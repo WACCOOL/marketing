@@ -4,6 +4,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-05-30",
   "compatibility_flags": ["nodejs_compat"],
+  "account_id": "b94b5602d0fac83f082622fd88b092d7",
 
   // Bound to the gowac.cc zone. The route catches all paths so the Worker can
   // 301 to the destination for known slugs and 404 for unknown ones.
@@ -18,7 +19,7 @@
       // MUST share the same KV namespace ID with apps/api/wrangler.jsonc so
       // create/edit writes are visible to the redirect path immediately.
       "binding": "SHORT_LINKS",
-      "id": "REPLACE_WITH_SAME_KV_ID_AS_API"
+      "id": "c23faa7c4acd44cf9835bc94a492397d"
     }
   ],
 

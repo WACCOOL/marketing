@@ -4,6 +4,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-05-30",
   "compatibility_flags": ["nodejs_compat"],
+  "account_id": "b94b5602d0fac83f082622fd88b092d7",
 
   // Serve the built React SPA as static assets. The Worker handles /api/* and
   // any unmatched route falls back to index.html (SPA routing).
@@ -20,7 +21,7 @@
     {
       // Created with: npx wrangler kv namespace create SHORT_LINKS
       "binding": "SHORT_LINKS",
-      "id": "REPLACE_WITH_KV_ID_AFTER_wrangler_kv_create"
+      "id": "c23faa7c4acd44cf9835bc94a492397d"
     }
   ],
 
