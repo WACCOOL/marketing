@@ -60,16 +60,33 @@ async function refreshIfStale(env: Env): Promise<void> {
   if (Date.now() - newestTs < REFRESH_INTERVAL_MS) return;
 
   const campaigns = await fetchHubspotCampaigns(env.HUBSPOT_TOKEN!);
+  // A 0-length result almost always means a transient error (auth blip, empty
+  // page) rather than "the portal genuinely has no campaigns". Bail without
+  // touching the cache so we never wipe a good dropdown.
   if (campaigns.length === 0) return;
 
-  // Upsert in batch; existing rows get refreshed synced_at.
+  // Stamp every fetched row with the same sync timestamp. Anything left in the
+  // table with an older synced_at after the upsert is stale — a removed dev
+  // seed, a campaign deleted in HubSpot, or the previous slug of a renamed
+  // campaign — and gets pruned below. This keeps the dropdown an exact mirror
+  // of the live HubSpot campaign list.
+  const syncedAt = new Date().toISOString();
+
   const { error } = await admin
     .from("hubspot_campaigns")
     .upsert(
-      campaigns.map((c) => ({ ...c, synced_at: new Date().toISOString() })),
+      campaigns.map((c) => ({ ...c, synced_at: syncedAt })),
       { onConflict: "hubspot_id,slug" },
     );
   if (error) throw new Error(`hubspot_campaigns upsert failed: ${error.message}`);
+
+  // Prune rows that were not part of this successful full pull.
+  const { error: pruneError } = await admin
+    .from("hubspot_campaigns")
+    .delete()
+    .lt("synced_at", syncedAt);
+  if (pruneError)
+    throw new Error(`hubspot_campaigns prune failed: ${pruneError.message}`);
 }
 
 interface HubspotApiCampaign {

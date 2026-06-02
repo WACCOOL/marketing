@@ -7,6 +7,8 @@ import {
 } from "./utm.js";
 
 const validCampaign = "39174698_hd_expo_2026";
+// The shape the live HubSpot Marketing Campaigns v3 API returns: a UUID id.
+const validUuidCampaign = "edb9b6c3-d2e2-4ca8-8396-832262aed0d4_hd_expo_2026";
 
 describe("buildTaggedUrl", () => {
   it("builds a correctly-encoded URL with all four params", () => {
@@ -71,6 +73,25 @@ describe("buildTaggedUrl", () => {
     expect(parsed.searchParams.getAll("utm_source")).toHaveLength(1);
   });
 
+  it("accepts a live HubSpot UUID campaign id", () => {
+    const url = buildTaggedUrl("https://waclighting.com/", {
+      source: "tradeshow",
+      medium: "vignette",
+      campaign: validUuidCampaign,
+      content: "aia",
+    });
+    expect(new URL(url).searchParams.get("utm_campaign")).toBe(
+      validUuidCampaign,
+    );
+
+    const res = validateUtmFields({
+      source: "tradeshow",
+      medium: "vignette",
+      campaign: validUuidCampaign,
+    });
+    expect(res.ok).toBe(true);
+  });
+
   it("encodes values that contain non-ASCII characters", () => {
     const url = buildTaggedUrl("https://example.com/", {
       source: "caf\u00e9",
@@ -98,6 +119,21 @@ describe("buildTaggedUrl — explicit guard against current-sheet bugs", () => {
 
   it("rejects campaigns with a drifting year suffix that lacks a hubspot id", () => {
     for (const bad of ["hd_expo_2027", "hd_expo_2028", "lightovation_2026"]) {
+      const res = validateUtmFields({
+        source: "print",
+        medium: "postcard",
+        campaign: bad,
+      });
+      expect(res.ok).toBe(false);
+    }
+  });
+
+  it("rejects a malformed/partial UUID campaign id", () => {
+    // Truncated UUID (missing the final segment) must not slip through.
+    for (const bad of [
+      "edb9b6c3-d2e2-4ca8-8396_hd_expo_2026",
+      "edb9b6c3d2e24ca88396832262aed0d4_hd_expo_2026",
+    ]) {
       const res = validateUtmFields({
         source: "print",
         medium: "postcard",
