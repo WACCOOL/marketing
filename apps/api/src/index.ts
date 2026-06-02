@@ -22,6 +22,20 @@ app.use(
   }),
 );
 
+// Surface uncaught errors with the actual message + stack so the SPA (and the
+// dev console) can show us what went wrong instead of a bare 500.
+app.onError((err, c) => {
+  const url = new URL(c.req.url);
+  console.error(`[api] ${c.req.method} ${url.pathname} failed:`, err);
+  return c.json(
+    {
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    },
+    500,
+  );
+});
+
 app.get("/api/_health", (c) => c.json({ ok: true }));
 
 app.route("/api/me", meRoutes);

@@ -1,11 +1,15 @@
 import { useMemo, useState } from "react";
 import {
+  SocialChannels,
   UtmFieldsSchema,
   auditTaggedUrl,
   buildTaggedUrl,
   encodeCampaignValue,
   type HubspotCampaign,
 } from "@wac/shared";
+
+const SOCIAL_SET = new Set<string>(SocialChannels);
+const SOCIAL_MEDIA = new Set(["social", "organic_social", "paid_social"]);
 import { addContentValue, useVocab } from "../lib/vocab.js";
 import { QrPreview } from "../components/QrPreview.js";
 import { api } from "../lib/api.js";
@@ -170,7 +174,20 @@ export function Builder() {
           </div>
           <div>
             <label>Source</label>
-            <select value={source} onChange={(e) => setSource(e.target.value)}>
+            <select
+              value={source}
+              onChange={(e) => {
+                const next = e.target.value;
+                setSource(next);
+                // When the source is a social channel, auto-set medium to
+                // "social" — unless the user has already picked some flavour
+                // of social (organic_social / paid_social), in which case we
+                // don't stomp their choice.
+                if (SOCIAL_SET.has(next) && !SOCIAL_MEDIA.has(medium)) {
+                  setMedium("social");
+                }
+              }}
+            >
               <option value="">— pick —</option>
               {vocab.source.map((s) => (
                 <option key={s} value={s}>

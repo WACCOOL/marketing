@@ -45,6 +45,42 @@ language sql stable security definer set search_path = public as $$
   );
 $$;
 
+-- Cross-table visibility helpers. These are SECURITY DEFINER so they bypass
+-- RLS internally, which is what breaks the assets <-> asset_shares recursion
+-- (an inline EXISTS subquery against another RLS-protected table re-enters
+-- that table's policies, which then EXISTS back into us, etc.).
+create or replace function public.user_owns_asset(p_asset_id uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.assets a
+    where a.id = p_asset_id and a.owner_id = auth.uid()
+  );
+$$;
+
+create or replace function public.user_has_share(p_asset_id uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.asset_shares s
+    where s.asset_id = p_asset_id and s.user_id = auth.uid()
+  );
+$$;
+
+create or replace function public.user_can_read_asset(p_asset_id uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.assets a
+    where a.id = p_asset_id
+      and (
+        a.owner_id = auth.uid()
+        or (a.org_visibility = 'internal' and public.is_active_internal_or_admin())
+        or exists (
+          select 1 from public.asset_shares s
+          where s.asset_id = a.id and s.user_id = auth.uid()
+        )
+      )
+  );
+$$;
+
 -- users -----------------------------------------------------------------------
 drop policy if exists users_self_read on public.users;
 create policy users_self_read on public.users
@@ -67,11 +103,9 @@ create policy assets_select on public.assets
     owner_id = auth.uid()
     -- internal/admin sees internal-visibility rows
     or (org_visibility = 'internal' and public.is_active_internal_or_admin())
-    -- rep with an explicit share
-    or exists (
-      select 1 from public.asset_shares s
-      where s.asset_id = id and s.user_id = auth.uid()
-    )
+    -- rep with an explicit share — via SECURITY DEFINER helper so we don't
+    -- recurse back through asset_shares' own RLS
+    or public.user_has_share(id)
   );
 
 drop policy if exists assets_insert on public.assets;
@@ -89,65 +123,29 @@ drop policy if exists assets_delete on public.assets;
 create policy assets_delete on public.assets
   for delete using (owner_id = auth.uid() or public.is_admin());
 
--- asset_files: inherit asset visibility ---------------------------------------
+-- asset_files: inherit asset visibility via SECURITY DEFINER helpers ----------
 drop policy if exists asset_files_select on public.asset_files;
 create policy asset_files_select on public.asset_files
-  for select using (
-    exists (
-      select 1 from public.assets a
-      where a.id = asset_id
-        and (
-          a.owner_id = auth.uid()
-          or (a.org_visibility = 'internal' and public.is_active_internal_or_admin())
-          or exists (
-            select 1 from public.asset_shares s
-            where s.asset_id = a.id and s.user_id = auth.uid()
-          )
-        )
-    )
-  );
+  for select using (public.user_can_read_asset(asset_id));
 
 drop policy if exists asset_files_modify on public.asset_files;
 create policy asset_files_modify on public.asset_files
-  for all using (
-    exists (
-      select 1 from public.assets a
-      where a.id = asset_id
-        and (a.owner_id = auth.uid() or public.is_admin())
-    )
-  ) with check (
-    exists (
-      select 1 from public.assets a
-      where a.id = asset_id
-        and (a.owner_id = auth.uid() or public.is_admin())
-    )
-  );
+  for all using (public.user_owns_asset(asset_id) or public.is_admin())
+  with check (public.user_owns_asset(asset_id) or public.is_admin());
 
 -- asset_shares ----------------------------------------------------------------
 drop policy if exists asset_shares_read on public.asset_shares;
 create policy asset_shares_read on public.asset_shares
   for select using (
     user_id = auth.uid()
-    or exists (
-      select 1 from public.assets a
-      where a.id = asset_id and a.owner_id = auth.uid()
-    )
+    or public.user_owns_asset(asset_id)
     or public.is_admin()
   );
 
 drop policy if exists asset_shares_write on public.asset_shares;
 create policy asset_shares_write on public.asset_shares
-  for all using (
-    exists (
-      select 1 from public.assets a
-      where a.id = asset_id and (a.owner_id = auth.uid() or public.is_admin())
-    )
-  ) with check (
-    exists (
-      select 1 from public.assets a
-      where a.id = asset_id and (a.owner_id = auth.uid() or public.is_admin())
-    )
-  );
+  for all using (public.user_owns_asset(asset_id) or public.is_admin())
+  with check (public.user_owns_asset(asset_id) or public.is_admin());
 
 -- short_links -----------------------------------------------------------------
 drop policy if exists short_links_select on public.short_links;
