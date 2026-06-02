@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, apiBlob } from "../lib/api.js";
+import { useVocab } from "../lib/vocab.js";
 
 interface ParseResp {
   rows: Array<{
@@ -33,12 +34,35 @@ interface ResultRow {
 }
 
 export function Bulk() {
+  const { vocab, campaigns, loading: vocabLoading } = useVocab();
   const [filename, setFilename] = useState("");
   const [parsed, setParsed] = useState<ParseResp | null>(null);
   const [results, setResults] = useState<ResultRow[]>([]);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  async function onDownloadTemplate() {
+    setErr(null);
+    try {
+      // Lazy-load: exceljs is heavy and only needed when building a template.
+      const { buildBulkTemplate } = await import("../lib/template.js");
+      const blob = await buildBulkTemplate({
+        source: vocab.source,
+        medium: vocab.medium,
+        content: vocab.content,
+        campaigns,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "WAC-bulk-import-template.xlsx";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setErr(formatErr(e));
+    }
+  }
 
   async function onUpload(file: File) {
     setErr(null);
@@ -154,6 +178,24 @@ export function Bulk() {
       </div>
 
       <div className="card col">
+        <div>
+          <label>Start from a template</label>
+          <div className="row" style={{ alignItems: "center", gap: 12 }}>
+            <button
+              className="secondary"
+              onClick={onDownloadTemplate}
+              disabled={vocabLoading}
+            >
+              {vocabLoading ? <span className="spinner" /> : null}
+              Download blank template (.xlsx)
+            </button>
+            <span className="muted" style={{ fontSize: 12 }}>
+              Includes dropdowns for source, medium, campaign &amp; content,
+              pre-filled with the current controlled vocab.
+            </span>
+          </div>
+        </div>
+
         <div>
           <label>Upload .xlsx / .csv</label>
           <input
