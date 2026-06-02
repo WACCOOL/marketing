@@ -1,5 +1,42 @@
 import { z } from "zod";
 import { buildTaggedUrl, type UtmFields } from "./utm.js";
+import { encodeCampaignValue, type HubspotCampaign } from "./types.js";
+
+/**
+ * The encoded `utm_campaign` shape, `{hubspotId}_{slug}`. Mirrors the regex in
+ * utm.ts and lets us cheaply detect a value that is already encoded.
+ */
+const ENCODED_CAMPAIGN_RE =
+  /^(?:\d{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})_[a-z0-9][a-z0-9_]*[a-z0-9]$/;
+
+/**
+ * Resolve a user-facing campaign value to the encoded `utm_campaign` string.
+ *
+ * Accepts (in priority order): an already-encoded value, an exact campaign
+ * display name, or a slug — all matched case-insensitively. Returns `null`
+ * when a non-empty value can't be matched so callers can flag the row instead
+ * of silently building a bad URL.
+ *
+ * This is what lets the bulk template show human campaign *names* in its
+ * dropdown while the parser still stores the encoded value the platform needs.
+ */
+export function resolveCampaignValue(
+  input: string,
+  campaigns: HubspotCampaign[],
+): string | null {
+  const v = input.trim();
+  if (!v) return null;
+  if (ENCODED_CAMPAIGN_RE.test(v)) return v;
+
+  const lc = v.toLowerCase();
+  const byName = campaigns.find((c) => c.name.trim().toLowerCase() === lc);
+  if (byName) return encodeCampaignValue(byName);
+
+  const bySlug = campaigns.find((c) => c.slug.trim().toLowerCase() === lc);
+  if (bySlug) return encodeCampaignValue(bySlug);
+
+  return null;
+}
 
 /**
  * Normalised representation of one row from the existing UTM Generator.xlsx
