@@ -53,10 +53,6 @@ importers:
         version: 4.97.0(@cloudflare/workers-types@4.20260602.1)
 
   apps/redirect:
-    dependencies:
-      '@supabase/supabase-js':
-        specifier: ^2.46.2
-        version: 2.107.0
     devDependencies:
       '@cloudflare/workers-types':
         specifier: ^4.20241218.0
