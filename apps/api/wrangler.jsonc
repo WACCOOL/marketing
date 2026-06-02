@@ -6,6 +6,11 @@
   "compatibility_flags": ["nodejs_compat"],
   "account_id": "b94b5602d0fac83f082622fd88b092d7",
 
+  // Custom domain on the gowac.cc zone. Wrangler provisions the DNS record +
+  // SSL cert automatically. The redirect Worker owns gowac.cc/* and
+  // www.gowac.cc/*, so marketing.gowac.cc is collision-free.
+  "routes": [{ "pattern": "marketing.gowac.cc", "custom_domain": true }],
+
   // Serve the built React SPA as static assets. The Worker handles /api/* and
   // any unmatched route falls back to index.html (SPA routing).
   "assets": {
