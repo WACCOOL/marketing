@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { encodeCampaignValue, type HubspotCampaign } from "@wac/shared";
 import { api, apiBlob } from "../lib/api.js";
 import { useVocab } from "../lib/vocab.js";
 
@@ -33,8 +34,45 @@ interface ResultRow {
   errors: string[];
 }
 
+type Mode = "file" | "paste" | "urls";
+
+/** Canonical header order assumed when pasted data has no recognizable header. */
+const PASTE_DEFAULT_HEADERS = [
+  "PROJECT",
+  "QR CODE NAME",
+  "LINK",
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_content",
+];
+
+const HEADER_TOKENS = new Set(
+  [
+    "project",
+    "qr code name",
+    "qr_code_name",
+    "qrname",
+    "qr name",
+    "link",
+    "destination",
+    "url",
+    "destination url",
+    "website url",
+    "utm_source",
+    "source",
+    "utm_medium",
+    "medium",
+    "utm_campaign",
+    "campaign",
+    "utm_content",
+    "content",
+  ].map((s) => s.toLowerCase()),
+);
+
 export function Bulk() {
   const { vocab, campaigns, loading: vocabLoading } = useVocab();
+  const [mode, setMode] = useState<Mode>("file");
   const [filename, setFilename] = useState("");
   const [parsed, setParsed] = useState<ParseResp | null>(null);
   const [results, setResults] = useState<ResultRow[]>([]);
@@ -42,10 +80,28 @@ export function Bulk() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Paste-mode state.
+  const [pasteText, setPasteText] = useState("");
+
+  // URL-list mode state (shared params applied to every URL).
+  const [urlText, setUrlText] = useState("");
+  const [ulProject, setUlProject] = useState("");
+  const [ulNamePrefix, setUlNamePrefix] = useState("");
+  const [ulSource, setUlSource] = useState("");
+  const [ulMedium, setUlMedium] = useState("");
+  const [ulCampaign, setUlCampaign] = useState<HubspotCampaign | null>(null);
+  const [ulContent, setUlContent] = useState("");
+
+  function resetResults(label: string) {
+    setErr(null);
+    setParsed(null);
+    setResults([]);
+    setFilename(label);
+  }
+
   async function onDownloadTemplate() {
     setErr(null);
     try {
-      // Lazy-load: exceljs is heavy and only needed when building a template.
       const { buildBulkTemplate } = await import("../lib/template.js");
       const blob = await buildBulkTemplate({
         source: vocab.source,
@@ -65,15 +121,65 @@ export function Bulk() {
   }
 
   async function onUpload(file: File) {
-    setErr(null);
-    setParsed(null);
-    setResults([]);
-    setFilename(file.name);
+    resetResults(file.name);
     const data = await fileToBase64(file);
     try {
       const res = await api<ParseResp>("/api/bulk/parse", {
         method: "POST",
         body: JSON.stringify({ data, filename: file.name }),
+      });
+      setParsed(res);
+    } catch (e) {
+      setErr(formatErr(e));
+    }
+  }
+
+  async function onParsePaste() {
+    const rows = parsePastedTsv(pasteText);
+    if (rows.length === 0) {
+      setErr("Nothing to parse — paste rows copied from Excel first.");
+      return;
+    }
+    resetResults("Pasted rows");
+    try {
+      const res = await api<ParseResp>("/api/bulk/parse-rows", {
+        method: "POST",
+        body: JSON.stringify({ rows }),
+      });
+      setParsed(res);
+    } catch (e) {
+      setErr(formatErr(e));
+    }
+  }
+
+  async function onParseUrlList() {
+    const urls = urlText
+      .split(/\r?\n/)
+      .map((u) => u.trim())
+      .filter((u) => u.length > 0);
+    if (urls.length === 0) {
+      setErr("Add at least one URL (one per line).");
+      return;
+    }
+    if (!ulSource || !ulMedium || !ulCampaign) {
+      setErr("Pick a source, medium, and campaign to apply to every URL.");
+      return;
+    }
+    const prefix = ulNamePrefix.trim() || ulProject.trim() || "QR";
+    const rows = urls.map((link, i) => ({
+      project: ulProject.trim(),
+      qrName: `${prefix} ${i + 1}`,
+      link,
+      utm_source: ulSource,
+      utm_medium: ulMedium,
+      utm_campaign: encodeCampaignValue(ulCampaign),
+      utm_content: ulContent,
+    }));
+    resetResults(ulProject.trim() ? `URL list — ${ulProject.trim()}` : "URL list");
+    try {
+      const res = await api<ParseResp>("/api/bulk/parse-rows", {
+        method: "POST",
+        body: JSON.stringify({ rows }),
       });
       setParsed(res);
     } catch (e) {
@@ -88,7 +194,6 @@ export function Bulk() {
     setResults([]);
     try {
       const okRows = parsed.rows.filter((r) => r.ok && r.row);
-      // Create a parent batch asset so all child QR assets link to one parent.
       const { parentAssetId } = await api<{ parentAssetId: string }>(
         "/api/bulk/start",
         {
@@ -171,42 +276,189 @@ export function Bulk() {
       <div>
         <h2>Bulk Import</h2>
         <div className="muted">
-          Upload a UTM Generator.xlsx/CSV file. We'll validate every row, build
-          tagged URLs + short links + QRs server-side, and export a results
-          sheet (or the dynamic-QR import template).
+          Build tagged URLs + short links + QRs in bulk. Upload a spreadsheet,
+          paste rows straight from Excel, or hand us a list of URLs to tag with
+          one shared set of UTM parameters. Every row is validated server-side
+          before anything is generated.
         </div>
       </div>
 
       <div className="card col">
-        <div>
-          <label>Start from a template</label>
-          <div className="row" style={{ alignItems: "center", gap: 12 }}>
-            <button
-              className="secondary"
-              onClick={onDownloadTemplate}
-              disabled={vocabLoading}
-            >
-              {vocabLoading ? <span className="spinner" /> : null}
-              Download blank template (.xlsx)
-            </button>
-            <span className="muted" style={{ fontSize: 12 }}>
-              Includes dropdowns for source, medium, campaign &amp; content,
-              pre-filled with the current controlled vocab.
-            </span>
-          </div>
+        <div className="row" role="tablist" style={{ gap: 8 }}>
+          <button
+            className={mode === "file" ? "" : "secondary"}
+            onClick={() => setMode("file")}
+          >
+            Upload file
+          </button>
+          <button
+            className={mode === "paste" ? "" : "secondary"}
+            onClick={() => setMode("paste")}
+          >
+            Paste from Excel
+          </button>
+          <button
+            className={mode === "urls" ? "" : "secondary"}
+            onClick={() => setMode("urls")}
+          >
+            List of URLs
+          </button>
         </div>
 
-        <div>
-          <label>Upload .xlsx / .csv</label>
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void onUpload(f);
-            }}
-          />
-        </div>
+        {mode === "file" && (
+          <>
+            <div>
+              <label>Start from a template</label>
+              <div className="row" style={{ alignItems: "center", gap: 12 }}>
+                <button
+                  className="secondary"
+                  onClick={onDownloadTemplate}
+                  disabled={vocabLoading}
+                >
+                  {vocabLoading ? <span className="spinner" /> : null}
+                  Download blank template (.xlsx)
+                </button>
+                <span className="muted" style={{ fontSize: 12 }}>
+                  Includes dropdowns for source, medium, campaign &amp; content,
+                  pre-filled with the current controlled vocab.
+                </span>
+              </div>
+            </div>
+            <div>
+              <label>Upload .xlsx / .csv</label>
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) void onUpload(f);
+                }}
+              />
+            </div>
+          </>
+        )}
+
+        {mode === "paste" && (
+          <>
+            <div>
+              <label>Paste rows copied from Excel</label>
+              <textarea
+                value={pasteText}
+                onChange={(e) => setPasteText(e.target.value)}
+                rows={8}
+                placeholder={
+                  "Paste cells straight from Excel (tab-separated).\n" +
+                  "Include the header row if you have one, otherwise columns are read in this order:\n" +
+                  PASTE_DEFAULT_HEADERS.join(" \u2192 ")
+                }
+                style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }}
+              />
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                The campaign column accepts the campaign <strong>name</strong>{" "}
+                (as shown in the template dropdown).
+              </div>
+            </div>
+            <button onClick={onParsePaste} disabled={!pasteText.trim()}>
+              Parse pasted rows
+            </button>
+          </>
+        )}
+
+        {mode === "urls" && (
+          <>
+            <div className="muted" style={{ fontSize: 12 }}>
+              Paste a list of destination URLs (one per line). Every URL gets the
+              same project + UTM parameters below.
+            </div>
+            <div>
+              <label>Destination URLs (one per line)</label>
+              <textarea
+                value={urlText}
+                onChange={(e) => setUrlText(e.target.value)}
+                rows={8}
+                placeholder={"https://waclighting.com/products/abc\nhttps://waclighting.com/products/xyz"}
+                style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }}
+              />
+            </div>
+            <div className="grid-2">
+              <div>
+                <label>Project (optional)</label>
+                <input
+                  value={ulProject}
+                  onChange={(e) => setUlProject(e.target.value)}
+                  placeholder="HD Expo 2026"
+                />
+              </div>
+              <div>
+                <label>QR name prefix (optional)</label>
+                <input
+                  value={ulNamePrefix}
+                  onChange={(e) => setUlNamePrefix(e.target.value)}
+                  placeholder="defaults to project; names become 'prefix 1', 'prefix 2'…"
+                />
+              </div>
+            </div>
+            <div className="grid-3">
+              <div>
+                <label>Campaign (HubSpot)</label>
+                <select
+                  value={ulCampaign ? encodeCampaignValue(ulCampaign) : ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setUlCampaign(
+                      campaigns.find((c) => encodeCampaignValue(c) === v) ?? null,
+                    );
+                  }}
+                >
+                  <option value="">— pick a campaign —</option>
+                  {campaigns.map((c) => (
+                    <option key={encodeCampaignValue(c)} value={encodeCampaignValue(c)}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label>Source</label>
+                <select value={ulSource} onChange={(e) => setUlSource(e.target.value)}>
+                  <option value="">— pick —</option>
+                  {vocab.source.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label>Medium</label>
+                <select value={ulMedium} onChange={(e) => setUlMedium(e.target.value)}>
+                  <option value="">— pick —</option>
+                  {vocab.medium.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="grid-2">
+              <div>
+                <label>Content (optional)</label>
+                <select value={ulContent} onChange={(e) => setUlContent(e.target.value)}>
+                  <option value="">— none —</option>
+                  {vocab.content.map((cv) => (
+                    <option key={cv} value={cv}>
+                      {cv}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <button onClick={onParseUrlList} disabled={vocabLoading || !urlText.trim()}>
+              Tag {urlText.split(/\r?\n/).filter((u) => u.trim()).length || ""} URLs
+            </button>
+          </>
+        )}
 
         {parsed && (
           <>
@@ -306,6 +558,29 @@ export function Bulk() {
       )}
     </div>
   );
+}
+
+/** Parse tab-separated rows pasted from Excel into header-keyed objects. */
+function parsePastedTsv(text: string): Record<string, string>[] {
+  const lines = text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return [];
+
+  const firstCells = lines[0]!.split("\t").map((c) => c.trim());
+  const looksLikeHeader = firstCells.some((c) => HEADER_TOKENS.has(c.toLowerCase()));
+  const headers = looksLikeHeader ? firstCells : PASTE_DEFAULT_HEADERS;
+  const dataLines = looksLikeHeader ? lines.slice(1) : lines;
+
+  return dataLines.map((line) => {
+    const cells = line.split("\t");
+    const obj: Record<string, string> = {};
+    headers.forEach((h, i) => {
+      obj[h] = (cells[i] ?? "").trim();
+    });
+    return obj;
+  });
 }
 
 async function fileToBase64(file: File): Promise<string> {

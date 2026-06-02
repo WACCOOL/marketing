@@ -4,7 +4,10 @@ import * as XLSX from "xlsx";
 import {
   DYNAMIC_QR_EXPORT_HEADERS,
   processBulkRow,
+  resolveCampaignValue,
   toDynamicQrExportRow,
+  type BulkRowResult,
+  type HubspotCampaign,
 } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
@@ -12,8 +15,95 @@ import { userSupabase } from "../supabase.js";
 import { createShortLink, shortLinkUrl } from "../shortlinks.js";
 import { renderQr } from "../qr.js";
 import { autoTags, createAsset } from "../assets.js";
+import { makeCampaignAdapter } from "../hubspot.js";
 
 export const bulkRoutes = new Hono<AppBindings>();
+
+/**
+ * Map one raw spreadsheet/pasted row (arbitrary header casing) onto our
+ * canonical field names. Forgiving on headers so the existing UTM Generator
+ * sheet, our own template, and Excel copy/paste all work.
+ */
+function normalizeRawRow(raw: Record<string, unknown>): Record<string, unknown> {
+  const norm: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    const lc = k.trim().toLowerCase();
+    switch (lc) {
+      case "project":
+        norm.project = v;
+        break;
+      case "qr code name":
+      case "qr_code_name":
+      case "qrname":
+      case "qr name":
+        norm.qrName = v;
+        break;
+      case "link":
+      case "destination":
+      case "url":
+      case "destination url":
+      case "website url":
+        norm.link = v;
+        break;
+      case "utm_source":
+      case "source":
+        norm.source = v;
+        break;
+      case "utm_medium":
+      case "medium":
+        norm.medium = v;
+        break;
+      case "utm_campaign":
+      case "campaign":
+        norm.campaign = v;
+        break;
+      case "utm_content":
+      case "content":
+        norm.content = v;
+        break;
+    }
+  }
+  return norm;
+}
+
+/**
+ * Normalise + campaign-resolve + validate a batch of raw rows. Campaign values
+ * may arrive as display names (from the template dropdown), slugs, or encoded
+ * values; we resolve them to the encoded form here so the rest of the pipeline
+ * only ever sees a valid `utm_campaign`.
+ */
+function processRows(
+  rawRows: Record<string, unknown>[],
+  campaigns: HubspotCampaign[],
+): BulkRowResult[] {
+  return rawRows.map((raw, idx) => {
+    const norm = normalizeRawRow(raw);
+    const rawCampaign = typeof norm.campaign === "string" ? norm.campaign : "";
+    if (rawCampaign.trim()) {
+      const resolved = resolveCampaignValue(rawCampaign, campaigns);
+      if (!resolved) {
+        return {
+          ok: false,
+          row: null,
+          rowIndex: idx,
+          errors: [
+            `utm_campaign: unknown campaign "${rawCampaign}" — pick one from the campaign dropdown`,
+          ],
+        };
+      }
+      norm.campaign = resolved;
+    }
+    return processBulkRow(norm, idx);
+  });
+}
+
+function rowsResponse(rows: BulkRowResult[]) {
+  return {
+    rows,
+    okCount: rows.filter((r) => r.ok).length,
+    errorCount: rows.filter((r) => !r.ok).length,
+  };
+}
 
 /**
  * Parse an uploaded .xlsx/.csv and return normalised rows for preview.
@@ -42,54 +132,26 @@ bulkRoutes.post("/parse", requireAuth, async (c) => {
     defval: "",
   });
 
-  // Normalise to our canonical row shape using forgiving header mapping.
-  const out = rawRows.map((raw, idx) => {
-    const norm: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(raw)) {
-      const lc = k.trim().toLowerCase();
-      switch (lc) {
-        case "project":
-          norm.project = v;
-          break;
-        case "qr code name":
-        case "qr_code_name":
-        case "qrname":
-        case "qr name":
-          norm.qrName = v;
-          break;
-        case "link":
-        case "destination":
-        case "url":
-        case "destination url":
-        case "website url":
-          norm.link = v;
-          break;
-        case "utm_source":
-        case "source":
-          norm.source = v;
-          break;
-        case "utm_medium":
-        case "medium":
-          norm.medium = v;
-          break;
-        case "utm_campaign":
-        case "campaign":
-          norm.campaign = v;
-          break;
-        case "utm_content":
-        case "content":
-          norm.content = v;
-          break;
-      }
-    }
-    return processBulkRow(norm, idx);
-  });
+  const campaigns = await makeCampaignAdapter(c.env).list();
+  return c.json(rowsResponse(processRows(rawRows, campaigns)));
+});
 
-  return c.json({
-    rows: out,
-    okCount: out.filter((r) => r.ok).length,
-    errorCount: out.filter((r) => !r.ok).length,
-  });
+/**
+ * Parse pre-structured rows (Excel copy/paste or the "list of URLs" builder)
+ * that the SPA assembled client-side. Same normalisation + campaign resolution
+ * + validation as the file upload path.
+ */
+const ParseRowsSchema = z.object({
+  rows: z.array(z.record(z.string(), z.unknown())).min(1).max(2000),
+});
+
+bulkRoutes.post("/parse-rows", requireAuth, async (c) => {
+  const parsed = ParseRowsSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  const campaigns = await makeCampaignAdapter(c.env).list();
+  return c.json(rowsResponse(processRows(parsed.data.rows, campaigns)));
 });
 
 const GenerateRowSchema = z.object({
