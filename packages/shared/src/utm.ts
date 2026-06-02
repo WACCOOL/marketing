@@ -63,8 +63,20 @@ export class UtmAssemblyError extends Error {
  * Validate the encoded campaign value. We require the `{hubspotId}_{slug}`
  * shape so that hand-typed strings (and especially the "incrementing 2026 ->
  * 2027 -> 2028" bug we have seen) get rejected at the boundary.
+ *
+ * The id segment accepts either form HubSpot has used:
+ *   - a UUID, returned by the Marketing Campaigns v3 API
+ *     (e.g. "edb9b6c3-d2e2-4ca8-8396-832262aed0d4_hd_expo_2026")
+ *   - a legacy numeric id, used by the dev seed data
+ *     (e.g. "39174698_hd_expo_2026")
+ * The UUID never contains an underscore, so the first `_` is always the
+ * unambiguous boundary between id and slug.
  */
-const CAMPAIGN_VALUE_RE = /^\d{4,}_[a-z0-9][a-z0-9_]*[a-z0-9]$/;
+const HUBSPOT_ID_RE =
+  "(?:\\d{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})";
+const CAMPAIGN_VALUE_RE = new RegExp(
+  `^${HUBSPOT_ID_RE}_[a-z0-9][a-z0-9_]*[a-z0-9]$`,
+);
 
 const utmTokenSchema = (label: string) =>
   z
