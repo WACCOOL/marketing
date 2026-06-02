@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wac-marketing-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-30",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Serve the built React SPA as static assets. The Worker handles /api/* and
+  // any unmatched route falls back to index.html (SPA routing).
+  "assets": {
+    "directory": "../web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // Force the Worker to run before assets for /api/* (otherwise /api/foo
+    // would 404 against the static asset tree first).
+    "run_worker_first": ["/api/*"]
+  },
+
+  "kv_namespaces": [
+    {
+      // Created with: npx wrangler kv namespace create SHORT_LINKS
+      "binding": "SHORT_LINKS",
+      "id": "REPLACE_WITH_KV_ID_AFTER_wrangler_kv_create"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      // Created with: npx wrangler r2 bucket create wac-marketing-assets
+      "binding": "ASSETS_BUCKET",
+      "bucket_name": "wac-marketing-assets"
+    }
+  ],
+
+  "vars": {
+    "SHORT_LINK_HOST": "https://gowac.cc"
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

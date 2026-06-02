@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wac-marketing-redirect",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-30",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Bound to the gowac.cc zone. The route catches all paths so the Worker can
+  // 301 to the destination for known slugs and 404 for unknown ones.
+  // Uncomment the route block once `gowac.cc` is added as a zone in the
+  // target Cloudflare account.
+  // "routes": [
+  //   { "pattern": "gowac.cc/*", "zone_name": "gowac.cc" }
+  // ],
+
+  "kv_namespaces": [
+    {
+      // MUST share the same KV namespace ID with apps/api/wrangler.jsonc so
+      // create/edit writes are visible to the redirect path immediately.
+      "binding": "SHORT_LINKS",
+      "id": "REPLACE_WITH_SAME_KV_ID_AS_API"
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+}

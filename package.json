@@ -1,0 +1,24 @@
+{
+  "name": "wac-marketing-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WAC Group Marketing App — Phase 1: UTM & QR Code Generator",
+  "scripts": {
+    "dev": "pnpm --filter @wac/web dev",
+    "dev:api": "pnpm --filter @wac/api dev",
+    "dev:redirect": "pnpm --filter @wac/redirect dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "@types/node": "^22.10.2"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "packageManager": "pnpm@9.15.9"
+}
