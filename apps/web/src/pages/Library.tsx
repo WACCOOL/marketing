@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/api.js";
+import { api, apiBlob } from "../lib/api.js";
 
 interface AssetFile {
   format: string;
@@ -48,6 +48,26 @@ export function Library() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function download(asset: Asset, format: string) {
+    setErr(null);
+    try {
+      // Plain <a href> navigation can't carry the Authorization header the API
+      // requires, so fetch the bytes with the authenticated helper and save the
+      // resulting blob via a temporary object URL.
+      const blob = await apiBlob(`/api/assets/${asset.id}/files/${format}`);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${asset.name || asset.id}.${format}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setErr(formatErr(e));
+    }
+  }
 
   return (
     <div className="col" style={{ gap: 20 }}>
@@ -111,6 +131,10 @@ export function Library() {
                       key={f.format}
                       href={`/api/assets/${a.id}/files/${f.format}`}
                       style={{ marginRight: 8 }}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        void download(a, f.format);
+                      }}
                     >
                       {f.format}
                     </a>
