@@ -6,13 +6,15 @@
   "compatibility_flags": ["nodejs_compat"],
   "account_id": "b94b5602d0fac83f082622fd88b092d7",
 
-  // Bound to the gowac.cc zone. The route catches all paths so the Worker can
-  // 301 to the destination for known slugs and 404 for unknown ones.
-  // Uncomment the route block once `gowac.cc` is added as a zone in the
-  // target Cloudflare account.
-  // "routes": [
-  //   { "pattern": "gowac.cc/*", "zone_name": "gowac.cc" }
-  // ],
+  // Bound to the gowac.cc zone. Catches every path on apex + www so the
+  // Worker can 301 to the destination for known slugs and 404 for unknown
+  // ones. Requires the zone to be active in this Cloudflare account with
+  // the orange-cloud (proxied) DNS marker on whichever record the routes
+  // resolve through.
+  "routes": [
+    { "pattern": "gowac.cc/*", "zone_name": "gowac.cc" },
+    { "pattern": "www.gowac.cc/*", "zone_name": "gowac.cc" }
+  ],
 
   "kv_namespaces": [
     {
