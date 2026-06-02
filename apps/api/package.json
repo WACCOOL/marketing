@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --remote",
+    "dev:local": "wrangler dev",
     "build": "echo 'no build step (wrangler deploy handles bundling)'",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
