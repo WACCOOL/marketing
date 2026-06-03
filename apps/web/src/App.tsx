@@ -58,7 +58,8 @@ function Shell() {
   return (
     <div className="app">
       <aside className="sidebar">
-        <h1>WAC Marketing</h1>
+        <img className="brand-logo" src="/wac-group-logo.svg" alt="WAC Group" />
+        <h1>Marketing</h1>
         <NavLink to="/builder" className={({ isActive }) => (isActive ? "active" : "")}>
           UTM Builder
         </NavLink>
