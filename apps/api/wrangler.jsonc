@@ -40,11 +40,14 @@
 
   // Phase 2b — heavy generation runs in a Cloudflare Container, fronted by a
   // container-enabled Durable Object (GenerationContainer in src/container.ts).
-  // The image is built from apps/generator on deploy.
+  // The image is built from apps/generator on deploy. The build context is the
+  // repo root so the multi-stage Dockerfile can resolve the @wac/shared workspace
+  // package (Phase 2c scale/compositing engine imports the shared contract).
   "containers": [
     {
       "class_name": "GenerationContainer",
       "image": "../generator/Dockerfile",
+      "image_build_context": "../..",
       "max_instances": 5,
       "instance_type": "basic"
     }

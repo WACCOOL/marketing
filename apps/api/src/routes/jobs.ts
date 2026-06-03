@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { GenerationJobRequestSchema } from "@wac/shared";
+import { AppImageParamsSchema, GenerationJobRequestSchema } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
 import { userSupabase } from "../supabase.js";
@@ -35,6 +35,21 @@ jobRoutes.post("/", requireAuth, async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
   }
+
+  // Per-tool param validation so bad inputs 400 here instead of failing as a
+  // dead generation job. appimage carries the scale + compositing contract.
+  let params: Record<string, unknown> = parsed.data.params;
+  if (parsed.data.tool === "appimage") {
+    const appimage = AppImageParamsSchema.safeParse(params);
+    if (!appimage.success) {
+      return c.json(
+        { error: "invalid appimage params", issues: appimage.error.issues },
+        400,
+      );
+    }
+    params = appimage.data as Record<string, unknown>;
+  }
+
   const user = c.get("user");
   const sb = userSupabase(c.env, c.get("jwt"));
 
@@ -42,7 +57,7 @@ jobRoutes.post("/", requireAuth, async (c) => {
     ownerId: user.id,
     tool: parsed.data.tool,
     name: parsed.data.name,
-    params: parsed.data.params,
+    params,
   });
   if (!res.ok) return c.json({ error: res.error }, 500);
 

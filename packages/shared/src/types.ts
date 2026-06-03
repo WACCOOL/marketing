@@ -129,3 +129,99 @@ export const ProductSchema = z.object({
   synced_at: z.string(),
 });
 export type Product = z.infer<typeof ProductSchema>;
+
+// ---------------------------------------------------------------------------
+// Application Image generation params (Phase 2c).
+//
+// This is the SINGLE canonical contract for the deterministic scale + compositing
+// engine. The generator container imports these schemas directly (its Docker image
+// is a pnpm-workspace build of this package), so there is no second copy to drift.
+// The AI scene-generation and AI scale-inference steps are siblings that produce
+// `sceneUrl` / `scale.pxPerMm` and feed this engine.
+// ---------------------------------------------------------------------------
+
+/**
+ * Version tag for the App Image params contract. Stamped into the generated
+ * asset's metadata_json and asserted by the generator, so a future v2 contract
+ * is unambiguous and old assets remain interpretable.
+ */
+export const APPIMAGE_PARAMS_VERSION = "appimage-v1";
+
+/** Which point of the cutout is pinned to the placement coordinate. */
+export const AppImageAnchorSchema = z.enum([
+  "center",
+  "top-left",
+  "top-center",
+  "top-right",
+  "center-left",
+  "center-right",
+  "bottom-left",
+  "bottom-center",
+  "bottom-right",
+]);
+export type AppImageAnchor = z.infer<typeof AppImageAnchorSchema>;
+
+/**
+ * Which real-world dimension governs the cutout's on-screen size. `auto` lets
+ * the engine pick; explicit values force a specific axis. See the scale engine
+ * for the `auto` priority rationale.
+ */
+export const AppImageWidthBasisSchema = z.enum([
+  "auto",
+  "width",
+  "height",
+  "diameter",
+  "length",
+]);
+export type AppImageWidthBasis = z.infer<typeof AppImageWidthBasisSchema>;
+
+/**
+ * Scene scale: `pxPerMm` is the link between real millimetres and scene pixels
+ * (from AI inference or a user value). `scaleAdjust` is the user's "scale looks
+ * off" correction multiplier applied on top.
+ */
+export const AppImageScaleSchema = z.object({
+  pxPerMm: z.number().positive(),
+  scaleAdjust: z.number().positive().default(1),
+});
+export type AppImageScale = z.infer<typeof AppImageScaleSchema>;
+
+export const AppImageFixtureSchema = z.object({
+  /**
+   * Sales Layer CDN URL of the product cutout. MUST be an RGBA PNG with a real
+   * alpha channel (transparent background) - the engine composites it as-is and
+   * does NOT remove backgrounds. JPEGs / opaque PNGs are rejected at generation.
+   */
+  cutoutUrl: z.string().url(),
+  /** Real fixture dimensions in millimetres; at least one is required. */
+  dimensionsMm: DimensionsMmSchema.refine(
+    (d) => Boolean(d.width || d.height || d.depth || d.diameter || d.length),
+    {
+      message:
+        "at least one dimension (width/height/depth/diameter/length) is required",
+    },
+  ),
+  anchor: AppImageAnchorSchema.default("bottom-center"),
+  /** Anchor placement as a fraction of scene width/height (0..1). */
+  xPct: z.number().min(0).max(1),
+  yPct: z.number().min(0).max(1),
+  widthBasis: AppImageWidthBasisSchema.default("auto"),
+});
+export type AppImageFixture = z.infer<typeof AppImageFixtureSchema>;
+
+export const AppImageOutputSchema = z.object({
+  format: z.enum(["png", "jpeg"]).default("png"),
+  quality: z.number().int().min(1).max(100).optional(),
+});
+export type AppImageOutput = z.infer<typeof AppImageOutputSchema>;
+
+export const AppImageParamsSchema = z.object({
+  version: z.literal(APPIMAGE_PARAMS_VERSION).default(APPIMAGE_PARAMS_VERSION),
+  /** Background scene (uploaded, stock, or a future AI-generated room). */
+  sceneUrl: z.string().url(),
+  scale: AppImageScaleSchema,
+  /** One or more fixtures to place; covers multi-fixture scenes. */
+  fixtures: z.array(AppImageFixtureSchema).min(1),
+  output: AppImageOutputSchema.default({}),
+});
+export type AppImageParams = z.infer<typeof AppImageParamsSchema>;

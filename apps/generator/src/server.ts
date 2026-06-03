@@ -2,15 +2,18 @@ import http from "node:http";
 import zlib from "node:zlib";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { AppImageParamsSchema, APPIMAGE_PARAMS_VERSION } from "@wac/shared";
+import { composeAppImage } from "./composite.js";
 
 /**
- * WAC generation Container (Phase 2b).
+ * WAC generation Container (Phase 2c).
  *
- * A minimal HTTP service that the API Worker's queue consumer invokes. It runs
- * the generator (a STUB for 2b — writes a placeholder PNG), uploads the result
- * to R2 over the S3 API, records the asset in Supabase, and flips the
- * generation_jobs row to succeeded/failed. The real compositing/AI logic lands
- * in 2c by replacing `runStubGenerator` — the infra path around it is final.
+ * A minimal HTTP service that the API Worker's queue consumer invokes. For
+ * `appimage` it runs the deterministic scale + compositing engine (fetch scene +
+ * Sales Layer CDN cutouts, size from dimensions_mm + scene scale, composite with
+ * sharp); `ppt`/`layout` still emit the 2b placeholder until Phase 3. It uploads
+ * the result to R2 over the S3 API, records the asset in Supabase, and flips the
+ * generation_jobs row to succeeded/failed.
  *
  * SHARED CONTRACT (keep in lockstep with apps/api/src/assets.ts):
  *   - R2 object key:   assets/{assetId}/{format}
@@ -67,6 +70,12 @@ interface GeneratedFile {
   format: string;
   body: Buffer;
   contentType: string;
+}
+
+interface GenerationResult {
+  files: GeneratedFile[];
+  /** Merged into the asset's metadata_json for reproducibility. */
+  metadata: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,11 +151,79 @@ function makePlaceholderPng(
   ]);
 }
 
-/** The STUB generator. Returns a placeholder PNG; replaced with real logic in 2c. */
-function runStubGenerator(req: GenerateRequest): GeneratedFile[] {
-  // WAC brand-ish slate so the placeholder is recognizable in the library.
+/**
+ * Placeholder generator for tools whose real pipeline isn't built yet
+ * (ppt/layout — Phase 3). Returns a recognizable WAC-slate PNG.
+ */
+function runStubGenerator(req: GenerateRequest): GenerationResult {
   const png = makePlaceholderPng(1200, 630, [30, 41, 59, 255]);
-  return [{ format: "png", body: png, contentType: "image/png" }];
+  return {
+    files: [{ format: "png", body: png, contentType: "image/png" }],
+    metadata: { generatedBy: "stub", params: req.params },
+  };
+}
+
+/**
+ * The deterministic App Image generator (Phase 2c): validate params against the
+ * canonical contract, fetch the scene + cutouts, and composite at the computed
+ * scale. Errors propagate to handleGenerate, which finalizes the job as failed.
+ */
+async function runAppImageGenerator(
+  req: GenerateRequest,
+): Promise<GenerationResult> {
+  const parsed = AppImageParamsSchema.safeParse(req.params);
+  if (!parsed.success) {
+    const detail = parsed.error.issues
+      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+      .join("; ");
+    throw new Error(`invalid appimage params: ${detail}`);
+  }
+  const p = parsed.data;
+  if (p.version !== APPIMAGE_PARAMS_VERSION) {
+    throw new Error(`unsupported appimage params version: ${p.version}`);
+  }
+
+  const result = await composeAppImage({
+    sceneUrl: p.sceneUrl,
+    pxPerMm: p.scale.pxPerMm,
+    scaleAdjust: p.scale.scaleAdjust,
+    fixtures: p.fixtures.map((f) => ({
+      cutoutUrl: f.cutoutUrl,
+      dimensionsMm: f.dimensionsMm,
+      anchor: f.anchor,
+      xPct: f.xPct,
+      yPct: f.yPct,
+      widthBasis: f.widthBasis,
+    })),
+    output: p.output,
+  });
+
+  return {
+    files: [
+      {
+        format: result.format,
+        body: result.body,
+        contentType: result.contentType,
+      },
+    ],
+    metadata: {
+      version: APPIMAGE_PARAMS_VERSION,
+      generatedBy: "appimage",
+      sceneUrl: p.sceneUrl,
+      scale: p.scale,
+      output: {
+        format: result.format,
+        width: result.width,
+        height: result.height,
+      },
+      fixtures: result.placements,
+    },
+  };
+}
+
+function runGeneration(req: GenerateRequest): Promise<GenerationResult> {
+  if (req.tool === "appimage") return runAppImageGenerator(req);
+  return Promise.resolve(runStubGenerator(req));
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +241,7 @@ async function markRunning(sb: SupabaseClient, jobId: string): Promise<void> {
 async function createAssetRow(
   sb: SupabaseClient,
   req: GenerateRequest,
+  metadata: Record<string, unknown>,
 ): Promise<string> {
   const { data, error } = await sb
     .from("assets")
@@ -173,7 +251,7 @@ async function createAssetRow(
       name: req.name,
       org_visibility: "internal",
       tags: [`tool:${req.tool}`],
-      metadata_json: { jobId: req.jobId, generatedBy: "stub", params: req.params },
+      metadata_json: { jobId: req.jobId, ...metadata },
     })
     .select("id")
     .single();
@@ -257,11 +335,15 @@ async function handleGenerate(
   s3: S3Client,
 ): Promise<void> {
   await markRunning(sb, req.jobId);
-  const assetId = await createAssetRow(sb, req);
-  const generated = runStubGenerator(req);
+
+  // Generate first so the asset row can carry the real generation metadata
+  // (computed scale, placements). A failure here surfaces before any DB writes
+  // beyond the running transition.
+  const generated = await runGeneration(req);
+  const assetId = await createAssetRow(sb, req, generated.metadata);
 
   const uploaded: { format: string; key: string; bytes: number }[] = [];
-  for (const file of generated) {
+  for (const file of generated.files) {
     const meta = await uploadFile(s3, config.r2Bucket, assetId, file);
     await recordAssetFile(sb, assetId, meta);
     uploaded.push(meta);
