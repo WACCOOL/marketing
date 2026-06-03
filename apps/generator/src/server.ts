@@ -2,17 +2,33 @@ import http from "node:http";
 import zlib from "node:zlib";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { AppImageParamsSchema, APPIMAGE_PARAMS_VERSION } from "@wac/shared";
-import { composeAppImage } from "./composite.js";
+import {
+  AppImageParamsSchema,
+  APPIMAGE_PARAMS_VERSIONS,
+  type AppImageParams,
+} from "@wac/shared";
+import {
+  composeAppImage,
+  encodeOutput,
+  fetchSceneAndFixtures,
+  placeFixtures,
+  type FixtureInput,
+  type Placement,
+} from "./composite.js";
+import { buildHarmonizationMask } from "./mask.js";
+import { fetchImageBuffer } from "./fetchImage.js";
+import { makeImageGenAdapters, type ImageGenAdapters } from "./ai/adapter.js";
 
 /**
- * WAC generation Container (Phase 2c).
+ * WAC generation Container (Phase 2d).
  *
  * A minimal HTTP service that the API Worker's queue consumer invokes. For
- * `appimage` it runs the deterministic scale + compositing engine (fetch scene +
- * Sales Layer CDN cutouts, size from dimensions_mm + scene scale, composite with
- * sharp); `ppt`/`layout` still emit the 2b placeholder until Phase 3. It uploads
- * the result to R2 over the S3 API, records the asset in Supabase, and flips the
+ * `appimage` it dispatches by `mode`: `composite` runs the deterministic scale +
+ * compositing engine (2c); `hybrid` composites then harmonizes lighting via
+ * FLUX.1 Fill (+ optional Gemini pass) behind the ImageGenerationAdapter; and
+ * `concept` is pure-generative via Gemini (flagged not product-accurate).
+ * `ppt`/`layout` still emit the 2b placeholder until Phase 3. It uploads the
+ * result to R2 over the S3 API, records the asset in Supabase, and flips the
  * generation_jobs row to succeeded/failed.
  *
  * SHARED CONTRACT (keep in lockstep with apps/api/src/assets.ts):
@@ -31,6 +47,10 @@ interface Config {
   r2AccessKeyId: string;
   r2SecretAccessKey: string;
   r2Bucket: string;
+  // Optional AI provider keys (Phase 2d). When unset, only `composite` mode
+  // works; hybrid/concept jobs fail with a precise "not configured" error.
+  bflApiKey?: string;
+  geminiApiKey?: string;
 }
 
 function loadConfig(): Config {
@@ -55,6 +75,8 @@ function loadConfig(): Config {
     r2AccessKeyId: required.R2_ACCESS_KEY_ID!,
     r2SecretAccessKey: required.R2_SECRET_ACCESS_KEY!,
     r2Bucket: required.R2_BUCKET!,
+    bflApiKey: process.env.BFL_API_KEY || undefined,
+    geminiApiKey: process.env.GEMINI_API_KEY || undefined,
   };
 }
 
@@ -163,13 +185,181 @@ function runStubGenerator(req: GenerateRequest): GenerationResult {
   };
 }
 
+function mapFixtures(p: AppImageParams): FixtureInput[] {
+  return p.fixtures.map((f) => ({
+    cutoutUrl: f.cutoutUrl,
+    dimensionsMm: f.dimensionsMm,
+    anchor: f.anchor,
+    xPct: f.xPct,
+    yPct: f.yPct,
+    widthBasis: f.widthBasis,
+  }));
+}
+
+/** Drop the heavy resized-cutout buffers before a placement goes into metadata. */
+function toPlacementMeta(
+  placements: { resizedCutout: Buffer }[],
+): Placement[] {
+  return placements.map(({ resizedCutout: _drop, ...rest }) => rest as Placement);
+}
+
 /**
- * The deterministic App Image generator (Phase 2c): validate params against the
- * canonical contract, fetch the scene + cutouts, and composite at the computed
- * scale. Errors propagate to handleGenerate, which finalizes the job as failed.
+ * Deterministic compositing (Phase 2c / `composite` mode): fetch the scene +
+ * cutouts and composite at the computed scale. No AI.
+ */
+async function runComposite(p: AppImageParams): Promise<GenerationResult> {
+  const result = await composeAppImage({
+    sceneUrl: p.sceneUrl!,
+    pxPerMm: p.scale!.pxPerMm,
+    scaleAdjust: p.scale!.scaleAdjust,
+    fixtures: mapFixtures(p),
+    output: p.output,
+  });
+  return {
+    files: [
+      { format: result.format, body: result.body, contentType: result.contentType },
+    ],
+    metadata: {
+      version: p.version,
+      mode: "composite",
+      generatedBy: "composite",
+      productAccurate: true,
+      sceneUrl: p.sceneUrl,
+      scale: p.scale,
+      output: { format: result.format, width: result.width, height: result.height },
+      fixtures: result.placements,
+    },
+  };
+}
+
+/**
+ * Hybrid (Option C / `hybrid` mode): composite the real cutouts, build a halo
+ * mask around each fixture (core preserved), let FLUX.1 Fill paint integrated
+ * lighting in the halo, then optionally run a Gemini global lighting pass.
+ */
+async function runHybrid(
+  p: AppImageParams,
+  adapters: ImageGenAdapters,
+): Promise<GenerationResult> {
+  const inpainter = adapters.inpainter;
+  if (!inpainter) {
+    throw new Error(
+      "hybrid mode requires a configured BFL API key (set BFL_API_KEY)",
+    );
+  }
+
+  const { scene, fixtures } = await fetchSceneAndFixtures(
+    p.sceneUrl!,
+    mapFixtures(p),
+  );
+  const placed = await placeFixtures({
+    scene,
+    fixtures,
+    pxPerMm: p.scale!.pxPerMm,
+    scaleAdjust: p.scale!.scaleAdjust,
+  });
+
+  const mask = await buildHarmonizationMask({
+    width: placed.width,
+    height: placed.height,
+    placements: placed.placements,
+    dilationPx: p.harmonize.maskDilationPx,
+  });
+
+  const steps: string[] = [];
+  let aiImage = await inpainter.inpaint({
+    image: placed.base,
+    mask,
+    prompt: p.prompt!,
+    steps: p.harmonize.steps,
+    guidance: p.harmonize.guidance,
+    seed: p.harmonize.seed,
+  });
+  steps.push(`inpaint:${inpainter.provider}`);
+
+  if (p.harmonize.globalPass) {
+    const harmonizer = adapters.harmonizer;
+    if (!harmonizer) {
+      throw new Error(
+        "harmonize.globalPass requires a configured Gemini API key (set GEMINI_API_KEY)",
+      );
+    }
+    aiImage = await harmonizer.harmonize({ image: aiImage, prompt: p.prompt! });
+    steps.push(`harmonize:${harmonizer.provider}`);
+  }
+
+  const encoded = await encodeOutput(aiImage, p.output);
+  return {
+    files: [
+      { format: encoded.format, body: encoded.body, contentType: encoded.contentType },
+    ],
+    metadata: {
+      version: p.version,
+      mode: "hybrid",
+      generatedBy: steps.join(" -> "),
+      productAccurate: true,
+      sceneUrl: p.sceneUrl,
+      scale: p.scale,
+      prompt: p.prompt,
+      harmonize: p.harmonize,
+      steps,
+      output: { format: encoded.format, width: encoded.width, height: encoded.height },
+      fixtures: toPlacementMeta(placed.placements),
+    },
+  };
+}
+
+/**
+ * Concept (Option B / `concept` mode): pure generative scene from the prompt
+ * (+ optional reference images). NOT product-accurate — flagged as such so the
+ * UI / library can label it clearly.
+ */
+async function runConcept(
+  p: AppImageParams,
+  adapters: ImageGenAdapters,
+): Promise<GenerationResult> {
+  const generator = adapters.generator;
+  if (!generator) {
+    throw new Error(
+      "concept mode requires a configured Gemini API key (set GEMINI_API_KEY)",
+    );
+  }
+
+  const referenceImages: Buffer[] = [];
+  for (const url of p.referenceImages) {
+    const fetched = await fetchImageBuffer(url);
+    referenceImages.push(fetched.buffer);
+  }
+
+  const aiImage = await generator.generate({
+    prompt: p.prompt!,
+    referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
+  });
+
+  const encoded = await encodeOutput(aiImage, p.output);
+  return {
+    files: [
+      { format: encoded.format, body: encoded.body, contentType: encoded.contentType },
+    ],
+    metadata: {
+      version: p.version,
+      mode: "concept",
+      generatedBy: `generate:${generator.provider}`,
+      productAccurate: false,
+      prompt: p.prompt,
+      referenceCount: referenceImages.length,
+      output: { format: encoded.format, width: encoded.width, height: encoded.height },
+    },
+  };
+}
+
+/**
+ * Validate against the canonical contract, then dispatch by mode. Errors
+ * propagate to handleGenerate, which finalizes the job as failed.
  */
 async function runAppImageGenerator(
   req: GenerateRequest,
+  adapters: ImageGenAdapters,
 ): Promise<GenerationResult> {
   const parsed = AppImageParamsSchema.safeParse(req.params);
   if (!parsed.success) {
@@ -179,50 +369,26 @@ async function runAppImageGenerator(
     throw new Error(`invalid appimage params: ${detail}`);
   }
   const p = parsed.data;
-  if (p.version !== APPIMAGE_PARAMS_VERSION) {
+  if (!(APPIMAGE_PARAMS_VERSIONS as readonly string[]).includes(p.version)) {
     throw new Error(`unsupported appimage params version: ${p.version}`);
   }
 
-  const result = await composeAppImage({
-    sceneUrl: p.sceneUrl,
-    pxPerMm: p.scale.pxPerMm,
-    scaleAdjust: p.scale.scaleAdjust,
-    fixtures: p.fixtures.map((f) => ({
-      cutoutUrl: f.cutoutUrl,
-      dimensionsMm: f.dimensionsMm,
-      anchor: f.anchor,
-      xPct: f.xPct,
-      yPct: f.yPct,
-      widthBasis: f.widthBasis,
-    })),
-    output: p.output,
-  });
-
-  return {
-    files: [
-      {
-        format: result.format,
-        body: result.body,
-        contentType: result.contentType,
-      },
-    ],
-    metadata: {
-      version: APPIMAGE_PARAMS_VERSION,
-      generatedBy: "appimage",
-      sceneUrl: p.sceneUrl,
-      scale: p.scale,
-      output: {
-        format: result.format,
-        width: result.width,
-        height: result.height,
-      },
-      fixtures: result.placements,
-    },
-  };
+  switch (p.mode) {
+    case "hybrid":
+      return runHybrid(p, adapters);
+    case "concept":
+      return runConcept(p, adapters);
+    case "composite":
+    default:
+      return runComposite(p);
+  }
 }
 
-function runGeneration(req: GenerateRequest): Promise<GenerationResult> {
-  if (req.tool === "appimage") return runAppImageGenerator(req);
+function runGeneration(
+  req: GenerateRequest,
+  adapters: ImageGenAdapters,
+): Promise<GenerationResult> {
+  if (req.tool === "appimage") return runAppImageGenerator(req, adapters);
   return Promise.resolve(runStubGenerator(req));
 }
 
@@ -333,13 +499,14 @@ async function handleGenerate(
   config: Config,
   sb: SupabaseClient,
   s3: S3Client,
+  adapters: ImageGenAdapters,
 ): Promise<void> {
   await markRunning(sb, req.jobId);
 
   // Generate first so the asset row can carry the real generation metadata
   // (computed scale, placements). A failure here surfaces before any DB writes
   // beyond the running transition.
-  const generated = await runGeneration(req);
+  const generated = await runGeneration(req, adapters);
   const assetId = await createAssetRow(sb, req, generated.metadata);
 
   const uploaded: { format: string; key: string; bytes: number }[] = [];
@@ -409,6 +576,13 @@ function main(): void {
     },
   });
 
+  // Built once at startup from configured keys; unset providers leave slots
+  // empty so hybrid/concept jobs fail with a precise "not configured" error.
+  const adapters = makeImageGenAdapters({
+    bflApiKey: config.bflApiKey,
+    geminiApiKey: config.geminiApiKey,
+  });
+
   const server = http.createServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://localhost");
@@ -435,7 +609,7 @@ function main(): void {
         }
 
         try {
-          await handleGenerate(parsed, config, sb, s3);
+          await handleGenerate(parsed, config, sb, s3, adapters);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: true, jobId: parsed.jobId }));
         } catch (e) {

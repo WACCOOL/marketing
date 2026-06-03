@@ -142,10 +142,19 @@ export type Product = z.infer<typeof ProductSchema>;
 
 /**
  * Version tag for the App Image params contract. Stamped into the generated
- * asset's metadata_json and asserted by the generator, so a future v2 contract
+ * asset's metadata_json and asserted by the generator, so a versioned contract
  * is unambiguous and old assets remain interpretable.
+ *
+ * `appimage-v2` (current) adds the hybrid AI pipeline: a `mode`
+ * (composite | hybrid | concept), a scene/lighting `prompt`, a `harmonize`
+ * block, and concept-mode `referenceImages`. `appimage-v1` payloads (pure
+ * deterministic compositing) remain valid and resolve to `mode: "composite"`.
  */
-export const APPIMAGE_PARAMS_VERSION = "appimage-v1";
+export const APPIMAGE_PARAMS_VERSION = "appimage-v2";
+
+/** Every params-contract version the generator still accepts. */
+export const APPIMAGE_PARAMS_VERSIONS = ["appimage-v1", "appimage-v2"] as const;
+export type AppImageParamsVersion = (typeof APPIMAGE_PARAMS_VERSIONS)[number];
 
 /** Which point of the cutout is pinned to the placement coordinate. */
 export const AppImageAnchorSchema = z.enum([
@@ -215,13 +224,104 @@ export const AppImageOutputSchema = z.object({
 });
 export type AppImageOutput = z.infer<typeof AppImageOutputSchema>;
 
-export const AppImageParamsSchema = z.object({
-  version: z.literal(APPIMAGE_PARAMS_VERSION).default(APPIMAGE_PARAMS_VERSION),
-  /** Background scene (uploaded, stock, or a future AI-generated room). */
-  sceneUrl: z.string().url(),
-  scale: AppImageScaleSchema,
-  /** One or more fixtures to place; covers multi-fixture scenes. */
-  fixtures: z.array(AppImageFixtureSchema).min(1),
-  output: AppImageOutputSchema.default({}),
+/**
+ * How the App Image is produced:
+ * - `composite`: deterministic scale + sharp compositing only (Phase 2c). No AI.
+ * - `hybrid`: Option C — composite the real cutouts, then let an AI inpainter
+ *   (FLUX.1 Fill) paint integrated lighting/shadow/glow in a masked halo around
+ *   each fixture (the fixture core is preserved), with an optional Gemini global
+ *   harmonization pass. Highest fidelity + realistic light.
+ * - `concept`: Option B — pure generative scene from a prompt (+ optional
+ *   reference images). Fast, but NOT product-accurate; flagged as such.
+ */
+export const AppImageModeSchema = z.enum(["composite", "hybrid", "concept"]);
+export type AppImageMode = z.infer<typeof AppImageModeSchema>;
+
+/**
+ * AI harmonization controls for `hybrid` mode. The inpaint step (FLUX.1 Fill) is
+ * always run for hybrid; there is no provider switch because Fill is the only
+ * masked inpainter wired in 2d. `globalPass` gates the optional Gemini
+ * full-image lighting pass that runs after inpainting.
+ */
+export const AppImageHarmonizeSchema = z.object({
+  /** Run the Gemini full-image lighting pass after FLUX.1 Fill. */
+  globalPass: z.boolean().default(false),
+  /** Pixels to dilate each fixture box by when building the inpaint mask. */
+  maskDilationPx: z.number().int().min(0).max(512).default(48),
+  /** FLUX.1 Fill sampling controls (passed through to BFL). */
+  steps: z.number().int().min(1).max(50).optional(),
+  guidance: z.number().min(1).max(100).optional(),
+  seed: z.number().int().optional(),
 });
+export type AppImageHarmonize = z.infer<typeof AppImageHarmonizeSchema>;
+
+/**
+ * The SINGLE canonical App Image contract. `mode` selects the pipeline; the
+ * deterministic fields (`sceneUrl`, `scale`, `fixtures`) are required for
+ * `composite`/`hybrid` and unused by `concept`, which generates from `prompt`.
+ * Per-mode requirements are enforced in the superRefine below so a malformed
+ * request 400s at the API instead of dying as a dead generation job.
+ */
+export const AppImageParamsSchema = z
+  .object({
+    version: z.enum(APPIMAGE_PARAMS_VERSIONS).default(APPIMAGE_PARAMS_VERSION),
+    mode: AppImageModeSchema.default("composite"),
+    /** Background scene (uploaded, stock, or a future AI-generated room). */
+    sceneUrl: z.string().url().optional(),
+    scale: AppImageScaleSchema.optional(),
+    /** Fixtures to place; covers multi-fixture scenes. Empty for `concept`. */
+    fixtures: z.array(AppImageFixtureSchema).default([]),
+    /**
+     * Room / lighting description. Required for `hybrid` (drives the Fill
+     * lighting paint) and `concept` (drives generation); ignored for
+     * `composite`.
+     */
+    prompt: z.string().trim().min(1).optional(),
+    harmonize: AppImageHarmonizeSchema.default({}),
+    /** Reference images for `concept` generation only (hybrid uses none). */
+    referenceImages: z.array(z.string().url()).default([]),
+    output: AppImageOutputSchema.default({}),
+  })
+  .superRefine((val, ctx) => {
+    if (val.mode === "concept") {
+      if (!val.prompt) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["prompt"],
+          message: "concept mode requires a prompt",
+        });
+      }
+      return;
+    }
+
+    // composite | hybrid: need a scene, a scale, and at least one fixture.
+    if (!val.sceneUrl) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["sceneUrl"],
+        message: `${val.mode} mode requires sceneUrl`,
+      });
+    }
+    if (!val.scale) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["scale"],
+        message: `${val.mode} mode requires scale`,
+      });
+    }
+    if (val.fixtures.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["fixtures"],
+        message: `${val.mode} mode requires at least one fixture`,
+      });
+    }
+    if (val.mode === "hybrid" && !val.prompt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["prompt"],
+        message: "hybrid mode requires a prompt",
+      });
+    }
+  });
 export type AppImageParams = z.infer<typeof AppImageParamsSchema>;

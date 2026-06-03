@@ -89,9 +89,11 @@ async function scheduled(_event: ScheduledController, env: Env): Promise<void> {
  * and asset creation itself. We only finalize a `failed` status here when the
  * container is unreachable/erroring after the queue's retries are exhausted.
  */
-// 2c: appimage fetches a scene + N cutouts from CDNs and runs a sharp composite,
-// so allow more headroom than the 2b stub (a slow CDN shouldn't trip a retry).
-const CONTAINER_TIMEOUT_MS = 60_000;
+// 2d: hybrid/concept jobs add sequential AI calls (BFL Fill ~10-30s + an optional
+// near-instant Gemini pass) on top of the 2c CDN fetch + sharp composite. The
+// adapters enforce tighter per-provider timeouts (60s BFL / 30s Gemini) so a
+// stuck provider surfaces an actionable error; this is the outer ceiling.
+const CONTAINER_TIMEOUT_MS = 150_000;
 
 async function queue(
   batch: MessageBatch<GenerationMessage>,

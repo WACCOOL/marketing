@@ -38,4 +38,11 @@ export interface Env {
   R2_ACCESS_KEY_ID: string;
   R2_SECRET_ACCESS_KEY: string;
   R2_BUCKET: string;
+
+  // Phase 2d — AI image providers for the Application Image hybrid/concept
+  // modes. Forwarded into the generation Container (see container.ts). When
+  // unset, only the deterministic `composite` mode works. Optional so the
+  // Worker still boots (and Phase 1 keeps running) without them.
+  BFL_API_KEY?: string; // Black Forest Labs — FLUX.1 Fill (masked inpainting)
+  GEMINI_API_KEY?: string; // Google Gemini 2.5 Flash Image — harmonize / concept
 }

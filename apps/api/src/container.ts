@@ -32,6 +32,10 @@ export class GenerationContainer extends Container<Env> {
       R2_ACCESS_KEY_ID: env.R2_ACCESS_KEY_ID,
       R2_SECRET_ACCESS_KEY: env.R2_SECRET_ACCESS_KEY,
       R2_BUCKET: env.R2_BUCKET,
+      // Phase 2d AI providers — only set when configured (composite mode needs
+      // neither). The container reads these in loadConfig().
+      ...(env.BFL_API_KEY ? { BFL_API_KEY: env.BFL_API_KEY } : {}),
+      ...(env.GEMINI_API_KEY ? { GEMINI_API_KEY: env.GEMINI_API_KEY } : {}),
     };
   }
 }
