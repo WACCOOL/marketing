@@ -38,6 +38,53 @@
     }
   ],
 
+  // Phase 2b — heavy generation runs in a Cloudflare Container, fronted by a
+  // container-enabled Durable Object (GenerationContainer in src/container.ts).
+  // The image is built from apps/generator on deploy.
+  "containers": [
+    {
+      "class_name": "GenerationContainer",
+      "image": "../generator/Dockerfile",
+      "max_instances": 5,
+      "instance_type": "basic"
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GENERATION_CONTAINER",
+        "class_name": "GenerationContainer"
+      }
+    ]
+  },
+
+  // Container-enabled Durable Objects must use new_sqlite_classes.
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["GenerationContainer"]
+    }
+  ],
+
+  // Async generation jobs. The API enqueues onto the producer binding; the
+  // consumer (queue() export in src/index.ts) invokes the container.
+  // Create with: npx wrangler queues create wac-generation
+  //          and: npx wrangler queues create wac-generation-dlq
+  "queues": {
+    "producers": [
+      { "binding": "GENERATION_QUEUE", "queue": "wac-generation" }
+    ],
+    "consumers": [
+      {
+        "queue": "wac-generation",
+        "max_batch_size": 1,
+        "max_retries": 3,
+        "dead_letter_queue": "wac-generation-dlq"
+      }
+    ]
+  },
+
   "vars": {
     "SHORT_LINK_HOST": "https://gowac.cc"
   },

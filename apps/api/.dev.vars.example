@@ -10,3 +10,10 @@ SALES_LAYER_SECRET_KEY=
 # SALES_LAYER_API_HOST=api.saleslayer.com
 # SALES_LAYER_API_VERSION=1.18
 # SALES_LAYER_DIMENSION_UNIT=in
+# Phase 2b — R2 S3-API creds forwarded into the generation Container so it can
+# write generated assets. Create an R2 API token (Object Read & Write) in the
+# Cloudflare dashboard. Endpoint is https://<account_id>.r2.cloudflarestorage.com
+R2_ENDPOINT=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET=wac-marketing-assets

@@ -31,6 +31,33 @@ export type AssetVisibility = z.infer<typeof AssetVisibilitySchema>;
 export const ToolSchema = z.enum(["utm", "qr", "appimage", "ppt", "layout"]);
 export type Tool = z.infer<typeof ToolSchema>;
 
+/**
+ * The tools that run through the async generation pipeline (Phase 2b). Derived
+ * from ToolSchema so it can't drift — utm/qr are synchronous and excluded. For
+ * 2b only `appimage` is exercised; ppt/layout arrive in Phase 3.
+ */
+export const GenerationToolSchema = ToolSchema.extract([
+  "appimage",
+  "ppt",
+  "layout",
+]);
+export type GenerationTool = z.infer<typeof GenerationToolSchema>;
+
+export const GenerationJobRequestSchema = z.object({
+  tool: GenerationToolSchema,
+  name: z.string().min(1),
+  params: z.record(z.unknown()).default({}),
+});
+export type GenerationJobRequest = z.infer<typeof GenerationJobRequestSchema>;
+
+export const GenerationJobStatusSchema = z.enum([
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+]);
+export type GenerationJobStatus = z.infer<typeof GenerationJobStatusSchema>;
+
 export const SocialChannels = [
   "youtube",
   "tiktok",

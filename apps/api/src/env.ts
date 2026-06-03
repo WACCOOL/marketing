@@ -1,3 +1,6 @@
+import type { GenerationMessage } from "./generation.js";
+import type { GenerationContainer } from "./container.js";
+
 export interface Env {
   SUPABASE_URL: string;
   SUPABASE_ANON_KEY: string;
@@ -21,4 +24,18 @@ export interface Env {
   SHORT_LINKS: KVNamespace;
   ASSETS_BUCKET: R2Bucket;
   ASSETS: Fetcher;
+
+  // Phase 2b — async generation pipeline.
+  // Producer binding the API enqueues jobs onto; the consumer is configured in
+  // wrangler.jsonc and handled by the queue() export in index.ts.
+  GENERATION_QUEUE: Queue<GenerationMessage>;
+  // Container-enabled Durable Object namespace (see container.ts).
+  GENERATION_CONTAINER: DurableObjectNamespace<GenerationContainer>;
+  // R2 S3-API credentials forwarded into the generation Container so it can
+  // write generated assets directly. These never live in the image — they are
+  // injected via the container's envVars at start (see container.ts).
+  R2_ENDPOINT: string;
+  R2_ACCESS_KEY_ID: string;
+  R2_SECRET_ACCESS_KEY: string;
+  R2_BUCKET: string;
 }
