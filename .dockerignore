@@ -1,0 +1,13 @@
+# The generation container builds with the repo root as its context
+# (apps/api/wrangler.jsonc -> image_build_context). Keep the build context small.
+**/node_modules
+**/dist
+**/.wrangler
+.git
+.github
+**/.DS_Store
+**/npm-debug.log*
+**/*.log
+apps/web
+supabase
+*.md

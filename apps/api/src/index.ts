@@ -89,7 +89,9 @@ async function scheduled(_event: ScheduledController, env: Env): Promise<void> {
  * and asset creation itself. We only finalize a `failed` status here when the
  * container is unreachable/erroring after the queue's retries are exhausted.
  */
-const CONTAINER_TIMEOUT_MS = 30_000;
+// 2c: appimage fetches a scene + N cutouts from CDNs and runs a sharp composite,
+// so allow more headroom than the 2b stub (a slow CDN shouldn't trip a retry).
+const CONTAINER_TIMEOUT_MS = 60_000;
 
 async function queue(
   batch: MessageBatch<GenerationMessage>,
