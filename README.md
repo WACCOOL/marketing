@@ -72,7 +72,14 @@ SUPABASE_ANON_KEY=...
 SUPABASE_SERVICE_ROLE_KEY=...
 SHORT_LINK_HOST=https://gowac.cc
 HUBSPOT_TOKEN=                 # leave blank until live HubSpot is wired
+BFL_API_KEY=                   # Phase 2d: Black Forest Labs FLUX.1 Fill (hybrid mode)
+GEMINI_API_KEY=                # Phase 2d: Google Gemini 2.5 Flash Image (harmonize/concept)
 ```
+
+The two AI keys are forwarded into the generation Container; without them the
+Application Image generator still runs in deterministic `composite` mode, while
+`hybrid` and `concept` jobs fail with a clear "not configured" error. In prod,
+set them with `wrangler secret put BFL_API_KEY` / `wrangler secret put GEMINI_API_KEY`.
 
 Redirect Worker secrets (`apps/redirect/.dev.vars`):
 

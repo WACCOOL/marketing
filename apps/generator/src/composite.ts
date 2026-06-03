@@ -43,12 +43,34 @@ export interface Placement {
   anchor: AppImageAnchor;
 }
 
-export interface CompositeResult {
+/**
+ * A placement plus the resized RGBA cutout buffer actually composited. The
+ * hybrid pipeline (2d) needs the resized cutout's alpha to subtract the fixture
+ * core when building the inpaint mask, so the real product pixels are preserved.
+ */
+export interface PlacedFixture extends Placement {
+  resizedCutout: Buffer;
+}
+
+/** The composited scene before output-format encoding, plus where each fixture landed. */
+export interface PlaceResult {
+  /** Lossless PNG of the scene with every cutout composited at its scaled size. */
+  base: Buffer;
+  width: number;
+  height: number;
+  placements: PlacedFixture[];
+}
+
+/** An image encoded to its final delivery format (PNG or JPEG). */
+export interface EncodedImage {
   body: Buffer;
   format: "png" | "jpeg";
   contentType: string;
   width: number;
   height: number;
+}
+
+export interface CompositeResult extends EncodedImage {
   placements: Placement[];
 }
 
@@ -111,17 +133,23 @@ function anchorToTopLeft(
   };
 }
 
+export interface FetchedScene {
+  scene: SourceImage;
+  fixtures: PreparedFixture[];
+}
+
 /**
- * Fetch the scene + every cutout from their URLs, then composite. The fetch is
- * separated from `compositeFixtures` so the deterministic compositing can be
- * exercised directly with in-memory buffers (the fetch path is https-only).
+ * Fetch the scene + every cutout from their URLs. Separated from placement so
+ * the deterministic compositing can be exercised with in-memory buffers (the
+ * fetch path is https-only) and so the hybrid pipeline can reuse the same data.
  */
-export async function composeAppImage(
-  input: CompositeInput,
-): Promise<CompositeResult> {
-  const sceneFetched = await fetchImageBuffer(input.sceneUrl);
+export async function fetchSceneAndFixtures(
+  sceneUrl: string,
+  fixtures: FixtureInput[],
+): Promise<FetchedScene> {
+  const sceneFetched = await fetchImageBuffer(sceneUrl);
   if (!sceneFetched.width || !sceneFetched.height) {
-    throw new Error(`scene image has no readable dimensions: ${input.sceneUrl}`);
+    throw new Error(`scene image has no readable dimensions: ${sceneUrl}`);
   }
   const scene: SourceImage = {
     buffer: sceneFetched.buffer,
@@ -130,13 +158,13 @@ export async function composeAppImage(
     hasAlpha: sceneFetched.hasAlpha,
   };
 
-  const fixtures: PreparedFixture[] = [];
-  for (const fixture of input.fixtures) {
+  const prepared: PreparedFixture[] = [];
+  for (const fixture of fixtures) {
     const cut = await fetchImageBuffer(fixture.cutoutUrl);
     if (!cut.width || !cut.height) {
       throw new Error(`cutout has no readable dimensions: ${fixture.cutoutUrl}`);
     }
-    fixtures.push({
+    prepared.push({
       ...fixture,
       source: {
         buffer: cut.buffer,
@@ -147,6 +175,45 @@ export async function composeAppImage(
     });
   }
 
+  return { scene, fixtures: prepared };
+}
+
+/**
+ * Encode a composited base image to the requested output format. The base is
+ * always a lossless PNG (preserving any alpha); JPEG output is flattened onto
+ * white. Shared by the composite and hybrid paths so output handling is uniform.
+ */
+export async function encodeOutput(
+  base: Buffer,
+  output: AppImageOutput,
+): Promise<EncodedImage> {
+  const pipeline =
+    output.format === "jpeg"
+      ? sharp(base)
+          .flatten({ background: "#ffffff" })
+          .jpeg({ quality: output.quality ?? 90 })
+      : sharp(base).png();
+  const { data, info } = await pipeline.toBuffer({ resolveWithObject: true });
+  return {
+    body: data,
+    format: output.format === "jpeg" ? "jpeg" : "png",
+    contentType: output.format === "jpeg" ? "image/jpeg" : "image/png",
+    width: info.width,
+    height: info.height,
+  };
+}
+
+/**
+ * Fetch the scene + cutouts, then composite. Convenience wrapper that runs the
+ * full deterministic path (Phase 2c behaviour, unchanged externally).
+ */
+export async function composeAppImage(
+  input: CompositeInput,
+): Promise<CompositeResult> {
+  const { scene, fixtures } = await fetchSceneAndFixtures(
+    input.sceneUrl,
+    input.fixtures,
+  );
   return compositeFixtures({
     scene,
     fixtures,
@@ -157,12 +224,13 @@ export async function composeAppImage(
 }
 
 /**
- * Deterministic compositing core: size every cutout from its real dimensions,
- * place it at its anchor, and flatten onto the scene. No network here.
+ * Size every cutout from its real dimensions and composite it onto the scene,
+ * returning the lossless PNG base plus where each fixture landed (with the
+ * resized cutout, for mask derivation). No network, no output encoding here.
  */
-export async function compositeFixtures(
-  input: CompositeFixturesInput,
-): Promise<CompositeResult> {
+export async function placeFixtures(
+  input: Omit<CompositeFixturesInput, "output">,
+): Promise<PlaceResult> {
   const { scene } = input;
   const sceneW = scene.width;
   const sceneH = scene.height;
@@ -171,7 +239,7 @@ export async function compositeFixtures(
   }
 
   const overlays: sharp.OverlayOptions[] = [];
-  const placements: Placement[] = [];
+  const placements: PlacedFixture[] = [];
 
   for (const fixture of input.fixtures) {
     const cut = fixture.source;
@@ -225,33 +293,25 @@ export async function compositeFixtures(
       computedPx: size,
       position,
       anchor: fixture.anchor,
+      resizedCutout: resized,
     });
   }
 
-  const composited = sharp(scene.buffer).composite(overlays);
+  const base = await sharp(scene.buffer).composite(overlays).png().toBuffer();
+  return { base, width: sceneW, height: sceneH, placements };
+}
 
-  if (input.output.format === "jpeg") {
-    const body = await composited
-      .flatten({ background: "#ffffff" })
-      .jpeg({ quality: input.output.quality ?? 90 })
-      .toBuffer();
-    return {
-      body,
-      format: "jpeg",
-      contentType: "image/jpeg",
-      width: sceneW,
-      height: sceneH,
-      placements,
-    };
-  }
-
-  const body = await composited.png().toBuffer();
-  return {
-    body,
-    format: "png",
-    contentType: "image/png",
-    width: sceneW,
-    height: sceneH,
-    placements,
-  };
+/**
+ * Deterministic compositing core (Phase 2c): place every cutout and encode to
+ * the requested output format. No network here.
+ */
+export async function compositeFixtures(
+  input: CompositeFixturesInput,
+): Promise<CompositeResult> {
+  const placed = await placeFixtures(input);
+  const encoded = await encodeOutput(placed.base, input.output);
+  const placements: Placement[] = placed.placements.map(
+    ({ resizedCutout, ...rest }) => rest,
+  );
+  return { ...encoded, placements };
 }
