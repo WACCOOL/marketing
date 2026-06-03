@@ -13,13 +13,16 @@
     "@supabase/supabase-js": "^2.46.2",
     "@wac/shared": "workspace:*",
     "exceljs": "^4.4.0",
+    "fflate": "^0.8.3",
     "qr-code-styling": "^1.9.2",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

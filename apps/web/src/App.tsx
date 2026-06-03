@@ -5,7 +5,7 @@ import { Builder } from "./pages/Builder.js";
 import { Social } from "./pages/Social.js";
 import { Bulk } from "./pages/Bulk.js";
 import { Library } from "./pages/Library.js";
-import { ShortLinks } from "./pages/ShortLinks.js";
+import { UtmQr } from "./pages/UtmQr.js";
 
 export function App() {
   return (
@@ -67,8 +67,8 @@ function Shell() {
         <NavLink to="/bulk" className={({ isActive }) => (isActive ? "active" : "")}>
           Bulk Import
         </NavLink>
-        <NavLink to="/short-links" className={({ isActive }) => (isActive ? "active" : "")}>
-          Short Links
+        <NavLink to="/utm-qr" className={({ isActive }) => (isActive ? "active" : "")}>
+          UTM &amp; QR
         </NavLink>
         <NavLink to="/library" className={({ isActive }) => (isActive ? "active" : "")}>
           Asset Library
@@ -97,7 +97,8 @@ function Shell() {
           <Route path="/builder" element={<Builder />} />
           <Route path="/social" element={<Social />} />
           <Route path="/bulk" element={<Bulk />} />
-          <Route path="/short-links" element={<ShortLinks />} />
+          <Route path="/utm-qr" element={<UtmQr />} />
+          <Route path="/short-links" element={<Navigate to="/utm-qr" replace />} />
           <Route path="/library" element={<Library />} />
           <Route path="*" element={<Navigate to="/builder" replace />} />
         </Routes>

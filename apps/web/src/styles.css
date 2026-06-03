@@ -238,6 +238,24 @@ th {
   margin: 0 4px 4px 0;
 }
 
+.icon-btn {
+  background: var(--panel-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  line-height: 0;
+}
+.icon-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--panel-2);
+}
+
 .center-screen {
   min-height: 100vh;
   display: grid;

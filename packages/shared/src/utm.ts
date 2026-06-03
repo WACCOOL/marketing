@@ -214,3 +214,44 @@ export function validateUtmFields(fields: unknown):
   if (parsed.success) return { ok: true, fields: parsed.data };
   return { ok: false, errors: parsed.error.issues.map((i) => i.message) };
 }
+
+export interface ParsedTaggedUrl {
+  /** The original URL with all utm_* params stripped (hash + non-utm query preserved). */
+  destination: string;
+  source?: string;
+  medium?: string;
+  campaign?: string;
+  content?: string;
+}
+
+/**
+ * Inverse of `buildTaggedUrl`: split a tagged URL back into its base destination
+ * and UTM fields. Tolerant — never throws; if the URL is unparseable we return
+ * the input as-is with no extracted fields. Used by the UTM & QR view to
+ * display per-column UTM values from the canonical `destination_url` and to
+ * pre-populate the inline edit dropdowns.
+ */
+export function parseTaggedUrl(input: string): ParsedTaggedUrl {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    return { destination: input };
+  }
+
+  const out: ParsedTaggedUrl = { destination: "" };
+  const get = (k: string) => {
+    const v = url.searchParams.get(k);
+    return v === null || v === "" ? undefined : v;
+  };
+  out.source = get("utm_source");
+  out.medium = get("utm_medium");
+  out.campaign = get("utm_campaign");
+  out.content = get("utm_content");
+
+  for (const key of [...url.searchParams.keys()]) {
+    if (key.startsWith("utm_")) url.searchParams.delete(key);
+  }
+  out.destination = url.toString();
+  return out;
+}
