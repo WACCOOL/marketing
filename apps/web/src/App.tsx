@@ -6,6 +6,7 @@ import { Social } from "./pages/Social.js";
 import { Bulk } from "./pages/Bulk.js";
 import { Library } from "./pages/Library.js";
 import { UtmQr } from "./pages/UtmQr.js";
+import { Products } from "./pages/Products.js";
 
 export function App() {
   return (
@@ -70,6 +71,9 @@ function Shell() {
         <NavLink to="/utm-qr" className={({ isActive }) => (isActive ? "active" : "")}>
           UTM &amp; QR
         </NavLink>
+        <NavLink to="/products" className={({ isActive }) => (isActive ? "active" : "")}>
+          Products
+        </NavLink>
         <NavLink to="/library" className={({ isActive }) => (isActive ? "active" : "")}>
           Asset Library
         </NavLink>
@@ -99,6 +103,7 @@ function Shell() {
           <Route path="/bulk" element={<Bulk />} />
           <Route path="/utm-qr" element={<UtmQr />} />
           <Route path="/short-links" element={<Navigate to="/utm-qr" replace />} />
+          <Route path="/products" element={<Products />} />
           <Route path="/library" element={<Library />} />
           <Route path="*" element={<Navigate to="/builder" replace />} />
         </Routes>

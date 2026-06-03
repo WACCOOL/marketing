@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import type { AppBindings } from "./auth.js";
+import type { Env } from "./env.js";
 import { utmRoutes } from "./routes/utm.js";
 import { vocabRoutes } from "./routes/vocab.js";
 import { shortLinkRoutes } from "./routes/shortlinks.js";
@@ -9,6 +10,8 @@ import { socialRoutes } from "./routes/social.js";
 import { bulkRoutes } from "./routes/bulk.js";
 import { assetRoutes } from "./routes/assets.js";
 import { meRoutes } from "./routes/me.js";
+import { productRoutes } from "./routes/products.js";
+import { makeProductAdapter } from "./saleslayer.js";
 
 const app = new Hono<AppBindings>();
 
@@ -46,9 +49,31 @@ app.route("/api/qr", qrRoutes);
 app.route("/api/social", socialRoutes);
 app.route("/api/bulk", bulkRoutes);
 app.route("/api/assets", assetRoutes);
+app.route("/api/products", productRoutes);
 
 // Anything not handled by a /api/* route falls through to the SPA assets
 // (configured in wrangler.jsonc with not_found_handling: single-page-application).
 app.all("*", async (c) => c.env.ASSETS.fetch(c.req.raw));
 
-export default app;
+/**
+ * Daily Sales Layer product cache refresh (cron configured in wrangler.jsonc).
+ * Errors are logged but never thrown out of the handler so a Sales Layer blip
+ * doesn't fail the scheduled invocation.
+ */
+async function scheduled(_event: ScheduledController, env: Env): Promise<void> {
+  const secret = env.SALES_LAYER_SECRET_KEY || env.SALES_LAYER_API_KEY;
+  if (!env.SALES_LAYER_CONNECTOR_ID || !secret) {
+    console.warn("[cron] Sales Layer credentials unset; skipping product sync");
+    return;
+  }
+  try {
+    const result = await makeProductAdapter(env).sync();
+    console.log(
+      `[cron] product sync: upserted ${result.upserted}, variants ${result.variants}, pruned ${result.pruned}`,
+    );
+  } catch (e) {
+    console.error("[cron] product sync failed", e);
+  }
+}
+
+export default { fetch: app.fetch, scheduled };

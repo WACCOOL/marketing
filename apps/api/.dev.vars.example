@@ -2,3 +2,11 @@ SUPABASE_URL=https://stmphhslrjhtzmvqilqu.supabase.co
 SUPABASE_ANON_KEY=replace-me
 SUPABASE_SERVICE_ROLE_KEY=replace-me
 HUBSPOT_TOKEN=
+# Sales Layer PIM (Phase 2) — legacy Connector API (api.saleslayer.com).
+# Both values come from the Connector in the Sales Layer PIM (must be published).
+SALES_LAYER_CONNECTOR_ID=
+SALES_LAYER_SECRET_KEY=
+# Optional overrides:
+# SALES_LAYER_API_HOST=api.saleslayer.com
+# SALES_LAYER_API_VERSION=1.18
+# SALES_LAYER_DIMENSION_UNIT=in

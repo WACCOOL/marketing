@@ -51,3 +51,54 @@ export const ShortLinkSchema = z.object({
   updated_at: z.string(),
 });
 export type ShortLink = z.infer<typeof ShortLinkSchema>;
+
+/**
+ * Physical fixture dimensions, always normalized to millimetres. Every field is
+ * optional because Sales Layer products expose different measurements (a round
+ * downlight has a diameter, a linear fixture has a length, etc.). The Phase 2
+ * scale engine reads from this shape.
+ */
+export const DimensionsMmSchema = z.object({
+  width: z.number().positive().optional(),
+  height: z.number().positive().optional(),
+  depth: z.number().positive().optional(),
+  diameter: z.number().positive().optional(),
+  length: z.number().positive().optional(),
+});
+export type DimensionsMm = z.infer<typeof DimensionsMmSchema>;
+
+/**
+ * One orderable variant of a product (a specific finish / size / configuration).
+ * Carries its own SKU, dimensions, and imagery. In WAC's Sales Layer the
+ * orderable SKU (matnr) and most fixture dimensions live at this level.
+ */
+export const ProductVariantSchema = z.object({
+  /** Sales Layer variant_id (e.g. "LED-TO24-CH5_G0_B"). */
+  variant_id: z.string().min(1),
+  /** Orderable SKU / material number (matnr), e.g. "LED-TO24-CH5". */
+  sku: z.string().nullable().optional(),
+  finish: z.string().nullable().optional(),
+  name: z.string().nullable().optional(),
+  dimensions_mm: DimensionsMmSchema.default({}),
+  image_urls: z.array(z.string().url()).default([]),
+});
+export type ProductVariant = z.infer<typeof ProductVariantSchema>;
+
+/**
+ * A product row from the local Sales Layer cache (public.products). Mirrors the
+ * DB columns. A product groups many variants; `image_urls` aggregates every
+ * image (product + variant) so the user can access all of them. Images live on
+ * the Sales Layer CDN — these are URLs, not R2 keys.
+ */
+export const ProductSchema = z.object({
+  id: z.string().uuid(),
+  sku: z.string().min(1),
+  name: z.string().min(1),
+  category: z.string().nullable().optional(),
+  dimensions_mm: DimensionsMmSchema.default({}),
+  primary_image_url: z.string().url().nullable().optional(),
+  image_urls: z.array(z.string().url()).default([]),
+  variants: z.array(ProductVariantSchema).default([]),
+  synced_at: z.string(),
+});
+export type Product = z.infer<typeof ProductSchema>;
