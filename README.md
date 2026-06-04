@@ -136,13 +136,29 @@ Pushes to `main` that touch `apps/web`, `apps/api`, `apps/generator`,
 [`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml), which builds
 the SPA and runs `wrangler deploy --containers-rollout none` (Worker + assets,
 no Container rebuild). To also rebuild and roll out the Container, run the
-workflow manually from the Actions tab with `include_container = true`.
+workflow manually with `include_container = true` — from the Actions tab, or:
+
+```bash
+gh workflow run deploy.yml --ref main -f include_container=true
+```
+
+The generation Container requires the **Workers Paid plan** (Containers + Queues
+are paid features) and a `CLOUDFLARE_API_TOKEN` that includes **Cloudflare
+Containers: Edit** — without it the container build fails at the registry push
+with `Unauthorized` (the Worker/assets still deploy fine). A token missing only
+that scope will deploy Worker+assets but not the Container.
 
 Required repo secret:
 
 | Secret | Notes |
 | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Token with Workers Scripts, Workers KV, R2, Queues, and (for full deploys) Containers/Cloudchamber write. `account_id` is already set in `wrangler.jsonc`. |
+| `CLOUDFLARE_API_TOKEN` | Needs Workers Scripts: Edit, Workers R2 Storage: Edit, Workers KV: Edit, Queues: Edit, Account Settings: Read, and — for Container rollouts — **Cloudflare Containers: Edit** (+ Workers Routes: Edit on the `gowac.cc` zone for the custom domain). `account_id` is already set in `wrangler.jsonc`. |
+
+> Production secrets (`BFL_API_KEY`, `GEMINI_API_KEY`, `R2_*`, `SALES_LAYER_*`,
+> `SUPABASE_*`, `HUBSPOT_TOKEN`) live as Worker secrets, **not** in CI — set them
+> once with `wrangler secret put <NAME>` in `apps/api`. They do not come from
+> `.dev.vars` (that's local dev only). The container reads the AI/R2 ones via the
+> `GenerationContainer.envVars` forwarding in `src/container.ts`.
 
 ## Database
 
