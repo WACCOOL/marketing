@@ -38,6 +38,13 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build web SPA
+        # Vite inlines VITE_* at build time, so these must be present here or the
+        # SPA ships with an empty Supabase config and crashes on load.
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_SHORT_LINK_HOST: https://gowac.cc
+          VITE_API_BASE_URL: ""
         run: pnpm --filter @wac/web build
 
       # By default we deploy the Worker + static assets and skip the Container
