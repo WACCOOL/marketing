@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { getContainer } from "@cloudflare/containers";
+import { containerPoolKey } from "./containerPool.js";
 import type { AppBindings } from "./auth.js";
 import type { Env } from "./env.js";
 import { utmRoutes } from "./routes/utm.js";
@@ -88,10 +89,16 @@ async function scheduled(_event: ScheduledController, env: Env): Promise<void> {
 
 /**
  * Generation queue consumer (Phase 2b). Orchestration only: route each job to a
- * generation Container instance (keyed by jobId) and POST the payload to its
- * HTTP handler. The Container performs the running/succeeded/failed transitions
- * and asset creation itself. We only finalize a `failed` status here when the
- * container is unreachable/erroring after the queue's retries are exhausted.
+ * generation Container instance and POST the payload to its HTTP handler. The
+ * Container performs the running/succeeded/failed transitions and asset creation
+ * itself. We only finalize a `failed` status here when the container is
+ * unreachable/erroring after the queue's retries are exhausted.
+ *
+ * Container routing uses a small fixed POOL of stable keys (not the unique
+ * jobId). Keying by jobId gave every job its own brand-new instance, so each
+ * generation paid a full container cold start (10-30s). A small pool keeps a few
+ * instances warm and reused while still allowing concurrent jobs to land on
+ * different instances. See containerPool.ts (shared with the scenes routes).
  */
 // 2d: hybrid/concept jobs add sequential AI calls (BFL Fill ~10-30s + an optional
 // near-instant Gemini pass) on top of the 2c CDN fetch + sharp composite. The
@@ -106,7 +113,10 @@ async function queue(
   for (const message of batch.messages) {
     const job = message.body;
     try {
-      const container = getContainer(env.GENERATION_CONTAINER, job.jobId);
+      const container = getContainer(
+        env.GENERATION_CONTAINER,
+        containerPoolKey(job.jobId),
+      );
       const res = await container.fetch(
         new Request("http://generation-container/generate", {
           method: "POST",

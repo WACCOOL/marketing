@@ -495,30 +495,17 @@ async function generateScene(
     throw new Error("scene generation requires a prompt");
   }
 
-  const prompt = buildScenePrompt(req);
-  const wantsClean = Boolean(req.fixtureType || req.mount);
-  // For fixture-aware scenes, Gemini often "helpfully" renders a ceiling light
-  // or junction box in the open space. Detect that and regenerate once before
-  // returning, so the user composites onto a genuinely empty surface.
-  const maxAttempts = wantsClean && adapters.inspector ? 2 : 1;
-
-  let image: Buffer | undefined;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    image = await generator.generate({
-      prompt,
-      aspectRatio: req.aspectRatio,
-      imageSize: req.imageSize,
-      model: config.geminiSceneModel,
-      timeoutMs: SCENE_GEN_TIMEOUT_MS,
-    });
-    if (attempt === maxAttempts || !adapters.inspector) break;
-    const dirty = await adapters.inspector.hasMountedFixture({
-      image,
-      mount: req.mount,
-    });
-    if (!dirty) break;
-  }
-  return { body: image!, contentType: sniffImageContentType(image!) };
+  // Single pass — keep scene gen fast. The fixture-aware prompt already steers
+  // Gemini toward a clean surface; if a stray fixture slips through the user can
+  // just regenerate (no automatic re-roll, which doubled the wait).
+  const image = await generator.generate({
+    prompt: buildScenePrompt(req),
+    aspectRatio: req.aspectRatio,
+    imageSize: req.imageSize,
+    model: config.geminiSceneModel,
+    timeoutMs: SCENE_GEN_TIMEOUT_MS,
+  });
+  return { body: image, contentType: sniffImageContentType(image) };
 }
 
 /**

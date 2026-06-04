@@ -172,6 +172,15 @@ export function SceneInput({
             <div className="muted" style={{ fontSize: 12 }}>
               {scene.naturalWidth} × {scene.naturalHeight}px
             </div>
+            {scene.generated && prompt.trim() ? (
+              <button
+                className="secondary"
+                onClick={handleGenerate}
+                disabled={busy}
+              >
+                {busy ? "Regenerating…" : "Regenerate"}
+              </button>
+            ) : null}
             <button className="secondary" onClick={() => onSceneChange(null)}>
               Replace scene
             </button>

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { FixtureMountSchema, SceneGenRequestSchema } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
+import { containerPoolKey } from "../containerPool.js";
 
 export const sceneRoutes = new Hono<AppBindings>();
 
@@ -50,7 +51,10 @@ sceneRoutes.post("/", requireAuth, async (c) => {
   }
 
   const user = c.get("user");
-  const container = getContainer(c.env.GENERATION_CONTAINER, `scene:${user.id}`);
+  const container = getContainer(
+    c.env.GENERATION_CONTAINER,
+    containerPoolKey(`scene:${user.id}`),
+  );
 
   let res: Response;
   try {
@@ -123,7 +127,10 @@ sceneRoutes.post("/perspective", requireAuth, async (c) => {
   }
 
   const user = c.get("user");
-  const container = getContainer(c.env.GENERATION_CONTAINER, `scene:${user.id}`);
+  const container = getContainer(
+    c.env.GENERATION_CONTAINER,
+    containerPoolKey(`scene:${user.id}`),
+  );
 
   let res: Response;
   try {
