@@ -49,6 +49,29 @@ async function centerMask(): Promise<SegmentationMask> {
   };
 }
 
+/**
+ * A center-patch mask whose probability is a soft mid-grey (not pure white),
+ * mimicking Gemini's probability maps. Without thresholding this would make the
+ * fixture semi-transparent ("ghosted").
+ */
+async function softCenterMask(value: number): Promise<SegmentationMask> {
+  const maskPng = await sharp({
+    create: {
+      width: 6,
+      height: 6,
+      channels: 3,
+      background: { r: value, g: value, b: value },
+    },
+  })
+    .png()
+    .toBuffer();
+  return {
+    box2d: [125, 125, 875, 875],
+    maskPngBase64: maskPng.toString("base64"),
+    label: "fixture",
+  };
+}
+
 function segmenterReturning(masks: SegmentationMask[]): {
   adapter: SegmentAdapter;
   segment: ReturnType<typeof vi.fn>;
@@ -86,9 +109,33 @@ describe("resolveCutout", () => {
     expect(segment).toHaveBeenCalledTimes(1);
     expect(out.hasAlpha).toBe(true);
     expect(store.has(cutoutCacheKey(url))).toBe(true);
-    // The matted output should carry the segmentation alpha (some transparency).
+    // The matted output should carry the segmentation alpha (the border is
+    // transparent; a tiny edge feather keeps it just above a hard 0).
     const stats = await sharp(out.buffer).stats();
-    expect(stats.channels[3]?.min).toBe(0);
+    expect(stats.channels[3]!.min).toBeLessThan(128);
+    expect(stats.channels[3]!.max).toBe(255);
+  });
+
+  it("thresholds a soft probability mask so the fixture is fully opaque (no ghosting)", async () => {
+    // Use a larger image so the resized mask's anti-aliased edge doesn't dominate.
+    const bigBuffer = await sharp({
+      create: {
+        width: 64,
+        height: 64,
+        channels: 3,
+        background: { r: 255, g: 255, b: 255 },
+      },
+    })
+      .png()
+      .toBuffer();
+    const big = { buffer: bigBuffer, width: 64, height: 64, hasAlpha: false };
+    // A mid-grey (160 > 128) probability map: a soft alpha would leave the core
+    // semi-transparent; thresholding must lift it to fully opaque.
+    const { adapter } = segmenterReturning([await softCenterMask(160)]);
+    const out = await resolveCutout({ sourceUrl: url, fetched: big, segmenter: adapter });
+    const stats = await sharp(out.buffer).stats();
+    expect(stats.channels[3]!.max).toBe(255); // foreground fully opaque
+    expect(stats.channels[3]!.min).toBe(0); // border fully transparent
   });
 
   it("serves a cached cutout without calling the segmenter", async () => {

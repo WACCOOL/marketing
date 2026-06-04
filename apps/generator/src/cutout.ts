@@ -24,12 +24,12 @@ export interface CutoutCache {
 
 /**
  * Deterministic cache key for a matted cutout, namespaced by source URL.
- * The `v2` namespace invalidates cutouts cached before the classical-matte
- * single-channel fix (those were corrupted into scanlines).
+ * Bumped to `v3` to invalidate ghosted cutouts cached before the segmentation
+ * probability map was thresholded (soft masks made fixtures semi-transparent).
  */
 export function cutoutCacheKey(sourceUrl: string): string {
   const hash = createHash("sha256").update(sourceUrl).digest("hex");
-  return `cutouts/v2/${hash}.png`;
+  return `cutouts/v3/${hash}.png`;
 }
 
 /** Decode raw image bytes into the SourceImage shape the compositor expects. */
@@ -210,8 +210,8 @@ async function applyMasksAsAlpha(
   }
 
   // Black canvas; masks paint the foreground probability. extractChannel(0)
-  // yields a single-band alpha (mask pixels are greyscale, so R carries it).
-  const alpha = await sharp({
+  // yields a single-band probability map (mask pixels are greyscale, R carries it).
+  const prob = await sharp({
     create: {
       width,
       height,
@@ -221,6 +221,18 @@ async function applyMasksAsAlpha(
   })
     .composite(overlays)
     .extractChannel(0)
+    .toColourspace("b-w")
+    .raw()
+    .toBuffer();
+
+  // Gemini masks are PROBABILITY maps, not binary masks. Using them directly as
+  // alpha makes the whole fixture semi-transparent ("ghosted"). Threshold at 0.5
+  // so foreground is fully opaque, then feather 0.6px for a soft (not stamped)
+  // edge. blur() promotes a 1-channel raw back to 3 channels, so force it back to
+  // single-channel ("b-w") before joining or joinChannel shreds it into scanlines.
+  const alpha = await sharp(prob, { raw: { width, height, channels: 1 } })
+    .threshold(128)
+    .blur(0.6)
     .toColourspace("b-w")
     .raw()
     .toBuffer();
