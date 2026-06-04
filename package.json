@@ -8,6 +8,8 @@
     "dev:api": "pnpm --filter @wac/api dev",
     "dev:redirect": "pnpm --filter @wac/redirect dev",
     "build": "pnpm -r build",
+    "deploy": "pnpm --filter @wac/web build && pnpm --filter @wac/api deploy",
+    "deploy:web": "pnpm --filter @wac/web build && pnpm --filter @wac/api exec wrangler deploy --containers-rollout none",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint --if-present"

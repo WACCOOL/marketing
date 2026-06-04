@@ -107,6 +107,36 @@ npx wrangler r2 bucket create wac-marketing-assets
 
 Put the returned IDs into the `wrangler.jsonc` files in `apps/api/` and `apps/redirect/`.
 
+## Deploy
+
+The React SPA is served by the `wac-marketing-api` Worker via Cloudflare Static
+Assets, so deploying = building `apps/web` then `wrangler deploy` in `apps/api`.
+
+```bash
+# Worker + static assets only (skips the generation Container — fast, this is
+# what you want for normal web/API changes)
+pnpm deploy:web
+
+# Full deploy, including a rebuild + rollout of the generation Container
+# (needs Docker running locally and a token with container registry perms)
+pnpm deploy
+```
+
+### Continuous deployment
+
+Pushes to `main` that touch `apps/web`, `apps/api`, `apps/generator`,
+`packages/shared`, or the lockfile trigger
+[`.github/workflows/deploy.yml`](./.github/workflows/deploy.yml), which builds
+the SPA and runs `wrangler deploy --containers-rollout none` (Worker + assets,
+no Container rebuild). To also rebuild and roll out the Container, run the
+workflow manually from the Actions tab with `include_container = true`.
+
+Required repo secret:
+
+| Secret | Notes |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Token with Workers Scripts, Workers KV, R2, Queues, and (for full deploys) Containers/Cloudchamber write. `account_id` is already set in `wrangler.jsonc`. |
+
 ## Database
 
 Supabase migrations live in [`supabase/migrations/`](./supabase/migrations). Apply them via the Supabase dashboard SQL editor or the Supabase CLI.
