@@ -117,11 +117,46 @@ describe("resolveCutout", () => {
     );
   });
 
-  it("throws when segmentation returns no masks", async () => {
+  it("throws when segmentation AND the classical fallback both fail", async () => {
+    // A 3x1 noise image has no solid border background, so the flood-fill
+    // fallback also bails — the error reports both failures.
     const fetched = await makeImage(3, 1);
     const { adapter } = segmenterReturning([]);
     await expect(
       resolveCutout({ sourceUrl: url, fetched, segmenter: adapter }),
-    ).rejects.toThrow(/no segmentation mask/);
+    ).rejects.toThrow(/classical fallback also failed/);
+  });
+
+  it("falls back to a classical matte on a solid background when segmentation finds nothing", async () => {
+    // White canvas with an opaque black square in the middle: no real alpha, so
+    // it needs matting; segmentation returns nothing, so the flood fill removes
+    // the connected white border and keeps the square.
+    const w = 40;
+    const h = 40;
+    const raw = Buffer.alloc(w * h * 3, 255);
+    for (let y = 12; y < 28; y++) {
+      for (let x = 12; x < 28; x++) {
+        const p = (y * w + x) * 3;
+        raw[p] = 0;
+        raw[p + 1] = 0;
+        raw[p + 2] = 0;
+      }
+    }
+    const png = await sharp(raw, { raw: { width: w, height: h, channels: 3 } })
+      .png()
+      .toBuffer();
+    const meta = await sharp(png).metadata();
+    const fetched = {
+      buffer: png,
+      width: meta.width ?? w,
+      height: meta.height ?? h,
+      hasAlpha: Boolean(meta.hasAlpha),
+    };
+    const { adapter } = segmenterReturning([]);
+    const out = await resolveCutout({ sourceUrl: url, fetched, segmenter: adapter });
+    expect(out.hasAlpha).toBe(true);
+    // The transparent border + opaque square means alpha is no longer all-255.
+    const stats = await sharp(out.buffer).stats();
+    expect(stats.channels[3]!.min).toBe(0);
   });
 });

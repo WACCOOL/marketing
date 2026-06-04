@@ -63,6 +63,104 @@ function clamp(n: number, min: number, max: number): number {
 }
 
 /**
+ * Classical background removal fallback for when Gemini returns no usable mask.
+ * Most Sales Layer catalog shots sit on a solid (white/grey/black) background, so
+ * a border-seeded flood fill reliably removes the background-connected region
+ * without touching the fixture — even same-colored fixture parts survive because
+ * they're not connected to the border. Graphic/cluttered backgrounds won't matte
+ * well here, but those are the cases Gemini usually handles; this only runs when
+ * segmentation has already failed.
+ */
+async function classicalMatte(
+  original: Buffer,
+  width: number,
+  height: number,
+): Promise<Buffer> {
+  // Tolerance for "same as background", in squared-distance over RGB (0..255).
+  // ~48/channel — generous enough for JPEG noise/gradients on a solid backdrop.
+  const TOL_SQ = 48 * 48 * 3;
+  const { data } = await sharp(original)
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const n = width * height;
+  if (data.length < n * 3) {
+    throw new Error("classical matte: unexpected raw buffer size");
+  }
+
+  // Reference background color = average of the four corner pixels.
+  const corners = [0, (width - 1) * 3, (height - 1) * width * 3, (n - 1) * 3];
+  let br = 0;
+  let bg = 0;
+  let bb = 0;
+  for (const c of corners) {
+    br += data[c]!;
+    bg += data[c + 1]!;
+    bb += data[c + 2]!;
+  }
+  br /= corners.length;
+  bg /= corners.length;
+  bb /= corners.length;
+
+  const isBg = (i: number): boolean => {
+    const p = i * 3;
+    const dr = data[p]! - br;
+    const dg = data[p + 1]! - bg;
+    const db = data[p + 2]! - bb;
+    return dr * dr + dg * dg + db * db <= TOL_SQ;
+  };
+
+  // Flood fill from every border pixel; only background-connected pixels become
+  // transparent. Stack-based to avoid recursion limits on large images.
+  const bgMask = new Uint8Array(n);
+  const stack: number[] = [];
+  const pushIfBg = (i: number): void => {
+    if (i >= 0 && i < n && !bgMask[i] && isBg(i)) {
+      bgMask[i] = 1;
+      stack.push(i);
+    }
+  };
+  for (let x = 0; x < width; x++) {
+    pushIfBg(x);
+    pushIfBg((height - 1) * width + x);
+  }
+  for (let y = 0; y < height; y++) {
+    pushIfBg(y * width);
+    pushIfBg(y * width + (width - 1));
+  }
+  while (stack.length > 0) {
+    const i = stack.pop()!;
+    const x = i % width;
+    if (x > 0) pushIfBg(i - 1);
+    if (x < width - 1) pushIfBg(i + 1);
+    if (i - width >= 0) pushIfBg(i - width);
+    if (i + width < n) pushIfBg(i + width);
+  }
+
+  const foreground = n - bgMask.reduce((acc, v) => acc + v, 0);
+  // If almost nothing (or everything) was removed, the background wasn't a solid
+  // color the flood fill could latch onto — don't return a garbage cutout.
+  if (foreground < n * 0.01 || foreground > n * 0.99) {
+    throw new Error("classical matte: no solid background detected");
+  }
+
+  const alpha = Buffer.allocUnsafe(n);
+  for (let i = 0; i < n; i++) alpha[i] = bgMask[i] ? 0 : 255;
+
+  // Soften the hard edge by 0.6px so the cutout doesn't look stamped.
+  const softAlpha = await sharp(alpha, { raw: { width, height, channels: 1 } })
+    .blur(0.6)
+    .raw()
+    .toBuffer();
+
+  const rgb = await sharp(original).removeAlpha().raw().toBuffer();
+  return sharp(rgb, { raw: { width, height, channels: 3 } })
+    .joinChannel(softAlpha, { raw: { width, height, channels: 1 } })
+    .png()
+    .toBuffer();
+}
+
+/**
  * Apply Gemini segmentation masks to an image as an alpha channel, producing a
  * transparent PNG. Each mask's `box2d` (0..1000) is scaled to pixels, the mask
  * probability map is resized into that box, and masks are combined with a
@@ -185,24 +283,44 @@ export async function resolveCutout(args: ResolveCutoutArgs): Promise<SourceImag
     );
   }
 
-  const masks = await segmentWithRetry(segmenter, fetched.buffer);
-  if (masks.length === 0) {
-    throw new Error(
-      `background removal failed: Gemini returned no segmentation mask for ${sourceUrl}`,
-    );
+  // Primary path: Gemini segmentation. On any failure (no mask, or an
+  // undecodable mask), fall back to the classical border flood-fill matte so a
+  // solid-background catalog shot still produces a usable cutout instead of a
+  // hard job failure.
+  let matted: Buffer | undefined;
+  let primaryErr: unknown;
+  try {
+    const masks = await segmentWithRetry(segmenter, fetched.buffer);
+    if (masks.length > 0) {
+      matted = await applyMasksAsAlpha(
+        fetched.buffer,
+        fetched.width,
+        fetched.height,
+        masks,
+      );
+    } else {
+      primaryErr = new Error("Gemini returned no segmentation mask");
+    }
+  } catch (e) {
+    primaryErr = e;
   }
 
-  let matted: Buffer;
-  try {
-    matted = await applyMasksAsAlpha(
-      fetched.buffer,
-      fetched.width,
-      fetched.height,
-      masks,
+  if (!matted) {
+    console.error(
+      `[cutout] segmentation unusable for ${sourceUrl} (${
+        primaryErr instanceof Error ? primaryErr.message : String(primaryErr)
+      }); trying classical matte`,
     );
-  } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
-    throw new Error(`background removal failed for ${sourceUrl}: ${detail}`);
+    try {
+      matted = await classicalMatte(fetched.buffer, fetched.width, fetched.height);
+    } catch (fallbackErr) {
+      const detail =
+        fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      throw new Error(
+        `background removal failed for ${sourceUrl}: segmentation produced no ` +
+          `mask and classical fallback also failed (${detail})`,
+      );
+    }
   }
   if (cache) {
     await cache.put(key, matted, "image/png").catch((e) => {
