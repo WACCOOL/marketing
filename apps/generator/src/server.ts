@@ -1,7 +1,7 @@
 import http from "node:http";
 import zlib from "node:zlib";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
   AppImageParamsSchema,
   APPIMAGE_PARAMS_VERSIONS,
@@ -14,10 +14,12 @@ import {
   placeFixtures,
   type FixtureInput,
   type Placement,
+  type PrepareCutout,
 } from "./composite.js";
 import { buildHarmonizationMask } from "./mask.js";
 import { fetchImageBuffer } from "./fetchImage.js";
 import { makeImageGenAdapters, type ImageGenAdapters } from "./ai/adapter.js";
+import { resolveCutout, type CutoutCache } from "./cutout.js";
 
 /**
  * WAC generation Container (Phase 2d).
@@ -51,7 +53,18 @@ interface Config {
   // works; hybrid/concept jobs fail with a precise "not configured" error.
   bflApiKey?: string;
   geminiApiKey?: string;
+  // fal.ai key for BiRefNet background removal (matting). When unset, opaque
+  // cutouts are rejected (composite/hybrid require transparent fixture PNGs).
+  falApiKey?: string;
+  // Gemini model used for text-to-room scene generation. Defaults to a Gemini 3
+  // image model because the user-facing size options go up to 4K, which 2.5
+  // Flash Image cannot produce. Overridable via GEMINI_SCENE_MODEL.
+  geminiSceneModel: string;
 }
+
+const DEFAULT_SCENE_MODEL = "gemini-3-pro-image";
+// Scene generation (esp. 4K) can take well over the 30s per-provider default.
+const SCENE_GEN_TIMEOUT_MS = 120_000;
 
 function loadConfig(): Config {
   const required = {
@@ -77,6 +90,8 @@ function loadConfig(): Config {
     r2Bucket: required.R2_BUCKET!,
     bflApiKey: process.env.BFL_API_KEY || undefined,
     geminiApiKey: process.env.GEMINI_API_KEY || undefined,
+    falApiKey: process.env.FAL_API_KEY || undefined,
+    geminiSceneModel: process.env.GEMINI_SCENE_MODEL || DEFAULT_SCENE_MODEL,
   };
 }
 
@@ -207,15 +222,19 @@ function toPlacementMeta(
 
 /**
  * Deterministic compositing (Phase 2c / `composite` mode): fetch the scene +
- * cutouts and composite at the computed scale. No AI.
+ * cutouts and composite at the computed scale. No AI (matting aside).
  */
-async function runComposite(p: AppImageParams): Promise<GenerationResult> {
+async function runComposite(
+  p: AppImageParams,
+  prepareCutout?: PrepareCutout,
+): Promise<GenerationResult> {
   const result = await composeAppImage({
     sceneUrl: p.sceneUrl!,
     pxPerMm: p.scale!.pxPerMm,
     scaleAdjust: p.scale!.scaleAdjust,
     fixtures: mapFixtures(p),
     output: p.output,
+    prepareCutout,
   });
   return {
     files: [
@@ -242,6 +261,7 @@ async function runComposite(p: AppImageParams): Promise<GenerationResult> {
 async function runHybrid(
   p: AppImageParams,
   adapters: ImageGenAdapters,
+  prepareCutout?: PrepareCutout,
 ): Promise<GenerationResult> {
   const inpainter = adapters.inpainter;
   if (!inpainter) {
@@ -253,6 +273,7 @@ async function runHybrid(
   const { scene, fixtures } = await fetchSceneAndFixtures(
     p.sceneUrl!,
     mapFixtures(p),
+    prepareCutout,
   );
   const placed = await placeFixtures({
     scene,
@@ -355,6 +376,58 @@ async function runConcept(
   };
 }
 
+interface SceneGenRequest {
+  prompt: string;
+  aspectRatio?: string;
+  imageSize?: string;
+}
+
+/** Sniff an image content-type from magic bytes; default to PNG. */
+function sniffImageContentType(buf: Buffer): string {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    buf.length >= 12 &&
+    buf.toString("ascii", 0, 4) === "RIFF" &&
+    buf.toString("ascii", 8, 12) === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  return "image/png";
+}
+
+/**
+ * Text-to-room scene generation. Produces an empty room from a prompt via the
+ * Gemini generator (a Gemini 3 image model so 4K is available) and returns the
+ * raw image bytes. The API Worker stores them in R2 and hands the URL back to
+ * the user, who then composites real fixtures into the scene.
+ */
+async function generateScene(
+  req: SceneGenRequest,
+  config: Config,
+  adapters: ImageGenAdapters,
+): Promise<{ body: Buffer; contentType: string }> {
+  const generator = adapters.generator;
+  if (!generator) {
+    throw new Error(
+      "scene generation requires a configured Gemini API key (set GEMINI_API_KEY)",
+    );
+  }
+  if (!req.prompt || !req.prompt.trim()) {
+    throw new Error("scene generation requires a prompt");
+  }
+
+  const image = await generator.generate({
+    prompt: req.prompt.trim(),
+    aspectRatio: req.aspectRatio,
+    imageSize: req.imageSize,
+    model: config.geminiSceneModel,
+    timeoutMs: SCENE_GEN_TIMEOUT_MS,
+  });
+  return { body: image, contentType: sniffImageContentType(image) };
+}
+
 /**
  * Validate against the canonical contract, then dispatch by mode. Errors
  * propagate to handleGenerate, which finalizes the job as failed.
@@ -362,6 +435,7 @@ async function runConcept(
 async function runAppImageGenerator(
   req: GenerateRequest,
   adapters: ImageGenAdapters,
+  prepareCutout?: PrepareCutout,
 ): Promise<GenerationResult> {
   const parsed = AppImageParamsSchema.safeParse(req.params);
   if (!parsed.success) {
@@ -377,20 +451,22 @@ async function runAppImageGenerator(
 
   switch (p.mode) {
     case "hybrid":
-      return runHybrid(p, adapters);
+      return runHybrid(p, adapters, prepareCutout);
     case "concept":
       return runConcept(p, adapters);
     case "composite":
     default:
-      return runComposite(p);
+      return runComposite(p, prepareCutout);
   }
 }
 
 function runGeneration(
   req: GenerateRequest,
   adapters: ImageGenAdapters,
+  prepareCutout?: PrepareCutout,
 ): Promise<GenerationResult> {
-  if (req.tool === "appimage") return runAppImageGenerator(req, adapters);
+  if (req.tool === "appimage")
+    return runAppImageGenerator(req, adapters, prepareCutout);
   return Promise.resolve(runStubGenerator(req));
 }
 
@@ -499,6 +575,51 @@ async function markFailed(
   if (error) console.error(`[generator] mark failed errored: ${error.message}`);
 }
 
+/** R2-backed cache for matted cutouts (keyed by source URL hash). */
+function makeR2CutoutCache(s3: S3Client, bucket: string): CutoutCache {
+  return {
+    async get(key: string): Promise<Buffer | null> {
+      try {
+        const out = await s3.send(
+          new GetObjectCommand({ Bucket: bucket, Key: key }),
+        );
+        if (!out.Body) return null;
+        const bytes = await out.Body.transformToByteArray();
+        return Buffer.from(bytes);
+      } catch {
+        // Cache miss (NoSuchKey) or transient read error: treat as no cache.
+        return null;
+      }
+    },
+    async put(key: string, body: Buffer, contentType: string): Promise<void> {
+      await s3.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          Body: body,
+          ContentType: contentType,
+        }),
+      );
+    },
+  };
+}
+
+/**
+ * Build the cutout-preparation hook: matte opaque fixture images (BiRefNet via
+ * fal.ai) into transparent PNGs, caching results in R2. Returns undefined only
+ * conceptually — it always returns a hook; when no matte adapter is configured
+ * the hook rejects opaque cutouts with an actionable error.
+ */
+function makePrepareCutout(
+  config: Config,
+  s3: S3Client,
+  adapters: ImageGenAdapters,
+): PrepareCutout {
+  const cache = makeR2CutoutCache(s3, config.r2Bucket);
+  return (sourceUrl, fetched) =>
+    resolveCutout({ sourceUrl, fetched, matter: adapters.matter, cache });
+}
+
 async function handleGenerate(
   req: GenerateRequest,
   config: Config,
@@ -511,7 +632,8 @@ async function handleGenerate(
   // Generate first so the asset row can carry the real generation metadata
   // (computed scale, placements). A failure here surfaces before any DB writes
   // beyond the running transition.
-  const generated = await runGeneration(req, adapters);
+  const prepareCutout = makePrepareCutout(config, s3, adapters);
+  const generated = await runGeneration(req, adapters, prepareCutout);
   const assetId = await createAssetRow(sb, req, generated.metadata);
 
   const uploaded: { format: string; key: string; bytes: number }[] = [];
@@ -589,6 +711,7 @@ function main(): void {
   const adapters = makeImageGenAdapters({
     bflApiKey: config.bflApiKey,
     geminiApiKey: config.geminiApiKey,
+    falApiKey: config.falApiKey,
   });
 
   const server = http.createServer((req, res) => {
@@ -624,6 +747,45 @@ function main(): void {
           const message = e instanceof Error ? e.message : String(e);
           console.error(`[generator] job ${parsed.jobId} failed:`, message);
           await markFailed(sb, parsed.jobId, message);
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: message }));
+        }
+        return;
+      }
+
+      // Synchronous scene generation: returns raw image bytes (no DB/R2 writes;
+      // the API Worker persists the result). Distinct from /generate, which is
+      // the async job path that creates a library asset.
+      if (req.method === "POST" && url.pathname === "/generate-scene") {
+        let body: SceneGenRequest | null;
+        try {
+          const raw = await readJsonBody(req);
+          body =
+            raw && typeof raw === "object"
+              ? (raw as SceneGenRequest)
+              : null;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        if (!body || typeof body.prompt !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "scene request needs a prompt" }));
+          return;
+        }
+
+        try {
+          const { body: image, contentType } = await generateScene(
+            body,
+            config,
+            adapters,
+          );
+          res.writeHead(200, { "content-type": contentType });
+          res.end(image);
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          console.error("[generator] scene generation failed:", message);
           res.writeHead(500, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: false, error: message }));
         }

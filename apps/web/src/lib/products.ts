@@ -19,12 +19,13 @@ export function useProducts(initialQuery = "") {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const search = useCallback(async (q: string) => {
+  const search = useCallback(async (q: string, brand?: string) => {
     setLoading(true);
     setErr(null);
     try {
       const params = new URLSearchParams();
       if (q.trim()) params.set("q", q.trim());
+      if (brand && brand.trim()) params.set("brand", brand.trim());
       const qs = params.toString();
       const res = await api<ProductsResp>(
         "/api/products" + (qs ? `?${qs}` : ""),
@@ -48,6 +49,12 @@ export function useProducts(initialQuery = "") {
 
 export async function syncProducts(): Promise<{ ok: boolean; started: boolean }> {
   return api("/api/products/sync", { method: "POST" });
+}
+
+/** Distinct brand names for the picker facet. */
+export async function fetchProductBrands(): Promise<string[]> {
+  const res = await api<{ brands: string[] }>("/api/products/brands");
+  return res.brands;
 }
 
 export function formatDimensions(d: Product["dimensions_mm"]): string {

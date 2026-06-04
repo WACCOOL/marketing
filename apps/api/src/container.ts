@@ -36,6 +36,10 @@ export class GenerationContainer extends Container<Env> {
       // neither). The container reads these in loadConfig().
       ...(env.BFL_API_KEY ? { BFL_API_KEY: env.BFL_API_KEY } : {}),
       ...(env.GEMINI_API_KEY ? { GEMINI_API_KEY: env.GEMINI_API_KEY } : {}),
+      ...(env.GEMINI_SCENE_MODEL
+        ? { GEMINI_SCENE_MODEL: env.GEMINI_SCENE_MODEL }
+        : {}),
+      ...(env.FAL_API_KEY ? { FAL_API_KEY: env.FAL_API_KEY } : {}),
     };
   }
 }

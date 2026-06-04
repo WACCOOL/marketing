@@ -234,15 +234,14 @@ function FixtureControls({
       </div>
 
       {opaque && (
-        <div className="alert warn">
-          This cutout looks like a JPEG, which can't have a transparent
-          background — generation may reject it. Choose a PNG/WebP cutout below
-          if one is available.
+        <div className="alert">
+          This image has a background — it'll be removed automatically before
+          compositing. Pick a clean, front-on product shot for the best cutout.
         </div>
       )}
 
       <div>
-        <label>Cutout image (must be transparent)</label>
+        <label>Product image (background removed automatically)</label>
         <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
           {fixture.imageOptions.map((url) => (
             <button
@@ -252,7 +251,7 @@ function FixtureControls({
                 "cutout-option" + (url === fixture.cutoutUrl ? " selected" : "")
               }
               onClick={() => onChange({ cutoutUrl: url })}
-              title={looksOpaque(url) ? "Likely opaque (JPEG)" : url}
+              title={looksOpaque(url) ? "Background will be removed" : url}
             >
               <img src={url} alt="" loading="lazy" />
             </button>

@@ -14,6 +14,7 @@ import { meRoutes } from "./routes/me.js";
 import { productRoutes } from "./routes/products.js";
 import { jobRoutes } from "./routes/jobs.js";
 import { uploadRoutes } from "./routes/uploads.js";
+import { sceneRoutes } from "./routes/scenes.js";
 import { makeProductAdapter } from "./saleslayer.js";
 import { serviceSupabase } from "./supabase.js";
 import { updateJobStatus, type GenerationMessage } from "./generation.js";
@@ -58,6 +59,7 @@ app.route("/api/assets", assetRoutes);
 app.route("/api/products", productRoutes);
 app.route("/api/jobs", jobRoutes);
 app.route("/api/uploads", uploadRoutes);
+app.route("/api/scenes", sceneRoutes);
 
 // Anything not handled by a /api/* route falls through to the SPA assets
 // (configured in wrangler.jsonc with not_found_handling: single-page-application).

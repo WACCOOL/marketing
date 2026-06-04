@@ -10,6 +10,9 @@ SALES_LAYER_SECRET_KEY=
 # SALES_LAYER_API_HOST=api.saleslayer.com
 # SALES_LAYER_API_VERSION=1.18
 # SALES_LAYER_DIMENSION_UNIT=in
+# Pin the exact product field that holds the brand if auto-discovery picks wrong
+# (the sync logs which field it used and how many products got a brand).
+# SALES_LAYER_BRAND_FIELD=
 # Phase 2b — R2 S3-API creds forwarded into the generation Container so it can
 # write generated assets. Create an R2 API token (Object Read & Write) in the
 # Cloudflare dashboard. Endpoint is https://<account_id>.r2.cloudflarestorage.com
@@ -20,6 +23,11 @@ R2_BUCKET=wac-marketing-assets
 # Phase 2d — AI image providers for the Application Image hybrid/concept modes.
 # Forwarded into the generation Container. Leave blank to run composite-only.
 #   BFL_API_KEY    — Black Forest Labs (FLUX.1 Fill masked inpainting), bfl.ai
-#   GEMINI_API_KEY — Google Gemini 2.5 Flash Image (harmonization + concept)
+#   GEMINI_API_KEY — Google Gemini (harmonization + concept + scene generation)
+#   FAL_API_KEY    — fal.ai BiRefNet background removal (fixture cutout matting)
 BFL_API_KEY=
 GEMINI_API_KEY=
+FAL_API_KEY=
+# Gemini model for text-to-room scene generation. Defaults to a Gemini 3 image
+# model (4K-capable) in the container; override to pin a specific model.
+# GEMINI_SCENE_MODEL=gemini-3-pro-image

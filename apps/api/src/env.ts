@@ -20,6 +20,9 @@ export interface Env {
   // Source unit for raw Sales Layer fixture dimensions: "mm" | "cm" | "in".
   // WAC's catalog publishes inches, so the adapter defaults to "in".
   SALES_LAYER_DIMENSION_UNIT?: string;
+  // Optional override pinning the exact Sales Layer product field that holds the
+  // brand. When unset, the adapter auto-discovers it from common field names.
+  SALES_LAYER_BRAND_FIELD?: string;
   SHORT_LINK_HOST: string;
   SHORT_LINKS: KVNamespace;
   ASSETS_BUCKET: R2Bucket;
@@ -45,4 +48,10 @@ export interface Env {
   // Worker still boots (and Phase 1 keeps running) without them.
   BFL_API_KEY?: string; // Black Forest Labs — FLUX.1 Fill (masked inpainting)
   GEMINI_API_KEY?: string; // Google Gemini 2.5 Flash Image — harmonize / concept
+  // Gemini model for text-to-room scene generation. Defaults to a Gemini 3
+  // image model in the container (4K-capable); override here to pin a model.
+  GEMINI_SCENE_MODEL?: string;
+  // fal.ai key for BiRefNet background removal (matting) of fixture cutouts.
+  // When unset, the generator falls back to requiring pre-cut transparent PNGs.
+  FAL_API_KEY?: string;
 }

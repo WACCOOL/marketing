@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { Product } from "@wac/shared";
-import { useProducts, formatDimensions } from "../lib/products.js";
+import {
+  useProducts,
+  formatDimensions,
+  fetchProductBrands,
+} from "../lib/products.js";
 
 interface ProductPickerProps {
   /** Called when a product card is clicked. Omit for a read-only browser. */
@@ -21,27 +25,49 @@ export function ProductPicker({ onSelect, selectedSku }: ProductPickerProps) {
   // Debounce search-as-you-type so we don't fire a request per keystroke.
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [pending, setPending] = useState(query);
+  const [brand, setBrand] = useState("");
+  const [brands, setBrands] = useState<string[]>([]);
+
+  useEffect(() => {
+    void fetchProductBrands()
+      .then(setBrands)
+      .catch(() => setBrands([]));
+  }, []);
 
   useEffect(() => {
     if (debounce.current) clearTimeout(debounce.current);
     debounce.current = setTimeout(() => {
       setQuery(pending);
-      void search(pending);
+      void search(pending, brand);
     }, 300);
     return () => {
       if (debounce.current) clearTimeout(debounce.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending]);
+  }, [pending, brand]);
 
   return (
     <div className="col" style={{ gap: 12 }}>
       <div className="card row">
         <input
-          placeholder="Search by SKU or name…"
+          placeholder="Search by brand, SKU, or name…"
           value={pending}
           onChange={(e) => setPending(e.target.value)}
         />
+        {brands.length > 0 && (
+          <select
+            value={brand}
+            onChange={(e) => setBrand(e.target.value)}
+            style={{ maxWidth: 200 }}
+          >
+            <option value="">All brands</option>
+            {brands.map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </select>
+        )}
         {loading ? <span className="spinner" /> : null}
         <span className="muted" style={{ whiteSpace: "nowrap" }}>
           {total} product{total === 1 ? "" : "s"}
@@ -73,6 +99,9 @@ export function ProductPicker({ onSelect, selectedSku }: ProductPickerProps) {
               <div className="product-name" title={p.name}>
                 {p.name}
               </div>
+              {p.brand ? (
+                <div className="muted product-brand">{p.brand}</div>
+              ) : null}
               <div className="muted product-sku">{p.sku}</div>
               <div className="muted product-dims">
                 {formatDimensions(p.dimensions_mm)}

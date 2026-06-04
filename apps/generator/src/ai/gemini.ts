@@ -24,6 +24,12 @@ const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 const DEFAULT_MODEL = "gemini-2.5-flash-image";
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/** Gemini imageConfig — aspectRatio (e.g. "16:9") and imageSize ("1K"/"2K"/"4K"). */
+interface ImageConfig {
+  aspectRatio?: string;
+  imageSize?: string;
+}
+
 export interface GeminiConfig {
   apiKey: string;
   baseUrl?: string;
@@ -75,16 +81,40 @@ function imagePart(buf: Buffer): InlinePart {
   };
 }
 
-export function makeGeminiAdapter(config: GeminiConfig): HarmonizeAdapter & GenerateAdapter {
-  const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
-  const model = config.model ?? DEFAULT_MODEL;
-  const url = `${baseUrl}/v1/models/${model}:generateContent`;
+interface CallOpts {
+  /** Per-call model override (e.g. a Gemini 3 image model for 4K scenes). */
+  model?: string;
+  /** Gemini imageConfig (aspectRatio + imageSize). */
+  imageConfig?: ImageConfig;
+  /** Per-call timeout override; defaults to REQUEST_TIMEOUT_MS. */
+  timeoutMs?: number;
+}
 
-  async function call(parts: Part[]): Promise<Buffer> {
-    const body = {
-      contents: [{ parts }],
-      generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
+export function makeGeminiAdapter(config: GeminiConfig): HarmonizeAdapter & GenerateAdapter {
+  // imageConfig (aspectRatio / imageSize) is only honored on the v1beta endpoint.
+  const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
+  const defaultModel = config.model ?? DEFAULT_MODEL;
+
+  async function call(parts: Part[], opts: CallOpts = {}): Promise<Buffer> {
+    const model = opts.model ?? defaultModel;
+    const url = `${baseUrl}/v1beta/models/${model}:generateContent`;
+
+    const generationConfig: Record<string, unknown> = {
+      responseModalities: ["TEXT", "IMAGE"],
     };
+    if (opts.imageConfig) {
+      // Drop empty keys so we never send `{}` or null values upstream.
+      const imageConfig: ImageConfig = {};
+      if (opts.imageConfig.aspectRatio) {
+        imageConfig.aspectRatio = opts.imageConfig.aspectRatio;
+      }
+      if (opts.imageConfig.imageSize) {
+        imageConfig.imageSize = opts.imageConfig.imageSize;
+      }
+      if (Object.keys(imageConfig).length > 0) {
+        generationConfig.imageConfig = imageConfig;
+      }
+    }
 
     const res = await fetchWithTimeout(
       "Gemini generateContent",
@@ -95,9 +125,9 @@ export function makeGeminiAdapter(config: GeminiConfig): HarmonizeAdapter & Gene
           "content-type": "application/json",
           "x-goog-api-key": config.apiKey,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ contents: [{ parts }], generationConfig }),
       },
-      REQUEST_TIMEOUT_MS,
+      opts.timeoutMs ?? REQUEST_TIMEOUT_MS,
     );
     if (!res.ok) {
       throw new Error(
@@ -127,7 +157,14 @@ export function makeGeminiAdapter(config: GeminiConfig): HarmonizeAdapter & Gene
     generate(req: GenerateRequest): Promise<Buffer> {
       const parts: Part[] = [{ text: req.prompt }];
       for (const ref of req.referenceImages ?? []) parts.push(imagePart(ref));
-      return call(parts);
+      return call(parts, {
+        model: req.model,
+        imageConfig:
+          req.aspectRatio || req.imageSize
+            ? { aspectRatio: req.aspectRatio, imageSize: req.imageSize }
+            : undefined,
+        timeoutMs: req.timeoutMs,
+      });
     },
   };
 }

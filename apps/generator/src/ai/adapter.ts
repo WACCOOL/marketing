@@ -17,6 +17,7 @@
 
 import { makeBflAdapter } from "./bfl.js";
 import { makeGeminiAdapter } from "./gemini.js";
+import { makeFalMatteAdapter } from "./fal.js";
 
 /** Inpaint a masked region. White mask pixels are repainted; black preserved. */
 export interface InpaintRequest {
@@ -41,6 +42,16 @@ export interface HarmonizeRequest {
 export interface GenerateRequest {
   prompt: string;
   referenceImages?: Buffer[];
+  /**
+   * Optional Gemini imageConfig controls. `aspectRatio` (e.g. "16:9") and
+   * `imageSize` ("1K"|"2K"|"4K", uppercase K) drive output dimensions; 4K needs
+   * a Gemini 3 image model, so callers pass `model` to override per call.
+   */
+  aspectRatio?: string;
+  imageSize?: string;
+  model?: string;
+  /** Per-call timeout override (large sizes can take much longer than 30s). */
+  timeoutMs?: number;
 }
 
 export interface InpaintAdapter {
@@ -58,6 +69,17 @@ export interface GenerateAdapter {
   generate(req: GenerateRequest): Promise<Buffer>;
 }
 
+/** Remove the background from a fixture image, returning a transparent PNG. */
+export interface MatteRequest {
+  /** Public URL of the source image (the provider fetches it). */
+  imageUrl: string;
+}
+
+export interface MatteAdapter {
+  readonly provider: string;
+  matte(req: MatteRequest): Promise<Buffer>;
+}
+
 /**
  * The set of adapters available for a generation run. Each slot is populated
  * only when the corresponding provider key is configured, so the pipeline can
@@ -67,6 +89,7 @@ export interface ImageGenAdapters {
   inpainter?: InpaintAdapter;
   harmonizer?: HarmonizeAdapter;
   generator?: GenerateAdapter;
+  matter?: MatteAdapter;
 }
 
 export interface AdapterConfig {
@@ -74,12 +97,14 @@ export interface AdapterConfig {
   bflApiKey?: string;
   /** Google Gemini API key (gemini-2.5-flash-image). */
   geminiApiKey?: string;
+  /** fal.ai API key (BiRefNet background removal). */
+  falApiKey?: string;
 }
 
 /**
  * Build the available adapters from configured keys. BFL provides the inpainter;
- * Gemini provides both the harmonizer and the concept-mode generator. Missing
- * keys simply leave a slot unset.
+ * Gemini provides both the harmonizer and the concept-mode generator; fal.ai
+ * provides the matte (background removal). Missing keys leave a slot unset.
  */
 export function makeImageGenAdapters(config: AdapterConfig): ImageGenAdapters {
   const adapters: ImageGenAdapters = {};
@@ -92,6 +117,10 @@ export function makeImageGenAdapters(config: AdapterConfig): ImageGenAdapters {
     const gemini = makeGeminiAdapter({ apiKey: config.geminiApiKey });
     adapters.harmonizer = gemini;
     adapters.generator = gemini;
+  }
+
+  if (config.falApiKey) {
+    adapters.matter = makeFalMatteAdapter({ apiKey: config.falApiKey });
   }
 
   return adapters;

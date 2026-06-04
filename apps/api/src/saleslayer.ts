@@ -68,6 +68,7 @@ export interface ProductCacheRow {
   sku: string;
   sl_id: string | null;
   name: string;
+  brand: string | null;
   category: string | null;
   dimensions_mm: DimsMm;
   primary_image_url: string | null;
@@ -76,6 +77,32 @@ export interface ProductCacheRow {
   variant_search: string | null;
   raw_json: Record<string, unknown>;
 }
+
+/**
+ * Candidate Sales Layer product field names that may carry the brand, scanned
+ * case-insensitively when no explicit SALES_LAYER_BRAND_FIELD override is set.
+ * WAC's connector uses SAP-style `z*` field names, so several spellings are
+ * covered; the first non-empty match wins.
+ */
+const BRAND_FIELD_CANDIDATES = [
+  "brand",
+  "brand_name",
+  "brandname",
+  "product_brand",
+  "zbrand",
+  "zbrandname",
+  "zbrand_name",
+  "zmarke",
+  "zmarca",
+  "marca",
+  "manufacturer",
+  "zmanufacturer",
+  "zproductbrand",
+  "zproductline",
+  "product_line",
+  "zdivision",
+  "division",
+];
 
 export interface ProductAdapter {
   /** Pull the full catalog and refresh the local cache. */
@@ -100,6 +127,7 @@ export function makeProductAdapter(env: Env): ProductAdapter {
   const connectorId = env.SALES_LAYER_CONNECTOR_ID;
   const secretKey = env.SALES_LAYER_SECRET_KEY || env.SALES_LAYER_API_KEY;
   const dimFactor = unitToMm(env.SALES_LAYER_DIMENSION_UNIT ?? "in");
+  const brandFieldOverride = env.SALES_LAYER_BRAND_FIELD?.trim() || undefined;
 
   function ensureCreds(): void {
     if (!connectorId || !secretKey) {
@@ -151,6 +179,9 @@ export function makeProductAdapter(env: Env): ProductAdapter {
       const categoryName = new Map<string, string>(); // internal ID -> name
       const products = new Map<string, ProductCacheRow>(); // internal ID -> row
       const variantsByProduct = new Map<string, VariantRow[]>();
+      // Remember which field we pulled brand from, logged once for observability
+      // so an admin can pin it via SALES_LAYER_BRAND_FIELD if discovery is wrong.
+      let discoveredBrandField: string | null = null;
 
       let url: string | undefined = await firstPageUrl();
       for (let page = 0; page < MAX_PAGES && url; page++) {
@@ -174,10 +205,13 @@ export function makeProductAdapter(env: Env): ProductAdapter {
           const id = str(p.ID);
           const sku = str(p.product_id);
           if (!id || !sku) continue;
+          const brandHit = extractBrand(p, brandFieldOverride);
+          if (brandHit && !discoveredBrandField) discoveredBrandField = brandHit.field;
           products.set(id, {
             sku,
             sl_id: id,
             name: decodeEntities(str(p.product_name) ?? sku),
+            brand: brandHit?.value ?? null,
             category: str(p.ID_categories), // resolved to name after the loop
             dimensions_mm: {},
             primary_image_url: firstImage(p, PRODUCT_IMAGE_FIELDS),
@@ -260,6 +294,15 @@ export function makeProductAdapter(env: Env): ProductAdapter {
       // an empty catalog — bail without wiping the cache.
       if (rows.length === 0) return { upserted: 0, pruned: 0, variants: 0 };
 
+      const brandCount = rows.filter((r) => r.brand).length;
+      console.log(
+        `[products] brand field: ${
+          brandFieldOverride
+            ? `${brandFieldOverride} (override)`
+            : (discoveredBrandField ?? "none discovered")
+        }; ${brandCount}/${rows.length} products have a brand`,
+      );
+
       const admin = serviceSupabase(env);
       const syncedAt = new Date().toISOString();
       const CHUNK = 300;
@@ -268,6 +311,7 @@ export function makeProductAdapter(env: Env): ProductAdapter {
           sku: r.sku,
           sl_id: r.sl_id,
           name: r.name,
+          brand: r.brand,
           category: r.category,
           dimensions_mm: r.dimensions_mm,
           primary_image_url: r.primary_image_url,
@@ -321,6 +365,42 @@ function mapRow(
 function str(v: unknown): string | null {
   if (typeof v === "string") return v.trim() || null;
   if (typeof v === "number") return String(v);
+  return null;
+}
+
+/**
+ * Pull the brand from a mapped product row. Uses the explicit override field if
+ * given, else scans common brand field names case-insensitively against the
+ * row's actual keys. Returns the matched field name (for logging) and the
+ * cleaned value. The connector image arrays are skipped so we never mistake an
+ * image field for a brand.
+ */
+function extractBrand(
+  p: Record<string, unknown>,
+  override?: string,
+): { field: string; value: string } | null {
+  const read = (field: string): string | null => {
+    const raw = p[field];
+    if (Array.isArray(raw)) return null; // image/multi-value fields aren't brands
+    const v = cleanText(decodeEntities(str(raw) ?? ""));
+    return v;
+  };
+
+  if (override) {
+    const v = read(override);
+    return v ? { field: override, value: v } : null;
+  }
+
+  // Case-insensitive lookup over the row's actual keys.
+  const keyByLower = new Map<string, string>();
+  for (const k of Object.keys(p)) keyByLower.set(k.toLowerCase(), k);
+
+  for (const candidate of BRAND_FIELD_CANDIDATES) {
+    const actualKey = keyByLower.get(candidate);
+    if (!actualKey) continue;
+    const v = read(actualKey);
+    if (v) return { field: actualKey, value: v };
+  }
   return null;
 }
 

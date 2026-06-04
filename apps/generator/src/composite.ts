@@ -27,12 +27,23 @@ export interface FixtureInput {
   widthBasis: AppImageWidthBasis;
 }
 
+/**
+ * Hook to transform a freshly-fetched cutout before it's composited - used to
+ * swap in a background-removed (matted) version. Receives the source URL and the
+ * fetched image; returns the image to actually composite.
+ */
+export type PrepareCutout = (
+  sourceUrl: string,
+  fetched: SourceImage,
+) => Promise<SourceImage>;
+
 export interface CompositeInput {
   sceneUrl: string;
   pxPerMm: number;
   scaleAdjust: number;
   fixtures: FixtureInput[];
   output: AppImageOutput;
+  prepareCutout?: PrepareCutout;
 }
 
 export interface Placement {
@@ -146,6 +157,7 @@ export interface FetchedScene {
 export async function fetchSceneAndFixtures(
   sceneUrl: string,
   fixtures: FixtureInput[],
+  prepareCutout?: PrepareCutout,
 ): Promise<FetchedScene> {
   const sceneFetched = await fetchImageBuffer(sceneUrl);
   if (!sceneFetched.width || !sceneFetched.height) {
@@ -164,15 +176,16 @@ export async function fetchSceneAndFixtures(
     if (!cut.width || !cut.height) {
       throw new Error(`cutout has no readable dimensions: ${fixture.cutoutUrl}`);
     }
-    prepared.push({
-      ...fixture,
-      source: {
-        buffer: cut.buffer,
-        width: cut.width,
-        height: cut.height,
-        hasAlpha: cut.hasAlpha,
-      },
-    });
+    let source: SourceImage = {
+      buffer: cut.buffer,
+      width: cut.width,
+      height: cut.height,
+      hasAlpha: cut.hasAlpha,
+    };
+    if (prepareCutout) {
+      source = await prepareCutout(fixture.cutoutUrl, source);
+    }
+    prepared.push({ ...fixture, source });
   }
 
   return { scene, fixtures: prepared };
@@ -213,6 +226,7 @@ export async function composeAppImage(
   const { scene, fixtures } = await fetchSceneAndFixtures(
     input.sceneUrl,
     input.fixtures,
+    input.prepareCutout,
   );
   return compositeFixtures({
     scene,

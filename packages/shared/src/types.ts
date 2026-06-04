@@ -127,6 +127,7 @@ export const ProductSchema = z.object({
   id: z.string().uuid(),
   sku: z.string().min(1),
   name: z.string().min(1),
+  brand: z.string().nullable().optional(),
   category: z.string().nullable().optional(),
   dimensions_mm: DimensionsMmSchema.default({}),
   primary_image_url: z.string().url().nullable().optional(),
@@ -203,9 +204,11 @@ export type AppImageScale = z.infer<typeof AppImageScaleSchema>;
 
 export const AppImageFixtureSchema = z.object({
   /**
-   * Sales Layer CDN URL of the product cutout. MUST be an RGBA PNG with a real
-   * alpha channel (transparent background) - the engine composites it as-is and
-   * does NOT remove backgrounds. JPEGs / opaque PNGs are rejected at generation.
+   * Sales Layer CDN URL of the product image. Ideally an RGBA PNG with a real
+   * transparent background, but opaque images (JPEG / white-background PNG) are
+   * accepted too: the generator runs background removal (BiRefNet via fal.ai,
+   * cached in R2) to produce a transparent cutout before compositing. If no
+   * matte provider is configured, opaque cutouts are rejected at generation.
    */
   cutoutUrl: z.string().url(),
   /** Real fixture dimensions in millimetres; at least one is required. */
@@ -268,6 +271,37 @@ export type AppImageHarmonize = z.infer<typeof AppImageHarmonizeSchema>;
  * Per-mode requirements are enforced in the superRefine below so a malformed
  * request 400s at the API instead of dying as a dead generation job.
  */
+// ---------------------------------------------------------------------------
+// Scene generation (text-to-room). A sibling of the App Image engine: it asks
+// Gemini for an empty room from a prompt and returns an image URL the user then
+// composites real fixtures into. Exposed sizes go up to 4K because some scenes
+// need very large output (4K requires a Gemini 3 image model upstream).
+// ---------------------------------------------------------------------------
+
+/** Gemini imageConfig.aspectRatio values we surface for room scenes. */
+export const GeminiAspectRatioSchema = z.enum([
+  "16:9",
+  "4:3",
+  "3:2",
+  "1:1",
+  "21:9",
+  "9:16",
+  "3:4",
+  "2:3",
+]);
+export type GeminiAspectRatio = z.infer<typeof GeminiAspectRatioSchema>;
+
+/** Gemini imageConfig.imageSize values (uppercase K is required upstream). */
+export const GeminiImageSizeSchema = z.enum(["1K", "2K", "4K"]);
+export type GeminiImageSize = z.infer<typeof GeminiImageSizeSchema>;
+
+export const SceneGenRequestSchema = z.object({
+  prompt: z.string().trim().min(1),
+  aspectRatio: GeminiAspectRatioSchema.default("16:9"),
+  imageSize: GeminiImageSizeSchema.default("2K"),
+});
+export type SceneGenRequest = z.infer<typeof SceneGenRequestSchema>;
+
 export const AppImageParamsSchema = z
   .object({
     version: z.enum(APPIMAGE_PARAMS_VERSIONS).default(APPIMAGE_PARAMS_VERSION),

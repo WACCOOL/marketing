@@ -46,7 +46,7 @@ describe("makeGeminiAdapter", () => {
     expect(out.equals(outBytes)).toBe(true);
 
     const [calledUrl, init] = fetchMock.mock.calls[0]!;
-    expect(calledUrl).toBe(`${baseUrl}/v1/models/gemini-2.5-flash-image:generateContent`);
+    expect(calledUrl).toBe(`${baseUrl}/v1beta/models/gemini-2.5-flash-image:generateContent`);
     const headers = (init as RequestInit).headers as Record<string, string>;
     expect(headers["x-goog-api-key"]).toBe(apiKey);
     const body = JSON.parse((init as RequestInit).body as string);
@@ -71,6 +71,26 @@ describe("makeGeminiAdapter", () => {
     const parts = body.contents[0].parts;
     expect(parts[0].text).toContain("modern lobby");
     expect(parts[1].inline_data.mime_type).toBe("image/jpeg");
+  });
+
+  it("generate threads model + imageConfig (aspectRatio/imageSize) through to the request", async () => {
+    fetchMock.mockResolvedValueOnce(imageResponse(outBytes));
+    const adapter = makeGeminiAdapter({ apiKey, baseUrl });
+
+    await adapter.generate({
+      prompt: "an empty modern kitchen, no fixtures",
+      aspectRatio: "16:9",
+      imageSize: "4K",
+      model: "gemini-3-pro-image",
+    });
+
+    const [calledUrl, init] = fetchMock.mock.calls[0]!;
+    expect(calledUrl).toBe(`${baseUrl}/v1beta/models/gemini-3-pro-image:generateContent`);
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.generationConfig.imageConfig).toEqual({
+      aspectRatio: "16:9",
+      imageSize: "4K",
+    });
   });
 
   it("throws when the response has no image part", async () => {

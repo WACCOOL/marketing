@@ -10,10 +10,11 @@ export const productRoutes = new Hono<AppBindings>();
 // Columns returned to the client. raw_json is intentionally excluded — it can be
 // large and is only needed server-side by later generation phases.
 const PRODUCT_COLS =
-  "id, sku, name, category, dimensions_mm, primary_image_url, image_urls, variants, synced_at";
+  "id, sku, name, brand, category, dimensions_mm, primary_image_url, image_urls, variants, synced_at";
 
 const ListQuerySchema = z.object({
   q: z.string().trim().optional(),
+  brand: z.string().trim().optional(),
   category: z.string().trim().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).default(0),
@@ -26,7 +27,7 @@ productRoutes.get("/", requireAuth, async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid query", issues: parsed.error.issues }, 400);
   }
-  const { q, category, limit, offset } = parsed.data;
+  const { q, brand, category, limit, offset } = parsed.data;
 
   const sb = userSupabase(c.env, c.get("jwt"));
   let query = sb
@@ -36,14 +37,15 @@ productRoutes.get("/", requireAuth, async (c) => {
     .range(offset, offset + limit - 1);
 
   if (category) query = query.eq("category", category);
+  if (brand) query = query.eq("brand", brand);
   if (q) {
-    // Partial match on product name/SKU and any variant model number/finish
+    // Partial match on product name/brand/SKU and any variant model number/finish
     // (variant_search). Strip PostgREST `or` control characters so user input
     // can't break the filter expression.
     const safe = q.replace(/[(),]/g, " ").trim();
     if (safe) {
       query = query.or(
-        `name.ilike.%${safe}%,sku.ilike.%${safe}%,variant_search.ilike.%${safe}%`,
+        `name.ilike.%${safe}%,brand.ilike.%${safe}%,sku.ilike.%${safe}%,variant_search.ilike.%${safe}%`,
       );
     }
   }
@@ -51,6 +53,19 @@ productRoutes.get("/", requireAuth, async (c) => {
   const { data, error, count } = await query;
   if (error) return c.json({ error: error.message }, 500);
   return c.json({ products: data ?? [], total: count ?? 0 });
+});
+
+// Distinct brand list for the picker facet. Declared before "/:sku" so it isn't
+// swallowed by the param route. Backed by the product_brands() RPC (DISTINCT in
+// SQL, RLS-respecting) so we avoid PostgREST's row cap.
+productRoutes.get("/brands", requireAuth, async (c) => {
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { data, error } = await sb.rpc("product_brands");
+  if (error) return c.json({ error: error.message }, 500);
+  const brands = Array.isArray(data)
+    ? (data as unknown[]).filter((b): b is string => typeof b === "string")
+    : [];
+  return c.json({ brands });
 });
 
 // Admin-only proxy of the live Sales Layer field schema (types for
