@@ -39,7 +39,10 @@ const DEFAULT_MODEL = "gemini-2.5-flash-image";
 // image-output model. gemini-2.5-flash supports segmentation masks.
 const DEFAULT_SEGMENT_MODEL = "gemini-2.5-flash";
 const REQUEST_TIMEOUT_MS = 30_000;
-const SEGMENT_TIMEOUT_MS = 60_000;
+// Shorter than before (was 60s): when segmentation is slow/stuck we'd rather
+// bail quickly and let cutout.ts's classical flood-fill fallback take over than
+// make the user wait a full minute (×retries) before any result.
+const SEGMENT_TIMEOUT_MS = 40_000;
 // Relight is a multi-image edit (composite + reference cutouts); allow headroom.
 const RELIGHT_TIMEOUT_MS = 90_000;
 const PERSPECTIVE_TIMEOUT_MS = 30_000;
