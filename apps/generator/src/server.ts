@@ -444,20 +444,18 @@ const MOUNT_SURFACE_PHRASE: Record<NonNullable<SceneGenRequest["mount"]>, string
 function buildScenePrompt(req: SceneGenRequest): string {
   const base = req.prompt.trim();
   if (!req.fixtureType && !req.mount) return base;
-  const thing = (req.fixtureType ?? "light fixture").trim();
   const surface = req.mount ?? "ceiling";
   const where = MOUNT_SURFACE_PHRASE[surface];
   const surfaceNoun =
     surface === "wall" ? "wall" : surface === "floor" ? "floor" : "ceiling";
+  // Image models draw every object noun we mention (even after "no"), so we
+  // avoid naming fixtures/hardware and instead describe a bare, pre-installation
+  // room positively. The open focal space leaves room to composite the fixture.
   return (
-    `${base}. This is an empty interior staged to showcase a ${thing}. ` +
-    `Leave clear, uncluttered, well-lit space at ${where} where the ${thing} ` +
-    `will be added later. The ${surfaceNoun} in that area must be completely ` +
-    `clean, smooth and unbroken — show only a blank ${surfaceNoun} surface with ` +
-    `no ${thing} and no other light fixture, and absolutely NO junction box, ` +
-    `electrical box, outlet box, mounting plate, bracket, canopy, ceiling medallion, ` +
-    `hook, wires, cables, or holes of any kind. Photorealistic interior ` +
-    `photograph, balanced natural lighting, no text or watermarks.`
+    `${base}. A newly finished, unfurnished interior photographed before ` +
+    `anything is mounted. The ${surfaceNoun} is smooth, blank and completely ` +
+    `bare, with clear, open, well-lit space at ${where}. Photorealistic ` +
+    `interior photograph, balanced natural daylight, no text or watermarks.`
   );
 }
 
