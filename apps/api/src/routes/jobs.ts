@@ -58,6 +58,7 @@ jobRoutes.post("/", requireAuth, async (c) => {
     tool: parsed.data.tool,
     name: parsed.data.name,
     params,
+    tags: parsed.data.tags,
   });
   if (!res.ok) return c.json({ error: res.error }, 500);
 

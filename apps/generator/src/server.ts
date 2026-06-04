@@ -86,6 +86,8 @@ interface GenerateRequest {
   tool: "appimage" | "ppt" | "layout";
   name: string;
   params: Record<string, unknown>;
+  /** Extra asset tags merged onto the base `tool:<tool>` tag (Phase 2e). */
+  tags?: string[];
 }
 
 interface GeneratedFile {
@@ -409,6 +411,9 @@ async function createAssetRow(
   req: GenerateRequest,
   metadata: Record<string, unknown>,
 ): Promise<string> {
+  // Base tag plus any caller-supplied tags (e.g. sku:/room: for app images),
+  // de-duped so the asset's tag set stays clean.
+  const tags = [...new Set([`tool:${req.tool}`, ...(req.tags ?? [])])];
   const { data, error } = await sb
     .from("assets")
     .insert({
@@ -416,7 +421,7 @@ async function createAssetRow(
       tool: req.tool,
       name: req.name,
       org_visibility: "internal",
-      tags: [`tool:${req.tool}`],
+      tags,
       metadata_json: { jobId: req.jobId, ...metadata },
     })
     .select("id")
@@ -559,6 +564,9 @@ function parseGenerateRequest(body: unknown): GenerateRequest | null {
       b.params && typeof b.params === "object"
         ? (b.params as Record<string, unknown>)
         : {},
+    tags: Array.isArray(b.tags)
+      ? b.tags.filter((t): t is string => typeof t === "string")
+      : undefined,
   };
 }
 

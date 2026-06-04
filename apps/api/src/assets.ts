@@ -15,7 +15,7 @@ export interface CreateAssetArgs {
 }
 
 export interface AssetFileSpec {
-  format: "svg" | "png" | "url" | "txt" | "xlsx" | "csv";
+  format: "svg" | "png" | "jpeg" | "webp" | "url" | "txt" | "xlsx" | "csv";
   /** R2 object body OR a literal string (e.g. for "url" assets). */
   body: Uint8Array | string;
   contentType?: string;

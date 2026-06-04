@@ -7,6 +7,7 @@ import { Bulk } from "./pages/Bulk.js";
 import { Library } from "./pages/Library.js";
 import { UtmQr } from "./pages/UtmQr.js";
 import { Products } from "./pages/Products.js";
+import { AppImage } from "./pages/AppImage.js";
 
 export function App() {
   return (
@@ -75,6 +76,9 @@ function Shell() {
         <NavLink to="/products" className={({ isActive }) => (isActive ? "active" : "")}>
           Products
         </NavLink>
+        <NavLink to="/app-image" className={({ isActive }) => (isActive ? "active" : "")}>
+          Image Generator
+        </NavLink>
         <NavLink to="/library" className={({ isActive }) => (isActive ? "active" : "")}>
           Asset Library
         </NavLink>
@@ -105,6 +109,7 @@ function Shell() {
           <Route path="/utm-qr" element={<UtmQr />} />
           <Route path="/short-links" element={<Navigate to="/utm-qr" replace />} />
           <Route path="/products" element={<Products />} />
+          <Route path="/app-image" element={<AppImage />} />
           <Route path="/library" element={<Library />} />
           <Route path="*" element={<Navigate to="/builder" replace />} />
         </Routes>
