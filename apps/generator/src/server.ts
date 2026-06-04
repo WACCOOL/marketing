@@ -447,12 +447,17 @@ function buildScenePrompt(req: SceneGenRequest): string {
   const thing = (req.fixtureType ?? "light fixture").trim();
   const surface = req.mount ?? "ceiling";
   const where = MOUNT_SURFACE_PHRASE[surface];
+  const surfaceNoun =
+    surface === "wall" ? "wall" : surface === "floor" ? "floor" : "ceiling";
   return (
     `${base}. This is an empty interior staged to showcase a ${thing}. ` +
     `Leave clear, uncluttered, well-lit space at ${where} where the ${thing} ` +
-    `will be added, and do not include any existing ${thing} or other light ` +
-    `fixture in that spot. Photorealistic interior photograph, balanced natural ` +
-    `lighting, no text or watermarks.`
+    `will be added later. The ${surfaceNoun} in that area must be completely ` +
+    `clean, smooth and unbroken — show only a blank ${surfaceNoun} surface with ` +
+    `no ${thing} and no other light fixture, and absolutely NO junction box, ` +
+    `electrical box, outlet box, mounting plate, bracket, canopy, ceiling medallion, ` +
+    `hook, wires, cables, or holes of any kind. Photorealistic interior ` +
+    `photograph, balanced natural lighting, no text or watermarks.`
   );
 }
 
