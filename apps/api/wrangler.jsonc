@@ -49,7 +49,10 @@
       "image": "../generator/Dockerfile",
       "image_build_context": "../..",
       "max_instances": 20,
-      "instance_type": "basic"
+      // standard-3 = 2 vCPU / 8 GiB. The hybrid warp + classical harmonize are
+      // CPU-bound sharp ops; basic's 1/4 vCPU was the main generate-step
+      // bottleneck. CPU is billed by active use, so faster jobs ≈ same CPU cost.
+      "instance_type": "standard-3"
     }
   ],
 
