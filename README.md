@@ -73,19 +73,20 @@ SUPABASE_SERVICE_ROLE_KEY=...
 SHORT_LINK_HOST=https://gowac.cc
 HUBSPOT_TOKEN=                 # leave blank until live HubSpot is wired
 BFL_API_KEY=                   # Phase 2d: Black Forest Labs FLUX.1 Fill (hybrid mode)
-GEMINI_API_KEY=                # Phase 2: Google Gemini (harmonize/concept + scene generation)
-FAL_API_KEY=                   # Phase 2: fal.ai BiRefNet background removal (cutout matting)
+GEMINI_API_KEY=                # Phase 2: Google Gemini (harmonize/concept + scene gen + background removal)
 ```
 
 These AI keys are forwarded into the generation Container. Without `BFL_API_KEY`/
 `GEMINI_API_KEY` the Application Image generator still runs in deterministic
 `composite` mode, while `hybrid`/`concept` jobs and text-to-room scene generation
-fail with a clear "not configured" error. Without `FAL_API_KEY`, opaque product
-images are rejected (only pre-cut transparent PNGs composite). In prod, set them
-with `wrangler secret put BFL_API_KEY` / `... GEMINI_API_KEY` / `... FAL_API_KEY`.
+fail with a clear "not configured" error. Background removal for opaque product
+images uses Gemini image segmentation (mask -> alpha), so without `GEMINI_API_KEY`
+only pre-cut transparent PNGs composite. Matted cutouts are cached in R2. In prod,
+set the keys with `wrangler secret put BFL_API_KEY` / `... GEMINI_API_KEY`.
 Optional: `GEMINI_SCENE_MODEL` pins the scene-generation model (defaults to a
-Gemini 3 image model so 4K is available), and `SALES_LAYER_BRAND_FIELD` pins the
-product brand field if auto-discovery is wrong.
+Gemini 3 image model so 4K is available), `GEMINI_SEGMENT_MODEL` pins the
+background-removal model (defaults to `gemini-2.5-flash`), and
+`SALES_LAYER_BRAND_FIELD` pins the product brand field if auto-discovery is wrong.
 
 Redirect Worker secrets (`apps/redirect/.dev.vars`):
 

@@ -23,11 +23,12 @@ R2_BUCKET=wac-marketing-assets
 # Phase 2d — AI image providers for the Application Image hybrid/concept modes.
 # Forwarded into the generation Container. Leave blank to run composite-only.
 #   BFL_API_KEY    — Black Forest Labs (FLUX.1 Fill masked inpainting), bfl.ai
-#   GEMINI_API_KEY — Google Gemini (harmonization + concept + scene generation)
-#   FAL_API_KEY    — fal.ai BiRefNet background removal (fixture cutout matting)
+#   GEMINI_API_KEY — Google Gemini (harmonization + concept + scene generation +
+#                    segmentation-based background removal of fixture cutouts)
 BFL_API_KEY=
 GEMINI_API_KEY=
-FAL_API_KEY=
 # Gemini model for text-to-room scene generation. Defaults to a Gemini 3 image
 # model (4K-capable) in the container; override to pin a specific model.
 # GEMINI_SCENE_MODEL=gemini-3-pro-image
+# Gemini model for background removal (segmentation). Defaults to gemini-2.5-flash.
+# GEMINI_SEGMENT_MODEL=gemini-2.5-flash

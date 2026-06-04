@@ -1,12 +1,16 @@
 /**
  * Google Gemini adapter — gemini-2.5-flash-image ("nano-banana"), Phase 2d.
  *
- * Two capabilities, both prompt-driven and both returning opaque images (Gemini
- * does not support transparency, so it only ever runs AFTER compositing):
+ * Capabilities:
  * - harmonize: send the post-inpaint image + a lighting prompt -> integrated
  *   global lighting/shadows. There is no mask and no separate "edit" mode;
- *   including an image part implicitly makes it an edit.
- * - generate: prompt (+ optional reference images) -> a new concept scene.
+ *   including an image part implicitly makes it an edit. Returns an opaque image
+ *   (Gemini cannot output transparency), so it only ever runs AFTER compositing.
+ * - generate: prompt (+ optional reference images) -> a new image (concept scene
+ *   or text-to-room scene with imageConfig size/aspect controls).
+ * - segment: image understanding -> object segmentation masks, used for
+ *   background removal. Gemini can't EMIT transparency, but it CAN return a
+ *   per-object mask; we apply that mask as an alpha channel ourselves (cutout.ts).
  *
  * Images go up as base64 `inline_data` parts and come back as base64 `inlineData`
  * parts under `candidates[].content.parts[]`.
@@ -18,11 +22,24 @@ import {
   type GenerateRequest,
   type HarmonizeAdapter,
   type HarmonizeRequest,
+  type SegmentAdapter,
+  type SegmentationMask,
 } from "./adapter.js";
 
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
 const DEFAULT_MODEL = "gemini-2.5-flash-image";
+// Segmentation is an image-understanding task; use a vision text model, not the
+// image-output model. gemini-2.5-flash supports segmentation masks.
+const DEFAULT_SEGMENT_MODEL = "gemini-2.5-flash";
 const REQUEST_TIMEOUT_MS = 30_000;
+const SEGMENT_TIMEOUT_MS = 60_000;
+
+const SEGMENT_PROMPT =
+  "Give the segmentation mask for the main foreground product in this image " +
+  "(the light fixture, lamp, or hardware item) — exclude the background, the " +
+  "surface/floor, and any cast shadow. Output a JSON list of segmentation masks " +
+  'where each entry contains the 2D bounding box in the key "box_2d", the ' +
+  'segmentation mask in the key "mask", and a text label in the key "label".';
 
 /** Gemini imageConfig — aspectRatio (e.g. "16:9") and imageSize ("1K"/"2K"/"4K"). */
 interface ImageConfig {
@@ -34,6 +51,8 @@ export interface GeminiConfig {
   apiKey: string;
   baseUrl?: string;
   model?: string;
+  /** Model used for segmentation (background removal). */
+  segmentModel?: string;
 }
 
 interface InlinePart {
@@ -90,10 +109,53 @@ interface CallOpts {
   timeoutMs?: number;
 }
 
-export function makeGeminiAdapter(config: GeminiConfig): HarmonizeAdapter & GenerateAdapter {
+interface RawMask {
+  box_2d?: number[];
+  mask?: string;
+  label?: string;
+}
+
+/** Parse Gemini's JSON segmentation response (tolerant of code fences). */
+function parseMasks(text: string): SegmentationMask[] {
+  let body = text.trim();
+  if (body.startsWith("```")) {
+    body = body.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return [];
+  }
+  const list = Array.isArray(parsed) ? parsed : [];
+  const masks: SegmentationMask[] = [];
+  for (const item of list as RawMask[]) {
+    const box = item.box_2d;
+    const mask = item.mask;
+    if (
+      Array.isArray(box) &&
+      box.length === 4 &&
+      box.every((n) => typeof n === "number") &&
+      typeof mask === "string" &&
+      mask.length > 0
+    ) {
+      masks.push({
+        box2d: [box[0]!, box[1]!, box[2]!, box[3]!],
+        maskPngBase64: mask.replace(/^data:image\/png;base64,/, ""),
+        label: typeof item.label === "string" ? item.label : undefined,
+      });
+    }
+  }
+  return masks;
+}
+
+export function makeGeminiAdapter(
+  config: GeminiConfig,
+): HarmonizeAdapter & GenerateAdapter & SegmentAdapter {
   // imageConfig (aspectRatio / imageSize) is only honored on the v1beta endpoint.
   const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
   const defaultModel = config.model ?? DEFAULT_MODEL;
+  const segmentModel = config.segmentModel ?? DEFAULT_SEGMENT_MODEL;
 
   async function call(parts: Part[], opts: CallOpts = {}): Promise<Buffer> {
     const model = opts.model ?? defaultModel;
@@ -149,6 +211,45 @@ export function makeGeminiAdapter(config: GeminiConfig): HarmonizeAdapter & Gene
     throw new Error("Gemini response contained no image part");
   }
 
+  /** Run a segmentation request and return the parsed masks. */
+  async function segment(image: Buffer): Promise<SegmentationMask[]> {
+    const url = `${baseUrl}/v1beta/models/${segmentModel}:generateContent`;
+    const res = await fetchWithTimeout(
+      "Gemini segment",
+      url,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": config.apiKey,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [imagePart(image), { text: SEGMENT_PROMPT }] }],
+          generationConfig: {
+            responseMimeType: "application/json",
+            // Segmentation is more reliable with thinking disabled (per Google).
+            thinkingConfig: { thinkingBudget: 0 },
+          },
+        }),
+      },
+      SEGMENT_TIMEOUT_MS,
+    );
+    if (!res.ok) {
+      throw new Error(
+        `Gemini segment failed ${res.status}: ${await res.text().catch(() => "")}`,
+      );
+    }
+
+    const data = (await res.json()) as GenerateContentResponse;
+    if (data.promptFeedback?.blockReason) {
+      throw new Error(`Gemini blocked the request: ${data.promptFeedback.blockReason}`);
+    }
+    const text = (data.candidates?.[0]?.content?.parts ?? [])
+      .map((p) => p.text ?? "")
+      .join("");
+    return parseMasks(text);
+  }
+
   return {
     provider: "gemini-2.5-flash-image",
     harmonize(req: HarmonizeRequest): Promise<Buffer> {
@@ -166,5 +267,6 @@ export function makeGeminiAdapter(config: GeminiConfig): HarmonizeAdapter & Gene
         timeoutMs: req.timeoutMs,
       });
     },
+    segment,
   };
 }

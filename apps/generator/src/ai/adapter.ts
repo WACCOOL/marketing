@@ -2,22 +2,19 @@
  * Image-generation adapter layer (Phase 2d — Option C hybrid pipeline).
  *
  * The container's AI steps run behind these small capability interfaces so the
- * underlying provider (BFL FLUX.1 Fill, Google Gemini, a future fal.ai / FLUX.2)
- * can be swapped without touching the pipeline. Every method takes and returns a
- * raw image `Buffer` — provider delivery URLs expire fast and have no CORS, so a
- * URL contract would be a footgun. Each adapter owns its own request timeout so
- * a stuck provider surfaces an actionable error instead of a generic container
- * timeout.
+ * underlying provider (BFL FLUX.1 Fill, Google Gemini) can be swapped without
+ * touching the pipeline. Each adapter owns its own request timeout so a stuck
+ * provider surfaces an actionable error instead of a generic container timeout.
  *
  * Capabilities are intentionally split: a provider implements only what it can.
  * - inpaint:   masked, prompt-driven local edit (FLUX.1 Fill). No reference img.
  * - harmonize: prompt-driven full-image lighting pass (Gemini). No mask.
  * - generate:  prompt (+ optional references) -> new image (Gemini concept mode).
+ * - segment:   return object segmentation masks for background removal (Gemini).
  */
 
 import { makeBflAdapter } from "./bfl.js";
 import { makeGeminiAdapter } from "./gemini.js";
-import { makeFalMatteAdapter } from "./fal.js";
 
 /** Inpaint a masked region. White mask pixels are repainted; black preserved. */
 export interface InpaintRequest {
@@ -69,15 +66,23 @@ export interface GenerateAdapter {
   generate(req: GenerateRequest): Promise<Buffer>;
 }
 
-/** Remove the background from a fixture image, returning a transparent PNG. */
-export interface MatteRequest {
-  /** Public URL of the source image (the provider fetches it). */
-  imageUrl: string;
+/**
+ * One object segmentation mask from Gemini. `box2d` is `[y0, x0, y1, x1]`
+ * normalized to 0..1000 (Gemini's convention); `maskPngBase64` is a base64 PNG
+ * probability map (0..255) sized to the bounding box. Used for background
+ * removal: the caller scales the mask to the box, applies it as an alpha
+ * channel, and composites a transparent cutout.
+ */
+export interface SegmentationMask {
+  box2d: [number, number, number, number];
+  maskPngBase64: string;
+  label?: string;
 }
 
-export interface MatteAdapter {
+/** Segment the foreground object(s) in an image (Gemini image understanding). */
+export interface SegmentAdapter {
   readonly provider: string;
-  matte(req: MatteRequest): Promise<Buffer>;
+  segment(image: Buffer): Promise<SegmentationMask[]>;
 }
 
 /**
@@ -89,22 +94,22 @@ export interface ImageGenAdapters {
   inpainter?: InpaintAdapter;
   harmonizer?: HarmonizeAdapter;
   generator?: GenerateAdapter;
-  matter?: MatteAdapter;
+  segmenter?: SegmentAdapter;
 }
 
 export interface AdapterConfig {
   /** Black Forest Labs API key (FLUX.1 Fill). */
   bflApiKey?: string;
-  /** Google Gemini API key (gemini-2.5-flash-image). */
+  /** Google Gemini API key (image generation + understanding/segmentation). */
   geminiApiKey?: string;
-  /** fal.ai API key (BiRefNet background removal). */
-  falApiKey?: string;
+  /** Gemini model for segmentation (background removal). */
+  geminiSegmentModel?: string;
 }
 
 /**
  * Build the available adapters from configured keys. BFL provides the inpainter;
- * Gemini provides both the harmonizer and the concept-mode generator; fal.ai
- * provides the matte (background removal). Missing keys leave a slot unset.
+ * Gemini provides the harmonizer, the concept-mode generator, and the segmenter
+ * (background removal). Missing keys leave a slot unset.
  */
 export function makeImageGenAdapters(config: AdapterConfig): ImageGenAdapters {
   const adapters: ImageGenAdapters = {};
@@ -114,13 +119,13 @@ export function makeImageGenAdapters(config: AdapterConfig): ImageGenAdapters {
   }
 
   if (config.geminiApiKey) {
-    const gemini = makeGeminiAdapter({ apiKey: config.geminiApiKey });
+    const gemini = makeGeminiAdapter({
+      apiKey: config.geminiApiKey,
+      segmentModel: config.geminiSegmentModel,
+    });
     adapters.harmonizer = gemini;
     adapters.generator = gemini;
-  }
-
-  if (config.falApiKey) {
-    adapters.matter = makeFalMatteAdapter({ apiKey: config.falApiKey });
+    adapters.segmenter = gemini;
   }
 
   return adapters;

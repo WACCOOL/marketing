@@ -51,7 +51,7 @@ export interface Env {
   // Gemini model for text-to-room scene generation. Defaults to a Gemini 3
   // image model in the container (4K-capable); override here to pin a model.
   GEMINI_SCENE_MODEL?: string;
-  // fal.ai key for BiRefNet background removal (matting) of fixture cutouts.
-  // When unset, the generator falls back to requiring pre-cut transparent PNGs.
-  FAL_API_KEY?: string;
+  // Gemini model for segmentation-based background removal of fixture cutouts.
+  // Defaults to gemini-2.5-flash in the container; override here to pin a model.
+  GEMINI_SEGMENT_MODEL?: string;
 }

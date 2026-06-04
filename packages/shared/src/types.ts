@@ -206,9 +206,9 @@ export const AppImageFixtureSchema = z.object({
   /**
    * Sales Layer CDN URL of the product image. Ideally an RGBA PNG with a real
    * transparent background, but opaque images (JPEG / white-background PNG) are
-   * accepted too: the generator runs background removal (BiRefNet via fal.ai,
-   * cached in R2) to produce a transparent cutout before compositing. If no
-   * matte provider is configured, opaque cutouts are rejected at generation.
+   * accepted too: the generator runs background removal (Gemini segmentation
+   * mask -> alpha, cached in R2) to produce a transparent cutout before
+   * compositing. Without GEMINI_API_KEY, opaque cutouts are rejected.
    */
   cutoutUrl: z.string().url(),
   /** Real fixture dimensions in millimetres; at least one is required. */

@@ -53,13 +53,14 @@ interface Config {
   // works; hybrid/concept jobs fail with a precise "not configured" error.
   bflApiKey?: string;
   geminiApiKey?: string;
-  // fal.ai key for BiRefNet background removal (matting). When unset, opaque
-  // cutouts are rejected (composite/hybrid require transparent fixture PNGs).
-  falApiKey?: string;
   // Gemini model used for text-to-room scene generation. Defaults to a Gemini 3
   // image model because the user-facing size options go up to 4K, which 2.5
   // Flash Image cannot produce. Overridable via GEMINI_SCENE_MODEL.
   geminiSceneModel: string;
+  // Gemini model used for segmentation-based background removal. Overridable via
+  // GEMINI_SEGMENT_MODEL. When GEMINI_API_KEY is unset, opaque cutouts are
+  // rejected (composite/hybrid require transparent fixtures).
+  geminiSegmentModel?: string;
 }
 
 const DEFAULT_SCENE_MODEL = "gemini-3-pro-image";
@@ -90,8 +91,8 @@ function loadConfig(): Config {
     r2Bucket: required.R2_BUCKET!,
     bflApiKey: process.env.BFL_API_KEY || undefined,
     geminiApiKey: process.env.GEMINI_API_KEY || undefined,
-    falApiKey: process.env.FAL_API_KEY || undefined,
     geminiSceneModel: process.env.GEMINI_SCENE_MODEL || DEFAULT_SCENE_MODEL,
+    geminiSegmentModel: process.env.GEMINI_SEGMENT_MODEL || undefined,
   };
 }
 
@@ -605,10 +606,10 @@ function makeR2CutoutCache(s3: S3Client, bucket: string): CutoutCache {
 }
 
 /**
- * Build the cutout-preparation hook: matte opaque fixture images (BiRefNet via
- * fal.ai) into transparent PNGs, caching results in R2. Returns undefined only
- * conceptually — it always returns a hook; when no matte adapter is configured
- * the hook rejects opaque cutouts with an actionable error.
+ * Build the cutout-preparation hook: remove the background from opaque fixture
+ * images (Gemini segmentation -> alpha) into transparent PNGs, caching results
+ * in R2. It always returns a hook; when no segmenter is configured the hook
+ * rejects opaque cutouts with an actionable error.
  */
 function makePrepareCutout(
   config: Config,
@@ -617,7 +618,7 @@ function makePrepareCutout(
 ): PrepareCutout {
   const cache = makeR2CutoutCache(s3, config.r2Bucket);
   return (sourceUrl, fetched) =>
-    resolveCutout({ sourceUrl, fetched, matter: adapters.matter, cache });
+    resolveCutout({ sourceUrl, fetched, segmenter: adapters.segmenter, cache });
 }
 
 async function handleGenerate(
@@ -711,7 +712,7 @@ function main(): void {
   const adapters = makeImageGenAdapters({
     bflApiKey: config.bflApiKey,
     geminiApiKey: config.geminiApiKey,
-    falApiKey: config.falApiKey,
+    geminiSegmentModel: config.geminiSegmentModel,
   });
 
   const server = http.createServer((req, res) => {

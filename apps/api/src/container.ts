@@ -39,7 +39,9 @@ export class GenerationContainer extends Container<Env> {
       ...(env.GEMINI_SCENE_MODEL
         ? { GEMINI_SCENE_MODEL: env.GEMINI_SCENE_MODEL }
         : {}),
-      ...(env.FAL_API_KEY ? { FAL_API_KEY: env.FAL_API_KEY } : {}),
+      ...(env.GEMINI_SEGMENT_MODEL
+        ? { GEMINI_SEGMENT_MODEL: env.GEMINI_SEGMENT_MODEL }
+        : {}),
     };
   }
 }

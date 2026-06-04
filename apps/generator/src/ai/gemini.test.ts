@@ -93,6 +93,50 @@ describe("makeGeminiAdapter", () => {
     });
   });
 
+  it("segment posts a JSON segmentation request and parses masks", async () => {
+    const maskList = [
+      { box_2d: [10, 20, 900, 800], mask: "data:image/png;base64,AAAA", label: "lamp" },
+      { box_2d: [0, 0, 100, 100], mask: "BBBB" },
+    ];
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          candidates: [{ content: { parts: [{ text: JSON.stringify(maskList) }] } }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const adapter = makeGeminiAdapter({ apiKey, baseUrl });
+
+    const masks = await adapter.segment(Buffer.from("\x89PNG source"));
+
+    const [calledUrl, init] = fetchMock.mock.calls[0]!;
+    expect(calledUrl).toBe(`${baseUrl}/v1beta/models/gemini-2.5-flash:generateContent`);
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.generationConfig.responseMimeType).toBe("application/json");
+    expect(body.generationConfig.thinkingConfig.thinkingBudget).toBe(0);
+    expect(masks).toHaveLength(2);
+    expect(masks[0]!.box2d).toEqual([10, 20, 900, 800]);
+    // The data: prefix is stripped so callers can base64-decode directly.
+    expect(masks[0]!.maskPngBase64).toBe("AAAA");
+    expect(masks[0]!.label).toBe("lamp");
+    expect(masks[1]!.maskPngBase64).toBe("BBBB");
+  });
+
+  it("segment honors a custom segmentModel", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "[]" }] } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const adapter = makeGeminiAdapter({ apiKey, baseUrl, segmentModel: "gemini-x" });
+    await adapter.segment(Buffer.from("x"));
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      `${baseUrl}/v1beta/models/gemini-x:generateContent`,
+    );
+  });
+
   it("throws when the response has no image part", async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: "no image" }] } }] }), {
