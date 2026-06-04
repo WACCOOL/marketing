@@ -200,6 +200,23 @@ export async function fetchSceneAndFixtures(
 }
 
 /**
+ * Conform a (possibly generative) image back to an exact width×height frame.
+ * Gemini image edits emit ~1024px, often squarish, so the relight pass would
+ * otherwise shrink/squarify the composite. We stretch-fit back to the original
+ * scene frame so the deterministic geometry/aspect is preserved. No-op when the
+ * dimensions already match.
+ */
+export async function conformToSize(
+  image: Buffer,
+  width: number,
+  height: number,
+): Promise<Buffer> {
+  const meta = await sharp(image).metadata();
+  if (meta.width === width && meta.height === height) return image;
+  return sharp(image).resize(width, height, { fit: "fill" }).png().toBuffer();
+}
+
+/**
  * Encode a composited base image to the requested output format. The base is
  * always a lossless PNG (preserving any alpha); JPEG output is flattened onto
  * white. Shared by the composite and hybrid paths so output handling is uniform.

@@ -9,6 +9,7 @@ import {
 } from "@wac/shared";
 import {
   composeAppImage,
+  conformToSize,
   encodeOutput,
   fetchSceneAndFixtures,
   placeFixtures,
@@ -339,11 +340,14 @@ async function runHybrid(
     const references = placed.placements
       .slice(0, 4)
       .map((pl) => pl.resizedCutout);
-    image = await relighter.relight({
+    const relit = await relighter.relight({
       image,
       references,
       prompt: buildRelightPrompt(p),
     });
+    // Gemini edits emit ~1024px (often square); conform back to the scene frame
+    // so the relight pass can't shrink/squarify the deterministic composite.
+    image = await conformToSize(relit, placed.width, placed.height);
     steps.push(p.harmonize.lightsOn ? "relight:lights-on" : "relight:fit");
   }
 

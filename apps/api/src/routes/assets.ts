@@ -70,6 +70,65 @@ assetRoutes.get("/:id/files/:format", requireAuth, async (c) => {
   });
 });
 
+/**
+ * Overwrite an asset's stored image with new bytes (used by the "crop before
+ * save" step: the client crops the generated image on a canvas and uploads the
+ * result). Only the owner may overwrite, and only raster image formats. The R2
+ * object is replaced in place at the existing key so links/format stay stable.
+ */
+const REPLACEABLE_FORMATS = new Set(["png", "jpeg", "jpg", "webp"]);
+const MAX_REPLACE_BYTES = 25_000_000;
+
+assetRoutes.post("/:id/files/:format", requireAuth, async (c) => {
+  const assetId = c.req.param("id");
+  const format = c.req.param("format");
+  if (!REPLACEABLE_FORMATS.has(format)) {
+    return c.json({ error: "format is not replaceable" }, 400);
+  }
+  const user = c.get("user");
+  const sb = userSupabase(c.env, c.get("jwt"));
+
+  // Only the owner may overwrite the stored image (visibility != ownership).
+  const { data: asset, error: aerr } = await sb
+    .from("assets")
+    .select("id, owner_id")
+    .eq("id", assetId)
+    .maybeSingle();
+  if (aerr) return c.json({ error: aerr.message }, 500);
+  if (!asset) return c.json({ error: "not found" }, 404);
+  if ((asset as { owner_id: string }).owner_id !== user.id) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+
+  const { data: row, error } = await sb
+    .from("asset_files")
+    .select("r2_key")
+    .eq("asset_id", assetId)
+    .eq("format", format)
+    .maybeSingle();
+  if (error) return c.json({ error: error.message }, 500);
+  if (!row) return c.json({ error: "not found" }, 404);
+
+  const bytes = await c.req.arrayBuffer();
+  if (bytes.byteLength === 0) return c.json({ error: "empty body" }, 400);
+  if (bytes.byteLength > MAX_REPLACE_BYTES) {
+    return c.json({ error: "image too large" }, 413);
+  }
+
+  const key = (row as { r2_key: string }).r2_key;
+  await c.env.ASSETS_BUCKET.put(key, bytes, {
+    httpMetadata: { contentType: guessContentType(format) },
+  });
+  // Best-effort byte-count update (RLS may restrict; the image is already saved).
+  await sb
+    .from("asset_files")
+    .update({ bytes: bytes.byteLength })
+    .eq("asset_id", assetId)
+    .eq("format", format);
+
+  return c.json({ ok: true });
+});
+
 function guessContentType(format: string): string {
   switch (format) {
     case "svg":

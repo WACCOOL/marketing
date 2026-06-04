@@ -48,7 +48,7 @@
       "class_name": "GenerationContainer",
       "image": "../generator/Dockerfile",
       "image_build_context": "../..",
-      "max_instances": 5,
+      "max_instances": 20,
       "instance_type": "basic"
     }
   ],
