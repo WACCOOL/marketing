@@ -2,11 +2,13 @@ import sharp from "sharp";
 import type {
   AppImageAnchor,
   AppImageOutput,
+  AppImagePerspective,
   AppImageWidthBasis,
   DimensionsMm,
 } from "@wac/shared";
 import { fetchImageBuffer } from "./fetchImage.js";
 import { computeCutoutPixelSize, type PixelSize } from "./scale.js";
+import { isIdentityPerspective, warpCutout } from "./warp.js";
 
 /**
  * Compositing (Phase 2c). Fetches the scene + each cutout, sizes every cutout
@@ -25,6 +27,12 @@ export interface FixtureInput {
   xPct: number;
   yPct: number;
   widthBasis: AppImageWidthBasis;
+  /**
+   * Optional deterministic perspective warp applied to the (background-removed)
+   * cutout before sizing/placement. Corrects viewing angle using the real
+   * pixels — never re-renders the fixture.
+   */
+  perspective?: AppImagePerspective;
 }
 
 /**
@@ -256,7 +264,7 @@ export async function placeFixtures(
   const placements: PlacedFixture[] = [];
 
   for (const fixture of input.fixtures) {
-    const cut = fixture.source;
+    let cut = fixture.source;
     if (!cut.hasAlpha) {
       throw new Error(
         `cutout ${fixture.cutoutUrl} has no alpha channel; cutouts must be ` +
@@ -266,6 +274,19 @@ export async function placeFixtures(
     }
     if (!cut.width || !cut.height) {
       throw new Error(`cutout has no readable dimensions: ${fixture.cutoutUrl}`);
+    }
+
+    // Deterministic perspective correction of the real pixels (if requested),
+    // before sizing so the warped footprint drives the on-screen scale.
+    if (!isIdentityPerspective(fixture.perspective)) {
+      const warped = await warpCutout(cut.buffer, fixture.perspective!);
+      const meta = await sharp(warped).metadata();
+      cut = {
+        buffer: warped,
+        width: meta.width ?? cut.width,
+        height: meta.height ?? cut.height,
+        hasAlpha: true,
+      };
     }
 
     const size = computeCutoutPixelSize({

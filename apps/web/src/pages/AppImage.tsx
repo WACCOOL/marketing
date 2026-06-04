@@ -31,7 +31,8 @@ export function AppImage() {
   const [fixtures, setFixtures] = useState<FixtureDraft[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
-  const [harmonizeGlobalPass, setHarmonizeGlobalPass] = useState(false);
+  const [harmonizeStrength, setHarmonizeStrength] = useState(0.7);
+  const [harmonizeShadowPx, setHarmonizeShadowPx] = useState(0);
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   const [outputFormat, setOutputFormat] = useState<"png" | "jpeg">("png");
   const [name, setName] = useState("");
@@ -108,9 +109,6 @@ export function AppImage() {
       }
       tags.add(`sku:${f.sku}`);
     }
-    if (mode === "hybrid" && !prompt.trim()) {
-      return { error: "Hybrid mode needs a lighting/room prompt." };
-    }
 
     params.sceneUrl = scene.url;
     params.scale = { pxPerMm, scaleAdjust };
@@ -121,10 +119,15 @@ export function AppImage() {
       xPct: f.xPct,
       yPct: f.yPct,
       widthBasis: f.widthBasis,
+      ...(f.perspective ? { perspective: f.perspective } : {}),
     }));
     if (mode === "hybrid") {
-      params.prompt = prompt.trim();
-      params.harmonize = { globalPass: harmonizeGlobalPass };
+      if (prompt.trim()) params.prompt = prompt.trim();
+      params.harmonize = {
+        enabled: true,
+        strength: harmonizeStrength,
+        shadowPx: harmonizeShadowPx,
+      };
     }
 
     return { params, tags: [...tags] };
@@ -146,8 +149,10 @@ export function AppImage() {
         onModeChange={setMode}
         prompt={prompt}
         onPromptChange={setPrompt}
-        harmonizeGlobalPass={harmonizeGlobalPass}
-        onHarmonizeGlobalPassChange={setHarmonizeGlobalPass}
+        harmonizeStrength={harmonizeStrength}
+        onHarmonizeStrengthChange={setHarmonizeStrength}
+        harmonizeShadowPx={harmonizeShadowPx}
+        onHarmonizeShadowPxChange={setHarmonizeShadowPx}
         referenceImages={referenceImages}
         onReferenceImagesChange={setReferenceImages}
         outputFormat={outputFormat}

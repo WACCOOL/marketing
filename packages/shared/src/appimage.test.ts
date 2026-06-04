@@ -37,8 +37,9 @@ describe("AppImageParamsSchema", () => {
     expect(parsed.version).toBe("appimage-v2");
     expect(parsed.mode).toBe("composite");
     // harmonize + referenceImages defaults are populated.
-    expect(parsed.harmonize.globalPass).toBe(false);
-    expect(parsed.harmonize.maskDilationPx).toBe(48);
+    expect(parsed.harmonize.enabled).toBe(true);
+    expect(parsed.harmonize.strength).toBe(0.7);
+    expect(parsed.harmonize.shadowPx).toBe(0);
     expect(parsed.referenceImages).toEqual([]);
   });
 
@@ -55,19 +56,39 @@ describe("AppImageParamsSchema", () => {
     expect(r.success).toBe(false);
   });
 
-  it("hybrid mode requires a prompt on top of the composite fields", () => {
+  it("hybrid mode needs the composite fields but no prompt (harmonization is color-driven)", () => {
     const noPrompt = AppImageParamsSchema.safeParse({
       mode: "hybrid",
       ...compositeParams,
     });
-    expect(noPrompt.success).toBe(false);
+    expect(noPrompt.success).toBe(true);
 
-    const withPrompt = AppImageParamsSchema.safeParse({
+    // Still rejects when the composite fields are missing.
+    const noScene = AppImageParamsSchema.safeParse({
       mode: "hybrid",
-      ...compositeParams,
-      prompt: "warm evening living room",
+      scale: { pxPerMm: 2 },
+      fixtures: [fixture],
     });
-    expect(withPrompt.success).toBe(true);
+    expect(noScene.success).toBe(false);
+  });
+
+  it("accepts an optional per-fixture perspective warp", () => {
+    const parsed = AppImageParamsSchema.parse({
+      ...compositeParams,
+      fixtures: [
+        {
+          ...fixture,
+          perspective: {
+            topLeft: { dx: 0.05, dy: 0 },
+            topRight: { dx: -0.05, dy: 0 },
+          },
+        },
+      ],
+    });
+    const persp = parsed.fixtures[0]!.perspective!;
+    expect(persp.topLeft).toEqual({ dx: 0.05, dy: 0 });
+    // Unspecified corners default to the identity (no offset).
+    expect(persp.bottomLeft).toEqual({ dx: 0, dy: 0 });
   });
 
   it("concept mode requires a prompt but no fixtures or scene", () => {

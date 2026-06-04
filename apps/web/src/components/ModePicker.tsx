@@ -6,12 +6,12 @@ const MODES: { id: AppImageMode; title: string; desc: string }[] = [
   {
     id: "hybrid",
     title: "Hybrid (recommended)",
-    desc: "Composites the real fixture, then AI paints integrated lighting & shadows. Needs a room/lighting prompt.",
+    desc: "Places the real fixture, then color/light-matches it to the room (like Photoshop's Harmonize). Product-accurate — never re-draws the fixture.",
   },
   {
     id: "composite",
     title: "Composite",
-    desc: "Deterministic placement of the real cutout at the computed scale. No AI, fully product-accurate.",
+    desc: "Deterministic placement of the real cutout at the computed scale. No color matching, fully product-accurate.",
   },
   {
     id: "concept",
@@ -25,8 +25,10 @@ interface ModePickerProps {
   onModeChange: (m: AppImageMode) => void;
   prompt: string;
   onPromptChange: (s: string) => void;
-  harmonizeGlobalPass: boolean;
-  onHarmonizeGlobalPassChange: (b: boolean) => void;
+  harmonizeStrength: number;
+  onHarmonizeStrengthChange: (n: number) => void;
+  harmonizeShadowPx: number;
+  onHarmonizeShadowPxChange: (n: number) => void;
   referenceImages: string[];
   onReferenceImagesChange: (urls: string[]) => void;
   outputFormat: "png" | "jpeg";
@@ -34,17 +36,20 @@ interface ModePickerProps {
 }
 
 /**
- * Generation mode selector + per-mode options (Phase 2e). Composite needs no
- * prompt; hybrid requires a prompt and offers the optional Gemini global pass;
- * concept requires a prompt and accepts reference image uploads.
+ * Generation mode selector + per-mode options. Composite is pure deterministic;
+ * hybrid adds a shape-preserving color/light match (strength + optional contact
+ * shadow) and takes an optional context prompt; concept requires a prompt and
+ * accepts reference image uploads.
  */
 export function ModePicker({
   mode,
   onModeChange,
   prompt,
   onPromptChange,
-  harmonizeGlobalPass,
-  onHarmonizeGlobalPassChange,
+  harmonizeStrength,
+  onHarmonizeStrengthChange,
+  harmonizeShadowPx,
+  onHarmonizeShadowPxChange,
   referenceImages,
   onReferenceImagesChange,
   outputFormat,
@@ -77,14 +82,14 @@ export function ModePicker({
         <div>
           <label>
             {mode === "hybrid"
-              ? "Lighting / room prompt"
+              ? "Room / lighting notes (optional)"
               : "Scene prompt"}
           </label>
           <textarea
             rows={3}
             placeholder={
               mode === "hybrid"
-                ? "e.g. warm evening light, soft contact shadows under the fixture"
+                ? "Optional context — e.g. warm evening light. Harmonization is automatic; a prompt is not required."
                 : "e.g. a modern kitchen at dusk with a pendant light over the island"
             }
             value={prompt}
@@ -94,15 +99,37 @@ export function ModePicker({
       )}
 
       {mode === "hybrid" && (
-        <label className="row" style={{ gap: 8, textTransform: "none" }}>
-          <input
-            type="checkbox"
-            style={{ width: "auto" }}
-            checked={harmonizeGlobalPass}
-            onChange={(e) => onHarmonizeGlobalPassChange(e.target.checked)}
-          />
-          Run a final full-image lighting harmonization pass (Gemini)
-        </label>
+        <div className="col" style={{ gap: 12 }}>
+          <div style={{ maxWidth: 360 }}>
+            <label>Color / light match ({Math.round(harmonizeStrength * 100)}%)</label>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={harmonizeStrength}
+              onChange={(e) => onHarmonizeStrengthChange(Number(e.target.value))}
+            />
+            <div className="muted" style={{ fontSize: 12 }}>
+              How strongly the fixture's color/exposure is pulled toward the
+              room. Shape is always preserved.
+            </div>
+          </div>
+          <div style={{ maxWidth: 360 }}>
+            <label>Contact shadow ({harmonizeShadowPx}px)</label>
+            <input
+              type="range"
+              min={0}
+              max={64}
+              step={2}
+              value={harmonizeShadowPx}
+              onChange={(e) => onHarmonizeShadowPxChange(Number(e.target.value))}
+            />
+            <div className="muted" style={{ fontSize: 12 }}>
+              Optional soft shadow under each fixture to ground it. 0 = none.
+            </div>
+          </div>
+        </div>
       )}
 
       {mode === "concept" && (

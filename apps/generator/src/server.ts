@@ -16,7 +16,7 @@ import {
   type Placement,
   type PrepareCutout,
 } from "./composite.js";
-import { buildHarmonizationMask } from "./mask.js";
+import { harmonizeFixtures } from "./harmonize.js";
 import { fetchImageBuffer } from "./fetchImage.js";
 import { makeImageGenAdapters, type ImageGenAdapters } from "./ai/adapter.js";
 import { resolveCutout, type CutoutCache } from "./cutout.js";
@@ -211,6 +211,7 @@ function mapFixtures(p: AppImageParams): FixtureInput[] {
     xPct: f.xPct,
     yPct: f.yPct,
     widthBasis: f.widthBasis,
+    perspective: f.perspective,
   }));
 }
 
@@ -255,22 +256,17 @@ async function runComposite(
 }
 
 /**
- * Hybrid (Option C / `hybrid` mode): composite the real cutouts, build a halo
- * mask around each fixture (core preserved), let FLUX.1 Fill paint integrated
- * lighting in the halo, then optionally run a Gemini global lighting pass.
+ * Hybrid (`hybrid` mode): place the REAL cutouts (optionally perspective-warped
+ * via the deterministic engine), then harmonize — a classical, shape-preserving
+ * color/tone transfer that matches each fixture's white balance, exposure, and
+ * contrast to the surrounding room (cf. Photoshop's Harmonize). No generative
+ * step touches the fixture, so geometry is never invented and the room pixels
+ * stay byte-identical to the deterministic composite (region-locked).
  */
 async function runHybrid(
   p: AppImageParams,
-  adapters: ImageGenAdapters,
   prepareCutout?: PrepareCutout,
 ): Promise<GenerationResult> {
-  const inpainter = adapters.inpainter;
-  if (!inpainter) {
-    throw new Error(
-      "hybrid mode requires a configured BFL API key (set BFL_API_KEY)",
-    );
-  }
-
   const { scene, fixtures } = await fetchSceneAndFixtures(
     p.sceneUrl!,
     mapFixtures(p),
@@ -283,36 +279,24 @@ async function runHybrid(
     scaleAdjust: p.scale!.scaleAdjust,
   });
 
-  const mask = await buildHarmonizationMask({
-    width: placed.width,
-    height: placed.height,
-    placements: placed.placements,
-    dilationPx: p.harmonize.maskDilationPx,
-  });
+  const steps: string[] = ["composite"];
+  let image = placed.base;
 
-  const steps: string[] = [];
-  let aiImage = await inpainter.inpaint({
-    image: placed.base,
-    mask,
-    prompt: p.prompt!,
-    steps: p.harmonize.steps,
-    guidance: p.harmonize.guidance,
-    seed: p.harmonize.seed,
-  });
-  steps.push(`inpaint:${inpainter.provider}`);
-
-  if (p.harmonize.globalPass) {
-    const harmonizer = adapters.harmonizer;
-    if (!harmonizer) {
-      throw new Error(
-        "harmonize.globalPass requires a configured Gemini API key (set GEMINI_API_KEY)",
-      );
-    }
-    aiImage = await harmonizer.harmonize({ image: aiImage, prompt: p.prompt! });
-    steps.push(`harmonize:${harmonizer.provider}`);
+  const wantsHarmonize =
+    (p.harmonize.enabled && p.harmonize.strength > 0) || p.harmonize.shadowPx > 0;
+  if (wantsHarmonize) {
+    image = await harmonizeFixtures({
+      base: placed.base,
+      width: placed.width,
+      height: placed.height,
+      placements: placed.placements,
+      strength: p.harmonize.enabled ? p.harmonize.strength : 0,
+      shadowPx: p.harmonize.shadowPx,
+    });
+    steps.push("harmonize:color-transfer");
   }
 
-  const encoded = await encodeOutput(aiImage, p.output);
+  const encoded = await encodeOutput(image, p.output);
   return {
     files: [
       { format: encoded.format, body: encoded.body, contentType: encoded.contentType },
@@ -452,7 +436,7 @@ async function runAppImageGenerator(
 
   switch (p.mode) {
     case "hybrid":
-      return runHybrid(p, adapters, prepareCutout);
+      return runHybrid(p, prepareCutout);
     case "concept":
       return runConcept(p, adapters);
     case "composite":

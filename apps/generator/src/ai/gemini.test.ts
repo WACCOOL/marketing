@@ -94,9 +94,17 @@ describe("makeGeminiAdapter", () => {
   });
 
   it("segment posts a JSON segmentation request and parses masks", async () => {
+    // Mask payloads must be base64 PNGs (header base64s to "iVBORw0KGgo");
+    // non-PNG strings are rejected by parseMasks.
     const maskList = [
-      { box_2d: [10, 20, 900, 800], mask: "data:image/png;base64,AAAA", label: "lamp" },
-      { box_2d: [0, 0, 100, 100], mask: "BBBB" },
+      {
+        box_2d: [10, 20, 900, 800],
+        mask: "data:image/png;base64,iVBORw0KGgoAAA1",
+        label: "lamp",
+      },
+      { box_2d: [0, 0, 100, 100], mask: "iVBORw0KGgoBBB2" },
+      // Garbage payload — must be dropped, not parsed.
+      { box_2d: [0, 0, 10, 10], mask: "not-a-png" },
     ];
     fetchMock.mockResolvedValueOnce(
       new Response(
@@ -115,12 +123,12 @@ describe("makeGeminiAdapter", () => {
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.generationConfig.responseMimeType).toBe("application/json");
     expect(body.generationConfig.thinkingConfig.thinkingBudget).toBe(0);
-    expect(masks).toHaveLength(2);
+    expect(masks).toHaveLength(2); // the garbage payload is dropped
     expect(masks[0]!.box2d).toEqual([10, 20, 900, 800]);
     // The data: prefix is stripped so callers can base64-decode directly.
-    expect(masks[0]!.maskPngBase64).toBe("AAAA");
+    expect(masks[0]!.maskPngBase64).toBe("iVBORw0KGgoAAA1");
     expect(masks[0]!.label).toBe("lamp");
-    expect(masks[1]!.maskPngBase64).toBe("BBBB");
+    expect(masks[1]!.maskPngBase64).toBe("iVBORw0KGgoBBB2");
   });
 
   it("segment honors a custom segmentModel", async () => {

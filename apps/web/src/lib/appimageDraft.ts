@@ -1,5 +1,6 @@
 import type {
   AppImageAnchor,
+  AppImagePerspective,
   AppImageWidthBasis,
   DimensionsMm,
   Product,
@@ -22,6 +23,8 @@ export interface FixtureDraft {
   xPct: number;
   yPct: number;
   widthBasis: AppImageWidthBasis;
+  /** Optional deterministic perspective warp (corner offsets). */
+  perspective?: AppImagePerspective;
 }
 
 /** Build a fixture draft from a picked product, with sensible auto-placement. */

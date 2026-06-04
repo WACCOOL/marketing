@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import type { AppImageAnchor, AppImageWidthBasis } from "@wac/shared";
 import {
   anchorToTopLeft,
@@ -6,6 +7,13 @@ import {
 } from "../lib/appimageScale.js";
 import { hasUsableDimension, looksOpaque } from "../lib/appimageDraft.js";
 import type { FixtureDraft } from "../lib/appimageDraft.js";
+import {
+  autoSuggestPerspective,
+  isIdentityPerspective,
+  keystoneToPerspective,
+  perspectiveToKeystone,
+  perspectiveToMatrix3d,
+} from "../lib/perspective.js";
 import type { SceneSelection } from "./SceneInput.js";
 
 const ANCHORS: AppImageAnchor[] = [
@@ -66,7 +74,21 @@ export function PlacementCanvas({
 }: PlacementCanvasProps) {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const [aspects, setAspects] = useState<Record<string, number>>({});
+  const [canvasPx, setCanvasPx] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const dragging = useRef<string | null>(null);
+
+  // Track the canvas's rendered pixel size so the perspective preview's
+  // matrix3d is built in the element's real CSS-px space (correct projection).
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      setCanvasPx({ w: el.clientWidth, h: el.clientHeight });
+    });
+    ro.observe(el);
+    setCanvasPx({ w: el.clientWidth, h: el.clientHeight });
+    return () => ro.disconnect();
+  }, []);
 
   // Load each unique cutout's intrinsic aspect ratio (needed to size overlays).
   useEffect(() => {
@@ -144,6 +166,17 @@ export function PlacementCanvas({
             scene.naturalHeight,
           );
           const isSel = f.id === selectedId;
+          // Live perspective preview: build matrix3d in the overlay's rendered
+          // px space so it matches the server's projective warp.
+          let warpStyle: CSSProperties | undefined;
+          if (f.perspective && !isIdentityPerspective(f.perspective) && canvasPx.w > 0) {
+            const renderedW = (size.width / scene.naturalWidth) * canvasPx.w;
+            const renderedH = (size.height / scene.naturalHeight) * canvasPx.h;
+            warpStyle = {
+              transform: perspectiveToMatrix3d(f.perspective, renderedW, renderedH),
+              transformOrigin: "top left",
+            };
+          }
           return (
             <div
               key={f.id}
@@ -153,6 +186,7 @@ export function PlacementCanvas({
                 top: `${(pos.top / scene.naturalHeight) * 100}%`,
                 width: `${(size.width / scene.naturalWidth) * 100}%`,
                 height: `${(size.height / scene.naturalHeight) * 100}%`,
+                overflow: "visible",
               }}
               onPointerDown={(e) => {
                 onSelect(f.id);
@@ -161,7 +195,7 @@ export function PlacementCanvas({
                 e.preventDefault();
               }}
             >
-              <img src={f.cutoutUrl} alt={f.name} draggable={false} />
+              <img src={f.cutoutUrl} alt={f.name} draggable={false} style={warpStyle} />
             </div>
           );
         })}
@@ -202,6 +236,86 @@ export function PlacementCanvas({
           </div>
         )
       )}
+    </div>
+  );
+}
+
+/**
+ * Deterministic perspective correction for the selected fixture: two keystone
+ * sliders (vertical/horizontal) plus an auto-suggestion and reset. Warps the
+ * real cutout pixels — never re-renders the fixture — and previews live on the
+ * canvas.
+ */
+function PerspectiveControls({
+  fixture,
+  onChange,
+}: {
+  fixture: FixtureDraft;
+  onChange: (patch: Partial<FixtureDraft>) => void;
+}) {
+  const { vertical, horizontal } = perspectiveToKeystone(fixture.perspective);
+
+  function apply(v: number, h: number) {
+    if (Math.abs(v) < 0.005 && Math.abs(h) < 0.005) {
+      onChange({ perspective: undefined });
+      return;
+    }
+    onChange({ perspective: keystoneToPerspective(v, h) });
+  }
+
+  const active = !isIdentityPerspective(fixture.perspective);
+
+  return (
+    <div className="col" style={{ gap: 8, borderTop: "1px dashed var(--border)", paddingTop: 12 }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <label style={{ margin: 0 }}>Perspective {active ? "(on)" : ""}</label>
+        <div className="row" style={{ gap: 6 }}>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => onChange({ perspective: autoSuggestPerspective(fixture.yPct) })}
+            title="Estimate a perspective from where the fixture sits in the scene"
+          >
+            Auto-fit
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            disabled={!active}
+            onClick={() => onChange({ perspective: undefined })}
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+      <div className="grid-2">
+        <div>
+          <label>Vertical tilt ({Math.round(vertical * 100)}%)</label>
+          <input
+            type="range"
+            min={-0.3}
+            max={0.3}
+            step={0.01}
+            value={vertical}
+            onChange={(e) => apply(Number(e.target.value), horizontal)}
+          />
+        </div>
+        <div>
+          <label>Horizontal tilt ({Math.round(horizontal * 100)}%)</label>
+          <input
+            type="range"
+            min={-0.3}
+            max={0.3}
+            step={0.01}
+            value={horizontal}
+            onChange={(e) => apply(vertical, Number(e.target.value))}
+          />
+        </div>
+      </div>
+      <div className="muted" style={{ fontSize: 12 }}>
+        Tilts the real cutout to match the room's angle (no re-rendering).
+        Positive vertical narrows the top (looking up at a ceiling fixture).
+      </div>
     </div>
   );
 }
@@ -298,6 +412,8 @@ function FixtureControls({
           </select>
         </div>
       </div>
+
+      <PerspectiveControls fixture={fixture} onChange={onChange} />
 
       <div className="col" style={{ gap: 8 }}>
         <label>Array (for downlights / landscape runs)</label>

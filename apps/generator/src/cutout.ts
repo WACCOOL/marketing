@@ -82,13 +82,22 @@ async function applyMasksAsAlpha(
     const boxW = clamp(Math.round(((x1 - x0) / 1000) * width), 1, width - left);
     const boxH = clamp(Math.round(((y1 - y0) / 1000) * height), 1, height - top);
 
-    const maskPng = Buffer.from(m.maskPngBase64, "base64");
-    const resized = await sharp(maskPng)
-      .resize(boxW, boxH, { fit: "fill" })
-      .greyscale()
-      .png()
-      .toBuffer();
-    overlays.push({ input: resized, left, top, blend: "lighten" });
+    // Decode each mask defensively: a malformed/empty PNG from Gemini must not
+    // crash the whole cutout ("unsupported image format"). Skip the bad one.
+    try {
+      const maskPng = Buffer.from(m.maskPngBase64, "base64");
+      const resized = await sharp(maskPng)
+        .resize(boxW, boxH, { fit: "fill" })
+        .greyscale()
+        .png()
+        .toBuffer();
+      overlays.push({ input: resized, left, top, blend: "lighten" });
+    } catch (e) {
+      console.error(`[cutout] skipping undecodable segmentation mask:`, e);
+    }
+  }
+  if (overlays.length === 0) {
+    throw new Error("no decodable segmentation mask");
   }
 
   // Black canvas; masks paint the foreground probability. extractChannel(0)
@@ -115,6 +124,32 @@ async function applyMasksAsAlpha(
     .joinChannel(alpha, { raw: { width, height, channels: 1 } })
     .png()
     .toBuffer();
+}
+
+/**
+ * Run segmentation with one retry. Gemini's segmentation is occasionally flaky
+ * (a transient timeout or an empty/garbled response), and a single retry
+ * recovers most of those without failing the whole job.
+ */
+async function segmentWithRetry(
+  segmenter: SegmentAdapter,
+  buffer: Buffer,
+): Promise<SegmentationMask[]> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const masks = await segmenter.segment(buffer);
+      if (masks.length > 0) return masks;
+    } catch (e) {
+      lastErr = e;
+      console.error(`[cutout] segmentation attempt ${attempt} failed:`, e);
+    }
+  }
+  if (lastErr) {
+    const detail = lastErr instanceof Error ? lastErr.message : String(lastErr);
+    throw new Error(`Gemini segmentation failed: ${detail}`);
+  }
+  return [];
 }
 
 export interface ResolveCutoutArgs {
@@ -150,19 +185,25 @@ export async function resolveCutout(args: ResolveCutoutArgs): Promise<SourceImag
     );
   }
 
-  const masks = await segmenter.segment(fetched.buffer);
+  const masks = await segmentWithRetry(segmenter, fetched.buffer);
   if (masks.length === 0) {
     throw new Error(
       `background removal failed: Gemini returned no segmentation mask for ${sourceUrl}`,
     );
   }
 
-  const matted = await applyMasksAsAlpha(
-    fetched.buffer,
-    fetched.width,
-    fetched.height,
-    masks,
-  );
+  let matted: Buffer;
+  try {
+    matted = await applyMasksAsAlpha(
+      fetched.buffer,
+      fetched.width,
+      fetched.height,
+      masks,
+    );
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    throw new Error(`background removal failed for ${sourceUrl}: ${detail}`);
+  }
   if (cache) {
     await cache.put(key, matted, "image/png").catch((e) => {
       // Caching is best-effort; a write failure shouldn't fail the generation.

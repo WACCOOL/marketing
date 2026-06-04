@@ -133,18 +133,25 @@ function parseMasks(text: string): SegmentationMask[] {
     const box = item.box_2d;
     const mask = item.mask;
     if (
-      Array.isArray(box) &&
-      box.length === 4 &&
-      box.every((n) => typeof n === "number") &&
-      typeof mask === "string" &&
-      mask.length > 0
+      !Array.isArray(box) ||
+      box.length !== 4 ||
+      !box.every((n) => typeof n === "number") ||
+      typeof mask !== "string" ||
+      mask.length === 0
     ) {
-      masks.push({
-        box2d: [box[0]!, box[1]!, box[2]!, box[3]!],
-        maskPngBase64: mask.replace(/^data:image\/png;base64,/, ""),
-        label: typeof item.label === "string" ? item.label : undefined,
-      });
+      continue;
     }
+    const b64 = mask.replace(/^data:image\/[a-z]+;base64,/i, "").trim();
+    // Only keep masks whose payload is actually a base64 PNG; Gemini sometimes
+    // returns prose or a truncated/empty string, which would crash sharp later
+    // with "unsupported image format". The PNG magic header base64-encodes to
+    // "iVBORw0KGgo".
+    if (!b64.startsWith("iVBORw0KGgo")) continue;
+    masks.push({
+      box2d: [box[0]!, box[1]!, box[2]!, box[3]!],
+      maskPngBase64: b64,
+      label: typeof item.label === "string" ? item.label : undefined,
+    });
   }
   return masks;
 }

@@ -202,6 +202,35 @@ export const AppImageScaleSchema = z.object({
 });
 export type AppImageScale = z.infer<typeof AppImageScaleSchema>;
 
+/**
+ * One corner's displacement for a perspective (keystone) warp, expressed as a
+ * fraction of the cutout's own width (`dx`) and height (`dy`). `0,0` leaves the
+ * corner where it is, so an all-zero perspective is the identity transform. The
+ * warp is applied to the REAL cutout pixels (a projective transform), so it can
+ * correct viewing angle without inventing geometry. Range is clamped to keep the
+ * warp sane (a corner can move at most one full cutout dimension).
+ */
+export const AppImageCornerOffsetSchema = z.object({
+  dx: z.number().min(-1).max(1).default(0),
+  dy: z.number().min(-1).max(1).default(0),
+});
+export type AppImageCornerOffset = z.infer<typeof AppImageCornerOffsetSchema>;
+
+/**
+ * Per-fixture perspective correction: where each corner of the cutout's
+ * rectangle should map to. Drives a deterministic projective warp of the real
+ * pixels (think Photoshop Free Transform / Perspective Warp), so the fixture's
+ * angle can be matched to the room WITHOUT a generative re-render. Omitted or
+ * all-zero means "no warp".
+ */
+export const AppImagePerspectiveSchema = z.object({
+  topLeft: AppImageCornerOffsetSchema.default({}),
+  topRight: AppImageCornerOffsetSchema.default({}),
+  bottomRight: AppImageCornerOffsetSchema.default({}),
+  bottomLeft: AppImageCornerOffsetSchema.default({}),
+});
+export type AppImagePerspective = z.infer<typeof AppImagePerspectiveSchema>;
+
 export const AppImageFixtureSchema = z.object({
   /**
    * Sales Layer CDN URL of the product image. Ideally an RGBA PNG with a real
@@ -224,6 +253,12 @@ export const AppImageFixtureSchema = z.object({
   xPct: z.number().min(0).max(1),
   yPct: z.number().min(0).max(1),
   widthBasis: AppImageWidthBasisSchema.default("auto"),
+  /**
+   * Optional deterministic perspective warp applied to the real cutout pixels
+   * before placement (corrects viewing angle without re-rendering). Omitted =
+   * no warp.
+   */
+  perspective: AppImagePerspectiveSchema.optional(),
 });
 export type AppImageFixture = z.infer<typeof AppImageFixtureSchema>;
 
@@ -235,32 +270,40 @@ export type AppImageOutput = z.infer<typeof AppImageOutputSchema>;
 
 /**
  * How the App Image is produced:
- * - `composite`: deterministic scale + sharp compositing only (Phase 2c). No AI.
- * - `hybrid`: Option C — composite the real cutouts, then let an AI inpainter
- *   (FLUX.1 Fill) paint integrated lighting/shadow/glow in a masked halo around
- *   each fixture (the fixture core is preserved), with an optional Gemini global
- *   harmonization pass. Highest fidelity + realistic light.
- * - `concept`: Option B — pure generative scene from a prompt (+ optional
- *   reference images). Fast, but NOT product-accurate; flagged as such.
+ * - `composite`: deterministic scale + sharp compositing only (Phase 2c). No AI,
+ *   pixel-exact fixture.
+ * - `hybrid`: product-accurate by construction — the REAL cutout is optionally
+ *   perspective-warped, composited deterministically, then harmonized (the
+ *   fixture region's color/tone/lighting is matched to the scene). The room
+ *   pixels stay deterministic and the fixture geometry is never re-rendered, so
+ *   shapes can't be invented (cf. Photoshop's "Harmonize"). No FLUX/inpainting.
+ * - `concept`: pure generative scene from a prompt (+ optional reference
+ *   images). Fast, but NOT product-accurate; flagged as such.
  */
 export const AppImageModeSchema = z.enum(["composite", "hybrid", "concept"]);
 export type AppImageMode = z.infer<typeof AppImageModeSchema>;
 
 /**
- * AI harmonization controls for `hybrid` mode. The inpaint step (FLUX.1 Fill) is
- * always run for hybrid; there is no provider switch because Fill is the only
- * masked inpainter wired in 2d. `globalPass` gates the optional Gemini
- * full-image lighting pass that runs after inpainting.
+ * Harmonization controls for `hybrid` mode. Harmonization recolors/relights the
+ * placed fixture region to match the scene via a classical, shape-preserving
+ * color/tone transfer (Lab-space mean/std matching of the fixture's pixels to
+ * the surrounding scene). It emits a color transform, never new pixels, so it
+ * CANNOT change the fixture's geometry — only its color, exposure, and tone.
  */
 export const AppImageHarmonizeSchema = z.object({
-  /** Run the Gemini full-image lighting pass after FLUX.1 Fill. */
-  globalPass: z.boolean().default(false),
-  /** Pixels to dilate each fixture box by when building the inpaint mask. */
-  maskDilationPx: z.number().int().min(0).max(512).default(48),
-  /** FLUX.1 Fill sampling controls (passed through to BFL). */
-  steps: z.number().int().min(1).max(50).optional(),
-  guidance: z.number().min(1).max(100).optional(),
-  seed: z.number().int().optional(),
+  /** Whether to run the harmonization (color/light match) pass. */
+  enabled: z.boolean().default(true),
+  /**
+   * How strongly to pull the fixture toward the scene's color/tone (0 = no
+   * change, 1 = full match). A moderate default keeps the product recognizable
+   * while making it sit in the room's light.
+   */
+  strength: z.number().min(0).max(1).default(0.7),
+  /**
+   * Optional soft contact shadow / glow rendered deterministically around each
+   * fixture to ground it in the scene. Pixels, 0 = none.
+   */
+  shadowPx: z.number().int().min(0).max(256).default(0),
 });
 export type AppImageHarmonize = z.infer<typeof AppImageHarmonizeSchema>;
 
@@ -312,9 +355,9 @@ export const AppImageParamsSchema = z
     /** Fixtures to place; covers multi-fixture scenes. Empty for `concept`. */
     fixtures: z.array(AppImageFixtureSchema).default([]),
     /**
-     * Room / lighting description. Required for `hybrid` (drives the Fill
-     * lighting paint) and `concept` (drives generation); ignored for
-     * `composite`.
+     * Room / lighting description. Required for `concept` (drives generation);
+     * optional context for `hybrid` (harmonization is color-driven, not
+     * prompt-driven); ignored for `composite`.
      */
     prompt: z.string().trim().min(1).optional(),
     harmonize: AppImageHarmonizeSchema.default({}),
@@ -354,13 +397,6 @@ export const AppImageParamsSchema = z
         code: z.ZodIssueCode.custom,
         path: ["fixtures"],
         message: `${val.mode} mode requires at least one fixture`,
-      });
-    }
-    if (val.mode === "hybrid" && !val.prompt) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["prompt"],
-        message: "hybrid mode requires a prompt",
       });
     }
   });
