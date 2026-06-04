@@ -127,6 +127,25 @@ export interface PerspectiveAdapter {
   estimatePerspective(req: PerspectiveRequest): Promise<PerspectiveHint>;
 }
 
+export interface SceneInspectRequest {
+  /** The generated scene image to inspect. */
+  image: Buffer;
+  /** Where the real fixture will mount — focuses the check on that surface. */
+  mount?: string;
+  timeoutMs?: number;
+}
+
+/**
+ * Vision check used to keep scene generation "clean": returns true when the
+ * generated room already contains a light fixture or mounting hardware (junction
+ * box, canopy, etc.) on the target surface, so the caller can regenerate before
+ * we composite the real fixture on top.
+ */
+export interface SceneInspectAdapter {
+  readonly provider: string;
+  hasMountedFixture(req: SceneInspectRequest): Promise<boolean>;
+}
+
 /**
  * The set of adapters available for a generation run. Each slot is populated
  * only when the corresponding provider key is configured, so the pipeline can
@@ -139,6 +158,7 @@ export interface ImageGenAdapters {
   segmenter?: SegmentAdapter;
   relighter?: RelightAdapter;
   perspective?: PerspectiveAdapter;
+  inspector?: SceneInspectAdapter;
 }
 
 export interface AdapterConfig {
@@ -172,6 +192,7 @@ export function makeImageGenAdapters(config: AdapterConfig): ImageGenAdapters {
     adapters.segmenter = gemini;
     adapters.relighter = gemini;
     adapters.perspective = gemini;
+    adapters.inspector = gemini;
   }
 
   return adapters;

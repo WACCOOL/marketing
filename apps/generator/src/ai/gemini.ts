@@ -27,6 +27,8 @@ import {
   type PerspectiveRequest,
   type RelightAdapter,
   type RelightRequest,
+  type SceneInspectAdapter,
+  type SceneInspectRequest,
   type SegmentAdapter,
   type SegmentationMask,
 } from "./adapter.js";
@@ -41,6 +43,7 @@ const SEGMENT_TIMEOUT_MS = 60_000;
 // Relight is a multi-image edit (composite + reference cutouts); allow headroom.
 const RELIGHT_TIMEOUT_MS = 90_000;
 const PERSPECTIVE_TIMEOUT_MS = 30_000;
+const INSPECT_TIMEOUT_MS = 30_000;
 
 const SEGMENT_PROMPT =
   "Give the segmentation mask for the main foreground product in this image " +
@@ -170,7 +173,8 @@ export function makeGeminiAdapter(
   GenerateAdapter &
   SegmentAdapter &
   RelightAdapter &
-  PerspectiveAdapter {
+  PerspectiveAdapter &
+  SceneInspectAdapter {
   // imageConfig (aspectRatio / imageSize) is only honored on the v1beta endpoint.
   const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
   const defaultModel = config.model ?? DEFAULT_MODEL;
@@ -295,8 +299,60 @@ export function makeGeminiAdapter(
       return call(parts, { timeoutMs: req.timeoutMs ?? RELIGHT_TIMEOUT_MS });
     },
     estimatePerspective,
+    hasMountedFixture,
     segment,
   };
+
+  /**
+   * Vision yes/no: does the generated scene already have a light fixture or
+   * mounting hardware (junction box, canopy, ceiling rose, recessed can) on the
+   * target surface? Used to regenerate "dirty" scenes before compositing.
+   * Fails open (returns false) so a flaky vision call never blocks scene gen.
+   */
+  async function hasMountedFixture(req: SceneInspectRequest): Promise<boolean> {
+    const mount = req.mount ?? "ceiling";
+    const prompt =
+      `Look only at the ${mount} surface in this interior photo. Is there any ` +
+      `light fixture, lamp, chandelier, pendant, recessed light, junction box, ` +
+      `electrical box, canopy, ceiling medallion, mounting plate, or exposed ` +
+      `wiring attached to or cut into that ${mount}? Respond with ONLY JSON ` +
+      `{"present": true} or {"present": false}.`;
+    const url = `${baseUrl}/v1beta/models/${segmentModel}:generateContent`;
+    try {
+      const res = await fetchWithTimeout(
+        "Gemini inspect",
+        url,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-goog-api-key": config.apiKey,
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [imagePart(req.image), { text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              thinkingConfig: { thinkingBudget: 0 },
+            },
+          }),
+        },
+        req.timeoutMs ?? INSPECT_TIMEOUT_MS,
+      );
+      if (!res.ok) return false;
+      const data = (await res.json()) as GenerateContentResponse;
+      const text = (data.candidates?.[0]?.content?.parts ?? [])
+        .map((p) => p.text ?? "")
+        .join("");
+      let body = text.trim();
+      if (body.startsWith("```")) {
+        body = body.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+      }
+      const parsed = JSON.parse(body) as { present?: unknown };
+      return parsed.present === true;
+    } catch {
+      return false;
+    }
+  }
 
   /** Ask Gemini vision for a keystone hint for the mount surface. */
   async function estimatePerspective(
