@@ -18,6 +18,12 @@ export interface FixtureDraft {
   id: string;
   sku: string;
   name: string;
+  /** The catalog image the user picked (raw, may have a background). */
+  sourceImageUrl: string;
+  /**
+   * Transparent PNG produced by removing `sourceImageUrl`'s background. Empty
+   * until the matte completes; submit is blocked until it's set.
+   */
   cutoutUrl: string;
   imageOptions: string[];
   dimensionsMm: DimensionsMm;
@@ -40,8 +46,8 @@ export function newFixtureFromProduct(product: Product): FixtureDraft {
       (u): u is string => Boolean(u),
     ),
   );
-  // Prefer a transparent-friendly image as the default cutout if one exists.
-  const cutoutUrl =
+  // Prefer a transparent-friendly image as the default source if one exists.
+  const sourceImageUrl =
     imageOptions.find((u) => !looksOpaque(u)) ?? imageOptions[0] ?? "";
   const kind = deriveFixtureKind(product.category, product.name);
   const placement = autoPlaceForMount(kind.mount);
@@ -49,7 +55,9 @@ export function newFixtureFromProduct(product: Product): FixtureDraft {
     id: crypto.randomUUID(),
     sku: product.sku,
     name: product.name,
-    cutoutUrl,
+    sourceImageUrl,
+    // Filled in by the background-removal step once it completes.
+    cutoutUrl: "",
     imageOptions,
     dimensionsMm: { ...product.dimensions_mm },
     anchor: placement.anchor,

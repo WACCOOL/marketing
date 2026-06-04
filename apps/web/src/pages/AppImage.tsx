@@ -11,10 +11,12 @@ import {
   type JobRequest,
 } from "../components/GenerationPreview.js";
 import { pxPerMmFromSceneWidth } from "../lib/appimageScale.js";
+import { removeBackground } from "../lib/cutout.js";
 import {
   autoPlaceForMount,
   expandArray,
   hasUsableDimension,
+  looksOpaque,
   newFixtureFromProduct,
   seedSceneWidthMm,
   type FixtureDraft,
@@ -43,6 +45,9 @@ export function AppImage() {
   const [name, setName] = useState("");
   const [roomType, setRoomType] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Source image URLs currently having their background removed.
+  const [mattingUrls, setMattingUrls] = useState<Set<string>>(new Set());
+  const [matteError, setMatteError] = useState<string | null>(null);
 
   const isComposite = mode === "composite" || mode === "hybrid";
 
@@ -75,6 +80,42 @@ export function AppImage() {
     setPickerOpen(false);
     // First fixture dropped onto a generated scene: seed a starting scale.
     if (fixtures.length === 0) maybeSeedScale(scene, draft);
+    // Remove the background up front so placement shows the real cutout.
+    if (draft.sourceImageUrl) void runMatte(draft.sourceImageUrl);
+  }
+
+  /**
+   * Remove a source image's background and store the transparent PNG as the
+   * cutout for every fixture using that image. Cached server-side, so picking
+   * the same image again (or an array copy) is instant.
+   */
+  async function runMatte(sourceUrl: string) {
+    setMatteError(null);
+    setMattingUrls((prev) => new Set(prev).add(sourceUrl));
+    try {
+      const { url } = await removeBackground(sourceUrl);
+      setFixtures((prev) =>
+        prev.map((f) =>
+          f.sourceImageUrl === sourceUrl ? { ...f, cutoutUrl: url } : f,
+        ),
+      );
+    } catch (e) {
+      setMatteError(
+        e instanceof Error ? e.message : "Background removal failed.",
+      );
+    } finally {
+      setMattingUrls((prev) => {
+        const next = new Set(prev);
+        next.delete(sourceUrl);
+        return next;
+      });
+    }
+  }
+
+  /** Switch the selected fixture's source image and re-run background removal. */
+  function changeFixtureImage(id: string, sourceUrl: string) {
+    changeFixture(id, { sourceImageUrl: sourceUrl, cutoutUrl: "" });
+    void runMatte(sourceUrl);
   }
 
   /** Override the hero fixture's mount and re-run its auto-placement. */
@@ -203,6 +244,16 @@ export function AppImage() {
                   ))}
                 </div>
               )}
+
+              {hero && (
+                <FixtureImagePicker
+                  fixture={hero}
+                  matting={mattingUrls.has(hero.sourceImageUrl)}
+                  error={matteError}
+                  onPick={(url) => changeFixtureImage(hero.id, url)}
+                  onRetry={() => runMatte(hero.sourceImageUrl)}
+                />
+              )}
             </div>
           </Step>
 
@@ -290,6 +341,78 @@ export function AppImage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Image chooser for the hero fixture, shown in the fixture step. Picking an
+ * option removes its background server-side and previews the transparent cutout
+ * (with a spinner while it processes), so placement uses the finished cutout.
+ */
+function FixtureImagePicker({
+  fixture,
+  matting,
+  error,
+  onPick,
+  onRetry,
+}: {
+  fixture: FixtureDraft;
+  matting: boolean;
+  error: string | null;
+  onPick: (url: string) => void;
+  onRetry: () => void;
+}) {
+  const ready = Boolean(fixture.cutoutUrl) && !matting;
+  return (
+    <div className="col" style={{ gap: 10, marginTop: 4 }}>
+      <label>Product image — background is removed automatically</label>
+      <div className="row" style={{ gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+        <div className="fixture-cutout-preview">
+          {matting ? (
+            <div className="muted" style={{ textAlign: "center" }}>
+              <div className="spinner" />
+              Removing background…
+            </div>
+          ) : fixture.cutoutUrl ? (
+            <img src={fixture.cutoutUrl} alt={`${fixture.name} cutout`} />
+          ) : (
+            <div className="muted" style={{ textAlign: "center", padding: 8 }}>
+              {error ? "Couldn't remove background" : "No image"}
+            </div>
+          )}
+        </div>
+        <div className="row" style={{ flexWrap: "wrap", gap: 8, flex: 1 }}>
+          {fixture.imageOptions.map((url) => (
+            <button
+              key={url}
+              type="button"
+              className={
+                "cutout-option" +
+                (url === fixture.sourceImageUrl ? " selected" : "")
+              }
+              onClick={() => onPick(url)}
+              disabled={matting}
+              title={looksOpaque(url) ? "Background will be removed" : url}
+            >
+              <img src={url} alt="" loading="lazy" />
+            </button>
+          ))}
+        </div>
+      </div>
+      {error && !matting ? (
+        <div className="alert alert-error">
+          {error}{" "}
+          <button className="link-button" type="button" onClick={onRetry}>
+            Retry
+          </button>
+        </div>
+      ) : null}
+      {!ready && !matting && !error ? (
+        <div className="muted" style={{ fontSize: 12 }}>
+          Pick the product image you want to place.
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -9,7 +9,7 @@ import {
   anchorToTopLeft,
   computeCutoutPixelSize,
 } from "../lib/appimageScale.js";
-import { hasUsableDimension, looksOpaque } from "../lib/appimageDraft.js";
+import { hasUsableDimension } from "../lib/appimageDraft.js";
 import type { FixtureDraft } from "../lib/appimageDraft.js";
 import {
   autoSuggestPerspective,
@@ -466,7 +466,6 @@ function FixtureControls({
 }) {
   const [count, setCount] = useState(3);
   const [spacingPct, setSpacingPct] = useState(15);
-  const opaque = looksOpaque(fixture.cutoutUrl);
 
   return (
     <div className="col" style={{ gap: 12, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
@@ -478,32 +477,6 @@ function FixtureControls({
         <button className="secondary" onClick={onRemove}>
           Remove
         </button>
-      </div>
-
-      {opaque && (
-        <div className="alert">
-          This image has a background — it'll be removed automatically before
-          compositing. Pick a clean, front-on product shot for the best cutout.
-        </div>
-      )}
-
-      <div>
-        <label>Product image (background removed automatically)</label>
-        <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
-          {fixture.imageOptions.map((url) => (
-            <button
-              key={url}
-              type="button"
-              className={
-                "cutout-option" + (url === fixture.cutoutUrl ? " selected" : "")
-              }
-              onClick={() => onChange({ cutoutUrl: url })}
-              title={looksOpaque(url) ? "Background will be removed" : url}
-            >
-              <img src={url} alt="" loading="lazy" />
-            </button>
-          ))}
-        </div>
       </div>
 
       <div className="grid-2">

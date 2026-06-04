@@ -1,5 +1,6 @@
 import http from "node:http";
 import zlib from "node:zlib";
+import sharp from "sharp";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import {
@@ -907,6 +908,49 @@ function main(): void {
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);
           console.error("[generator] perspective estimate failed:", message);
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: message }));
+        }
+        return;
+      }
+
+      // Synchronous background removal: given a product image URL, return a
+      // transparent PNG cutout (Gemini segmentation -> alpha, classical
+      // flood-fill fallback), cached in R2. Lets the web UI show the matted
+      // fixture in the picker/placement before generation, using the SAME
+      // matting the final composite uses.
+      if (req.method === "POST" && url.pathname === "/cutout") {
+        let body: { sourceUrl?: string } | null;
+        try {
+          const raw = await readJsonBody(req);
+          body = raw && typeof raw === "object" ? (raw as typeof body) : null;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        if (!body || typeof body.sourceUrl !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "cutout request needs a sourceUrl" }));
+          return;
+        }
+        try {
+          const fetched = await fetchImageBuffer(body.sourceUrl);
+          const prepareCutout = makePrepareCutout(config, s3, adapters);
+          const cut = await prepareCutout(body.sourceUrl, {
+            buffer: fetched.buffer,
+            width: fetched.width ?? 0,
+            height: fetched.height ?? 0,
+            hasAlpha: fetched.hasAlpha,
+          });
+          // Normalize to PNG so the caller always gets a transparent PNG even on
+          // the passthrough (already-transparent) path.
+          const png = await sharp(cut.buffer).png().toBuffer();
+          res.writeHead(200, { "content-type": "image/png" });
+          res.end(png);
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          console.error("[generator] cutout failed:", message);
           res.writeHead(500, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: false, error: message }));
         }

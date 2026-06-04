@@ -22,10 +22,14 @@ export interface CutoutCache {
   put(key: string, body: Buffer, contentType: string): Promise<void>;
 }
 
-/** Deterministic cache key for a matted cutout, namespaced by source URL. */
+/**
+ * Deterministic cache key for a matted cutout, namespaced by source URL.
+ * The `v2` namespace invalidates cutouts cached before the classical-matte
+ * single-channel fix (those were corrupted into scanlines).
+ */
 export function cutoutCacheKey(sourceUrl: string): string {
   const hash = createHash("sha256").update(sourceUrl).digest("hex");
-  return `cutouts/gemini/${hash}.png`;
+  return `cutouts/v2/${hash}.png`;
 }
 
 /** Decode raw image bytes into the SourceImage shape the compositor expects. */
@@ -77,8 +81,10 @@ async function classicalMatte(
   height: number,
 ): Promise<Buffer> {
   // Tolerance for "same as background", in squared-distance over RGB (0..255).
-  // ~48/channel — generous enough for JPEG noise/gradients on a solid backdrop.
-  const TOL_SQ = 48 * 48 * 3;
+  // ~24/channel: tight enough to keep near-white fixture parts (crystal accents,
+  // frosted glass) that a looser threshold would erase, while still clearing a
+  // solid white/grey/black backdrop with normal JPEG noise.
+  const TOL_SQ = 24 * 24 * 3;
   const { data } = await sharp(original)
     .removeAlpha()
     .raw()
@@ -148,8 +154,13 @@ async function classicalMatte(
   for (let i = 0; i < n; i++) alpha[i] = bgMask[i] ? 0 : 255;
 
   // Soften the hard edge by 0.6px so the cutout doesn't look stamped.
+  // CRITICAL: blur() promotes a 1-channel raw input back to 3 channels, so we
+  // must force it back to single-channel ("b-w") before joining it as alpha —
+  // otherwise joinChannel reads RGB-interleaved bytes as alpha and shreds the
+  // cutout into scanlines (which silently destroyed every classical matte).
   const softAlpha = await sharp(alpha, { raw: { width, height, channels: 1 } })
     .blur(0.6)
+    .toColourspace("b-w")
     .raw()
     .toBuffer();
 
