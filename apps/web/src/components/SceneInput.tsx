@@ -1,13 +1,22 @@
 import { useRef, useState } from "react";
-import type { GeminiAspectRatio, GeminiImageSize } from "@wac/shared";
+import type {
+  FixtureMount,
+  GeminiAspectRatio,
+  GeminiImageSize,
+} from "@wac/shared";
 import { isAllowedImageType, uploadImage } from "../lib/uploads.js";
 import { generateScene } from "../lib/scenes.js";
+import { MOUNT_LABELS } from "../lib/fixtureKind.js";
 
 export interface SceneSelection {
   url: string;
   naturalWidth: number;
   naturalHeight: number;
+  /** True when this scene was AI-generated (so we can seed a starting scale). */
+  generated?: boolean;
 }
+
+const MOUNTS: FixtureMount[] = ["ceiling", "wall", "floor", "recessed"];
 
 type SceneSource = "upload" | "generate";
 
@@ -33,6 +42,10 @@ interface SceneInputProps {
   sceneWidthMm: number;
   onSceneChange: (scene: SceneSelection | null) => void;
   onWidthMmChange: (mm: number) => void;
+  /** Hero-fixture context: when present, scene gen leaves space for it. */
+  fixtureType?: string;
+  mount?: FixtureMount;
+  onMountChange?: (mount: FixtureMount) => void;
 }
 
 /** Load an image URL and resolve its intrinsic pixel dimensions. */
@@ -60,6 +73,9 @@ export function SceneInput({
   sceneWidthMm,
   onSceneChange,
   onWidthMmChange,
+  fixtureType,
+  mount,
+  onMountChange,
 }: SceneInputProps) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -117,9 +133,11 @@ export function SceneInput({
         prompt: prompt.trim(),
         aspectRatio,
         imageSize,
+        fixtureType,
+        mount,
       });
       const dims = await loadDimensions(url);
-      onSceneChange({ url, ...dims });
+      onSceneChange({ url, ...dims, generated: true });
     } catch (e) {
       setErr(formatErr(e));
     } finally {
@@ -234,6 +252,35 @@ export function SceneInput({
             </>
           ) : (
             <div className="col" style={{ gap: 10 }}>
+              {fixtureType && (
+                <div className="alert" style={{ fontSize: 13 }}>
+                  Optimizing the scene to showcase a <strong>{fixtureType}</strong>
+                  {mount ? (
+                    <>
+                      {" "}
+                      on the{" "}
+                      {onMountChange ? (
+                        <select
+                          value={mount}
+                          onChange={(e) =>
+                            onMountChange(e.target.value as FixtureMount)
+                          }
+                          style={{ width: "auto", display: "inline-block" }}
+                        >
+                          {MOUNTS.map((m) => (
+                            <option key={m} value={m}>
+                              {MOUNT_LABELS[m].toLowerCase()}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <strong>{MOUNT_LABELS[mount].toLowerCase()}</strong>
+                      )}
+                    </>
+                  ) : null}
+                  . We'll leave clear space there.
+                </div>
+              )}
               <div>
                 <label>Room description</label>
                 <textarea

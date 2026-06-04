@@ -22,6 +22,11 @@ import {
   type GenerateRequest,
   type HarmonizeAdapter,
   type HarmonizeRequest,
+  type PerspectiveAdapter,
+  type PerspectiveHint,
+  type PerspectiveRequest,
+  type RelightAdapter,
+  type RelightRequest,
   type SegmentAdapter,
   type SegmentationMask,
 } from "./adapter.js";
@@ -33,6 +38,9 @@ const DEFAULT_MODEL = "gemini-2.5-flash-image";
 const DEFAULT_SEGMENT_MODEL = "gemini-2.5-flash";
 const REQUEST_TIMEOUT_MS = 30_000;
 const SEGMENT_TIMEOUT_MS = 60_000;
+// Relight is a multi-image edit (composite + reference cutouts); allow headroom.
+const RELIGHT_TIMEOUT_MS = 90_000;
+const PERSPECTIVE_TIMEOUT_MS = 30_000;
 
 const SEGMENT_PROMPT =
   "Give the segmentation mask for the main foreground product in this image " +
@@ -158,7 +166,11 @@ function parseMasks(text: string): SegmentationMask[] {
 
 export function makeGeminiAdapter(
   config: GeminiConfig,
-): HarmonizeAdapter & GenerateAdapter & SegmentAdapter {
+): HarmonizeAdapter &
+  GenerateAdapter &
+  SegmentAdapter &
+  RelightAdapter &
+  PerspectiveAdapter {
   // imageConfig (aspectRatio / imageSize) is only honored on the v1beta endpoint.
   const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
   const defaultModel = config.model ?? DEFAULT_MODEL;
@@ -274,6 +286,82 @@ export function makeGeminiAdapter(
         timeoutMs: req.timeoutMs,
       });
     },
+    relight(req: RelightRequest): Promise<Buffer> {
+      // First part is the composited scene to edit; the rest are the fixture
+      // cutout(s) as a design reference; the text part carries the geometry lock.
+      const parts: Part[] = [imagePart(req.image)];
+      for (const ref of req.references ?? []) parts.push(imagePart(ref));
+      parts.push({ text: req.prompt });
+      return call(parts, { timeoutMs: req.timeoutMs ?? RELIGHT_TIMEOUT_MS });
+    },
+    estimatePerspective,
     segment,
   };
+
+  /** Ask Gemini vision for a keystone hint for the mount surface. */
+  async function estimatePerspective(
+    req: PerspectiveRequest,
+  ): Promise<PerspectiveHint> {
+    const mount = req.mount ?? "ceiling";
+    const prompt =
+      `This is an interior room photo. Estimate the camera perspective of the ` +
+      `${mount} surface where a flat, front-facing product image would be placed. ` +
+      `Respond with ONLY JSON {"vertical": number, "horizontal": number}, each in ` +
+      `[-0.3, 0.3]. vertical>0 = the top edge recedes (looking up at a ceiling ` +
+      `fixture); horizontal>0 = the right edge recedes (surface turned away to the ` +
+      `right). Use 0 for a surface that faces the camera straight-on.`;
+    const url = `${baseUrl}/v1beta/models/${segmentModel}:generateContent`;
+    const res = await fetchWithTimeout(
+      "Gemini perspective",
+      url,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": config.apiKey,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [imagePart(req.image), { text: prompt }] }],
+          generationConfig: {
+            responseMimeType: "application/json",
+            thinkingConfig: { thinkingBudget: 0 },
+          },
+        }),
+      },
+      req.timeoutMs ?? PERSPECTIVE_TIMEOUT_MS,
+    );
+    if (!res.ok) {
+      throw new Error(
+        `Gemini perspective failed ${res.status}: ${await res.text().catch(() => "")}`,
+      );
+    }
+    const data = (await res.json()) as GenerateContentResponse;
+    const text = (data.candidates?.[0]?.content?.parts ?? [])
+      .map((p) => p.text ?? "")
+      .join("");
+    return parsePerspectiveHint(text);
+  }
+}
+
+/** Clamp a number into [-0.3, 0.3]; non-finite -> 0. */
+function clampHint(n: unknown): number {
+  const v = typeof n === "number" && Number.isFinite(n) ? n : 0;
+  return Math.min(0.3, Math.max(-0.3, v));
+}
+
+/** Parse Gemini's perspective JSON (tolerant of code fences); identity on failure. */
+function parsePerspectiveHint(text: string): PerspectiveHint {
+  let body = text.trim();
+  if (body.startsWith("```")) {
+    body = body.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+  }
+  try {
+    const parsed = JSON.parse(body) as { vertical?: number; horizontal?: number };
+    return {
+      vertical: clampHint(parsed.vertical),
+      horizontal: clampHint(parsed.horizontal),
+    };
+  } catch {
+    return { vertical: 0, horizontal: 0 };
+  }
 }

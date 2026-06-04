@@ -1,10 +1,17 @@
 import { Hono } from "hono";
 import { getContainer } from "@cloudflare/containers";
-import { SceneGenRequestSchema } from "@wac/shared";
+import { z } from "zod";
+import { FixtureMountSchema, SceneGenRequestSchema } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
 
 export const sceneRoutes = new Hono<AppBindings>();
+
+/** Body for the perspective auto-fit proxy. */
+const PerspectiveRequestSchema = z.object({
+  sceneUrl: z.string().url(),
+  mount: FixtureMountSchema.optional(),
+});
 
 /**
  * Text-to-room scene generation (Phase 2). The App Image generator needs a way
@@ -92,4 +99,53 @@ sceneRoutes.post("/", requireAuth, async (c) => {
   // Absolute URL so the Container can later fetch it over HTTPS as the scene.
   const url = `${new URL(c.req.url).origin}/api/uploads/${user.id}/${file}`;
   return c.json({ url }, 201);
+});
+
+/**
+ * Vision-based perspective auto-fit. Forwards the scene URL + mount to the
+ * container's /suggest-perspective endpoint and returns a keystone hint
+ * { vertical, horizontal }. The client falls back to its positional heuristic
+ * if this fails, so a 502 here is non-fatal to the UX.
+ */
+sceneRoutes.post("/perspective", requireAuth, async (c) => {
+  if (!c.env.GEMINI_API_KEY) {
+    return c.json(
+      { error: "perspective auto-fit is not configured (set GEMINI_API_KEY)" },
+      400,
+    );
+  }
+
+  const parsed = PerspectiveRequestSchema.safeParse(
+    await c.req.json().catch(() => null),
+  );
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+
+  const user = c.get("user");
+  const container = getContainer(c.env.GENERATION_CONTAINER, `scene:${user.id}`);
+
+  let res: Response;
+  try {
+    res = await container.fetch(
+      new Request("http://generation-container/suggest-perspective", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(parsed.data),
+        signal: AbortSignal.timeout(45_000),
+      }),
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return c.json({ error: `perspective estimate failed: ${msg}` }, 502);
+  }
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    return c.json(
+      { error: detail || `perspective estimate failed (${res.status})` },
+      502,
+    );
+  }
+  return c.json(await res.json());
 });

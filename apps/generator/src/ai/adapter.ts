@@ -35,6 +35,24 @@ export interface HarmonizeRequest {
   prompt: string;
 }
 
+/**
+ * Generative relight pass: edit the composited image so the fixture's lighting
+ * fits the room (optionally "lights on"). `references` are the real fixture
+ * cutout(s), passed back as a design reference so a geometry-locked prompt can
+ * keep the shape faithful (no invented arms/crystals). Returns an opaque image.
+ */
+export interface RelightRequest {
+  image: Buffer;
+  references?: Buffer[];
+  prompt: string;
+  timeoutMs?: number;
+}
+
+export interface RelightAdapter {
+  readonly provider: string;
+  relight(req: RelightRequest): Promise<Buffer>;
+}
+
 /** Pure-generative scene from a prompt, optionally conditioned on references. */
 export interface GenerateRequest {
   prompt: string;
@@ -86,6 +104,30 @@ export interface SegmentAdapter {
 }
 
 /**
+ * A keystone hint for auto-fitting a fixture's perspective to a room surface.
+ * `vertical` > 0 means the top edge should recede (looking up at a ceiling
+ * fixture); `horizontal` > 0 means the right edge recedes. Both in [-0.3, 0.3].
+ */
+export interface PerspectiveHint {
+  vertical: number;
+  horizontal: number;
+}
+
+export interface PerspectiveRequest {
+  /** The scene image to analyze. */
+  image: Buffer;
+  /** Where the fixture mounts, to focus the surface estimate. */
+  mount?: string;
+  timeoutMs?: number;
+}
+
+/** Estimate the perspective of a room surface from the scene (Gemini vision). */
+export interface PerspectiveAdapter {
+  readonly provider: string;
+  estimatePerspective(req: PerspectiveRequest): Promise<PerspectiveHint>;
+}
+
+/**
  * The set of adapters available for a generation run. Each slot is populated
  * only when the corresponding provider key is configured, so the pipeline can
  * fail with a precise "X not configured" error rather than a null deref.
@@ -95,6 +137,8 @@ export interface ImageGenAdapters {
   harmonizer?: HarmonizeAdapter;
   generator?: GenerateAdapter;
   segmenter?: SegmentAdapter;
+  relighter?: RelightAdapter;
+  perspective?: PerspectiveAdapter;
 }
 
 export interface AdapterConfig {
@@ -126,6 +170,8 @@ export function makeImageGenAdapters(config: AdapterConfig): ImageGenAdapters {
     adapters.harmonizer = gemini;
     adapters.generator = gemini;
     adapters.segmenter = gemini;
+    adapters.relighter = gemini;
+    adapters.perspective = gemini;
   }
 
   return adapters;

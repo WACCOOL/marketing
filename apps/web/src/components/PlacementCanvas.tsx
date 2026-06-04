@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { AppImageAnchor, AppImageWidthBasis } from "@wac/shared";
+import type {
+  AppImageAnchor,
+  AppImagePerspective,
+  AppImageWidthBasis,
+} from "@wac/shared";
 import {
   anchorToTopLeft,
   computeCutoutPixelSize,
@@ -9,12 +13,30 @@ import { hasUsableDimension, looksOpaque } from "../lib/appimageDraft.js";
 import type { FixtureDraft } from "../lib/appimageDraft.js";
 import {
   autoSuggestPerspective,
+  IDENTITY_PERSPECTIVE,
   isIdentityPerspective,
   keystoneToPerspective,
   perspectiveToKeystone,
   perspectiveToMatrix3d,
 } from "../lib/perspective.js";
+import { suggestPerspective } from "../lib/scenes.js";
 import type { SceneSelection } from "./SceneInput.js";
+
+/** The four perspective corners and their base position as 0/1 fractions. */
+const CORNERS: {
+  key: keyof AppImagePerspective;
+  fx: 0 | 1;
+  fy: 0 | 1;
+}[] = [
+  { key: "topLeft", fx: 0, fy: 0 },
+  { key: "topRight", fx: 1, fy: 0 },
+  { key: "bottomRight", fx: 1, fy: 1 },
+  { key: "bottomLeft", fx: 0, fy: 1 },
+];
+
+function clampOffset(n: number): number {
+  return Math.min(0.6, Math.max(-0.6, n));
+}
 
 const ANCHORS: AppImageAnchor[] = [
   "top-left",
@@ -76,6 +98,13 @@ export function PlacementCanvas({
   const [aspects, setAspects] = useState<Record<string, number>>({});
   const [canvasPx, setCanvasPx] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const dragging = useRef<string | null>(null);
+  // Active perspective corner-handle drag, if any.
+  const cornerDrag = useRef<{
+    id: string;
+    corner: keyof AppImagePerspective;
+    fx: 0 | 1;
+    fy: 0 | 1;
+  } | null>(null);
 
   // Track the canvas's rendered pixel size so the perspective preview's
   // matrix3d is built in the element's real CSS-px space (correct projection).
@@ -116,6 +145,46 @@ export function PlacementCanvas({
     };
   }
 
+  /**
+   * Translate a corner-handle drag into a perspective offset for that corner.
+   * The offset is a fraction of the fixture's rendered width/height, matching
+   * the server warp and the matrix3d preview.
+   */
+  function handleCornerDrag(clientX: number, clientY: number) {
+    const drag = cornerDrag.current;
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!drag || !rect || rect.width === 0 || rect.height === 0) return;
+    const f = fixtures.find((x) => x.id === drag.id);
+    const aspect = f ? aspects[f.cutoutUrl] : undefined;
+    if (!f || !pxPerMm || aspect === undefined) return;
+    const size = computeCutoutPixelSize({
+      dimensionsMm: f.dimensionsMm,
+      pxPerMm,
+      scaleAdjust,
+      cutoutAspect: aspect,
+      widthBasis: f.widthBasis,
+    });
+    if (!size) return;
+    const pos = anchorToTopLeft(
+      f.anchor,
+      f.xPct,
+      f.yPct,
+      size,
+      scene.naturalWidth,
+      scene.naturalHeight,
+    );
+    const overlayLeft = rect.left + (pos.left / scene.naturalWidth) * rect.width;
+    const overlayTop = rect.top + (pos.top / scene.naturalHeight) * rect.height;
+    const renderedW = (size.width / scene.naturalWidth) * rect.width;
+    const renderedH = (size.height / scene.naturalHeight) * rect.height;
+    if (renderedW === 0 || renderedH === 0) return;
+    const dx = clampOffset((clientX - overlayLeft) / renderedW - drag.fx);
+    const dy = clampOffset((clientY - overlayTop) / renderedH - drag.fy);
+    const base = f.perspective ?? IDENTITY_PERSPECTIVE;
+    const next: AppImagePerspective = { ...base, [drag.corner]: { dx, dy } };
+    onChangeFixture(drag.id, { perspective: next });
+  }
+
   const selected = fixtures.find((f) => f.id === selectedId) ?? null;
 
   return (
@@ -131,12 +200,17 @@ export function PlacementCanvas({
         ref={canvasRef}
         className="placement-canvas"
         onPointerMove={(e) => {
+          if (cornerDrag.current) {
+            handleCornerDrag(e.clientX, e.clientY);
+            return;
+          }
           if (!dragging.current) return;
           const pct = pointerToPct(e.clientX, e.clientY);
           if (pct) onChangeFixture(dragging.current, pct);
         }}
         onPointerUp={(e) => {
-          if (dragging.current) {
+          if (cornerDrag.current || dragging.current) {
+            cornerDrag.current = null;
             dragging.current = null;
             (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
           }
@@ -196,6 +270,32 @@ export function PlacementCanvas({
               }}
             >
               <img src={f.cutoutUrl} alt={f.name} draggable={false} style={warpStyle} />
+              {isSel &&
+                CORNERS.map((corner) => {
+                  const off = (f.perspective ?? IDENTITY_PERSPECTIVE)[corner.key];
+                  return (
+                    <div
+                      key={corner.key}
+                      className="perspective-handle"
+                      style={{
+                        left: `${(corner.fx + off.dx) * 100}%`,
+                        top: `${(corner.fy + off.dy) * 100}%`,
+                      }}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        cornerDrag.current = {
+                          id: f.id,
+                          corner: corner.key,
+                          fx: corner.fx,
+                          fy: corner.fy,
+                        };
+                        (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+                        e.preventDefault();
+                      }}
+                      title="Drag to adjust perspective"
+                    />
+                  );
+                })}
             </div>
           );
         })}
@@ -222,6 +322,7 @@ export function PlacementCanvas({
       {selected ? (
         <FixtureControls
           fixture={selected}
+          sceneUrl={scene.url}
           onChange={(patch) => onChangeFixture(selected.id, patch)}
           onRemove={() => onRemoveFixture(selected.id)}
           onAddArray={(count, spacing) =>
@@ -248,12 +349,16 @@ export function PlacementCanvas({
  */
 function PerspectiveControls({
   fixture,
+  sceneUrl,
   onChange,
 }: {
   fixture: FixtureDraft;
+  sceneUrl: string;
   onChange: (patch: Partial<FixtureDraft>) => void;
 }) {
   const { vertical, horizontal } = perspectiveToKeystone(fixture.perspective);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
 
   function apply(v: number, h: number) {
     if (Math.abs(v) < 0.005 && Math.abs(h) < 0.005) {
@@ -261,6 +366,25 @@ function PerspectiveControls({
       return;
     }
     onChange({ perspective: keystoneToPerspective(v, h) });
+  }
+
+  /**
+   * Auto-fit: ask the server (Gemini vision) for the surface keystone, and fall
+   * back to the positional heuristic if the call fails or isn't configured.
+   */
+  async function autoFit() {
+    setBusy(true);
+    setNote(null);
+    try {
+      const hint = await suggestPerspective({ sceneUrl, mount: fixture.mount });
+      apply(hint.vertical, hint.horizontal);
+      setNote("Fitted from the scene's surface.");
+    } catch {
+      onChange({ perspective: autoSuggestPerspective(fixture.yPct) });
+      setNote("Used a positional estimate (vision unavailable).");
+    } finally {
+      setBusy(false);
+    }
   }
 
   const active = !isIdentityPerspective(fixture.perspective);
@@ -273,10 +397,11 @@ function PerspectiveControls({
           <button
             type="button"
             className="secondary"
-            onClick={() => onChange({ perspective: autoSuggestPerspective(fixture.yPct) })}
-            title="Estimate a perspective from where the fixture sits in the scene"
+            disabled={busy}
+            onClick={() => void autoFit()}
+            title="Estimate the surface perspective from the scene"
           >
-            Auto-fit
+            {busy ? <span className="spinner" /> : "Auto-fit"}
           </button>
           <button
             type="button"
@@ -313,20 +438,28 @@ function PerspectiveControls({
         </div>
       </div>
       <div className="muted" style={{ fontSize: 12 }}>
-        Tilts the real cutout to match the room's angle (no re-rendering).
-        Positive vertical narrows the top (looking up at a ceiling fixture).
+        Drag the corner handles on the canvas for a Photoshop-style free
+        transform, or use Auto-fit / the sliders. Warps the real cutout to match
+        the room's angle (no re-rendering).
       </div>
+      {note && (
+        <div className="muted" style={{ fontSize: 12 }}>
+          {note}
+        </div>
+      )}
     </div>
   );
 }
 
 function FixtureControls({
   fixture,
+  sceneUrl,
   onChange,
   onRemove,
   onAddArray,
 }: {
   fixture: FixtureDraft;
+  sceneUrl: string;
   onChange: (patch: Partial<FixtureDraft>) => void;
   onRemove: () => void;
   onAddArray: (count: number, spacingPct: number) => void;
@@ -413,7 +546,11 @@ function FixtureControls({
         </div>
       </div>
 
-      <PerspectiveControls fixture={fixture} onChange={onChange} />
+      <PerspectiveControls
+        fixture={fixture}
+        sceneUrl={sceneUrl}
+        onChange={onChange}
+      />
 
       <div className="col" style={{ gap: 8 }}>
         <label>Array (for downlights / landscape runs)</label>

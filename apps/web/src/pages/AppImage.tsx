@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import type { AppImageMode, Product } from "@wac/shared";
+import type { ReactNode } from "react";
+import type { AppImageMode, FixtureMount, Product } from "@wac/shared";
 import { APPIMAGE_PARAMS_VERSION } from "@wac/shared";
 import { ProductPicker } from "../components/ProductPicker.js";
 import { SceneInput, type SceneSelection } from "../components/SceneInput.js";
@@ -11,9 +12,11 @@ import {
 } from "../components/GenerationPreview.js";
 import { pxPerMmFromSceneWidth } from "../lib/appimageScale.js";
 import {
+  autoPlaceForMount,
   expandArray,
   hasUsableDimension,
   newFixtureFromProduct,
+  seedSceneWidthMm,
   type FixtureDraft,
 } from "../lib/appimageDraft.js";
 
@@ -33,6 +36,8 @@ export function AppImage() {
   const [prompt, setPrompt] = useState("");
   const [harmonizeStrength, setHarmonizeStrength] = useState(0.7);
   const [harmonizeShadowPx, setHarmonizeShadowPx] = useState(0);
+  const [aiRelight, setAiRelight] = useState(false);
+  const [lightsOn, setLightsOn] = useState(false);
   const [referenceImages, setReferenceImages] = useState<string[]>([]);
   const [outputFormat, setOutputFormat] = useState<"png" | "jpeg">("png");
   const [name, setName] = useState("");
@@ -47,11 +52,35 @@ export function AppImage() {
     [scene, sceneWidthMm],
   );
 
+  // The "hero" fixture drives fixture-aware scene gen + auto-placement: the
+  // selected one, else the first placed.
+  const hero = fixtures.find((f) => f.id === selectedId) ?? fixtures[0] ?? null;
+
+  /** Seed a sane starting scale from the hero fixture for generated scenes. */
+  function maybeSeedScale(next: SceneSelection | null, heroFixture: FixtureDraft | null) {
+    if (!next?.generated || !heroFixture) return;
+    const mm = seedSceneWidthMm(heroFixture);
+    if (mm) setSceneWidthMm(mm);
+  }
+
+  function handleSceneChange(next: SceneSelection | null) {
+    setScene(next);
+    maybeSeedScale(next, hero);
+  }
+
   function addFixture(product: Product) {
     const draft = newFixtureFromProduct(product);
     setFixtures((prev) => [...prev, draft]);
     setSelectedId(draft.id);
     setPickerOpen(false);
+    // First fixture dropped onto a generated scene: seed a starting scale.
+    if (fixtures.length === 0) maybeSeedScale(scene, draft);
+  }
+
+  /** Override the hero fixture's mount and re-run its auto-placement. */
+  function changeMount(mount: FixtureMount) {
+    if (!hero) return;
+    changeFixture(hero.id, { mount, ...autoPlaceForMount(mount) });
   }
 
   function changeFixture(id: string, patch: Partial<FixtureDraft>) {
@@ -127,6 +156,8 @@ export function AppImage() {
         enabled: true,
         strength: harmonizeStrength,
         shadowPx: harmonizeShadowPx,
+        aiRelight: aiRelight || lightsOn,
+        lightsOn,
       };
     }
 
@@ -139,88 +170,106 @@ export function AppImage() {
         <h2>Image Generator</h2>
         <div className="muted">
           Place real WAC fixtures into a room, sized to scale from Sales Layer
-          dimensions. Choose a mode, drop fixtures onto your scene, then generate
-          and save to the library.
+          dimensions. Pick a fixture, set the scene, place and adjust it, then
+          generate and save to the library.
         </div>
       </div>
 
-      <ModePicker
-        mode={mode}
-        onModeChange={setMode}
-        prompt={prompt}
-        onPromptChange={setPrompt}
-        harmonizeStrength={harmonizeStrength}
-        onHarmonizeStrengthChange={setHarmonizeStrength}
-        harmonizeShadowPx={harmonizeShadowPx}
-        onHarmonizeShadowPxChange={setHarmonizeShadowPx}
-        referenceImages={referenceImages}
-        onReferenceImagesChange={setReferenceImages}
-        outputFormat={outputFormat}
-        onOutputFormatChange={setOutputFormat}
-      />
-
       {isComposite && (
         <>
-          <SceneInput
-            scene={scene}
-            sceneWidthMm={sceneWidthMm}
-            onSceneChange={setScene}
-            onWidthMmChange={setSceneWidthMm}
-          />
-
-          <div className="card col" style={{ gap: 12 }}>
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <div>
-                <h3 style={{ margin: 0 }}>Fixtures</h3>
+          <Step n={1} title="Choose your fixture(s)">
+            <div className="card col" style={{ gap: 12 }}>
+              <div className="row" style={{ justifyContent: "space-between" }}>
                 <div className="muted">
-                  {fixtures.length} placed. Add fixtures and arrange them on the
-                  scene.
+                  {fixtures.length === 0
+                    ? "Start by picking the hero fixture you want to showcase."
+                    : `${fixtures.length} added. The selected one drives the scene + auto-placement.`}
                 </div>
+                <button onClick={() => setPickerOpen(true)}>Add fixture</button>
               </div>
-              <button onClick={() => setPickerOpen(true)}>Add fixture</button>
+              {fixtures.length > 0 && (
+                <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
+                  {fixtures.map((f) => (
+                    <button
+                      key={f.id}
+                      type="button"
+                      className={
+                        "tag" + (f.id === selectedId ? " tag-selected" : "")
+                      }
+                      onClick={() => setSelectedId(f.id)}
+                    >
+                      {f.sku}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-            {fixtures.length > 0 && (
-              <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
-                {fixtures.map((f) => (
-                  <button
-                    key={f.id}
-                    type="button"
-                    className={
-                      "tag" + (f.id === selectedId ? " tag-selected" : "")
-                    }
-                    onClick={() => setSelectedId(f.id)}
-                  >
-                    {f.sku}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          </Step>
+
+          <Step n={2} title="Set the scene">
+            <SceneInput
+              scene={scene}
+              sceneWidthMm={sceneWidthMm}
+              onSceneChange={handleSceneChange}
+              onWidthMmChange={setSceneWidthMm}
+              fixtureType={hero?.fixtureType}
+              mount={hero?.mount}
+              onMountChange={changeMount}
+            />
+          </Step>
 
           {scene && (
-            <PlacementCanvas
-              scene={scene}
-              pxPerMm={pxPerMm}
-              scaleAdjust={scaleAdjust}
-              onScaleAdjustChange={setScaleAdjust}
-              fixtures={fixtures}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              onChangeFixture={changeFixture}
-              onRemoveFixture={removeFixture}
-              onAddArray={addArray}
-            />
+            <Step n={3} title="Place, scale & adjust perspective">
+              <PlacementCanvas
+                scene={scene}
+                pxPerMm={pxPerMm}
+                scaleAdjust={scaleAdjust}
+                onScaleAdjustChange={setScaleAdjust}
+                fixtures={fixtures}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onChangeFixture={changeFixture}
+                onRemoveFixture={removeFixture}
+                onAddArray={addArray}
+              />
+            </Step>
           )}
         </>
       )}
 
-      <GenerationPreview
-        name={name}
-        onNameChange={setName}
-        roomType={roomType}
-        onRoomTypeChange={setRoomType}
-        buildRequest={buildRequest}
-      />
+      <Step
+        n={isComposite ? 4 : 1}
+        title={isComposite ? "Finishing & output" : "Concept generation"}
+      >
+        <ModePicker
+          mode={mode}
+          onModeChange={setMode}
+          prompt={prompt}
+          onPromptChange={setPrompt}
+          harmonizeStrength={harmonizeStrength}
+          onHarmonizeStrengthChange={setHarmonizeStrength}
+          harmonizeShadowPx={harmonizeShadowPx}
+          onHarmonizeShadowPxChange={setHarmonizeShadowPx}
+          aiRelight={aiRelight}
+          onAiRelightChange={setAiRelight}
+          lightsOn={lightsOn}
+          onLightsOnChange={setLightsOn}
+          referenceImages={referenceImages}
+          onReferenceImagesChange={setReferenceImages}
+          outputFormat={outputFormat}
+          onOutputFormatChange={setOutputFormat}
+        />
+      </Step>
+
+      <Step n={isComposite ? 5 : 2} title="Generate & save">
+        <GenerationPreview
+          name={name}
+          onNameChange={setName}
+          roomType={roomType}
+          onRoomTypeChange={setRoomType}
+          buildRequest={buildRequest}
+        />
+      </Step>
 
       {pickerOpen && (
         <div className="modal-overlay" onClick={() => setPickerOpen(false)}>
@@ -241,6 +290,27 @@ export function AppImage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** A numbered step wrapper for the guided generation flow. */
+function Step({
+  n,
+  title,
+  children,
+}: {
+  n: number;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="col" style={{ gap: 10 }}>
+      <div className="row" style={{ gap: 10, alignItems: "center" }}>
+        <span className="step-badge">{n}</span>
+        <h3 style={{ margin: 0 }}>{title}</h3>
+      </div>
+      {children}
     </div>
   );
 }

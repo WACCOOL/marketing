@@ -29,6 +29,10 @@ interface ModePickerProps {
   onHarmonizeStrengthChange: (n: number) => void;
   harmonizeShadowPx: number;
   onHarmonizeShadowPxChange: (n: number) => void;
+  aiRelight: boolean;
+  onAiRelightChange: (b: boolean) => void;
+  lightsOn: boolean;
+  onLightsOnChange: (b: boolean) => void;
   referenceImages: string[];
   onReferenceImagesChange: (urls: string[]) => void;
   outputFormat: "png" | "jpeg";
@@ -50,6 +54,10 @@ export function ModePicker({
   onHarmonizeStrengthChange,
   harmonizeShadowPx,
   onHarmonizeShadowPxChange,
+  aiRelight,
+  onAiRelightChange,
+  lightsOn,
+  onLightsOnChange,
   referenceImages,
   onReferenceImagesChange,
   outputFormat,
@@ -127,6 +135,44 @@ export function ModePicker({
             />
             <div className="muted" style={{ fontSize: 12 }}>
               Optional soft shadow under each fixture to ground it. 0 = none.
+            </div>
+          </div>
+
+          <div className="col" style={{ gap: 8 }}>
+            <label style={{ marginBottom: 0 }}>AI finishing (optional)</label>
+            <label className="row" style={{ gap: 8, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={aiRelight || lightsOn}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  onAiRelightChange(on);
+                  if (!on) onLightsOnChange(false);
+                }}
+              />
+              <span>
+                Gemini relight — re-render lighting/reflections to match the room.
+              </span>
+            </label>
+            <label
+              className="row"
+              style={{ gap: 8, cursor: "pointer", marginLeft: 24 }}
+            >
+              <input
+                type="checkbox"
+                checked={lightsOn}
+                onChange={(e) => {
+                  const on = e.target.checked;
+                  onLightsOnChange(on);
+                  if (on) onAiRelightChange(true);
+                }}
+              />
+              <span>Turn the lights on — illuminate bulbs + cast a glow.</span>
+            </label>
+            <div className="muted" style={{ fontSize: 12 }}>
+              Runs a Gemini pass after the classical match, with the real cutout
+              as a geometry-locked reference. Shape is preserved; this can still
+              subtly alter the fixture, so it's off by default.
             </div>
           </div>
         </div>

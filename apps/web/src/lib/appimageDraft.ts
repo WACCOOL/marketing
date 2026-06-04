@@ -3,8 +3,10 @@ import type {
   AppImagePerspective,
   AppImageWidthBasis,
   DimensionsMm,
+  FixtureMount,
   Product,
 } from "@wac/shared";
+import { deriveFixtureKind } from "./fixtureKind.js";
 
 /**
  * UI-side model for one fixture being placed. Maps onto AppImageFixtureSchema at
@@ -25,6 +27,10 @@ export interface FixtureDraft {
   widthBasis: AppImageWidthBasis;
   /** Optional deterministic perspective warp (corner offsets). */
   perspective?: AppImagePerspective;
+  /** Where this fixture mounts (derived from category; user-overridable). */
+  mount: FixtureMount;
+  /** Human-readable fixture type for fixture-aware scene generation. */
+  fixtureType: string;
 }
 
 /** Build a fixture draft from a picked product, with sensible auto-placement. */
@@ -37,6 +43,8 @@ export function newFixtureFromProduct(product: Product): FixtureDraft {
   // Prefer a transparent-friendly image as the default cutout if one exists.
   const cutoutUrl =
     imageOptions.find((u) => !looksOpaque(u)) ?? imageOptions[0] ?? "";
+  const kind = deriveFixtureKind(product.category, product.name);
+  const placement = autoPlaceForMount(kind.mount);
   return {
     id: crypto.randomUUID(),
     sku: product.sku,
@@ -44,11 +52,56 @@ export function newFixtureFromProduct(product: Product): FixtureDraft {
     cutoutUrl,
     imageOptions,
     dimensionsMm: { ...product.dimensions_mm },
-    anchor: "bottom-center",
-    xPct: 0.5,
-    yPct: 0.65,
+    anchor: placement.anchor,
+    xPct: placement.xPct,
+    yPct: placement.yPct,
     widthBasis: "auto",
+    mount: kind.mount,
+    fixtureType: kind.fixtureType,
   };
+}
+
+/**
+ * Mount-appropriate starting placement (anchor + normalized x/y). Ceiling/recessed
+ * fixtures hang from the top, wall fixtures sit mid-frame, floor fixtures rest near
+ * the bottom. The user fine-tunes from here.
+ */
+export function autoPlaceForMount(mount: FixtureMount): {
+  anchor: AppImageAnchor;
+  xPct: number;
+  yPct: number;
+} {
+  switch (mount) {
+    case "wall":
+      return { anchor: "center", xPct: 0.5, yPct: 0.42 };
+    case "floor":
+      return { anchor: "bottom-center", xPct: 0.5, yPct: 0.82 };
+    case "recessed":
+      return { anchor: "top-center", xPct: 0.5, yPct: 0.08 };
+    case "ceiling":
+    default:
+      return { anchor: "top-center", xPct: 0.5, yPct: 0.14 };
+  }
+}
+
+/** Representative horizontal real-world size of a fixture, in mm (0 if unknown). */
+export function representativeWidthMm(d: DimensionsMm): number {
+  return d.width || d.diameter || d.length || d.height || 0;
+}
+
+/**
+ * Seed a generated scene's real-world width (mm) so the fixture starts at a
+ * sensible fraction of the scene width (default ~30%). Because pxPerMm derives
+ * from sceneWidthMm, this is scene-pixel-independent: sceneWidthMm = realWidth /
+ * fraction. Returns null when the fixture has no usable width.
+ */
+export function seedSceneWidthMm(
+  fixture: FixtureDraft,
+  fraction = 0.3,
+): number | null {
+  const w = representativeWidthMm(fixture.dimensionsMm);
+  if (!w) return null;
+  return Math.round(w / fraction);
 }
 
 function dedupe(urls: string[]): string[] {

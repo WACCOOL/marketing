@@ -256,15 +256,44 @@ async function runComposite(
 }
 
 /**
+ * Build the geometry-locked relight instruction. The composite is image #1 and
+ * the fixture cutout(s) are the reference images; the prompt forbids any shape
+ * change and (optionally) turns the lamps on. Folds in the user's room/lighting
+ * `prompt` as extra context when supplied.
+ */
+function buildRelightPrompt(p: AppImageParams): string {
+  const context = p.prompt?.trim() ? ` Room/lighting context: ${p.prompt.trim()}.` : "";
+  const lightsOn = p.harmonize.lightsOn
+    ? " Turn the fixture's lamps ON: make the bulbs/shades emit a warm, natural " +
+      "glow and cast soft, physically plausible light and shadows onto nearby " +
+      "surfaces (ceiling, walls, floor) consistent with its position."
+    : "";
+  return (
+    "The first image is a room with a real product fixture already composited at " +
+    "the correct size and position. The remaining image(s) show the EXACT fixture " +
+    "design. Relight only the fixture so its color temperature, brightness, " +
+    "reflections and shadows match the room, and blend its edges naturally. " +
+    "CRITICAL: preserve the fixture's exact shape, arm/element count, materials, " +
+    "proportions, scale and position from the reference image(s); do not add, " +
+    "remove, or redesign any part of it. Do not change the room's architecture, " +
+    "furniture, or any other object." +
+    lightsOn +
+    context +
+    " Output a single photorealistic image, no text or watermarks."
+  );
+}
+
+/**
  * Hybrid (`hybrid` mode): place the REAL cutouts (optionally perspective-warped
  * via the deterministic engine), then harmonize — a classical, shape-preserving
  * color/tone transfer that matches each fixture's white balance, exposure, and
- * contrast to the surrounding room (cf. Photoshop's Harmonize). No generative
- * step touches the fixture, so geometry is never invented and the room pixels
- * stay byte-identical to the deterministic composite (region-locked).
+ * contrast to the surrounding room (cf. Photoshop's Harmonize). An optional
+ * generative relight / lights-on pass (Gemini) can run last, with the cutouts
+ * passed back as a design reference under a geometry-locked prompt.
  */
 async function runHybrid(
   p: AppImageParams,
+  adapters: ImageGenAdapters,
   prepareCutout?: PrepareCutout,
 ): Promise<GenerationResult> {
   const { scene, fixtures } = await fetchSceneAndFixtures(
@@ -296,6 +325,28 @@ async function runHybrid(
     steps.push("harmonize:color-transfer");
   }
 
+  // Optional generative relight / lights-on pass (Gemini). Runs AFTER the
+  // classical match. The placed cutouts are passed back as a design reference
+  // with a geometry-locked prompt so the fixture's shape stays faithful.
+  const wantsRelight = p.harmonize.aiRelight || p.harmonize.lightsOn;
+  if (wantsRelight) {
+    const relighter = adapters.relighter;
+    if (!relighter) {
+      throw new Error(
+        "AI relight / lights-on requires a configured Gemini API key (set GEMINI_API_KEY)",
+      );
+    }
+    const references = placed.placements
+      .slice(0, 4)
+      .map((pl) => pl.resizedCutout);
+    image = await relighter.relight({
+      image,
+      references,
+      prompt: buildRelightPrompt(p),
+    });
+    steps.push(p.harmonize.lightsOn ? "relight:lights-on" : "relight:fit");
+  }
+
   const encoded = await encodeOutput(image, p.output);
   return {
     files: [
@@ -305,7 +356,10 @@ async function runHybrid(
       version: p.version,
       mode: "hybrid",
       generatedBy: steps.join(" -> "),
+      // Geometry is deterministic; a relight pass can alter fixture pixels, so
+      // flag it so the library can label AI-touched images.
       productAccurate: true,
+      aiRelit: wantsRelight,
       sceneUrl: p.sceneUrl,
       scale: p.scale,
       prompt: p.prompt,
@@ -365,6 +419,37 @@ interface SceneGenRequest {
   prompt: string;
   aspectRatio?: string;
   imageSize?: string;
+  /** Hero-fixture context so the room is staged to showcase it (see below). */
+  fixtureType?: string;
+  mount?: "ceiling" | "wall" | "floor" | "recessed";
+}
+
+const MOUNT_SURFACE_PHRASE: Record<NonNullable<SceneGenRequest["mount"]>, string> = {
+  ceiling: "the center of the ceiling",
+  wall: "a clear, prominent wall area",
+  floor: "an open area of the floor",
+  recessed: "the ceiling",
+};
+
+/**
+ * When the scene is being generated to SHOWCASE a specific fixture, augment the
+ * user's room description so Gemini leaves clear, uncluttered space on the mount
+ * surface and omits any pre-existing fixture there (so the real fixture we drop
+ * in later isn't competing with a hallucinated one).
+ */
+function buildScenePrompt(req: SceneGenRequest): string {
+  const base = req.prompt.trim();
+  if (!req.fixtureType && !req.mount) return base;
+  const thing = (req.fixtureType ?? "light fixture").trim();
+  const surface = req.mount ?? "ceiling";
+  const where = MOUNT_SURFACE_PHRASE[surface];
+  return (
+    `${base}. This is an empty interior staged to showcase a ${thing}. ` +
+    `Leave clear, uncluttered, well-lit space at ${where} where the ${thing} ` +
+    `will be added, and do not include any existing ${thing} or other light ` +
+    `fixture in that spot. Photorealistic interior photograph, balanced natural ` +
+    `lighting, no text or watermarks.`
+  );
 }
 
 /** Sniff an image content-type from magic bytes; default to PNG. */
@@ -404,7 +489,7 @@ async function generateScene(
   }
 
   const image = await generator.generate({
-    prompt: req.prompt.trim(),
+    prompt: buildScenePrompt(req),
     aspectRatio: req.aspectRatio,
     imageSize: req.imageSize,
     model: config.geminiSceneModel,
@@ -436,7 +521,7 @@ async function runAppImageGenerator(
 
   switch (p.mode) {
     case "hybrid":
-      return runHybrid(p, prepareCutout);
+      return runHybrid(p, adapters, prepareCutout);
     case "concept":
       return runConcept(p, adapters);
     case "composite":
@@ -771,6 +856,47 @@ function main(): void {
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);
           console.error("[generator] scene generation failed:", message);
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: message }));
+        }
+        return;
+      }
+
+      // Vision-based perspective auto-fit: given a scene URL + mount, return a
+      // keystone hint { vertical, horizontal }. The web client converts it to a
+      // perspective warp and falls back to its positional heuristic on failure.
+      if (req.method === "POST" && url.pathname === "/suggest-perspective") {
+        let body: { sceneUrl?: string; mount?: string } | null;
+        try {
+          const raw = await readJsonBody(req);
+          body = raw && typeof raw === "object" ? (raw as typeof body) : null;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        if (!body || typeof body.sceneUrl !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "perspective request needs a sceneUrl" }));
+          return;
+        }
+        try {
+          const estimator = adapters.perspective;
+          if (!estimator) {
+            throw new Error(
+              "perspective auto-fit requires a configured Gemini API key (set GEMINI_API_KEY)",
+            );
+          }
+          const fetched = await fetchImageBuffer(body.sceneUrl);
+          const hint = await estimator.estimatePerspective({
+            image: fetched.buffer,
+            mount: body.mount,
+          });
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify(hint));
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          console.error("[generator] perspective estimate failed:", message);
           res.writeHead(500, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: false, error: message }));
         }

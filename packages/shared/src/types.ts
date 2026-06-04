@@ -304,6 +304,20 @@ export const AppImageHarmonizeSchema = z.object({
    * fixture to ground it in the scene. Pixels, 0 = none.
    */
   shadowPx: z.number().int().min(0).max(256).default(0),
+  /**
+   * Optional generative relight pass (Gemini) AFTER the classical color
+   * transfer. Unlike harmonization this CAN re-render the fixture, so it is
+   * off by default; the original cutout is passed back to Gemini as a design
+   * reference with a geometry-locked prompt to keep the shape faithful. Use it
+   * when the classical match isn't enough (directional light, reflections).
+   */
+  aiRelight: z.boolean().default(false),
+  /**
+   * Turn the fixture's lamps "on": the generative pass illuminates the bulbs
+   * and casts light onto nearby surfaces. Implies the relight pass. Off by
+   * default. Only meaningful with a configured Gemini key.
+   */
+  lightsOn: z.boolean().default(false),
 });
 export type AppImageHarmonize = z.infer<typeof AppImageHarmonizeSchema>;
 
@@ -338,10 +352,24 @@ export type GeminiAspectRatio = z.infer<typeof GeminiAspectRatioSchema>;
 export const GeminiImageSizeSchema = z.enum(["1K", "2K", "4K"]);
 export type GeminiImageSize = z.infer<typeof GeminiImageSizeSchema>;
 
+/**
+ * Where the hero fixture will be mounted. Used to make a generated scene
+ * fixture-aware (leave clear space on that surface) and to drive auto-placement.
+ */
+export const FixtureMountSchema = z.enum(["ceiling", "wall", "floor", "recessed"]);
+export type FixtureMount = z.infer<typeof FixtureMountSchema>;
+
 export const SceneGenRequestSchema = z.object({
   prompt: z.string().trim().min(1),
   aspectRatio: GeminiAspectRatioSchema.default("16:9"),
   imageSize: GeminiImageSizeSchema.default("2K"),
+  /**
+   * Optional hero-fixture context. When set, the scene is generated to SHOWCASE
+   * this fixture: the prompt is augmented to leave clear, uncluttered space on
+   * the `mount` surface and to omit any pre-existing fixture there.
+   */
+  fixtureType: z.string().trim().min(1).max(120).optional(),
+  mount: FixtureMountSchema.optional(),
 });
 export type SceneGenRequest = z.infer<typeof SceneGenRequestSchema>;
 
