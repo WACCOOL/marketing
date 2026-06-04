@@ -26,10 +26,11 @@ export async function createJob(
   tool: GenerationTool,
   name: string,
   params: Record<string, unknown> = {},
+  tags: string[] = [],
 ): Promise<{ jobId: string; status: GenerationJobStatus }> {
   return api("/api/jobs", {
     method: "POST",
-    body: JSON.stringify({ tool, name, params }),
+    body: JSON.stringify({ tool, name, params, tags }),
   });
 }
 

@@ -47,6 +47,12 @@ export const GenerationJobRequestSchema = z.object({
   tool: GenerationToolSchema,
   name: z.string().min(1),
   params: z.record(z.unknown()).default({}),
+  /**
+   * Extra asset tags to apply on success, e.g. `sku:LED-TO24-CH5` and
+   * `room:kitchen` (PRD: app images are tagged by product SKU + room type). The
+   * generator merges these onto its base `tool:<tool>` tag.
+   */
+  tags: z.array(z.string().min(1)).default([]),
 });
 export type GenerationJobRequest = z.infer<typeof GenerationJobRequestSchema>;
 

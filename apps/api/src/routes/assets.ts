@@ -76,6 +76,11 @@ function guessContentType(format: string): string {
       return "image/svg+xml";
     case "png":
       return "image/png";
+    case "jpeg":
+    case "jpg":
+      return "image/jpeg";
+    case "webp":
+      return "image/webp";
     case "url":
     case "txt":
       return "text/plain";

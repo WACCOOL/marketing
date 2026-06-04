@@ -19,6 +19,8 @@ export interface GenerationMessage {
   tool: GenerationTool;
   name: string;
   params: Record<string, unknown>;
+  /** Extra asset tags merged onto the generator's base tag (Phase 2e). */
+  tags?: string[];
 }
 
 export interface GenerationJobRow {
@@ -53,6 +55,7 @@ export async function createGenerationJob(
     tool: GenerationTool;
     name: string;
     params: Record<string, unknown>;
+    tags?: string[];
   },
 ): Promise<{ ok: true; row: GenerationJobRow } | { ok: false; error: string }> {
   const { data, error } = await sb
@@ -75,6 +78,7 @@ export async function createGenerationJob(
     tool: args.tool,
     name: args.name,
     params: args.params,
+    tags: args.tags,
   };
   try {
     await env.GENERATION_QUEUE.send(message);
