@@ -216,6 +216,8 @@ export interface PlacementCriticAdapter {
 export interface ModelRenderPose {
   azimuthDeg?: number;
   elevationDeg?: number;
+  /** Roll about the camera's view axis (side-to-side tilt / lean), in degrees. */
+  rollDeg?: number;
   fovDeg?: number;
   distanceFactor?: number;
   marginFactor?: number;

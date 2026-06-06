@@ -1,6 +1,8 @@
 import { Suspense, lazy } from "react";
-import { Navigate, NavLink, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth.js";
+import { ThemeProvider } from "./lib/theme.js";
+import { Sidebar } from "./components/Sidebar.js";
 import { SignIn } from "./pages/SignIn.js";
 import { Builder } from "./pages/Builder.js";
 import { Social } from "./pages/Social.js";
@@ -18,9 +20,11 @@ const AppShot = lazy(() =>
 
 export function App() {
   return (
-    <AuthProvider>
-      <Shell />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <Shell />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }
 
@@ -65,51 +69,7 @@ function Shell() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
-        <img className="brand-logo" src="/wac-group-logo.svg" alt="WAC Group" />
-        <h1>Marketing</h1>
-        <NavLink to="/builder" className={({ isActive }) => (isActive ? "active" : "")}>
-          UTM Builder
-        </NavLink>
-        <NavLink to="/social" className={({ isActive }) => (isActive ? "active" : "")}>
-          Social Fan-out
-        </NavLink>
-        <NavLink to="/bulk" className={({ isActive }) => (isActive ? "active" : "")}>
-          Bulk Import
-        </NavLink>
-        <NavLink to="/utm-qr" className={({ isActive }) => (isActive ? "active" : "")}>
-          UTM &amp; QR
-        </NavLink>
-        <NavLink to="/products" className={({ isActive }) => (isActive ? "active" : "")}>
-          Products
-        </NavLink>
-        <NavLink to="/app-image" className={({ isActive }) => (isActive ? "active" : "")}>
-          Image Generator
-        </NavLink>
-        <NavLink to="/app-shot" className={({ isActive }) => (isActive ? "active" : "")}>
-          3D App-Shot
-        </NavLink>
-        <NavLink to="/library" className={({ isActive }) => (isActive ? "active" : "")}>
-          Asset Library
-        </NavLink>
-        <div className="spacer" />
-        <div className="user">
-          <div>{user.email}</div>
-          <div className="muted">
-            {user.role}
-            {" · "}
-            <a
-              href="#"
-              onClick={(e) => {
-                e.preventDefault();
-                signOut();
-              }}
-            >
-              sign out
-            </a>
-          </div>
-        </div>
-      </aside>
+      <Sidebar />
       <main className="main">
         <Routes>
           <Route path="/" element={<Navigate to="/builder" replace />} />

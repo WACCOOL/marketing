@@ -190,7 +190,7 @@ const DEFAULT_PLACEMENT: AppShotPlacement = {
   brightness: 25,
   lightOutput: 25,
   warm: 0.45,
-  pose: { azimuthDeg: 0, elevationDeg: -18, fovDeg: 36, distanceFactor: 1, marginFactor: 1.25 },
+  pose: { azimuthDeg: 0, elevationDeg: -18, rollDeg: 0, fovDeg: 36, distanceFactor: 1, marginFactor: 1.25 },
 };
 
 /**
@@ -207,7 +207,7 @@ function defaultPlacementFor(mount: string | undefined): AppShotPlacement {
       brightness: 25,
       lightOutput: 25,
       warm: 0.45,
-      pose: { azimuthDeg: -8, elevationDeg: 2, fovDeg: 30, distanceFactor: 1, marginFactor: 1.25 },
+      pose: { azimuthDeg: -8, elevationDeg: 2, rollDeg: 0, fovDeg: 30, distanceFactor: 1, marginFactor: 1.25 },
     };
   }
   if (mount === "floor") {
@@ -218,7 +218,7 @@ function defaultPlacementFor(mount: string | undefined): AppShotPlacement {
       brightness: 25,
       lightOutput: 25,
       warm: 0.45,
-      pose: { azimuthDeg: 0, elevationDeg: -5, fovDeg: 35, distanceFactor: 1, marginFactor: 1.25 },
+      pose: { azimuthDeg: 0, elevationDeg: -5, rollDeg: 0, fovDeg: 35, distanceFactor: 1, marginFactor: 1.25 },
     };
   }
   return DEFAULT_PLACEMENT; // ceiling / recessed: from below
@@ -1037,119 +1037,126 @@ function EditPanel(p: EditProps) {
 
       {/* two columns: controls on the left, the room/fixture canvas on the right */}
       <div className="appshot-edit">
-        <div className="col appshot-controls" style={{ gap: 14 }}>
-          <div className="card col" style={{ gap: 10 }}>
-            <h3 style={{ margin: 0 }}>Size & position</h3>
-            <div className="muted" style={{ fontSize: 12 }}>
-              {viewer
-                ? "Drag the move bar to reposition · scroll over the fixture (or the slider) to resize."
-                : "Drag the fixture on the image to move it · scroll over it (or the slider) to resize."}
+        <div className="col appshot-controls" style={{ gap: 10 }}>
+          <div className="card col appshot-sliders">
+            <div className="slider-section">
+              <div className="slider-section-title">Size & position</div>
+              <Slider
+                label="Fixture size"
+                min={0.08}
+                max={0.9}
+                step={0.005}
+                value={p.placement.coverage}
+                onChange={(v) => p.onPatch({ coverage: v })}
+                fmt={(v) => `${Math.round(v * 100)}%`}
+              />
+              <Slider
+                label="Left / right"
+                min={0}
+                max={1}
+                step={0.01}
+                value={p.placement.xPct}
+                onChange={(v) => p.onPatch({ xPct: v })}
+                fmt={(v) => `${Math.round(v * 100)}%`}
+              />
+              <Slider
+                label="Up / down"
+                min={0}
+                max={1}
+                step={0.01}
+                value={1 - p.placement.yPct}
+                onChange={(v) => p.onPatch({ yPct: 1 - v })}
+                fmt={(v) => `${Math.round(v * 100)}%`}
+              />
+              <div className="row" style={{ gap: 8 }}>
+                <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 0.9, 0.08, 0.9) })}>– smaller</button>
+                <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 1.1, 0.08, 0.9) })}>+ larger</button>
+              </div>
             </div>
-            <Slider
-              label="Fixture size"
-              min={0.08}
-              max={0.9}
-              step={0.005}
-              value={p.placement.coverage}
-              onChange={(v) => p.onPatch({ coverage: v })}
-              fmt={(v) => `${Math.round(v * 100)}%`}
-            />
-            <div className="row" style={{ gap: 8 }}>
-              <button className="secondary" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 0.9, 0.08, 0.9) })}>– smaller</button>
-              <button className="secondary" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 1.1, 0.08, 0.9) })}>+ larger</button>
+
+            <div className="slider-section">
+              <div className="slider-section-title">
+                Angle & lens
+                {!viewer && p.cutoutBusy && (
+                  <>
+                    {" "}
+                    <span className="spinner" />
+                  </>
+                )}
+              </div>
+              <Slider
+                label="Rotate"
+                min={-180}
+                max={180}
+                step={1}
+                value={p.placement.pose.azimuthDeg ?? 0}
+                onChange={(v) => p.onPatchPose({ azimuthDeg: v })}
+                fmt={(v) => `${Math.round(v)}°`}
+              />
+              <Slider
+                label="Tilt (f/b)"
+                min={-40}
+                max={70}
+                step={1}
+                value={p.placement.pose.elevationDeg ?? 0}
+                onChange={(v) => p.onPatchPose({ elevationDeg: v })}
+                fmt={(v) => `${Math.round(v)}°`}
+              />
+              <Slider
+                label="Tilt (l/r)"
+                min={-45}
+                max={45}
+                step={1}
+                value={p.placement.pose.rollDeg ?? 0}
+                onChange={(v) => p.onPatchPose({ rollDeg: v })}
+                fmt={(v) => `${Math.round(v)}°`}
+              />
+              <Slider
+                label="Lens (FOV)"
+                min={15}
+                max={60}
+                step={1}
+                value={p.placement.pose.fovDeg ?? 32}
+                onChange={(v) => p.onPatchPose({ fovDeg: v })}
+                fmt={(v) => `${Math.round(v)}°`}
+              />
+            </div>
+
+            <div className="slider-section">
+              <div className="slider-section-title">Light</div>
+              <Slider
+                label="Brightness"
+                min={0}
+                max={100}
+                step={1}
+                value={p.placement.brightness}
+                onChange={(v) => p.onPatch({ brightness: v })}
+                fmt={(v) => `${Math.round(v)}`}
+              />
+              <Slider
+                label="Light output"
+                min={0}
+                max={100}
+                step={1}
+                value={p.placement.lightOutput}
+                onChange={(v) => p.onPatch({ lightOutput: v })}
+                fmt={(v) => `${Math.round(v)}`}
+              />
+              <Slider
+                label="Warmth"
+                min={0}
+                max={1}
+                step={0.05}
+                value={p.placement.warm}
+                onChange={(v) => p.onPatch({ warm: v })}
+                fmt={(v) => `${Math.round(v * 100)}%`}
+              />
             </div>
           </div>
 
-          <div className="card col" style={{ gap: 10 }}>
-            <h3 style={{ margin: 0 }}>Angle & lens</h3>
-            <div className="muted" style={{ fontSize: 12 }}>
-              {viewer ? (
-                "Rotate/tilt the fixture by dragging it directly, or use the sliders — instant."
-              ) : (
-                <>
-                  Changing the angle re-renders the fixture (a moment).
-                  {p.cutoutBusy && (
-                    <>
-                      {" "}
-                      <span className="spinner" /> updating…
-                    </>
-                  )}
-                </>
-              )}
-            </div>
-            <Slider
-              label="Rotate"
-              min={-180}
-              max={180}
-              step={1}
-              value={p.placement.pose.azimuthDeg ?? 0}
-              onChange={(v) => p.onPatchPose({ azimuthDeg: v })}
-              fmt={(v) => `${Math.round(v)}°`}
-            />
-            <Slider
-              label="Tilt"
-              min={-40}
-              max={70}
-              step={1}
-              value={p.placement.pose.elevationDeg ?? 0}
-              onChange={(v) => p.onPatchPose({ elevationDeg: v })}
-              fmt={(v) => `${Math.round(v)}°`}
-            />
-            <Slider
-              label="Lens (FOV)"
-              min={15}
-              max={60}
-              step={1}
-              value={p.placement.pose.fovDeg ?? 32}
-              onChange={(v) => p.onPatchPose({ fovDeg: v })}
-              fmt={(v) => `${Math.round(v)}°`}
-            />
-          </div>
-
-          <div className="card col" style={{ gap: 10 }}>
-            <h3 style={{ margin: 0 }}>Light</h3>
-            <div className="muted" style={{ fontSize: 12 }}>
-              Applies on Test / Final render.
-            </div>
-            <Slider
-              label="Fixture brightness"
-              min={0}
-              max={100}
-              step={1}
-              value={p.placement.brightness}
-              onChange={(v) => p.onPatch({ brightness: v })}
-              fmt={(v) => `${Math.round(v)}`}
-            />
-            <div className="muted" style={{ fontSize: 11, marginTop: -4 }}>
-              How bright the fixture's own bulbs/diffusers glow.
-            </div>
-            <Slider
-              label="Light output"
-              min={0}
-              max={100}
-              step={1}
-              value={p.placement.lightOutput}
-              onChange={(v) => p.onPatch({ lightOutput: v })}
-              fmt={(v) => `${Math.round(v)}`}
-            />
-            <div className="muted" style={{ fontSize: 11, marginTop: -4 }}>
-              How much light it casts into the room (wall wash, glow, shadows).
-            </div>
-            <Slider
-              label="Warmth"
-              min={0}
-              max={1}
-              step={0.05}
-              value={p.placement.warm}
-              onChange={(v) => p.onPatch({ warm: v })}
-              fmt={(v) => `${Math.round(v * 100)}%`}
-            />
-          </div>
-
-          <div className="muted" style={{ fontSize: 12 }}>
+          <div className="muted" style={{ fontSize: 11 }}>
             {p.mountLabel && <>Mount: {p.mountLabel}. </>}
-            Use <strong>Test render</strong> to check true light and glass, then{" "}
-            <strong>Final render</strong> for the layered export.
+            <strong>Test render</strong> checks light & glass; <strong>Final render</strong> exports.
           </div>
         </div>
 
@@ -1317,15 +1324,17 @@ function ModelViewerCanvas(p: ViewerCanvasProps) {
         zIndex: 5,
         display: "flex",
         justifyContent: "center",
-        background: "var(--bg-muted, #0d1117)",
-        borderRadius: "var(--radius)",
-        padding: 8,
       }}
     >
       <div
         ref={roomRef}
         className="placement-canvas"
-        style={{ position: "relative", width: "100%" }}
+        style={{
+          position: "relative",
+          width: "100%",
+          borderRadius: 0,
+          border: "none",
+        }}
         onWheel={onWheel}
       >
         <img
@@ -1355,7 +1364,7 @@ function ModelViewerCanvas(p: ViewerCanvasProps) {
               top: `${p.placement.yPct * 100}%`,
               height: `${boxFrac * 100}%`,
               aspectRatio: "1 / 1",
-              transform: "translate(-50%, -50%)",
+              transform: `translate(-50%, -50%) rotate(${pose.rollDeg ?? 0}deg)`,
               touchAction: "none",
             }}
           >
@@ -1517,15 +1526,17 @@ function ShotCanvas(p: CanvasProps) {
         zIndex: 5,
         display: "flex",
         justifyContent: "center",
-        background: "var(--bg-muted, #0d1117)",
-        borderRadius: "var(--radius)",
-        padding: 8,
       }}
     >
       <div
         ref={ref}
         className="placement-canvas"
-        style={{ cursor: p.showPreview ? "default" : "grab", maxHeight: "72vh" }}
+        style={{
+          cursor: p.showPreview ? "default" : "grab",
+          maxHeight: "72vh",
+          borderRadius: 0,
+          border: "none",
+        }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
@@ -1605,13 +1616,10 @@ interface SliderProps {
 
 function Slider({ label, min, max, step, value, onChange, fmt }: SliderProps) {
   return (
-    <div className="col" style={{ gap: 4 }}>
-      <div className="row" style={{ justifyContent: "space-between" }}>
-        <label style={{ margin: 0 }}>{label}</label>
-        <span className="muted" style={{ fontSize: 12 }}>
-          {fmt(value)}
-        </span>
-      </div>
+    <div className="slider-row">
+      <label className="slider-label" style={{ margin: 0 }}>
+        {label}
+      </label>
       <input
         type="range"
         min={min}
@@ -1619,8 +1627,9 @@ function Slider({ label, min, max, step, value, onChange, fmt }: SliderProps) {
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        style={{ width: "100%" }}
+        className="slider-input"
       />
+      <span className="slider-value muted">{fmt(value)}</span>
     </div>
   );
 }

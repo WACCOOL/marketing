@@ -234,11 +234,14 @@ export type AppImagePerspective = z.infer<typeof AppImagePerspectiveSchema>;
 /**
  * Camera pose for rendering a 3D fixture model (Phase 3). An orbit camera around
  * the fixture: `azimuthDeg` rotates around it (0 = front), `elevationDeg` raises
- * the camera, `fovDeg` sets the lens, and the framing factors dolly/pad the shot.
+ * the camera (front-to-back tilt), `rollDeg` rolls the camera about its view axis
+ * (side-to-side tilt / lean), `fovDeg` sets the lens, and the framing factors
+ * dolly/pad the shot.
  */
 export const AppImageModelPoseSchema = z.object({
   azimuthDeg: z.number().default(0),
   elevationDeg: z.number().default(0),
+  rollDeg: z.number().default(0),
   fovDeg: z.number().positive().default(35),
   distanceFactor: z.number().positive().default(1),
   marginFactor: z.number().positive().default(1.25),

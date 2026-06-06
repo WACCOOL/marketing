@@ -22,7 +22,7 @@ import sys
 import json
 import math
 import re
-from mathutils import Vector
+from mathutils import Vector, Quaternion
 
 
 # Top-level collections that are scene rig, never the product itself.
@@ -152,6 +152,7 @@ def place_camera(scene, center, radius, pose):
     """Create + aim an orbit camera around the fixture from the given pose."""
     az = math.radians(pose.get("azimuthDeg", 0.0))
     el = math.radians(pose.get("elevationDeg", 0.0))
+    roll = math.radians(pose.get("rollDeg", 0.0))
     fov_deg = pose.get("fovDeg", 35.0)
     margin = pose.get("marginFactor", 1.25)
 
@@ -175,9 +176,14 @@ def place_camera(scene, center, radius, pose):
     )
     cam_obj.location = center + dir_vec * distance
 
-    # Aim at the fixture center.
+    # Aim at the fixture center, then roll about the view axis (side-to-side tilt).
     look = (center - cam_obj.location).normalized()
-    cam_obj.rotation_euler = look.to_track_quat("-Z", "Y").to_euler()
+    quat = look.to_track_quat("-Z", "Y")
+    if roll:
+        # The camera looks down local -Z; roll about the view axis so a positive
+        # rollDeg leans the fixture clockwise on screen (matches the live viewer).
+        quat = quat @ Quaternion((0.0, 0.0, 1.0), -roll)
+    cam_obj.rotation_euler = quat.to_euler()
 
     scene.camera = cam_obj
     return cam_obj
