@@ -15,6 +15,7 @@
 
 import { makeBflAdapter } from "./bfl.js";
 import { makeGeminiAdapter } from "./gemini.js";
+import { makeModelRenderAdapter } from "./modelRender.js";
 
 /** Inpaint a masked region. White mask pixels are repainted; black preserved. */
 export interface InpaintRequest {
@@ -146,6 +147,165 @@ export interface SceneInspectAdapter {
   hasMountedFixture(req: SceneInspectRequest): Promise<boolean>;
 }
 
+/** Suggested corrections to a fixture placement, each in its own unit. */
+export interface PlacementAdjust {
+  /** Absolute screen target for the fixture center (0..1), if a move is needed. */
+  xPct?: number;
+  yPct?: number;
+  /** Absolute fixture height as a fraction of the frame (0..1). */
+  coverage?: number;
+  /** Absolute light slider (0..100). */
+  brightness?: number;
+}
+
+export interface PlacementCritiqueRequest {
+  /** The preview composite to judge. */
+  image: Buffer;
+  /** Fixture context so the rubric fits the type (sconce vs chandelier). */
+  fixtureType?: string;
+  mount?: "ceiling" | "wall" | "floor" | "recessed";
+  /** The current placement, so the model returns sensible absolute corrections. */
+  current?: PlacementAdjust;
+  timeoutMs?: number;
+}
+
+export interface PlacementCritique {
+  approved: boolean;
+  /** Absolute corrected values to apply before the next preview (when not approved). */
+  adjust?: PlacementAdjust;
+  /** Short human-readable reason (logged, not shown to the user). */
+  reason?: string;
+}
+
+/** Request to analyze a BARE room (no fixture yet) for the best mount spot. */
+export interface RoomAnalysisRequest {
+  /** The empty room plate. */
+  image: Buffer;
+  fixtureType?: string;
+  mount?: "ceiling" | "wall" | "floor" | "recessed";
+  timeoutMs?: number;
+}
+
+/** Where the fixture should go, read off the room itself before any render. */
+export interface RoomPlacement {
+  /** Fixture center as 0..1 from top-left. */
+  xPct: number;
+  yPct: number;
+  /** Fixture height as a fraction of the frame (0..1), if the model offers one. */
+  coverage?: number;
+  reason?: string;
+}
+
+/**
+ * Vision critic for the auto-placement loop: judges a preview composite (is the
+ * fixture grounded, correctly scaled/positioned, and clearly lighting the space?)
+ * and returns absolute corrections to apply before the next preview. Fails open
+ * (approved=true) so a flaky vision call never deadlocks the loop.
+ *
+ * `analyzeRoom` (optional) reads the BARE room before any render to find the
+ * natural mount point (ceiling center above the seating, a clear wall, etc.), so
+ * the fixture starts in the right place instead of dead-center.
+ */
+export interface PlacementCriticAdapter {
+  readonly provider: string;
+  critiquePlacement(req: PlacementCritiqueRequest): Promise<PlacementCritique>;
+  analyzeRoom?(req: RoomAnalysisRequest): Promise<RoomPlacement | null>;
+}
+
+/** Camera pose for an orbit render of a 3D fixture (degrees + framing factors). */
+export interface ModelRenderPose {
+  azimuthDeg?: number;
+  elevationDeg?: number;
+  fovDeg?: number;
+  distanceFactor?: number;
+  marginFactor?: number;
+}
+
+/**
+ * Render a real 3D fixture model (.blend/.glb) to a transparent PNG at a given
+ * pose. Either `modelUrl` (fetched by the worker) or `modelPath` (local, POC).
+ */
+export interface ModelRenderRequest {
+  modelUrl?: string;
+  modelPath?: string;
+  /** Helps the worker pick the fixture collection inside the file. */
+  sku?: string;
+  pose?: ModelRenderPose;
+  width?: number;
+  height?: number;
+  engine?: string;
+  samples?: number;
+  lightsOn?: boolean;
+}
+
+export interface ExportGlbRequest {
+  modelUrl?: string;
+  modelPath?: string;
+  /** Helps the worker pick the fixture collection inside the file. */
+  sku?: string;
+}
+
+export interface ModelRenderAdapter {
+  readonly provider: string;
+  render(req: ModelRenderRequest): Promise<Buffer>;
+  /** Export the fixture (no studio rig) to a GLB for the web 3D viewer. */
+  exportGlb(req: ExportGlbRequest): Promise<Buffer>;
+}
+
+/**
+ * Render a 3D fixture composited INTO a room plate (the in-Blender app-shot
+ * pipeline): the fixture refracts/lights the real room and the result IS the
+ * framed image. `preview` does a fast low-res single render for the interactive
+ * AI/slider loop; the final render emits the layered PSD + AVIF too.
+ */
+export interface CompositeRenderRequest {
+  modelUrl?: string;
+  modelPath?: string;
+  sku?: string;
+  /** The room plate to composite into (URL the worker fetches, or local path). */
+  roomUrl?: string;
+  roomPath?: string;
+  /** Manufacturer IES photometry for accurate spill (optional — decoratives lack it). */
+  iesUrl?: string;
+  iesPath?: string;
+  iesRotation?: [number, number, number];
+  pose?: ModelRenderPose;
+  cameraName?: string;
+  /** Fixture height as a fraction of the frame (0..1). */
+  coverage?: number;
+  /** Screen position of the fixture center (0..1). */
+  xPct?: number;
+  yPct?: number;
+  /** Fixture-brightness slider (0..200, 25 = neutral): the fixture's own glow. */
+  brightness?: number;
+  /** Light-output slider (0..200, 25 = neutral): real light thrown into the room. */
+  lightOutput?: number;
+  warm?: number;
+  samples?: number;
+  highQuality?: boolean;
+  /** Final export emits the layered PSD; preview is png-only. */
+  layers?: boolean;
+  preview?: boolean;
+  previewMaxPx?: number;
+  /** Render at this multiple of the target size then downscale (crisp fixture AA). */
+  supersample?: number;
+  /** Final export: upscale the room so its long edge is >= this many px. */
+  finalLongEdge?: number;
+  timeoutMs?: number;
+}
+
+export interface CompositeResult {
+  png: Buffer;
+  avif?: Buffer;
+  /** Layered PSD (Background / Light+Shadow / Fixture / Fixture Glow) on finals. */
+  psd?: Buffer;
+}
+
+export interface CompositeAdapter {
+  readonly provider: string;
+  composite(req: CompositeRenderRequest): Promise<CompositeResult>;
+}
+
 /**
  * The set of adapters available for a generation run. Each slot is populated
  * only when the corresponding provider key is configured, so the pipeline can
@@ -159,6 +319,12 @@ export interface ImageGenAdapters {
   relighter?: RelightAdapter;
   perspective?: PerspectiveAdapter;
   inspector?: SceneInspectAdapter;
+  /** Self-hosted Blender render-worker (Phase 3 3D fixture path). */
+  modelRenderer?: ModelRenderAdapter;
+  /** In-Blender room compositing (Phase 3 app-shot pipeline). */
+  compositor?: CompositeAdapter;
+  /** Vision check that critiques + auto-corrects fixture placement. */
+  placementCritic?: PlacementCriticAdapter;
 }
 
 export interface AdapterConfig {
@@ -168,6 +334,8 @@ export interface AdapterConfig {
   geminiApiKey?: string;
   /** Gemini model for segmentation (background removal). */
   geminiSegmentModel?: string;
+  /** Render-worker base URL (Blender 3D fixture rendering). */
+  renderWorkerUrl?: string;
 }
 
 /**
@@ -193,6 +361,13 @@ export function makeImageGenAdapters(config: AdapterConfig): ImageGenAdapters {
     adapters.relighter = gemini;
     adapters.perspective = gemini;
     adapters.inspector = gemini;
+    adapters.placementCritic = gemini;
+  }
+
+  if (config.renderWorkerUrl) {
+    const worker = makeModelRenderAdapter({ url: config.renderWorkerUrl });
+    adapters.modelRenderer = worker;
+    adapters.compositor = worker;
   }
 
   return adapters;

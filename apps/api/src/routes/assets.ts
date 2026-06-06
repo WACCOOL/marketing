@@ -140,6 +140,10 @@ function guessContentType(format: string): string {
       return "image/jpeg";
     case "webp":
       return "image/webp";
+    case "avif":
+      return "image/avif";
+    case "psd":
+      return "image/vnd.adobe.photoshop";
     case "url":
     case "txt":
       return "text/plain";

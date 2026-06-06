@@ -32,3 +32,8 @@ GEMINI_API_KEY=
 # GEMINI_SCENE_MODEL=gemini-3-pro-image
 # Gemini model for background removal (segmentation). Defaults to gemini-2.5-flash.
 # GEMINI_SEGMENT_MODEL=gemini-2.5-flash
+# Phase 3 — Blender render-worker base URL for 3D fixture rendering. Forwarded
+# into the generation Container. POC: a local/tunneled dev box (e.g.
+# http://host.docker.internal:8787); prod: the GPU server. Leave blank to disable
+# the 3D model path (fixtures then require a flat cutout image).
+RENDER_WORKER_URL=

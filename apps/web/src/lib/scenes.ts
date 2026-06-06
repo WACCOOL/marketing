@@ -17,6 +17,8 @@ export async function generateScene(req: {
   imageSize: GeminiImageSize;
   fixtureType?: string;
   mount?: FixtureMount;
+  /** Enforce the AI scene gate (clean mount surface) — used by 3D app-shots. */
+  gate?: boolean;
 }): Promise<{ url: string }> {
   return api<{ url: string }>("/api/scenes", {
     method: "POST",

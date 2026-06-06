@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
+import { publicOrigin } from "../publicUrl.js";
 
 export const uploadRoutes = new Hono<AppBindings>();
 
@@ -57,7 +58,7 @@ uploadRoutes.post("/", requireAuth, async (c) => {
 
   // Absolute URL so the Container (which has no notion of our origin) can fetch
   // it directly over HTTPS.
-  const url = `${new URL(c.req.url).origin}/api/uploads/${user.id}/${file}`;
+  const url = `${publicOrigin(c)}/api/uploads/${user.id}/${file}`;
   return c.json({ url }, 201);
 });
 

@@ -392,6 +392,23 @@ th {
   height: auto;
   pointer-events: none;
 }
+/* 3D app-shot edit view: controls on the left, room/fixture canvas on the right,
+   both visible at once. Collapses to one column on narrow screens. */
+.appshot-edit {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) 1fr;
+  gap: 14px;
+  align-items: start;
+}
+.appshot-canvas-col {
+  min-width: 0;
+}
+@media (max-width: 860px) {
+  .appshot-edit {
+    grid-template-columns: 1fr;
+  }
+}
+
 .fixture-overlay {
   position: absolute;
   cursor: grab;

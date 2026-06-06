@@ -1,0 +1,21 @@
+{
+  "name": "@wac/render-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/server.js --external:sharp --banner:js=\"import{createRequire as __cr}from'module';const require=__cr(import.meta.url);\"",
+    "start": "node dist/server.js",
+    "dev": "pnpm build && node dist/server.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.6.3"
+  },
+  "dependencies": {
+    "ag-psd": "^30.1.1",
+    "sharp": "^0.34.5"
+  }
+}

@@ -17,11 +17,23 @@ import {
   type FixtureInput,
   type Placement,
   type PrepareCutout,
+  type RenderModel,
 } from "./composite.js";
 import { harmonizeFixtures } from "./harmonize.js";
 import { fetchImageBuffer } from "./fetchImage.js";
 import { makeImageGenAdapters, type ImageGenAdapters } from "./ai/adapter.js";
 import { resolveCutout, type CutoutCache } from "./cutout.js";
+import {
+  autoPlace,
+  exportFixtureGlb,
+  finalRender,
+  planPlacement,
+  renderCutout,
+  resolveFixture,
+  type AutoPlaceInput,
+  type FinalRenderInput,
+  type Placement as ShotPlacement,
+} from "./appshot3d.js";
 
 /**
  * WAC generation Container (Phase 2d).
@@ -63,6 +75,9 @@ interface Config {
   // GEMINI_SEGMENT_MODEL. When GEMINI_API_KEY is unset, opaque cutouts are
   // rejected (composite/hybrid require transparent fixtures).
   geminiSegmentModel?: string;
+  // Base URL of the self-hosted Blender render-worker (Phase 3 3D fixtures).
+  // When unset, fixtures that carry a 3D model fail with a precise error.
+  renderWorkerUrl?: string;
 }
 
 const DEFAULT_SCENE_MODEL = "gemini-3-pro-image";
@@ -95,6 +110,7 @@ function loadConfig(): Config {
     geminiApiKey: process.env.GEMINI_API_KEY || undefined,
     geminiSceneModel: process.env.GEMINI_SCENE_MODEL || DEFAULT_SCENE_MODEL,
     geminiSegmentModel: process.env.GEMINI_SEGMENT_MODEL || undefined,
+    renderWorkerUrl: process.env.RENDER_WORKER_URL || undefined,
   };
 }
 
@@ -208,6 +224,7 @@ function runStubGenerator(req: GenerateRequest): GenerationResult {
 function mapFixtures(p: AppImageParams): FixtureInput[] {
   return p.fixtures.map((f) => ({
     cutoutUrl: f.cutoutUrl,
+    model: f.model,
     dimensionsMm: f.dimensionsMm,
     anchor: f.anchor,
     xPct: f.xPct,
@@ -215,6 +232,38 @@ function mapFixtures(p: AppImageParams): FixtureInput[] {
     widthBasis: f.widthBasis,
     perspective: f.perspective,
   }));
+}
+
+/**
+ * Build the model-render hook from the configured render-worker adapter. Renders
+ * each 3D fixture to a transparent PNG and trims the transparent margins so the
+ * cutout tightly bounds the fixture (the scale engine then sizes it from the real
+ * dimension exactly like a matted photo cutout). Returns undefined when no
+ * render-worker is configured, so model fixtures fail with a precise error.
+ */
+function makeRenderModel(adapters: ImageGenAdapters): RenderModel | undefined {
+  const renderer = adapters.modelRenderer;
+  if (!renderer) return undefined;
+  return async (model) => {
+    const png = await renderer.render({
+      modelUrl: model.url,
+      sku: model.sku,
+      pose: model.pose,
+      engine: model.engine,
+      samples: model.samples,
+      lightsOn: model.lightsOn,
+      width: 2048,
+      height: 2048,
+    });
+    const trimmed = await sharp(png).trim().png().toBuffer();
+    const meta = await sharp(trimmed).metadata();
+    return {
+      buffer: trimmed,
+      width: meta.width ?? 0,
+      height: meta.height ?? 0,
+      hasAlpha: true,
+    };
+  };
 }
 
 /** Drop the heavy resized-cutout buffers before a placement goes into metadata. */
@@ -231,6 +280,7 @@ function toPlacementMeta(
 async function runComposite(
   p: AppImageParams,
   prepareCutout?: PrepareCutout,
+  renderModel?: RenderModel,
 ): Promise<GenerationResult> {
   const result = await composeAppImage({
     sceneUrl: p.sceneUrl!,
@@ -239,6 +289,7 @@ async function runComposite(
     fixtures: mapFixtures(p),
     output: p.output,
     prepareCutout,
+    renderModel,
   });
   return {
     files: [
@@ -297,11 +348,13 @@ async function runHybrid(
   p: AppImageParams,
   adapters: ImageGenAdapters,
   prepareCutout?: PrepareCutout,
+  renderModel?: RenderModel,
 ): Promise<GenerationResult> {
   const { scene, fixtures } = await fetchSceneAndFixtures(
     p.sceneUrl!,
     mapFixtures(p),
     prepareCutout,
+    renderModel,
   );
   const placed = await placeFixtures({
     scene,
@@ -420,6 +473,59 @@ async function runConcept(
   };
 }
 
+/**
+ * 3D app-shot final render (`shot3d` mode). Rides the async job pipeline so the
+ * full-quality layered export becomes a library asset. Reads the finalized
+ * placement from `p.shot`, renders the in-Blender composite, and returns the
+ * PNG + (when present) AVIF + layered PSD as asset files.
+ */
+async function runShot3d(
+  p: AppImageParams,
+  adapters: ImageGenAdapters,
+): Promise<GenerationResult> {
+  const shot = p.shot;
+  if (!shot) {
+    throw new Error("shot3d mode requires a shot payload");
+  }
+  const art = await finalRender(
+    {
+      sku: shot.sku,
+      roomUrl: shot.sceneUrl,
+      placement: shot.placement as ShotPlacement,
+      samples: shot.samples,
+      highQuality: shot.highQuality ?? true,
+      straightOn: shot.straightOn,
+    },
+    adapters,
+  );
+  const files: GeneratedFile[] = [
+    { format: "png", body: art.png, contentType: "image/png" },
+  ];
+  if (art.avif) {
+    files.push({ format: "avif", body: art.avif, contentType: "image/avif" });
+  }
+  if (art.psd) {
+    files.push({
+      format: "psd",
+      body: art.psd,
+      contentType: "image/vnd.adobe.photoshop",
+    });
+  }
+  return {
+    files,
+    metadata: {
+      version: p.version,
+      mode: "shot3d",
+      generatedBy: "blender:in-scene-composite",
+      productAccurate: true,
+      sku: shot.sku,
+      sceneUrl: shot.sceneUrl,
+      placement: shot.placement,
+      formats: files.map((f) => f.format),
+    },
+  };
+}
+
 interface SceneGenRequest {
   prompt: string;
   aspectRatio?: string;
@@ -427,36 +533,60 @@ interface SceneGenRequest {
   /** Hero-fixture context so the room is staged to showcase it (see below). */
   fixtureType?: string;
   mount?: "ceiling" | "wall" | "floor" | "recessed";
+  /**
+   * Enforce the AI scene gate: after generating, vision-check that the mount
+   * surface is clear (no hallucinated fixture/hardware) and auto-regenerate up to
+   * a few times if not. Runs silently — the user only ever sees a clean plate.
+   */
+  gate?: boolean;
 }
 
-const MOUNT_SURFACE_PHRASE: Record<NonNullable<SceneGenRequest["mount"]>, string> = {
-  ceiling: "the center of the ceiling",
-  wall: "a clear, prominent wall area",
-  floor: "an open area of the floor",
-  recessed: "the ceiling",
+// How many times to silently re-roll a scene that fails the AI gate.
+const SCENE_GATE_MAX_TRIES = 3;
+
+/**
+ * Per-mount clause that keeps the mount surface clear for the real fixture.
+ *
+ * CRITICAL: never describe the ceiling as "open" — image models read "open
+ * ceiling" as a SKYLIGHT/opening and punch a hole in it. The ceiling is framed
+ * positively as solid/continuous/unbroken with nothing hanging and a clear
+ * center. (Verified by A/B generating real rooms; "open" reliably produced
+ * skylights, the wording below reliably produced clean solid ceilings.)
+ */
+const MOUNT_CLEAR_PHRASE: Record<NonNullable<SceneGenRequest["mount"]>, string> = {
+  ceiling:
+    "Overhead, the ceiling is a single smooth, solid, continuous and unbroken " +
+    "flat ceiling with nothing currently hanging from it, its center left clean " +
+    "and clear so a fixture can be added there later",
+  recessed:
+    "Overhead, the ceiling is a single smooth, solid, continuous and unbroken " +
+    "flat ceiling with nothing currently mounted on it, its center left clean " +
+    "and clear so a fixture can be added there later",
+  wall:
+    "Leave one clean, clear and prominent section of wall with nothing mounted " +
+    "on it, so a fixture can be added there later",
+  floor:
+    "Leave a clear, uncluttered area of floor in the foreground so a fixture " +
+    "can be added there later",
 };
 
 /**
  * When the scene is being generated to SHOWCASE a specific fixture, augment the
- * user's room description so Gemini leaves clear, uncluttered space on the mount
- * surface and omits any pre-existing fixture there (so the real fixture we drop
- * in later isn't competing with a hallucinated one).
+ * user's room description so Gemini produces a fully furnished, magazine-style
+ * interior that still leaves the mount surface clear (so the real fixture we
+ * drop in later isn't competing with a hallucinated one). The AI scene gate
+ * re-rolls if a fixture still appears on the mount surface.
  */
 function buildScenePrompt(req: SceneGenRequest): string {
   const base = req.prompt.trim();
   if (!req.fixtureType && !req.mount) return base;
   const surface = req.mount ?? "ceiling";
-  const where = MOUNT_SURFACE_PHRASE[surface];
-  const surfaceNoun =
-    surface === "wall" ? "wall" : surface === "floor" ? "floor" : "ceiling";
-  // Image models draw every object noun we mention (even after "no"), so we
-  // avoid naming fixtures/hardware and instead describe a bare, pre-installation
-  // room positively. The open focal space leaves room to composite the fixture.
+  const clear = MOUNT_CLEAR_PHRASE[surface];
   return (
-    `${base}. A newly finished, unfurnished interior photographed before ` +
-    `anything is mounted. The ${surfaceNoun} is smooth, blank and completely ` +
-    `bare, with clear, open, well-lit space at ${where}. Photorealistic ` +
-    `interior photograph, balanced natural daylight, no text or watermarks.`
+    `${base}. A fully furnished, professionally styled and decorated interior ` +
+    `with real furniture, rugs, art, and plants appropriate to the room, shot ` +
+    `like a high-end interior-design magazine photograph. ${clear}. ` +
+    `Photorealistic, balanced natural daylight, no text or watermarks.`
   );
 }
 
@@ -496,16 +626,31 @@ async function generateScene(
     throw new Error("scene generation requires a prompt");
   }
 
-  // Single pass — keep scene gen fast. The fixture-aware prompt already steers
-  // Gemini toward a clean surface; if a stray fixture slips through the user can
-  // just regenerate (no automatic re-roll, which doubled the wait).
-  const image = await generator.generate({
-    prompt: buildScenePrompt(req),
-    aspectRatio: req.aspectRatio,
-    imageSize: req.imageSize,
-    model: config.geminiSceneModel,
-    timeoutMs: SCENE_GEN_TIMEOUT_MS,
-  });
+  const prompt = buildScenePrompt(req);
+  const gen = () =>
+    generator.generate({
+      prompt,
+      aspectRatio: req.aspectRatio,
+      imageSize: req.imageSize,
+      model: config.geminiSceneModel,
+      timeoutMs: SCENE_GEN_TIMEOUT_MS,
+    });
+
+  // AI scene gate (opt-in): re-roll silently until the mount surface is clean, so
+  // the real fixture isn't competing with a hallucinated one. Without it, a stray
+  // fixture means the user just regenerates.
+  let image = await gen();
+  if (req.gate && adapters.inspector) {
+    for (let tries = 1; tries < SCENE_GATE_MAX_TRIES; tries++) {
+      const dirty = await adapters.inspector.hasMountedFixture({
+        image,
+        mount: req.mount,
+      });
+      if (!dirty) break;
+      console.log(`[generator] scene gate: re-rolling (try ${tries + 1})`);
+      image = await gen();
+    }
+  }
   return { body: image, contentType: sniffImageContentType(image) };
 }
 
@@ -530,14 +675,18 @@ async function runAppImageGenerator(
     throw new Error(`unsupported appimage params version: ${p.version}`);
   }
 
+  const renderModel = makeRenderModel(adapters);
+
   switch (p.mode) {
+    case "shot3d":
+      return runShot3d(p, adapters);
     case "hybrid":
-      return runHybrid(p, adapters, prepareCutout);
+      return runHybrid(p, adapters, prepareCutout, renderModel);
     case "concept":
       return runConcept(p, adapters);
     case "composite":
     default:
-      return runComposite(p, prepareCutout);
+      return runComposite(p, prepareCutout, renderModel);
   }
 }
 
@@ -793,6 +942,7 @@ function main(): void {
     bflApiKey: config.bflApiKey,
     geminiApiKey: config.geminiApiKey,
     geminiSegmentModel: config.geminiSegmentModel,
+    renderWorkerUrl: config.renderWorkerUrl,
   });
 
   const server = http.createServer((req, res) => {
@@ -951,6 +1101,216 @@ function main(): void {
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);
           console.error("[generator] cutout failed:", message);
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: message }));
+        }
+        return;
+      }
+
+      // 3D app-shot: pick a starting placement by reading the bare room (vision
+      // only, no Blender). Fast — runs before the interactive editor opens.
+      if (req.method === "POST" && url.pathname === "/autoplace-3d") {
+        let body: { sku?: string; roomUrl?: string; roomPath?: string } | null;
+        try {
+          const raw = await readJsonBody(req);
+          body = raw && typeof raw === "object" ? (raw as typeof body) : null;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        if (!body || typeof body.sku !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "autoplace-3d needs a sku" }));
+          return;
+        }
+        try {
+          const meta = resolveFixture(body.sku);
+          const placement = await planPlacement(
+            { sku: body.sku, roomUrl: body.roomUrl, roomPath: body.roomPath },
+            adapters,
+          );
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              placement,
+              fixtureType: meta.fixtureType,
+              mount: meta.mount,
+            }),
+          );
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          console.error("[generator] autoplace-3d failed:", message);
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: message }));
+        }
+        return;
+      }
+
+      // 3D app-shot: export the fixture to a GLB for the web 3D viewer (the new
+      // model-viewer placement path). Returns raw GLB bytes; the API caches them
+      // in R2 per SKU and hands back a public URL.
+      if (req.method === "POST" && url.pathname === "/glb-3d") {
+        let body: { sku?: string } | null;
+        try {
+          const raw = await readJsonBody(req);
+          body = raw && typeof raw === "object" ? (raw as typeof body) : null;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        if (!body || typeof body.sku !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "glb-3d needs a sku" }));
+          return;
+        }
+        try {
+          const glb = await exportFixtureGlb(body.sku, adapters);
+          res.writeHead(200, { "content-type": "model/gltf-binary" });
+          res.end(glb);
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          console.error("[generator] glb-3d failed:", message);
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: message }));
+        }
+        return;
+      }
+
+      // 3D app-shot: render the fixture alone to a full-frame transparent PNG for
+      // the interactive drag/scale overlay (one render per pose; position + size
+      // are pure client-side CSS transforms after that).
+      if (req.method === "POST" && url.pathname === "/cutout-3d") {
+        let body:
+          | {
+              sku?: string;
+              pose?: ShotPlacement["pose"];
+              coverageRef?: number;
+              width?: number;
+              height?: number;
+              samples?: number;
+            }
+          | null;
+        try {
+          const raw = await readJsonBody(req);
+          body = raw && typeof raw === "object" ? (raw as typeof body) : null;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        if (!body || typeof body.sku !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "cutout-3d needs a sku" }));
+          return;
+        }
+        try {
+          const cut = await renderCutout(
+            {
+              sku: body.sku,
+              pose: body.pose,
+              coverageRef: body.coverageRef,
+              width: body.width,
+              height: body.height,
+              samples: body.samples,
+            },
+            adapters,
+          );
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              png: cut.png.toString("base64"),
+              coverageRef: cut.coverageRef,
+              width: cut.width,
+              height: cut.height,
+            }),
+          );
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          console.error("[generator] cutout-3d failed:", message);
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: message }));
+        }
+        return;
+      }
+
+      // 3D app-shot: auto-place a real fixture into the room and let the AI critic
+      // correct it (hidden loop of fast preview renders). Returns the approved
+      // preview + the placement params the UI binds its sliders to.
+      if (req.method === "POST" && url.pathname === "/compose-3d") {
+        let body: AutoPlaceInput | null;
+        try {
+          const raw = await readJsonBody(req);
+          body = raw && typeof raw === "object" ? (raw as AutoPlaceInput) : null;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        if (!body || typeof body.sku !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "compose-3d needs a sku" }));
+          return;
+        }
+        try {
+          const result = await autoPlace(body, adapters);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              previewPng: result.previewPng.toString("base64"),
+              placement: result.placement,
+              sku: result.sku,
+              fixtureType: result.fixtureType,
+              mount: result.mount,
+              iterations: result.iterations,
+              approved: result.approved,
+            }),
+          );
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          console.error("[generator] compose-3d failed:", message);
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: message }));
+        }
+        return;
+      }
+
+      // 3D app-shot final render: full-quality layered export from the finalized
+      // placement. Returns PNG + AVIF + layered PSD (base64); the API persists.
+      if (req.method === "POST" && url.pathname === "/render-3d") {
+        let body:
+          | (FinalRenderInput & { placement?: ShotPlacement })
+          | null;
+        try {
+          const raw = await readJsonBody(req);
+          body = raw && typeof raw === "object" ? (raw as typeof body) : null;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        if (!body || typeof body.sku !== "string" || !body.placement) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "render-3d needs a sku and placement" }));
+          return;
+        }
+        try {
+          const art = await finalRender(body, adapters);
+          const out: Record<string, unknown> = {
+            ok: true,
+            png: art.png.toString("base64"),
+          };
+          if (art.avif) out.avif = art.avif.toString("base64");
+          if (art.psd) out.psd = art.psd.toString("base64");
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify(out));
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          console.error("[generator] render-3d failed:", message);
           res.writeHead(500, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: false, error: message }));
         }

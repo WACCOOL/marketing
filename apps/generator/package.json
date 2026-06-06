@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "ag-psd": "^30.1.1",
     "sharp": "^0.34.5"
   },
   "devDependencies": {

@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { getContainer } from "@cloudflare/containers";
-import { containerPoolKey } from "./containerPool.js";
+import { generatorFetch } from "./generatorClient.js";
 import type { AppBindings } from "./auth.js";
 import type { Env } from "./env.js";
 import { utmRoutes } from "./routes/utm.js";
@@ -17,6 +16,7 @@ import { jobRoutes } from "./routes/jobs.js";
 import { uploadRoutes } from "./routes/uploads.js";
 import { sceneRoutes } from "./routes/scenes.js";
 import { cutoutRoutes } from "./routes/cutout.js";
+import { appShotRoutes } from "./routes/appshot.js";
 import { makeProductAdapter } from "./saleslayer.js";
 import { serviceSupabase } from "./supabase.js";
 import { updateJobStatus, type GenerationMessage } from "./generation.js";
@@ -63,6 +63,7 @@ app.route("/api/jobs", jobRoutes);
 app.route("/api/uploads", uploadRoutes);
 app.route("/api/scenes", sceneRoutes);
 app.route("/api/cutout", cutoutRoutes);
+app.route("/api/appshot", appShotRoutes);
 
 // Anything not handled by a /api/* route falls through to the SPA assets
 // (configured in wrangler.jsonc with not_found_handling: single-page-application).
@@ -107,6 +108,10 @@ async function scheduled(_event: ScheduledController, env: Env): Promise<void> {
 // adapters enforce tighter per-provider timeouts (60s BFL / 30s Gemini) so a
 // stuck provider surfaces an actionable error; this is the outer ceiling.
 const CONTAINER_TIMEOUT_MS = 150_000;
+// 3D app-shot (shot3d) finals run Blender Cycles over a full-quality layered
+// export, which on large .blend files can take several minutes — far longer than
+// the 2D pipelines. Give those jobs a much larger ceiling.
+const SHOT3D_CONTAINER_TIMEOUT_MS = 600_000;
 
 async function queue(
   batch: MessageBatch<GenerationMessage>,
@@ -115,18 +120,15 @@ async function queue(
   for (const message of batch.messages) {
     const job = message.body;
     try {
-      const container = getContainer(
-        env.GENERATION_CONTAINER,
-        containerPoolKey(job.jobId),
-      );
-      const res = await container.fetch(
-        new Request("http://generation-container/generate", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(job),
-          signal: AbortSignal.timeout(CONTAINER_TIMEOUT_MS),
-        }),
-      );
+      const timeoutMs =
+        (job.params as { mode?: string } | undefined)?.mode === "shot3d"
+          ? SHOT3D_CONTAINER_TIMEOUT_MS
+          : CONTAINER_TIMEOUT_MS;
+      const res = await generatorFetch(env, job.jobId, "/generate", {
+        method: "POST",
+        body: JSON.stringify(job),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
       if (!res.ok) {
         throw new Error(`container responded ${res.status}: ${await res.text()}`);
       }

@@ -1,4 +1,11 @@
 node_modules/
+# Machine-local pnpm tuning (relocates the virtual store off OneDrive). Paths are
+# per-machine, so keep it out of git / CI / Docker. See docs/onedrive-dev-performance.md.
+.npmrc
+# Render-worker scratch outputs (test renders / PSD / AVIF) and Python bytecode.
+apps/render-worker/exports/
+__pycache__/
+*.pyc
 dist/
 build/
 .wrangler/

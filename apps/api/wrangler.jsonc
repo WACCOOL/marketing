@@ -34,7 +34,13 @@
     {
       // Created with: npx wrangler r2 bucket create wac-marketing-assets
       "binding": "ASSETS_BUCKET",
-      "bucket_name": "wac-marketing-assets"
+      "bucket_name": "wac-marketing-assets",
+      // Use the REAL cloud bucket during `wrangler dev`. The host-run generator
+      // writes final shot3d assets to cloud R2 over the S3 API, so a local
+      // simulated bucket can't see them (download -> "object missing"). Remote
+      // binding keeps local dev reading/writing the same bucket as prod. Ignored
+      // by `wrangler deploy`, so this is prod-safe.
+      "remote": true
     }
   ],
 

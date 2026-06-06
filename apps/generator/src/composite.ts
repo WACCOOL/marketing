@@ -1,6 +1,7 @@
 import sharp from "sharp";
 import type {
   AppImageAnchor,
+  AppImageModel,
   AppImageOutput,
   AppImagePerspective,
   AppImageWidthBasis,
@@ -21,7 +22,13 @@ import { isIdentityPerspective, warpCutout } from "./warp.js";
  */
 
 export interface FixtureInput {
-  cutoutUrl: string;
+  /** Catalog image URL. Optional when `model` is set (cutout is rendered). */
+  cutoutUrl?: string;
+  /**
+   * Optional 3D model + pose. When set, the cutout is rendered from the real
+   * fixture geometry (Blender) instead of fetched/matted — true viewpoint/scale.
+   */
+  model?: AppImageModel;
   dimensionsMm: DimensionsMm;
   anchor: AppImageAnchor;
   xPct: number;
@@ -35,6 +42,11 @@ export interface FixtureInput {
   perspective?: AppImagePerspective;
 }
 
+/** A short label for a fixture used in errors + placement metadata. */
+function fixtureLabel(f: { cutoutUrl?: string; model?: AppImageModel }): string {
+  return f.cutoutUrl ?? f.model?.url ?? "model";
+}
+
 /**
  * Hook to transform a freshly-fetched cutout before it's composited - used to
  * swap in a background-removed (matted) version. Receives the source URL and the
@@ -45,6 +57,13 @@ export type PrepareCutout = (
   fetched: SourceImage,
 ) => Promise<SourceImage>;
 
+/**
+ * Hook to render a fixture's 3D model into a transparent cutout (Blender via the
+ * render-worker), tightly trimmed to the fixture. Returns the image to composite
+ * exactly like a matted photo cutout, so the rest of the pipeline is unchanged.
+ */
+export type RenderModel = (model: AppImageModel) => Promise<SourceImage>;
+
 export interface CompositeInput {
   sceneUrl: string;
   pxPerMm: number;
@@ -52,6 +71,7 @@ export interface CompositeInput {
   fixtures: FixtureInput[];
   output: AppImageOutput;
   prepareCutout?: PrepareCutout;
+  renderModel?: RenderModel;
 }
 
 export interface Placement {
@@ -166,6 +186,7 @@ export async function fetchSceneAndFixtures(
   sceneUrl: string,
   fixtures: FixtureInput[],
   prepareCutout?: PrepareCutout,
+  renderModel?: RenderModel,
 ): Promise<FetchedScene> {
   const sceneFetched = await fetchImageBuffer(sceneUrl);
   if (!sceneFetched.width || !sceneFetched.height) {
@@ -180,6 +201,23 @@ export async function fetchSceneAndFixtures(
 
   const prepared: PreparedFixture[] = [];
   for (const fixture of fixtures) {
+    // 3D-model fixtures are rendered to a transparent cutout (Blender); flat
+    // catalog cutouts are fetched + matted. Both yield an RGBA SourceImage.
+    if (fixture.model) {
+      if (!renderModel) {
+        throw new Error(
+          "fixture has a 3D model but model rendering is not configured " +
+            "(set RENDER_WORKER_URL on the generator)",
+        );
+      }
+      const source = await renderModel(fixture.model);
+      prepared.push({ ...fixture, source });
+      continue;
+    }
+
+    if (!fixture.cutoutUrl) {
+      throw new Error("fixture has neither a cutoutUrl nor a 3D model");
+    }
     const cut = await fetchImageBuffer(fixture.cutoutUrl);
     if (!cut.width || !cut.height) {
       throw new Error(`cutout has no readable dimensions: ${fixture.cutoutUrl}`);
@@ -252,6 +290,7 @@ export async function composeAppImage(
     input.sceneUrl,
     input.fixtures,
     input.prepareCutout,
+    input.renderModel,
   );
   return compositeFixtures({
     scene,
@@ -284,13 +323,15 @@ export async function placeFixtures(
     let cut = fixture.source;
     if (!cut.hasAlpha) {
       throw new Error(
-        `cutout ${fixture.cutoutUrl} has no alpha channel; cutouts must be ` +
+        `cutout ${fixtureLabel(fixture)} has no alpha channel; cutouts must be ` +
           `RGBA PNGs with a transparent background (background removal is not ` +
           `performed here)`,
       );
     }
     if (!cut.width || !cut.height) {
-      throw new Error(`cutout has no readable dimensions: ${fixture.cutoutUrl}`);
+      throw new Error(
+        `cutout has no readable dimensions: ${fixtureLabel(fixture)}`,
+      );
     }
 
     // Deterministic perspective correction of the real pixels (if requested),
@@ -316,7 +357,7 @@ export async function placeFixtures(
 
     if (size.width > sceneW || size.height > sceneH) {
       throw new Error(
-        `cutout ${fixture.cutoutUrl} sized to ${size.width}x${size.height}px ` +
+        `cutout ${fixtureLabel(fixture)} sized to ${size.width}x${size.height}px ` +
           `is larger than the scene (${sceneW}x${sceneH}px); reduce scaleAdjust ` +
           `or use a larger scene`,
       );
@@ -340,7 +381,7 @@ export async function placeFixtures(
 
     overlays.push({ input: resized, left: position.left, top: position.top });
     placements.push({
-      cutoutUrl: fixture.cutoutUrl,
+      cutoutUrl: fixtureLabel(fixture),
       dimensionsMm: fixture.dimensionsMm,
       computedPx: size,
       position,

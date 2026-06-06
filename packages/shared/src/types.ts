@@ -231,35 +231,88 @@ export const AppImagePerspectiveSchema = z.object({
 });
 export type AppImagePerspective = z.infer<typeof AppImagePerspectiveSchema>;
 
-export const AppImageFixtureSchema = z.object({
+/**
+ * Camera pose for rendering a 3D fixture model (Phase 3). An orbit camera around
+ * the fixture: `azimuthDeg` rotates around it (0 = front), `elevationDeg` raises
+ * the camera, `fovDeg` sets the lens, and the framing factors dolly/pad the shot.
+ */
+export const AppImageModelPoseSchema = z.object({
+  azimuthDeg: z.number().default(0),
+  elevationDeg: z.number().default(0),
+  fovDeg: z.number().positive().default(35),
+  distanceFactor: z.number().positive().default(1),
+  marginFactor: z.number().positive().default(1.25),
   /**
-   * Sales Layer CDN URL of the product image. Ideally an RGBA PNG with a real
-   * transparent background, but opaque images (JPEG / white-background PNG) are
-   * accepted too: the generator runs background removal (Gemini segmentation
-   * mask -> alpha, cached in R2) to produce a transparent cutout before
-   * compositing. Without GEMINI_API_KEY, opaque cutouts are rejected.
+   * Optional explicit camera distance in scene meters, carried from the 3D
+   * viewer's orbit radius so a Blender render can reproduce the viewer's exact
+   * perspective. When absent the renderer auto-frames from the bounding sphere.
    */
-  cutoutUrl: z.string().url(),
-  /** Real fixture dimensions in millimetres; at least one is required. */
-  dimensionsMm: DimensionsMmSchema.refine(
-    (d) => Boolean(d.width || d.height || d.depth || d.diameter || d.length),
-    {
-      message:
-        "at least one dimension (width/height/depth/diameter/length) is required",
-    },
-  ),
-  anchor: AppImageAnchorSchema.default("bottom-center"),
-  /** Anchor placement as a fraction of scene width/height (0..1). */
-  xPct: z.number().min(0).max(1),
-  yPct: z.number().min(0).max(1),
-  widthBasis: AppImageWidthBasisSchema.default("auto"),
-  /**
-   * Optional deterministic perspective warp applied to the real cutout pixels
-   * before placement (corrects viewing angle without re-rendering). Omitted =
-   * no warp.
-   */
-  perspective: AppImagePerspectiveSchema.optional(),
+  distanceMeters: z.number().positive().optional(),
 });
+export type AppImageModelPose = z.infer<typeof AppImageModelPoseSchema>;
+
+/**
+ * A real 3D fixture model (Blender `.blend` or glTF `.glb`) plus the pose to
+ * render it from. When a fixture carries this, the generator renders a
+ * product-accurate transparent cutout via the render-worker (Blender) instead of
+ * matting a flat catalog photo — true viewpoint/scale, no hallucinated geometry.
+ */
+export const AppImageModelSchema = z.object({
+  /** URL the render-worker can fetch (.blend/.glb). */
+  url: z.string().url(),
+  /** SKU hint so the worker picks the right fixture collection in the file. */
+  sku: z.string().optional(),
+  pose: AppImageModelPoseSchema.default({}),
+  /** Render engine override; defaults to EEVEE (fast) in the worker. */
+  engine: z.enum(["BLENDER_EEVEE_NEXT", "CYCLES"]).optional(),
+  samples: z.number().int().positive().max(2048).optional(),
+  /** Render the fixture's internal lamps "on" (emissive). */
+  lightsOn: z.boolean().optional(),
+});
+export type AppImageModel = z.infer<typeof AppImageModelSchema>;
+
+export const AppImageFixtureSchema = z
+  .object({
+    /**
+     * Sales Layer CDN URL of the product image. Ideally an RGBA PNG with a real
+     * transparent background, but opaque images (JPEG / white-background PNG) are
+     * accepted too: the generator runs background removal (Gemini segmentation
+     * mask -> alpha, cached in R2) to produce a transparent cutout before
+     * compositing. Without GEMINI_API_KEY, opaque cutouts are rejected.
+     *
+     * Optional ONLY when `model` is supplied — then the cutout is rendered from
+     * the 3D model instead of fetched.
+     */
+    cutoutUrl: z.string().url().optional(),
+    /**
+     * Optional 3D model + pose. When present, the generator renders a
+     * product-accurate transparent cutout (Blender) and ignores `cutoutUrl`.
+     */
+    model: AppImageModelSchema.optional(),
+    /** Real fixture dimensions in millimetres; at least one is required. */
+    dimensionsMm: DimensionsMmSchema.refine(
+      (d) => Boolean(d.width || d.height || d.depth || d.diameter || d.length),
+      {
+        message:
+          "at least one dimension (width/height/depth/diameter/length) is required",
+      },
+    ),
+    anchor: AppImageAnchorSchema.default("bottom-center"),
+    /** Anchor placement as a fraction of scene width/height (0..1). */
+    xPct: z.number().min(0).max(1),
+    yPct: z.number().min(0).max(1),
+    widthBasis: AppImageWidthBasisSchema.default("auto"),
+    /**
+     * Optional deterministic perspective warp applied to the real cutout pixels
+     * before placement (corrects viewing angle without re-rendering). Omitted =
+     * no warp. Largely unnecessary when `model` is set (the pose handles angle).
+     */
+    perspective: AppImagePerspectiveSchema.optional(),
+  })
+  .refine((f) => Boolean(f.cutoutUrl) || Boolean(f.model), {
+    message: "fixture needs either a cutoutUrl or a 3D model",
+    path: ["cutoutUrl"],
+  });
 export type AppImageFixture = z.infer<typeof AppImageFixtureSchema>;
 
 export const AppImageOutputSchema = z.object({
@@ -280,8 +333,105 @@ export type AppImageOutput = z.infer<typeof AppImageOutputSchema>;
  * - `concept`: pure generative scene from a prompt (+ optional reference
  *   images). Fast, but NOT product-accurate; flagged as such.
  */
-export const AppImageModeSchema = z.enum(["composite", "hybrid", "concept"]);
+export const AppImageModeSchema = z.enum([
+  "composite",
+  "hybrid",
+  "concept",
+  "shot3d",
+]);
 export type AppImageMode = z.infer<typeof AppImageModeSchema>;
+
+// ---------------------------------------------------------------------------
+// 3D app-shot (Phase 3 / Phase C). A real Blender fixture composited into a room
+// IN Blender (true light spill, refraction, grounding), then exported as a
+// layered PSD + AVIF + PNG. Distinct from the 2D `composite`/`hybrid` engines:
+// no flat cutout, no harmonization — the fixture is the actual 3D model. The UI
+// drives an auto-place AI loop (preview renders) then a high-quality finalize.
+// ---------------------------------------------------------------------------
+
+/**
+ * The user-adjustable placement of a 3D fixture in the room. `coverage` is the
+ * fixture's on-screen height as a fraction of the frame; `brightness` scales how
+ * bright the fixture's OWN diffusers/bulbs glow; `lightOutput` scales the real
+ * light it throws into the room (IES power, or its own lamps for decoratives
+ * without photometry); `warm` (0..1) shifts color temperature; `pose` is the
+ * orbit camera around the fixture. These are exactly the sliders the web UI binds
+ * to, and the values the AI critic returns when correcting a placement.
+ */
+export const AppShotPlacementSchema = z.object({
+  xPct: z.number().min(0).max(1).default(0.5),
+  yPct: z.number().min(0).max(1).default(0.4),
+  coverage: z.number().min(0.05).max(1).default(0.34),
+  brightness: z.number().min(0).max(200).default(25),
+  lightOutput: z.number().min(0).max(200).default(25),
+  warm: z.number().min(0).max(1).default(0.45),
+  pose: AppImageModelPoseSchema.default({}),
+});
+export type AppShotPlacement = z.infer<typeof AppShotPlacementSchema>;
+
+/**
+ * Finalize payload carried inside `AppImageParams.shot` for the `shot3d` mode.
+ * It rides the normal async generation job pipeline so a final app-shot becomes
+ * a library asset (PNG + AVIF + layered PSD) like any other generation.
+ */
+export const AppShotInputSchema = z.object({
+  /** SKU resolved to a .blend (+ optional IES) by the generator's fixture map. */
+  sku: z.string().trim().min(1),
+  /** The room plate (uploaded or AI-generated) the fixture is composited into. */
+  sceneUrl: z.string().url(),
+  placement: AppShotPlacementSchema,
+  samples: z.number().int().positive().max(2048).optional(),
+  highQuality: z.boolean().optional(),
+  /** Use the straight-on 2D-layered render (WYSIWYG 3D-viewer path). */
+  straightOn: z.boolean().optional(),
+});
+export type AppShotInput = z.infer<typeof AppShotInputSchema>;
+
+/**
+ * Synchronous auto-place request (API → generator `/compose-3d`). The generator
+ * places the fixture and runs the hidden AI critic loop, returning an approved
+ * preview + the placement the UI binds its sliders to. `placement` is optional
+ * starting overrides; omit it to use the fixture's defaults.
+ */
+export const AppShotComposeRequestSchema = z.object({
+  sku: z.string().trim().min(1),
+  sceneUrl: z.string().url(),
+  placement: AppShotPlacementSchema.partial().optional(),
+  /** Max AI correction rounds before handing back to the user (default 3). */
+  maxIterations: z.number().int().min(1).max(6).optional(),
+});
+export type AppShotComposeRequest = z.infer<typeof AppShotComposeRequestSchema>;
+
+/**
+ * Synchronous single preview request (API → generator). Renders the user's EXACT
+ * placement once with NO AI critic (so slider changes are never overridden). Used
+ * for the responsive live-preview loop while the user tweaks sliders.
+ */
+export const AppShotPreviewRequestSchema = z.object({
+  sku: z.string().trim().min(1),
+  sceneUrl: z.string().url(),
+  placement: AppShotPlacementSchema,
+  /** Use the straight-on 2D-layered render (WYSIWYG 3D-viewer path). */
+  straightOn: z.boolean().optional(),
+});
+export type AppShotPreviewRequest = z.infer<typeof AppShotPreviewRequestSchema>;
+
+/**
+ * Finalize request (API). Enqueues a `shot3d` generation job that produces the
+ * full-quality layered export and saves it as a library asset.
+ */
+export const AppShotFinalizeRequestSchema = z.object({
+  sku: z.string().trim().min(1),
+  sceneUrl: z.string().url(),
+  placement: AppShotPlacementSchema,
+  /** Optional asset name; defaults to the SKU. */
+  name: z.string().trim().min(1).max(200).optional(),
+  /** Use the straight-on 2D-layered render (WYSIWYG 3D-viewer path). */
+  straightOn: z.boolean().optional(),
+});
+export type AppShotFinalizeRequest = z.infer<
+  typeof AppShotFinalizeRequestSchema
+>;
 
 /**
  * Harmonization controls for `hybrid` mode. Harmonization recolors/relights the
@@ -370,6 +520,13 @@ export const SceneGenRequestSchema = z.object({
    */
   fixtureType: z.string().trim().min(1).max(120).optional(),
   mount: FixtureMountSchema.optional(),
+  /**
+   * Enforce the AI scene gate: after generating, vision-check that the mount
+   * surface is clear (no hallucinated fixture/hardware) and silently regenerate
+   * up to a few times if not. Used by the 3D app-shot flow so the real fixture
+   * isn't dropped onto a hallucinated one.
+   */
+  gate: z.boolean().optional(),
 });
 export type SceneGenRequest = z.infer<typeof SceneGenRequestSchema>;
 
@@ -391,9 +548,21 @@ export const AppImageParamsSchema = z
     harmonize: AppImageHarmonizeSchema.default({}),
     /** Reference images for `concept` generation only (hybrid uses none). */
     referenceImages: z.array(z.string().url()).default([]),
+    /** 3D app-shot payload; required for (and only used by) `shot3d` mode. */
+    shot: AppShotInputSchema.optional(),
     output: AppImageOutputSchema.default({}),
   })
   .superRefine((val, ctx) => {
+    if (val.mode === "shot3d") {
+      if (!val.shot) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["shot"],
+          message: "shot3d mode requires a shot payload",
+        });
+      }
+      return;
+    }
     if (val.mode === "concept") {
       if (!val.prompt) {
         ctx.addIssue({

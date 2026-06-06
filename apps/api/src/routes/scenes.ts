@@ -1,10 +1,10 @@
 import { Hono } from "hono";
-import { getContainer } from "@cloudflare/containers";
 import { z } from "zod";
 import { FixtureMountSchema, SceneGenRequestSchema } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
-import { containerPoolKey } from "../containerPool.js";
+import { generatorFetch } from "../generatorClient.js";
+import { publicOrigin } from "../publicUrl.js";
 
 export const sceneRoutes = new Hono<AppBindings>();
 
@@ -51,21 +51,14 @@ sceneRoutes.post("/", requireAuth, async (c) => {
   }
 
   const user = c.get("user");
-  const container = getContainer(
-    c.env.GENERATION_CONTAINER,
-    containerPoolKey(`scene:${user.id}`),
-  );
 
   let res: Response;
   try {
-    res = await container.fetch(
-      new Request("http://generation-container/generate-scene", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(parsed.data),
-        signal: AbortSignal.timeout(CONTAINER_TIMEOUT_MS),
-      }),
-    );
+    res = await generatorFetch(c.env, `scene:${user.id}`, "/generate-scene", {
+      method: "POST",
+      body: JSON.stringify(parsed.data),
+      signal: AbortSignal.timeout(CONTAINER_TIMEOUT_MS),
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return c.json({ error: `scene generation failed: ${msg}` }, 502);
@@ -101,7 +94,7 @@ sceneRoutes.post("/", requireAuth, async (c) => {
   });
 
   // Absolute URL so the Container can later fetch it over HTTPS as the scene.
-  const url = `${new URL(c.req.url).origin}/api/uploads/${user.id}/${file}`;
+  const url = `${publicOrigin(c)}/api/uploads/${user.id}/${file}`;
   return c.json({ url }, 201);
 });
 
@@ -127,20 +120,18 @@ sceneRoutes.post("/perspective", requireAuth, async (c) => {
   }
 
   const user = c.get("user");
-  const container = getContainer(
-    c.env.GENERATION_CONTAINER,
-    containerPoolKey(`scene:${user.id}`),
-  );
 
   let res: Response;
   try {
-    res = await container.fetch(
-      new Request("http://generation-container/suggest-perspective", {
+    res = await generatorFetch(
+      c.env,
+      `scene:${user.id}`,
+      "/suggest-perspective",
+      {
         method: "POST",
-        headers: { "content-type": "application/json" },
         body: JSON.stringify(parsed.data),
         signal: AbortSignal.timeout(45_000),
-      }),
+      },
     );
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

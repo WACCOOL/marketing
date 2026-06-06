@@ -25,8 +25,13 @@ import {
   type PerspectiveAdapter,
   type PerspectiveHint,
   type PerspectiveRequest,
+  type PlacementCriticAdapter,
+  type PlacementCritique,
+  type PlacementCritiqueRequest,
   type RelightAdapter,
   type RelightRequest,
+  type RoomAnalysisRequest,
+  type RoomPlacement,
   type SceneInspectAdapter,
   type SceneInspectRequest,
   type SegmentAdapter,
@@ -47,6 +52,7 @@ const SEGMENT_TIMEOUT_MS = 40_000;
 const RELIGHT_TIMEOUT_MS = 90_000;
 const PERSPECTIVE_TIMEOUT_MS = 30_000;
 const INSPECT_TIMEOUT_MS = 30_000;
+const CRITIQUE_TIMEOUT_MS = 30_000;
 
 const SEGMENT_PROMPT =
   "Give the segmentation mask for the main foreground product in this image " +
@@ -177,7 +183,8 @@ export function makeGeminiAdapter(
   SegmentAdapter &
   RelightAdapter &
   PerspectiveAdapter &
-  SceneInspectAdapter {
+  SceneInspectAdapter &
+  PlacementCriticAdapter {
   // imageConfig (aspectRatio / imageSize) is only honored on the v1beta endpoint.
   const baseUrl = (config.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
   const defaultModel = config.model ?? DEFAULT_MODEL;
@@ -303,8 +310,177 @@ export function makeGeminiAdapter(
     },
     estimatePerspective,
     hasMountedFixture,
+    critiquePlacement,
+    analyzeRoom,
     segment,
   };
+
+  /**
+   * Read a BARE room and choose where the fixture should be mounted, BEFORE any
+   * render — so it starts in the natural spot (a chandelier centered over the
+   * dining/seating area on the ceiling; a sconce on a clear, prominent wall at a
+   * believable height) instead of dead-center. Fails open (returns null) so a
+   * flaky vision call just falls back to the default placement.
+   */
+  async function analyzeRoom(
+    req: RoomAnalysisRequest,
+  ): Promise<RoomPlacement | null> {
+    const type = req.fixtureType ?? "light fixture";
+    const mount = req.mount ?? "ceiling";
+    const guidance =
+      mount === "ceiling" || mount === "recessed"
+        ? `Find where a ${type} should hang from the ceiling. Put it over the ` +
+          `visual center of the main seating/dining area, horizontally centered ` +
+          `on the ceiling above that furniture. yPct should sit on the ceiling ` +
+          `(usually upper third of the frame), low enough that the fixture and a ` +
+          `short drop are visible, not cropped at the top edge.`
+        : mount === "wall"
+          ? `Find the clearest, most prominent empty wall area for a ${type}. ` +
+            `Center it on that wall span at a believable mounting height ` +
+            `(typically a bit above eye level), clear of windows, art and ` +
+            `furniture.`
+          : `Find a natural, uncluttered spot on the floor for a ${type}.`;
+    const prompt =
+      `This is an empty interior room (no fixture yet). ${guidance} Also suggest ` +
+      `a realistic on-screen size for the fixture as "coverage" = its height as a ` +
+      `fraction of the frame height (chandeliers ~0.2-0.4, sconces ~0.12-0.25). ` +
+      `Respond with ONLY JSON {"xPct": number, "yPct": number, "coverage": ` +
+      `number, "reason": string}; xPct/yPct are the fixture center, 0..1 from the ` +
+      `top-left.`;
+    const url = `${baseUrl}/v1beta/models/${segmentModel}:generateContent`;
+    try {
+      const res = await fetchWithTimeout(
+        "Gemini room analysis",
+        url,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-goog-api-key": config.apiKey,
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [imagePart(req.image), { text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              thinkingConfig: { thinkingBudget: 0 },
+            },
+          }),
+        },
+        req.timeoutMs ?? CRITIQUE_TIMEOUT_MS,
+      );
+      if (!res.ok) return null;
+      const data = (await res.json()) as GenerateContentResponse;
+      const text = (data.candidates?.[0]?.content?.parts ?? [])
+        .map((p) => p.text ?? "")
+        .join("");
+      let body = text.trim();
+      if (body.startsWith("```")) {
+        body = body.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+      }
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      const num = (v: unknown): number | undefined =>
+        typeof v === "number" && Number.isFinite(v) ? v : undefined;
+      const clamp = (v: number, lo: number, hi: number) =>
+        Math.min(hi, Math.max(lo, v));
+      const x = num(parsed.xPct);
+      const y = num(parsed.yPct);
+      if (x === undefined || y === undefined) return null;
+      const cov = num(parsed.coverage);
+      return {
+        xPct: clamp(x, 0, 1),
+        yPct: clamp(y, 0, 1),
+        coverage: cov !== undefined ? clamp(cov, 0.1, 0.6) : undefined,
+        reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Vision critic for the auto-placement loop. Judges the preview composite and
+   * returns absolute corrections. Fails open (approved=true) so a flaky vision
+   * call never deadlocks the loop.
+   */
+  async function critiquePlacement(
+    req: PlacementCritiqueRequest,
+  ): Promise<PlacementCritique> {
+    const type = req.fixtureType ?? "light fixture";
+    const mount = req.mount ?? "wall";
+    const cur = req.current ?? {};
+    const curStr = JSON.stringify({
+      xPct: cur.xPct ?? 0.5,
+      yPct: cur.yPct ?? 0.5,
+      coverage: cur.coverage ?? 0.34,
+      brightness: cur.brightness ?? 25,
+    });
+    const prompt =
+      `This is a rendered marketing photo of a ${type} (${mount}-mounted) placed ` +
+      `into a room. Judge it as a lighting designer would. Criteria: (1) the ` +
+      `fixture sits believably ON the ${mount} (not floating, not clipped, not ` +
+      `half off-frame); (2) its size is realistic for a real ${type}; (3) it is ` +
+      `well composed (a ${mount === "ceiling" ? "ceiling" : "wall"} fixture should ` +
+      `read clearly, generally upper/central); (4) it visibly casts light into the ` +
+      `space. The current placement is ${curStr} where xPct/yPct are the fixture ` +
+      `center (0..1 from top-left), coverage is fixture height as a fraction of the ` +
+      `frame, brightness is a 0..100 light slider. Respond with ONLY JSON: ` +
+      `{"approved": boolean, "xPct": number, "yPct": number, "coverage": number, ` +
+      `"brightness": number, "reason": string}. Always return the BEST absolute ` +
+      `values (corrected if needed, else the current ones). Keep coverage in ` +
+      `[0.15,0.6] and brightness in [0,100].`;
+    const url = `${baseUrl}/v1beta/models/${segmentModel}:generateContent`;
+    try {
+      const res = await fetchWithTimeout(
+        "Gemini critique",
+        url,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-goog-api-key": config.apiKey,
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [imagePart(req.image), { text: prompt }] }],
+            generationConfig: {
+              responseMimeType: "application/json",
+              thinkingConfig: { thinkingBudget: 0 },
+            },
+          }),
+        },
+        req.timeoutMs ?? CRITIQUE_TIMEOUT_MS,
+      );
+      if (!res.ok) return { approved: true };
+      const data = (await res.json()) as GenerateContentResponse;
+      const text = (data.candidates?.[0]?.content?.parts ?? [])
+        .map((p) => p.text ?? "")
+        .join("");
+      let body = text.trim();
+      if (body.startsWith("```")) {
+        body = body.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+      }
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      const num = (v: unknown): number | undefined =>
+        typeof v === "number" && Number.isFinite(v) ? v : undefined;
+      const clamp = (v: number, lo: number, hi: number) =>
+        Math.min(hi, Math.max(lo, v));
+      const adjust: PlacementCritique["adjust"] = {};
+      const x = num(parsed.xPct);
+      const y = num(parsed.yPct);
+      const cov = num(parsed.coverage);
+      const br = num(parsed.brightness);
+      if (x !== undefined) adjust.xPct = clamp(x, 0, 1);
+      if (y !== undefined) adjust.yPct = clamp(y, 0, 1);
+      if (cov !== undefined) adjust.coverage = clamp(cov, 0.15, 0.6);
+      if (br !== undefined) adjust.brightness = clamp(br, 0, 100);
+      return {
+        approved: parsed.approved === true,
+        adjust,
+        reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
+      };
+    } catch {
+      return { approved: true };
+    }
+  }
 
   /**
    * Vision yes/no: does the generated scene already have a light fixture or

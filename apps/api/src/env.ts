@@ -54,4 +54,22 @@ export interface Env {
   // Gemini model for segmentation-based background removal of fixture cutouts.
   // Defaults to gemini-2.5-flash in the container; override here to pin a model.
   GEMINI_SEGMENT_MODEL?: string;
+  // Phase 3 — base URL of the self-hosted Blender render-worker for 3D fixture
+  // rendering. POC: a local/tunneled dev box; prod: the GPU server. When unset,
+  // fixtures that carry a 3D model fail with a precise "not configured" error.
+  RENDER_WORKER_URL?: string;
+
+  // Origin used when building public URLs (uploads / generated scenes / shot
+  // previews) that the render-worker and generator fetch back over HTTP. Defaults
+  // to the request origin. LOCAL DEV: wrangler stamps the configured custom-domain
+  // host (marketing.gowac.cc) onto request.url even when served on localhost, so
+  // set PUBLIC_BASE_URL=http://localhost:8787 to make those URLs fetchable locally.
+  PUBLIC_BASE_URL?: string;
+
+  // LOCAL DEV ONLY — base URL of a host-run generation service (node). When set,
+  // the API calls this URL directly instead of the GENERATION_CONTAINER Durable
+  // Object. This sidesteps the local container runtime (whose proxy sidecar is
+  // flaky under some Docker/kernel setups; see workers-sdk#12965). MUST be unset
+  // in production so the real container path is used.
+  GENERATOR_URL?: string;
 }

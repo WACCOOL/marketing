@@ -42,6 +42,9 @@ export class GenerationContainer extends Container<Env> {
       ...(env.GEMINI_SEGMENT_MODEL
         ? { GEMINI_SEGMENT_MODEL: env.GEMINI_SEGMENT_MODEL }
         : {}),
+      ...(env.RENDER_WORKER_URL
+        ? { RENDER_WORKER_URL: env.RENDER_WORKER_URL }
+        : {}),
     };
   }
 }

@@ -1,3 +1,4 @@
+import { Suspense, lazy } from "react";
 import { Navigate, NavLink, Route, Routes } from "react-router-dom";
 import { AuthProvider, useAuth } from "./lib/auth.js";
 import { SignIn } from "./pages/SignIn.js";
@@ -8,6 +9,12 @@ import { Library } from "./pages/Library.js";
 import { UtmQr } from "./pages/UtmQr.js";
 import { Products } from "./pages/Products.js";
 import { AppImage } from "./pages/AppImage.js";
+
+// Lazy-loaded: the 3D App-Shot studio pulls in <model-viewer> (three.js), which
+// is heavy. Code-split it so it only loads when that route is opened.
+const AppShot = lazy(() =>
+  import("./pages/AppShot.js").then((m) => ({ default: m.AppShot })),
+);
 
 export function App() {
   return (
@@ -79,6 +86,9 @@ function Shell() {
         <NavLink to="/app-image" className={({ isActive }) => (isActive ? "active" : "")}>
           Image Generator
         </NavLink>
+        <NavLink to="/app-shot" className={({ isActive }) => (isActive ? "active" : "")}>
+          3D App-Shot
+        </NavLink>
         <NavLink to="/library" className={({ isActive }) => (isActive ? "active" : "")}>
           Asset Library
         </NavLink>
@@ -110,6 +120,22 @@ function Shell() {
           <Route path="/short-links" element={<Navigate to="/utm-qr" replace />} />
           <Route path="/products" element={<Products />} />
           <Route path="/app-image" element={<AppImage />} />
+          <Route
+            path="/app-shot"
+            element={
+              <Suspense
+                fallback={
+                  <div className="center-screen">
+                    <div>
+                      <span className="spinner" /> Loading 3D studio…
+                    </div>
+                  </div>
+                }
+              >
+                <AppShot />
+              </Suspense>
+            }
+          />
           <Route path="/library" element={<Library />} />
           <Route path="*" element={<Navigate to="/builder" replace />} />
         </Routes>

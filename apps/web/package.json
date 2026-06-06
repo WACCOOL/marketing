@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@google/model-viewer": "^4.3.1",
     "@supabase/supabase-js": "^2.46.2",
     "@wac/shared": "workspace:*",
     "exceljs": "^4.4.0",
