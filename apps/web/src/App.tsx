@@ -12,10 +12,13 @@ import { UtmQr } from "./pages/UtmQr.js";
 import { Products } from "./pages/Products.js";
 import { AppImage } from "./pages/AppImage.js";
 
-// Lazy-loaded: the 3D App-Shot studio pulls in <model-viewer> (three.js), which
-// is heavy. Code-split it so it only loads when that route is opened.
+// Lazy-loaded: the 3D App-Shot + Cam Solve studios pull in <model-viewer>
+// (three.js), which is heavy. Code-split them so they only load when opened.
 const AppShot = lazy(() =>
   import("./pages/AppShot.js").then((m) => ({ default: m.AppShot })),
+);
+const CamSolve = lazy(() =>
+  import("./pages/CamSolve.js").then((m) => ({ default: m.CamSolve })),
 );
 
 export function App() {
@@ -93,6 +96,22 @@ function Shell() {
                 }
               >
                 <AppShot />
+              </Suspense>
+            }
+          />
+          <Route
+            path="/cam-solve"
+            element={
+              <Suspense
+                fallback={
+                  <div className="center-screen">
+                    <div>
+                      <span className="spinner" /> Loading Cam Solve…
+                    </div>
+                  </div>
+                }
+              >
+                <CamSolve />
               </Suspense>
             }
           />

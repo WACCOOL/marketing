@@ -1,4 +1,9 @@
-import type { AppShotPlacement, FixtureMount } from "@wac/shared";
+import type {
+  AppShotPlacement,
+  FixtureMount,
+  RenderQuality,
+  RenderStyle,
+} from "@wac/shared";
 import { api } from "./api.js";
 
 /**
@@ -82,6 +87,10 @@ export async function previewShot(req: {
   placement: AppShotPlacement;
   /** Use the straight-on 2D-layered render (the new 3D-viewer path). */
   straightOn?: boolean;
+  /** Cam Solve render style (clean / cleanShadow / studio). */
+  renderStyle?: RenderStyle;
+  /** Quality tier (samples + caustics + resolution). */
+  renderQuality?: RenderQuality;
 }): Promise<PreviewResult> {
   return api<PreviewResult>("/api/appshot/preview", {
     method: "POST",
@@ -136,6 +145,10 @@ export async function finalizeShot(req: {
   name?: string;
   /** Use the straight-on 2D-layered render (the new 3D-viewer path). */
   straightOn?: boolean;
+  /** Cam Solve render style (clean / cleanShadow / studio). */
+  renderStyle?: RenderStyle;
+  /** Quality tier (samples + caustics + resolution). */
+  renderQuality?: RenderQuality;
 }): Promise<{ jobId: string; status: string }> {
   return api("/api/appshot/finalize", {
     method: "POST",

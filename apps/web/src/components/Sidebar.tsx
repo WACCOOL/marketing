@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
+  Aperture,
   Box,
   ChevronLeft,
   FolderOpen,
@@ -56,6 +57,7 @@ const NAV: NavEntry[] = [
     icon: ImageIcon,
     children: [
       { to: "/app-shot", label: "3D App-Shot", icon: Box },
+      { to: "/cam-solve", label: "Cam Solve", icon: Aperture },
       { to: "/app-image", label: "Image Generator", icon: ImageIcon },
     ],
   },

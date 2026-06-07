@@ -14,6 +14,7 @@
 
 import sharp from "sharp";
 import { writePsd } from "ag-psd";
+import type { RenderQuality, RenderStyle } from "@wac/shared";
 import type {
   CompositeResult,
   ImageGenAdapters,
@@ -130,6 +131,14 @@ export interface AutoPlaceInput extends RoomRef {
    * meaningful for the old path, so callers set this with skipCritic.
    */
   straightOn?: boolean;
+  /**
+   * Cam Solve render style. `studio` (default) uses the in-Blender catcher
+   * composite; `clean`/`cleanShadow` use the flat layered cutout (alpha
+   * preserved), with `cleanShadow` adding a soft drop shadow.
+   */
+  renderStyle?: RenderStyle;
+  /** Quality tier (samples + caustics + resolution). Defaults to standard. */
+  renderQuality?: RenderQuality;
 }
 
 export interface AutoPlaceResult {
@@ -212,6 +221,141 @@ export async function planPlacement(
 }
 
 /**
+ * Concrete render settings for a quality tier. These are the three knobs that
+ * trade time for quality: `samples` (Cycles noise), `highQuality` (refractive
+ * caustics — the crystal/glass sparkle, the big time cost), and resolution
+ * (`renderPx` = the square fixture render for the clean cutout; `finalLongEdge`
+ * = the upscale target for the studio composite).
+ */
+interface QualityProfile {
+  samples: number;
+  highQuality: boolean;
+  renderPx: number;
+  finalLongEdge: number;
+}
+
+/**
+ * Map a quality tier to concrete render settings. Previews stay deliberately
+ * cheap (they're thrown away every slider tweak) but scale a little with the
+ * tier so the test render roughly previews the final look; finals open the taps.
+ * `standard` reproduces the pipeline's previous fixed defaults, so an omitted
+ * tier is a no-op for existing callers.
+ */
+export function qualityProfile(
+  quality: RenderQuality | undefined,
+  preview: boolean,
+): QualityProfile {
+  const tier = quality ?? "standard";
+  if (preview) {
+    switch (tier) {
+      case "draft":
+        return { samples: 16, highQuality: false, renderPx: 700, finalLongEdge: 1280 };
+      case "high":
+        return { samples: 48, highQuality: false, renderPx: 1100, finalLongEdge: 2048 };
+      case "max":
+        // Previews stay caustics-off even at Max: caustics are the big time cost
+        // and a preview is just a fast look-check (the final still renders them).
+        return { samples: 64, highQuality: false, renderPx: 1280, finalLongEdge: 2560 };
+      case "standard":
+      default:
+        return { samples: 24, highQuality: false, renderPx: 900, finalLongEdge: 1600 };
+    }
+  }
+  switch (tier) {
+    case "draft":
+      return { samples: 64, highQuality: false, renderPx: 1200, finalLongEdge: 1920 };
+    case "high":
+      return { samples: 512, highQuality: true, renderPx: 2600, finalLongEdge: 4096 };
+    case "max":
+      return { samples: 1024, highQuality: true, renderPx: 3600, finalLongEdge: 5120 };
+    case "standard":
+    default:
+      return { samples: 200, highQuality: true, renderPx: 1600, finalLongEdge: 3840 };
+  }
+}
+
+/**
+ * Render a single placement onto its background, choosing the pipeline by render
+ * style. `studio` uses the in-Blender catcher composite (real light spill +
+ * contact shadow on the backdrop); `clean`/`cleanShadow` use the flat layered
+ * cutout (fixture only, alpha preserved), with `cleanShadow` adding a soft drop
+ * shadow. Shared by the preview (autoPlace) and final (finalRender) paths.
+ *
+ * The quality tier resolves to concrete samples/caustics/resolution here; any
+ * explicit override on `opts` wins so callers can still force a specific value.
+ */
+async function renderShotImage(
+  meta: FixtureMeta,
+  placement: Placement,
+  opts: {
+    preview: boolean;
+    layers?: boolean;
+    renderStyle?: RenderStyle;
+    renderQuality?: RenderQuality;
+    roomUrl?: string;
+    roomPath?: string;
+    samples?: number;
+    highQuality?: boolean;
+    supersample?: number;
+    finalLongEdge?: number;
+  },
+  adapters: ImageGenAdapters,
+): Promise<CompositeResult> {
+  const style = opts.renderStyle ?? "studio";
+  const profile = qualityProfile(opts.renderQuality, opts.preview);
+  const samples = opts.samples ?? profile.samples;
+  const highQuality = opts.highQuality ?? profile.highQuality;
+  const finalLongEdge = opts.finalLongEdge ?? profile.finalLongEdge;
+  if (style === "clean" || style === "cleanShadow") {
+    return layeredShot(
+      meta,
+      placement,
+      {
+        roomUrl: opts.roomUrl,
+        roomPath: opts.roomPath,
+        preview: opts.preview,
+        layers: opts.layers,
+        samples,
+        highQuality,
+        renderPx: profile.renderPx,
+        dropShadow: style === "cleanShadow",
+      },
+      adapters,
+    );
+  }
+  // studio: in-Blender catcher composite (the fixture emits real light into the
+  // backdrop and casts a contact shadow).
+  const compositor = adapters.compositor;
+  if (!compositor) {
+    throw new Error(
+      "3D app-shot requires a configured render-worker (set RENDER_WORKER_URL)",
+    );
+  }
+  return compositor.composite({
+    preview: opts.preview,
+    layers: opts.layers,
+    modelPath: meta.modelPath,
+    modelUrl: meta.modelUrl,
+    sku: meta.sku,
+    iesPath: meta.iesPath,
+    iesUrl: meta.iesUrl,
+    roomUrl: opts.roomUrl,
+    roomPath: opts.roomPath,
+    pose: placement.pose,
+    coverage: placement.coverage,
+    xPct: placement.xPct,
+    yPct: placement.yPct,
+    brightness: placement.brightness,
+    lightOutput: placement.lightOutput,
+    warm: placement.warm,
+    samples,
+    highQuality,
+    supersample: opts.supersample,
+    finalLongEdge,
+  });
+}
+
+/**
  * Auto-place the fixture and let the AI critic correct it in a hidden loop. Each
  * round does a fast preview render, then the critic returns absolute corrections;
  * we stop on approval or after `maxIterations`. Without a critic (no Gemini key)
@@ -222,8 +366,10 @@ export async function autoPlace(
   adapters: ImageGenAdapters,
 ): Promise<AutoPlaceResult> {
   const meta = resolveFixture(input.sku);
-  const compositor = adapters.compositor;
-  if (!compositor) {
+  const style = input.renderStyle ?? "studio";
+  // The clean/cleanShadow styles render via the layered cutout (modelRenderer),
+  // so they don't need the catcher compositor — only studio does.
+  if (style === "studio" && !adapters.compositor) {
     throw new Error(
       "3D app-shot requires a configured render-worker (set RENDER_WORKER_URL)",
     );
@@ -248,26 +394,21 @@ export async function autoPlace(
 
   for (let i = 0; i < maxIterations; i++) {
     iterations++;
-    // Always use the in-Blender catcher composite so the fixture actually emits
-    // light into the room (IES spill / lamp glow, contact shadow) — the flat
-    // straight-on layer (`layeredShot`) is placement-only and never looked lit.
-    const r = await compositor.composite({
-      preview: true,
-      modelPath: meta.modelPath,
-      modelUrl: meta.modelUrl,
-      sku: meta.sku,
-      iesPath: meta.iesPath,
-      iesUrl: meta.iesUrl,
-      roomUrl: input.roomUrl,
-      roomPath: input.roomPath,
-      pose: placement.pose,
-      coverage: placement.coverage,
-      xPct: placement.xPct,
-      yPct: placement.yPct,
-      brightness: placement.brightness,
-      lightOutput: placement.lightOutput,
-      warm: placement.warm,
-    });
+    // studio: in-Blender catcher composite so the fixture actually emits light
+    // into the backdrop (IES spill / lamp glow, contact shadow). clean styles:
+    // flat layered cutout (alpha preserved), optionally with a soft drop shadow.
+    const r = await renderShotImage(
+      meta,
+      placement,
+      {
+        preview: true,
+        renderStyle: style,
+        renderQuality: input.renderQuality,
+        roomUrl: input.roomUrl,
+        roomPath: input.roomPath,
+      },
+      adapters,
+    );
     previewPng = r.png;
 
     if (!critic) {
@@ -478,6 +619,54 @@ export interface LayeredShotInput extends RoomRef {
   layers?: boolean;
   samples?: number;
   highQuality?: boolean;
+  /** Square size the fixture is rendered at before trim + 2D scale. Higher =
+   * crisper, zoom-proof cutout (the resolution lever for clean styles). */
+  renderPx?: number;
+  /** Add a soft, alpha-preserving drop shadow under the fixture (cleanShadow). */
+  dropShadow?: boolean;
+}
+
+/**
+ * Build a soft drop-shadow buffer from a placed fixture: take the fixture's
+ * alpha as a silhouette, pad it so the blur isn't clipped, blur + dim it, and
+ * tint it black. Returns the shadow PNG plus the padding it added so the caller
+ * can offset it correctly under the fixture.
+ */
+async function buildShadow(
+  scaled: Buffer,
+  fh: number,
+): Promise<{ buf: Buffer; pad: number; offX: number; offY: number }> {
+  const blurR = Math.max(4, Math.round(fh * 0.05));
+  const pad = Math.ceil(blurR * 3);
+  // The shadow's opacity peak (0..255 alpha scaler).
+  const opacity = 0.42;
+  const padded = await sharp(scaled)
+    .ensureAlpha()
+    .extend({
+      top: pad,
+      bottom: pad,
+      left: pad,
+      right: pad,
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .toBuffer();
+  const pmeta = await sharp(padded).metadata();
+  const pw = pmeta.width ?? 0;
+  const ph = pmeta.height ?? 0;
+  // Blurred, dimmed silhouette from the alpha channel -> the shadow's alpha mask.
+  const mask = await sharp(padded)
+    .extractChannel("alpha")
+    .blur(blurR)
+    .linear(opacity, 0)
+    .toBuffer();
+  // Black RGB with the blurred mask as alpha.
+  const buf = await sharp({
+    create: { width: pw, height: ph, channels: 3, background: { r: 0, g: 0, b: 0 } },
+  })
+    .joinChannel(mask)
+    .png()
+    .toBuffer();
+  return { buf, pad, offX: Math.round(fh * 0.03), offY: Math.round(fh * 0.05) };
 }
 
 /**
@@ -505,7 +694,7 @@ export async function layeredShot(
   // Render the fixture straight-on (camera at the fixture center). marginFactor is
   // small so the fixture nearly fills the render frame for maximum resolution; the
   // trim below removes the slack and the 2D scale sets the on-screen size.
-  const renderPx = input.preview ? 900 : 1600;
+  const renderPx = input.renderPx ?? (input.preview ? 900 : 1600);
   // A little slack so extreme tilts never clip the fixture; trim removes it.
   const pose: ModelRenderPose = { ...placement.pose, marginFactor: 1.15 };
   const rendered = await renderer.render({
@@ -515,8 +704,14 @@ export async function layeredShot(
     pose,
     width: renderPx,
     height: renderPx,
-    samples: input.preview ? 24 : input.samples,
+    samples: input.samples,
+    highQuality: input.highQuality,
     lightsOn: true,
+    // A final at the High/Max tiers (caustics on, hi-res, many samples) can take
+    // many minutes on a crystal fixture; previews stay fast and bounded. The
+    // final cap sits above the worker's Blender hard-cap (900s) so the worker's
+    // clean timeout surfaces rather than an opaque fetch abort.
+    timeoutMs: input.preview ? 110_000 : 960_000,
   });
 
   // Tight-trim transparent margins so the fixture's own bbox drives sizing.
@@ -544,10 +739,31 @@ export async function layeredShot(
   const top = placement.yPct * RH - fh / 2;
 
   const fixtureLayer = await fixtureLayerOnCanvas(scaled, fw, fh, left, top, RW, RH);
-  const beauty = await sharp(room)
-    .composite([{ input: fixtureLayer, left: 0, top: 0 }])
-    .png()
-    .toBuffer();
+
+  // Optional soft drop shadow, laid down UNDER the fixture (its own full-canvas
+  // layer so it can be a separate PSD layer and stays alpha-preserving).
+  let shadowLayer: Buffer | null = null;
+  if (input.dropShadow) {
+    const sh = await buildShadow(scaled, fh);
+    const sm = await sharp(sh.buf).metadata();
+    shadowLayer = await fixtureLayerOnCanvas(
+      sh.buf,
+      sm.width ?? fw,
+      sm.height ?? fh,
+      left - sh.pad + sh.offX,
+      top - sh.pad + sh.offY,
+      RW,
+      RH,
+    );
+  }
+
+  const overlays = shadowLayer
+    ? [
+        { input: shadowLayer, left: 0, top: 0 },
+        { input: fixtureLayer, left: 0, top: 0 },
+      ]
+    : [{ input: fixtureLayer, left: 0, top: 0 }];
+  const beauty = await sharp(room).composite(overlays).png().toBuffer();
 
   if (input.preview || !(input.layers ?? true)) {
     return { png: beauty };
@@ -559,16 +775,15 @@ export async function layeredShot(
     toImageData(fixtureLayer, RW, RH),
     toImageData(beauty, RW, RH),
   ]);
+  const children: Parameters<typeof writePsd>[0]["children"] = [
+    { name: "Background", imageData: bg },
+  ];
+  if (shadowLayer) {
+    children.push({ name: "Shadow", imageData: await toImageData(shadowLayer, RW, RH) });
+  }
+  children.push({ name: "Fixture", imageData: fixtureData });
   const psd = Buffer.from(
-    writePsd({
-      width: RW,
-      height: RH,
-      imageData: merged,
-      children: [
-        { name: "Background", imageData: bg },
-        { name: "Fixture", imageData: fixtureData },
-      ],
-    }),
+    writePsd({ width: RW, height: RH, imageData: merged, children }),
   );
   return { png: beauty, avif, psd };
 }
@@ -606,6 +821,14 @@ export interface FinalRenderInput extends RoomRef {
   finalLongEdge?: number;
   /** Use the straight-on 2D-layered render (WYSIWYG 3D-viewer path). */
   straightOn?: boolean;
+  /**
+   * Cam Solve render style. `studio` (default) runs the in-Blender catcher
+   * composite; `clean`/`cleanShadow` run the flat layered cutout (alpha
+   * preserved), with `cleanShadow` adding a soft drop shadow.
+   */
+  renderStyle?: RenderStyle;
+  /** Quality tier (samples + caustics + resolution). Defaults to standard. */
+  renderQuality?: RenderQuality;
 }
 
 /** Full-quality, layered final export (PNG + AVIF + PSD). */
@@ -617,41 +840,31 @@ export async function finalRender(
   if (!input.roomUrl && !input.roomPath) {
     throw new Error("final render requires a roomUrl or roomPath");
   }
-  const p = input.placement;
-  const compositor = adapters.compositor;
-  if (!compositor) {
-    throw new Error(
-      "3D app-shot requires a configured render-worker (set RENDER_WORKER_URL)",
-    );
-  }
-  // The final export always runs the in-Blender catcher composite so the fixture
-  // emits real light (IES spill / lamp glow + contact shadow) and reads as part
-  // of the scene rather than a pasted-on layer.
-  return compositor.composite({
-    preview: false,
-    layers: true,
-    modelPath: meta.modelPath,
-    modelUrl: meta.modelUrl,
-    sku: meta.sku,
-    iesPath: meta.iesPath,
-    iesUrl: meta.iesUrl,
-    roomUrl: input.roomUrl,
-    roomPath: input.roomPath,
-    pose: p.pose,
-    coverage: p.coverage,
-    xPct: p.xPct,
-    yPct: p.yPct,
-    brightness: p.brightness,
-    lightOutput: p.lightOutput,
-    warm: p.warm,
-    samples: input.samples,
-    highQuality: input.highQuality ?? true,
-    // The fixture only fills ~30% of the frame, so the lever for a crisp,
-    // zoom-proof fixture is OUTPUT RESOLUTION: the worker upscales the room to
-    // finalLongEdge and renders the composite there, giving the fixture many
-    // more pixels. At that high native res + high samples, extra supersampling
-    // isn't worth its (large) render-time cost, so keep it off for the final.
-    supersample: input.supersample ?? 1.0,
-    finalLongEdge: input.finalLongEdge ?? 3840,
-  });
+  // The studio style runs the in-Blender catcher composite so the fixture emits
+  // real light (IES spill / lamp glow + contact shadow) and reads as part of the
+  // scene; the clean styles run the flat layered cutout and preserve alpha (the
+  // lever for a crisp fixture there is finalLongEdge inside the composite path).
+  return renderShotImage(
+    meta,
+    input.placement,
+    {
+      preview: false,
+      layers: true,
+      renderStyle: input.renderStyle,
+      // The quality tier drives samples + caustics + resolution; explicit
+      // samples/highQuality/finalLongEdge below still override it when set.
+      renderQuality: input.renderQuality,
+      roomUrl: input.roomUrl,
+      roomPath: input.roomPath,
+      samples: input.samples,
+      highQuality: input.highQuality,
+      // The fixture only fills ~30% of the frame, so the lever for a crisp,
+      // zoom-proof fixture is OUTPUT RESOLUTION: the worker upscales the room to
+      // finalLongEdge and renders the composite there. At that high native res +
+      // high samples, extra supersampling isn't worth its (large) cost.
+      supersample: input.supersample ?? 1.0,
+      finalLongEdge: input.finalLongEdge,
+    },
+    adapters,
+  );
 }

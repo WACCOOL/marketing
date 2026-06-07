@@ -402,6 +402,8 @@ appShotRoutes.post("/preview", requireAuth, async (c) => {
       skipCritic: true,
       maxIterations: 1,
       straightOn: parsed.data.straightOn,
+      renderStyle: parsed.data.renderStyle,
+      renderQuality: parsed.data.renderQuality,
     },
     PREVIEW_TIMEOUT_MS,
   );
@@ -444,8 +446,11 @@ appShotRoutes.post("/finalize", requireAuth, async (c) => {
       sku: parsed.data.sku,
       sceneUrl: parsed.data.sceneUrl,
       placement: parsed.data.placement,
-      highQuality: true,
+      // Caustics/samples/resolution come from the quality tier (defaults to
+      // `standard`, which keeps the previous "high quality" behavior).
       straightOn: parsed.data.straightOn,
+      renderStyle: parsed.data.renderStyle,
+      renderQuality: parsed.data.renderQuality,
     },
   };
 

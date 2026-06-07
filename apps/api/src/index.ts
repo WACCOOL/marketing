@@ -109,9 +109,12 @@ async function scheduled(_event: ScheduledController, env: Env): Promise<void> {
 // stuck provider surfaces an actionable error; this is the outer ceiling.
 const CONTAINER_TIMEOUT_MS = 150_000;
 // 3D app-shot (shot3d) finals run Blender Cycles over a full-quality layered
-// export, which on large .blend files can take several minutes — far longer than
-// the 2D pipelines. Give those jobs a much larger ceiling.
-const SHOT3D_CONTAINER_TIMEOUT_MS = 600_000;
+// export, which at the High/Max quality tiers (refractive caustics + high
+// samples + hi-res) can take many minutes on a crystal fixture. This is the
+// outermost server ceiling, so it sits ABOVE the generator→worker fetch (960s)
+// and the worker's Blender hard-cap (900s) — letting their cleaner errors
+// surface first — while still outlasting a legitimate hero render.
+const SHOT3D_CONTAINER_TIMEOUT_MS = 1_020_000;
 
 async function queue(
   batch: MessageBatch<GenerationMessage>,

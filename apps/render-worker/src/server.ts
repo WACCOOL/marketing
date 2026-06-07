@@ -41,8 +41,11 @@ const PORT = Number(process.env.PORT ?? 8787);
 const BLENDER_BIN =
   process.env.BLENDER_BIN ||
   "/Applications/Blender.app/Contents/MacOS/Blender";
-// Hard cap so a stuck render can't wedge the worker.
-const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS ?? 300_000);
+// Hard cap so a *stuck* render can't wedge the worker. Must comfortably exceed
+// the slowest legitimate render — the Max quality tier (refractive caustics +
+// ~1024 samples + hi-res) can take many minutes on a crystal fixture — so this
+// only fires on a genuine hang, not a healthy hero render. Overridable via env.
+const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS ?? 900_000);
 // Where render.py lives, relative to this file at runtime (dist/ -> ../blender).
 // Use fileURLToPath so spaces (e.g. the OneDrive path) are decoded, not %20.
 const RENDER_SCRIPT = path.resolve(
@@ -89,6 +92,8 @@ interface RenderRequest {
   /** "BLENDER_EEVEE_NEXT" (fast, default) or "CYCLES" (higher fidelity). */
   engine?: string;
   samples?: number;
+  /** Enable the file's refractive caustics (the slow, glass/crystal sparkle). */
+  highQuality?: boolean;
 }
 
 function parseBody(req: http.IncomingMessage): Promise<unknown> {
@@ -144,6 +149,7 @@ async function renderFixture(reqBody: RenderRequest): Promise<Buffer> {
       height: reqBody.height ?? 1024,
       engine: reqBody.engine,
       samples: reqBody.samples,
+      highQuality: reqBody.highQuality,
     };
 
     await writeFile(jobPath, JSON.stringify(job));

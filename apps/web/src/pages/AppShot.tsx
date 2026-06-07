@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import "@google/model-viewer";
-import type { ModelViewerElement } from "@google/model-viewer";
 import type {
   AppShotPlacement,
   GeminiAspectRatio,
   GeminiImageSize,
+  RenderQuality,
 } from "@wac/shared";
 import { isAllowedImageType, uploadImage } from "../lib/uploads.js";
 import { generateScene } from "../lib/scenes.js";
@@ -20,141 +19,11 @@ import {
   type ShotFixture,
 } from "../lib/appshot.js";
 import { MOUNT_LABELS } from "../lib/fixtureKind.js";
-
-/** Which placement canvas is active. */
-type ViewerMode = "viewer" | "overlay";
-
-const RAD2DEG = 180 / Math.PI;
-
-/**
- * Map an AppImageModelPose to a model-viewer `camera-orbit` string. The viewer
- * azimuth (theta) is our azimuthDeg; its polar angle (phi) is measured from the
- * top, so phi = 90 - elevationDeg (elevation negative = looking up from below).
- * Radius is "auto" so changing the lens (FOV) re-frames instead of zooming —
- * the on-screen size is set by the element box (= coverage), matching the render.
- */
-function poseToOrbit(pose: AppShotPlacement["pose"]): string {
-  const az = pose.azimuthDeg ?? 0;
-  const phi = 90 - (pose.elevationDeg ?? 0);
-  return `${az}deg ${phi}deg auto`;
-}
-
-/**
- * The viewer's perspective must match the Blender render's. In `place_camera` the
- * camera distance is `radius / sin(fov/2) * marginFactor` with `marginFactor =
- * 1/coverage`, so the fixture's bounding sphere subtends a half-angle α where
- * `sin(α) = sin(fov/2) * coverage / distanceFactor`. With model-viewer auto-
- * framing (radius = R/sin(FOV/2)), setting the viewer field-of-view to `2α`
- * reproduces the exact same distance/size ratio — i.e. the same foreshortening.
- * (Using the raw fovDeg instead made the viewer a close-up while the render was a
- * far/flat shot — the perspective mismatch.)
- */
-function viewerFovDeg(pose: AppShotPlacement["pose"], coverage: number): number {
-  const fov = pose.fovDeg ?? 35;
-  const df = pose.distanceFactor ?? 1;
-  const s = (Math.sin(((fov * Math.PI) / 180) / 2) * coverage) / Math.max(df, 0.01);
-  const clamped = Math.min(0.9999, Math.max(0.0001, s));
-  const deg = (2 * Math.asin(clamped) * 180) / Math.PI;
-  // Keep within a range model-viewer frames reliably (very tiny FOV needs a huge
-  // auto radius that can get clamped, hiding the model).
-  return Math.min(60, Math.max(6, deg));
-}
-
-// model-viewer auto-framing fills its element with the fixture's silhouette up to
-// this fraction (measured empirically and stable across fixtures/poses).
-const MV_FILL = 0.918;
-
-/**
- * Size of the square placement box (as a fraction of the room *height*) so the
- * fixture renders at EXACTLY the size Blender will produce.
- *
- * Blender's `place_camera` puts the camera at D = R/sin(fovH/2)/coverage and frames
- * the fixture's bounding SPHERE relative to frame WIDTH; the fixture's projected
- * height ends up different from `coverage`. model-viewer instead auto-fits the
- * fixture's silhouette to its element, so if we sized the box to raw `coverage`
- * the fixture comes out ~25% too small and "grows" on Test render. Here we project
- * the model's bounding box under Blender's exact camera to get the true on-screen
- * silhouette size, then size the box to that / MV_FILL so auto-framing reproduces
- * it. Verified in-browser: yields 34.0% vs Blender's 33.3% for the chandelier.
- */
-function projectedBoxFrac(
-  dims: { x: number; y: number; z: number },
-  pose: AppShotPlacement["pose"],
-  coverage: number,
-  aspect: number, // room width / height
-): number {
-  const RAD = Math.PI / 180;
-  const fovH = (pose.fovDeg ?? 36) * RAD;
-  const df = pose.distanceFactor ?? 1;
-  const az = (pose.azimuthDeg ?? 0) * RAD;
-  const el = (pose.elevationDeg ?? 0) * RAD;
-  type Vec = [number, number, number];
-  const R = 0.5 * Math.hypot(dims.x, dims.y, dims.z);
-  const D = (R / Math.sin(fovH / 2) / Math.max(coverage, 0.01)) * df;
-  const sub = (a: Vec, b: Vec): Vec => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-  const dot = (a: Vec, b: Vec) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-  const cross = (a: Vec, b: Vec): Vec => [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
-  const norm = (a: Vec): Vec => {
-    const l = Math.hypot(a[0], a[1], a[2]) || 1;
-    return [a[0] / l, a[1] / l, a[2] / l];
-  };
-  // Camera at distance D along the orbit direction, looking at the model center.
-  const dir: Vec = [
-    Math.cos(el) * Math.sin(az),
-    -Math.cos(el) * Math.cos(az),
-    Math.sin(el),
-  ];
-  const C: Vec = [dir[0] * D, dir[1] * D, dir[2] * D];
-  const f = norm(sub([0, 0, 0], C)); // forward
-  const right = norm(cross(f, [0, 0, 1])); // screen right (world Z up)
-  const up = cross(right, f); // screen up
-  const fovV = 2 * Math.atan(Math.tan(fovH / 2) / Math.max(aspect, 0.01));
-  const hx = dims.x / 2,
-    hy = dims.y / 2,
-    hz = dims.z / 2;
-  let minY = Infinity,
-    maxY = -Infinity,
-    minX = Infinity,
-    maxX = -Infinity;
-  for (const sx of [-1, 1])
-    for (const sy of [-1, 1])
-      for (const sz of [-1, 1]) {
-        const v = sub([sx * hx, sy * hy, sz * hz], C);
-        const depth = dot(v, f);
-        if (depth <= 1e-4) continue;
-        const ndcx = dot(v, right) / depth / Math.tan(fovH / 2);
-        const ndcy = dot(v, up) / depth / Math.tan(fovV / 2);
-        if (ndcy < minY) minY = ndcy;
-        if (ndcy > maxY) maxY = ndcy;
-        if (ndcx < minX) minX = ndcx;
-        if (ndcx > maxX) maxX = ndcx;
-      }
-  const projH = (maxY - minY) / 2; // fraction of frame HEIGHT
-  const projW = (maxX - minX) / 2; // fraction of frame WIDTH
-  // Square box (height-based): model-viewer fits the larger silhouette dimension.
-  const frac = Math.max(projH, projW * aspect) / MV_FILL;
-  return Math.min(1.6, Math.max(0.02, frac));
-}
-
-/**
- * Inverse of poseToOrbit: read the viewer camera back into pose degrees. Zoom is
- * disabled, so the FOV never changes from user interaction — we only read back
- * the orbit (azimuth/elevation) and leave pose.fovDeg (the render's frame FOV)
- * untouched.
- */
-function orbitToPose(
-  thetaRad: number,
-  phiRad: number,
-): Partial<AppShotPlacement["pose"]> {
-  return {
-    azimuthDeg: thetaRad * RAD2DEG,
-    elevationDeg: 90 - phiRad * RAD2DEG,
-  };
-}
+import {
+  EditPanel,
+  QualityPicker,
+  type ViewerMode,
+} from "../components/appshotEditor.js";
 
 /**
  * 3D App-Shot Studio.
@@ -244,10 +113,7 @@ interface Persisted {
   viewerMode: ViewerMode | null;
   previewUrl: string | null;
   finalAssetId: string | null;
-}
-
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, n));
+  renderQuality: RenderQuality;
 }
 
 function formatErr(e: unknown): string {
@@ -309,6 +175,9 @@ export function AppShot() {
   const [finalAssetId, setFinalAssetId] = useState<string | null>(
     saved.current?.finalAssetId ?? null,
   );
+  const [renderQuality, setRenderQuality] = useState<RenderQuality>(
+    saved.current?.renderQuality ?? "standard",
+  );
 
   const [error, setError] = useState<string | null>(null);
 
@@ -346,13 +215,14 @@ export function AppShot() {
       viewerMode,
       previewUrl,
       finalAssetId,
+      renderQuality,
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(snap));
     } catch {
       // storage full / unavailable — non-fatal
     }
-  }, [sku, sceneUrl, placement, cutout, glb, viewerMode, previewUrl, finalAssetId]);
+  }, [sku, sceneUrl, placement, cutout, glb, viewerMode, previewUrl, finalAssetId, renderQuality]);
 
   useEffect(() => {
     return () => {
@@ -592,7 +462,7 @@ export function AppShot() {
     setError(null);
     setPreviewBusy(true);
     try {
-      const r = await previewShot({ sku, sceneUrl, placement, straightOn });
+      const r = await previewShot({ sku, sceneUrl, placement, straightOn, renderQuality });
       setPreviewUrl(r.previewUrl);
       setShowPreview(true);
     } catch (e) {
@@ -616,10 +486,14 @@ export function AppShot() {
         placement,
         name: `${sku} app shot`,
         straightOn,
+        renderQuality,
       });
       const job = await pollJob(jobId, {
         intervalMs: 3000,
-        timeoutMs: 12 * 60_000,
+        // Outlast the worker's render stack (Blender cap 900s < generator fetch
+        // 960s) so a slow High/Max hero render finishes rather than the client
+        // giving up first.
+        timeoutMs: 18 * 60_000,
         onUpdate: (j) => setFinalStatus(j.status),
       });
       if (job.status === "succeeded" && job.assetId) {
@@ -726,6 +600,16 @@ export function AppShot() {
           onTestRender={runTestRender}
           onFinalize={runFinalize}
           onDownload={download}
+          renderControls={
+            <QualityPicker
+              quality={renderQuality}
+              onChange={(q) => {
+                setRenderQuality(q);
+                setShowPreview(false);
+              }}
+              disabled={previewBusy || finalizing}
+            />
+          }
         />
       )}
     </div>
@@ -931,705 +815,6 @@ function SetupPanel(p: SetupProps) {
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------- edit -- */
-
-interface EditProps {
-  sceneUrl: string;
-  placement: AppShotPlacement;
-  viewerMode: ViewerMode;
-  onSwitchMode: (m: ViewerMode) => void;
-  glbUrl: string | null;
-  glbBusy: boolean;
-  cutout: Cutout | null;
-  cutoutBusy: boolean;
-  previewUrl: string | null;
-  showPreview: boolean;
-  setShowPreview: (b: boolean) => void;
-  previewBusy: boolean;
-  finalizing: boolean;
-  finalStatus: string | null;
-  finalAssetId: string | null;
-  mountLabel: string;
-  onPatch: (patch: Partial<AppShotPlacement>) => void;
-  onPatchPose: (patch: Partial<AppShotPlacement["pose"]>, rerender?: boolean) => void;
-  onRePlaceAi: () => void;
-  onTestRender: () => void;
-  onFinalize: () => void;
-  onDownload: (f: "png" | "avif" | "psd") => void;
-}
-
-function EditPanel(p: EditProps) {
-  const viewer = p.viewerMode === "viewer";
-  return (
-    <div className="col" style={{ gap: 14 }}>
-      {/* top bar: placement method + edit/test toggle + render actions */}
-      <div className="card row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <div className="row" style={{ gap: 6 }}>
-          <span className="muted" style={{ fontSize: 12 }}>Placement:</span>
-          <button
-            type="button"
-            className={"tag" + (viewer ? " tag-selected" : "")}
-            onClick={() => p.onSwitchMode("viewer")}
-            title="Real-time 3D viewer (recommended)"
-          >
-            3D viewer
-          </button>
-          <button
-            type="button"
-            className={"tag" + (!viewer ? " tag-selected" : "")}
-            onClick={() => p.onSwitchMode("overlay")}
-            title="Classic flat cutout overlay (fallback)"
-          >
-            Classic overlay
-          </button>
-        </div>
-
-        {p.previewUrl && (
-          <div className="row" style={{ gap: 6 }}>
-            <button
-              type="button"
-              className={"tag" + (!p.showPreview ? " tag-selected" : "")}
-              onClick={() => p.setShowPreview(false)}
-            >
-              Edit
-            </button>
-            <button
-              type="button"
-              className={"tag" + (p.showPreview ? " tag-selected" : "")}
-              onClick={() => p.setShowPreview(true)}
-            >
-              Test render
-            </button>
-          </div>
-        )}
-        <div style={{ flex: 1 }} />
-        <button className="secondary" onClick={p.onRePlaceAi} title="Let the AI re-pick the spot">
-          Re-place with AI
-        </button>
-        <button onClick={p.onTestRender} disabled={p.previewBusy}>
-          {p.previewBusy ? <span className="spinner" /> : null}
-          Test render
-        </button>
-        <button onClick={p.onFinalize} disabled={p.finalizing}>
-          {p.finalizing ? <span className="spinner" /> : null}
-          {p.finalizing ? `Rendering… (${p.finalStatus})` : "Final render"}
-        </button>
-      </div>
-
-      {p.finalAssetId && (
-        <div className="alert good col" style={{ gap: 8 }}>
-          <div>Final render complete — download:</div>
-          <div className="row" style={{ gap: 8 }}>
-            <button className="secondary" onClick={() => p.onDownload("png")}>PNG</button>
-            <button className="secondary" onClick={() => p.onDownload("avif")}>AVIF</button>
-            <button className="secondary" onClick={() => p.onDownload("psd")}>PSD</button>
-          </div>
-          <div className="muted" style={{ fontSize: 12 }}>
-            Also saved to your Asset Library. Tweak and render again for a new
-            version.
-          </div>
-        </div>
-      )}
-
-      {/* two columns: controls on the left, the room/fixture canvas on the right */}
-      <div className="appshot-edit">
-        <div className="col appshot-controls" style={{ gap: 10 }}>
-          <div className="card col appshot-sliders">
-            <div className="slider-section">
-              <div className="slider-section-title">Size & position</div>
-              <Slider
-                label="Fixture size"
-                min={0.08}
-                max={0.9}
-                step={0.005}
-                value={p.placement.coverage}
-                onChange={(v) => p.onPatch({ coverage: v })}
-                fmt={(v) => `${Math.round(v * 100)}%`}
-              />
-              <Slider
-                label="Left / right"
-                min={0}
-                max={1}
-                step={0.01}
-                value={p.placement.xPct}
-                onChange={(v) => p.onPatch({ xPct: v })}
-                fmt={(v) => `${Math.round(v * 100)}%`}
-              />
-              <Slider
-                label="Up / down"
-                min={0}
-                max={1}
-                step={0.01}
-                value={1 - p.placement.yPct}
-                onChange={(v) => p.onPatch({ yPct: 1 - v })}
-                fmt={(v) => `${Math.round(v * 100)}%`}
-              />
-              <div className="row" style={{ gap: 8 }}>
-                <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 0.9, 0.08, 0.9) })}>– smaller</button>
-                <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 1.1, 0.08, 0.9) })}>+ larger</button>
-              </div>
-            </div>
-
-            <div className="slider-section">
-              <div className="slider-section-title">
-                Angle & lens
-                {!viewer && p.cutoutBusy && (
-                  <>
-                    {" "}
-                    <span className="spinner" />
-                  </>
-                )}
-              </div>
-              <Slider
-                label="Rotate"
-                min={-180}
-                max={180}
-                step={1}
-                value={p.placement.pose.azimuthDeg ?? 0}
-                onChange={(v) => p.onPatchPose({ azimuthDeg: v })}
-                fmt={(v) => `${Math.round(v)}°`}
-              />
-              <Slider
-                label="Tilt (f/b)"
-                min={-40}
-                max={70}
-                step={1}
-                value={p.placement.pose.elevationDeg ?? 0}
-                onChange={(v) => p.onPatchPose({ elevationDeg: v })}
-                fmt={(v) => `${Math.round(v)}°`}
-              />
-              <Slider
-                label="Tilt (l/r)"
-                min={-45}
-                max={45}
-                step={1}
-                value={p.placement.pose.rollDeg ?? 0}
-                onChange={(v) => p.onPatchPose({ rollDeg: v })}
-                fmt={(v) => `${Math.round(v)}°`}
-              />
-              <Slider
-                label="Lens (FOV)"
-                min={15}
-                max={60}
-                step={1}
-                value={p.placement.pose.fovDeg ?? 32}
-                onChange={(v) => p.onPatchPose({ fovDeg: v })}
-                fmt={(v) => `${Math.round(v)}°`}
-              />
-            </div>
-
-            <div className="slider-section">
-              <div className="slider-section-title">Light</div>
-              <Slider
-                label="Brightness"
-                min={0}
-                max={100}
-                step={1}
-                value={p.placement.brightness}
-                onChange={(v) => p.onPatch({ brightness: v })}
-                fmt={(v) => `${Math.round(v)}`}
-              />
-              <Slider
-                label="Light output"
-                min={0}
-                max={100}
-                step={1}
-                value={p.placement.lightOutput}
-                onChange={(v) => p.onPatch({ lightOutput: v })}
-                fmt={(v) => `${Math.round(v)}`}
-              />
-              <Slider
-                label="Warmth"
-                min={0}
-                max={1}
-                step={0.05}
-                value={p.placement.warm}
-                onChange={(v) => p.onPatch({ warm: v })}
-                fmt={(v) => `${Math.round(v * 100)}%`}
-              />
-            </div>
-          </div>
-
-          <div className="muted" style={{ fontSize: 11 }}>
-            {p.mountLabel && <>Mount: {p.mountLabel}. </>}
-            <strong>Test render</strong> checks light & glass; <strong>Final render</strong> exports.
-          </div>
-        </div>
-
-        <div className="appshot-canvas-col">
-          {viewer ? (
-            <ModelViewerCanvas
-              sceneUrl={p.sceneUrl}
-              placement={p.placement}
-              glbUrl={p.glbUrl}
-              glbBusy={p.glbBusy}
-              previewUrl={p.previewUrl}
-              showPreview={p.showPreview}
-              previewBusy={p.previewBusy}
-              onPatch={p.onPatch}
-              onPatchPose={p.onPatchPose}
-            />
-          ) : p.cutout ? (
-            <ShotCanvas
-              sceneUrl={p.sceneUrl}
-              placement={p.placement}
-              cutout={p.cutout}
-              cutoutBusy={p.cutoutBusy}
-              previewUrl={p.previewUrl}
-              showPreview={p.showPreview}
-              previewBusy={p.previewBusy}
-              onPatch={p.onPatch}
-            />
-          ) : (
-            <div className="card" style={{ padding: 24, textAlign: "center" }}>
-              <span className="spinner" /> preparing overlay…
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ----------------------------------------------------------- viewer canvas -- */
-
-interface ViewerCanvasProps {
-  sceneUrl: string;
-  placement: AppShotPlacement;
-  glbUrl: string | null;
-  glbBusy: boolean;
-  previewUrl: string | null;
-  showPreview: boolean;
-  previewBusy: boolean;
-  onPatch: (patch: Partial<AppShotPlacement>) => void;
-  onPatchPose: (patch: Partial<AppShotPlacement["pose"]>, rerender?: boolean) => void;
-}
-
-/**
- * Real-time 3D placement: a transparent <model-viewer> sits in a square box over
- * the room (box side = coverage of the room height = how the Blender render sizes
- * it). Orbit (drag) rotates/tilts the fixture; the move bar drags its position;
- * scroll resizes. The camera maps 1:1 to the pose Blender renders from, so Test
- * render lands at the exact same angle/size/position — no jump.
- */
-function ModelViewerCanvas(p: ViewerCanvasProps) {
-  const roomRef = useRef<HTMLDivElement | null>(null);
-  const mvRef = useRef<ModelViewerElement | null>(null);
-  const drag = useRef<{ x: number; y: number; xPct: number; yPct: number } | null>(
-    null,
-  );
-  // Skip the pose->camera sync when the change CAME from the camera (user orbit),
-  // so we don't fight the live interaction.
-  const fromCamera = useRef(false);
-  // The fixture's bounding-box dims (model units, from model-viewer once loaded)
-  // and the room aspect — together they let us size the box so the fixture matches
-  // the Blender render exactly (see projectedBoxFrac).
-  const [modelDims, setModelDims] = useState<{ x: number; y: number; z: number } | null>(
-    null,
-  );
-  const [roomAspect, setRoomAspect] = useState(16 / 9);
-
-  const pose = p.placement.pose;
-
-  // Capture the fixture's true bounding-box size once the GLB loads.
-  useEffect(() => {
-    const mv = mvRef.current;
-    if (!mv) return;
-    setModelDims(null);
-    const onLoad = () => {
-      try {
-        const d = mv.getDimensions();
-        if (d && d.x > 0 && d.y > 0) setModelDims({ x: d.x, y: d.y, z: d.z });
-      } catch {
-        /* dims unavailable */
-      }
-    };
-    mv.addEventListener("load", onLoad);
-    return () => mv.removeEventListener("load", onLoad);
-  }, [p.glbUrl]);
-
-  // Box size (fraction of room height): match the Blender-projected fixture size
-  // once we know the model dims; until then fall back to raw coverage.
-  const boxFrac =
-    modelDims != null
-      ? projectedBoxFrac(modelDims, pose, p.placement.coverage, roomAspect)
-      : p.placement.coverage;
-
-  // Sync sliders -> viewer camera (skip when the pose update came from the camera).
-  useEffect(() => {
-    const mv = mvRef.current;
-    if (!mv) return;
-    if (fromCamera.current) {
-      fromCamera.current = false;
-      return;
-    }
-    mv.cameraOrbit = poseToOrbit(pose);
-    mv.fieldOfView = `${viewerFovDeg(pose, p.placement.coverage)}deg`;
-  }, [pose.azimuthDeg, pose.elevationDeg, pose.fovDeg, p.placement.coverage]);
-
-  // Viewer camera -> sliders/pose on user interaction.
-  useEffect(() => {
-    const mv = mvRef.current;
-    if (!mv) return;
-    const onCam = (e: Event) => {
-      const detail = (e as CustomEvent<{ source?: string }>).detail;
-      if (detail?.source !== "user-interaction") return;
-      const o = mv.getCameraOrbit();
-      fromCamera.current = true;
-      p.onPatchPose(orbitToPose(o.theta, o.phi), false);
-    };
-    mv.addEventListener("camera-change", onCam);
-    return () => mv.removeEventListener("camera-change", onCam);
-  }, [p.glbUrl, p.onPatchPose]);
-
-  function onMovePointerDown(e: React.PointerEvent) {
-    if (p.showPreview) return;
-    drag.current = {
-      x: e.clientX,
-      y: e.clientY,
-      xPct: p.placement.xPct,
-      yPct: p.placement.yPct,
-    };
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-  }
-  function onMovePointerMove(e: React.PointerEvent) {
-    const d = drag.current;
-    const rect = roomRef.current?.getBoundingClientRect();
-    if (!d || !rect || rect.width === 0 || rect.height === 0) return;
-    const dx = (e.clientX - d.x) / rect.width;
-    const dy = (e.clientY - d.y) / rect.height;
-    p.onPatch({ xPct: clamp(d.xPct + dx, 0, 1), yPct: clamp(d.yPct + dy, 0, 1) });
-  }
-  function endMove(e: React.PointerEvent) {
-    if (drag.current) {
-      drag.current = null;
-      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-    }
-  }
-  function onWheel(e: React.WheelEvent) {
-    if (p.showPreview) return;
-    const factor = e.deltaY > 0 ? 0.95 : 1.05;
-    p.onPatch({ coverage: clamp(p.placement.coverage * factor, 0.08, 0.9) });
-  }
-
-  return (
-    <div
-      style={{
-        position: "sticky",
-        top: 12,
-        zIndex: 5,
-        display: "flex",
-        justifyContent: "center",
-      }}
-    >
-      <div
-        ref={roomRef}
-        className="placement-canvas"
-        style={{
-          position: "relative",
-          width: "100%",
-          borderRadius: 0,
-          border: "none",
-        }}
-        onWheel={onWheel}
-      >
-        <img
-          src={p.sceneUrl}
-          alt="room"
-          draggable={false}
-          onLoad={(e) => {
-            const im = e.currentTarget;
-            if (im.naturalWidth > 0 && im.naturalHeight > 0) {
-              setRoomAspect(im.naturalWidth / im.naturalHeight);
-            }
-          }}
-          style={{ width: "100%", height: "auto", display: "block" }}
-        />
-
-        {/* live 3D fixture (hidden while showing the test render).
-            IMPORTANT: never set min/max-camera-orbit with a radius bound here —
-            it disables model-viewer's "auto" radius framing, leaving the model
-            off-frame (invisible). Constrain only the FOV (min 1deg so the narrow
-            telephoto FOV that matches the render isn't clamped to the 12deg
-            default). */}
-        {!p.showPreview && p.glbUrl && (
-          <div
-            style={{
-              position: "absolute",
-              left: `${p.placement.xPct * 100}%`,
-              top: `${p.placement.yPct * 100}%`,
-              height: `${boxFrac * 100}%`,
-              aspectRatio: "1 / 1",
-              transform: `translate(-50%, -50%) rotate(${pose.rollDeg ?? 0}deg)`,
-              touchAction: "none",
-            }}
-          >
-            <model-viewer
-              ref={mvRef as never}
-              src={p.glbUrl}
-              alt="fixture"
-              camera-controls=""
-              disable-zoom=""
-              disable-pan=""
-              disable-tap=""
-              interaction-prompt="none"
-              tone-mapping="neutral"
-              shadow-intensity="0"
-              exposure="1"
-              camera-orbit={poseToOrbit(pose)}
-              field-of-view={`${viewerFovDeg(pose, p.placement.coverage)}deg`}
-              min-field-of-view="1deg"
-              max-field-of-view="65deg"
-              style={{
-                width: "100%",
-                height: "100%",
-                backgroundColor: "transparent",
-                ["--poster-color" as never]: "transparent",
-              }}
-            />
-            {/* drag-to-move handle (orbit owns the model body) */}
-            <div
-              onPointerDown={onMovePointerDown}
-              onPointerMove={onMovePointerMove}
-              onPointerUp={endMove}
-              onPointerCancel={endMove}
-              title="Drag to move"
-              style={{
-                position: "absolute",
-                top: -10,
-                left: "50%",
-                transform: "translateX(-50%)",
-                cursor: "move",
-                background: "rgba(0,0,0,0.6)",
-                color: "#fff",
-                fontSize: 11,
-                lineHeight: 1,
-                padding: "4px 10px",
-                borderRadius: 999,
-                userSelect: "none",
-                whiteSpace: "nowrap",
-                touchAction: "none",
-              }}
-            >
-              ✥ move
-            </div>
-          </div>
-        )}
-
-        {/* in-Blender test render overlay */}
-        {p.showPreview && p.previewUrl && (
-          <img
-            src={p.previewUrl}
-            alt="test render"
-            draggable={false}
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              objectFit: "fill",
-              pointerEvents: "none",
-            }}
-          />
-        )}
-
-        {(p.glbBusy || p.previewBusy) && (
-          <div
-            style={{
-              position: "absolute",
-              top: 10,
-              right: 10,
-              background: "rgba(0,0,0,0.65)",
-              color: "#fff",
-              padding: "4px 10px",
-              borderRadius: 6,
-              fontSize: 12,
-            }}
-          >
-            <span className="spinner" /> {p.previewBusy ? "rendering…" : "loading 3D…"}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ----------------------------------------------------------------- canvas -- */
-
-interface CanvasProps {
-  sceneUrl: string;
-  placement: AppShotPlacement;
-  cutout: Cutout;
-  cutoutBusy: boolean;
-  previewUrl: string | null;
-  showPreview: boolean;
-  previewBusy: boolean;
-  onPatch: (patch: Partial<AppShotPlacement>) => void;
-}
-
-function ShotCanvas(p: CanvasProps) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  const drag = useRef<{ x: number; y: number; xPct: number; yPct: number } | null>(
-    null,
-  );
-
-  const scale = p.placement.coverage / (p.cutout.coverageRef || 0.5);
-  const tx = (p.placement.xPct - 0.5) * 100;
-  const ty = (p.placement.yPct - 0.5) * 100;
-
-  function onPointerDown(e: React.PointerEvent) {
-    if (p.showPreview) return;
-    drag.current = {
-      x: e.clientX,
-      y: e.clientY,
-      xPct: p.placement.xPct,
-      yPct: p.placement.yPct,
-    };
-    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
-  }
-
-  function onPointerMove(e: React.PointerEvent) {
-    const d = drag.current;
-    const rect = ref.current?.getBoundingClientRect();
-    if (!d || !rect || rect.width === 0 || rect.height === 0) return;
-    const dx = (e.clientX - d.x) / rect.width;
-    const dy = (e.clientY - d.y) / rect.height;
-    p.onPatch({
-      xPct: clamp(d.xPct + dx, 0, 1),
-      yPct: clamp(d.yPct + dy, 0, 1),
-    });
-  }
-
-  function endDrag(e: React.PointerEvent) {
-    if (drag.current) {
-      drag.current = null;
-      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
-    }
-  }
-
-  function onWheel(e: React.WheelEvent) {
-    if (p.showPreview) return;
-    e.preventDefault();
-    const factor = e.deltaY > 0 ? 0.95 : 1.05;
-    p.onPatch({ coverage: clamp(p.placement.coverage * factor, 0.08, 0.9) });
-  }
-
-  return (
-    <div
-      style={{
-        position: "sticky",
-        top: 12,
-        zIndex: 5,
-        display: "flex",
-        justifyContent: "center",
-      }}
-    >
-      <div
-        ref={ref}
-        className="placement-canvas"
-        style={{
-          cursor: p.showPreview ? "default" : "grab",
-          maxHeight: "72vh",
-          borderRadius: 0,
-          border: "none",
-        }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-        onWheel={onWheel}
-      >
-        <img src={p.sceneUrl} alt="room" draggable={false} style={{ maxHeight: "72vh", width: "auto" }} />
-
-        {/* live draggable fixture overlay (hidden while showing the test render) */}
-        {!p.showPreview && (
-          <img
-            src={p.cutout.url}
-            alt="fixture"
-            draggable={false}
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              objectFit: "fill",
-              pointerEvents: "none",
-              transformOrigin: "50% 50%",
-              transform: `translate(${tx}%, ${ty}%) scale(${scale})`,
-            }}
-          />
-        )}
-
-        {/* in-Blender test render overlay */}
-        {p.showPreview && p.previewUrl && (
-          <img
-            src={p.previewUrl}
-            alt="test render"
-            draggable={false}
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              objectFit: "fill",
-              pointerEvents: "none",
-            }}
-          />
-        )}
-
-        {(p.cutoutBusy || p.previewBusy) && (
-          <div
-            style={{
-              position: "absolute",
-              top: 10,
-              right: 10,
-              background: "rgba(0,0,0,0.65)",
-              color: "#fff",
-              padding: "4px 10px",
-              borderRadius: 6,
-              fontSize: 12,
-            }}
-          >
-            <span className="spinner" /> {p.previewBusy ? "rendering…" : "updating fixture…"}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ----------------------------------------------------------------- slider -- */
-
-interface SliderProps {
-  label: string;
-  min: number;
-  max: number;
-  step: number;
-  value: number;
-  onChange: (v: number) => void;
-  fmt: (v: number) => string;
-}
-
-function Slider({ label, min, max, step, value, onChange, fmt }: SliderProps) {
-  return (
-    <div className="slider-row">
-      <label className="slider-label" style={{ margin: 0 }}>
-        {label}
-      </label>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="slider-input"
-      />
-      <span className="slider-value muted">{fmt(value)}</span>
     </div>
   );
 }

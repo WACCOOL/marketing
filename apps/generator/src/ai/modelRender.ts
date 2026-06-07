@@ -27,9 +27,11 @@ export interface ModelRenderConfig {
 }
 
 const DEFAULT_TIMEOUT_MS = 180_000;
-// A final composite (layered PSD, full-res Cycles) can take minutes on a complex
-// fixture; a preview is fast. Both well under these caps.
-const COMPOSITE_FINAL_TIMEOUT_MS = 600_000;
+// A final composite (layered PSD, full-res Cycles) can take many minutes on a
+// complex fixture at the High/Max tiers; a preview is fast. The final cap sits
+// ABOVE the worker's own Blender hard-cap (900s) so the worker's clean "render
+// timed out" surfaces instead of an opaque fetch abort.
+const COMPOSITE_FINAL_TIMEOUT_MS = 960_000;
 const COMPOSITE_PREVIEW_TIMEOUT_MS = 90_000;
 
 export function makeModelRenderAdapter(
@@ -120,10 +122,11 @@ export function makeModelRenderAdapter(
             height: req.height,
             engine: req.engine,
             samples: req.samples,
+            highQuality: req.highQuality,
             lightsOn: req.lightsOn,
           }),
         },
-        timeoutMs,
+        req.timeoutMs ?? timeoutMs,
       );
 
       if (!res.ok) {

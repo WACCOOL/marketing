@@ -364,13 +364,35 @@ export type AppImageMode = z.infer<typeof AppImageModeSchema>;
 export const AppShotPlacementSchema = z.object({
   xPct: z.number().min(0).max(1).default(0.5),
   yPct: z.number().min(0).max(1).default(0.4),
-  coverage: z.number().min(0.05).max(1).default(0.34),
+  coverage: z.number().min(0.05).max(3).default(0.34),
   brightness: z.number().min(0).max(200).default(25),
   lightOutput: z.number().min(0).max(200).default(25),
   warm: z.number().min(0).max(1).default(0.45),
   pose: AppImageModelPoseSchema.default({}),
 });
 export type AppShotPlacement = z.infer<typeof AppShotPlacementSchema>;
+
+/**
+ * How the fixture is rendered onto its background (Cam Solve). `studio` is the
+ * existing in-Blender catcher composite (contact shadow + light spill on the
+ * backdrop); `clean` is the flat layered cutout (fixture only, alpha preserved);
+ * `cleanShadow` adds a soft, alpha-preserving drop shadow under the fixture.
+ * Defaults to `studio` so the 3D App-Shot flow is unchanged.
+ */
+export const RenderStyleSchema = z.enum(["clean", "cleanShadow", "studio"]);
+export type RenderStyle = z.infer<typeof RenderStyleSchema>;
+
+/**
+ * Render-quality tier. Bundles the three knobs that trade render time for image
+ * quality — Cycles samples, refractive caustics (the crystal/glass sparkle), and
+ * output resolution — into one control. `standard` matches the previous fixed
+ * defaults, so omitting it is a no-op. `high`/`max` turn caustics on and push
+ * samples + resolution way up for catalog-grade output (minutes, not seconds);
+ * `draft` is the fast, caustics-off preview tier. The concrete numbers live in
+ * the generator's `qualityProfile`.
+ */
+export const RenderQualitySchema = z.enum(["draft", "standard", "high", "max"]);
+export type RenderQuality = z.infer<typeof RenderQualitySchema>;
 
 /**
  * Finalize payload carried inside `AppImageParams.shot` for the `shot3d` mode.
@@ -387,6 +409,10 @@ export const AppShotInputSchema = z.object({
   highQuality: z.boolean().optional(),
   /** Use the straight-on 2D-layered render (WYSIWYG 3D-viewer path). */
   straightOn: z.boolean().optional(),
+  /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
+  renderStyle: RenderStyleSchema.optional(),
+  /** Quality tier (samples + caustics + resolution). Defaults to standard. */
+  renderQuality: RenderQualitySchema.optional(),
 });
 export type AppShotInput = z.infer<typeof AppShotInputSchema>;
 
@@ -416,6 +442,10 @@ export const AppShotPreviewRequestSchema = z.object({
   placement: AppShotPlacementSchema,
   /** Use the straight-on 2D-layered render (WYSIWYG 3D-viewer path). */
   straightOn: z.boolean().optional(),
+  /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
+  renderStyle: RenderStyleSchema.optional(),
+  /** Quality tier (samples + caustics + resolution). Defaults to standard. */
+  renderQuality: RenderQualitySchema.optional(),
 });
 export type AppShotPreviewRequest = z.infer<typeof AppShotPreviewRequestSchema>;
 
@@ -431,6 +461,10 @@ export const AppShotFinalizeRequestSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),
   /** Use the straight-on 2D-layered render (WYSIWYG 3D-viewer path). */
   straightOn: z.boolean().optional(),
+  /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
+  renderStyle: RenderStyleSchema.optional(),
+  /** Quality tier (samples + caustics + resolution). Defaults to standard. */
+  renderQuality: RenderQualitySchema.optional(),
 });
 export type AppShotFinalizeRequest = z.infer<
   typeof AppShotFinalizeRequestSchema

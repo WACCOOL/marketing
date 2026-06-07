@@ -493,8 +493,11 @@ async function runShot3d(
       roomUrl: shot.sceneUrl,
       placement: shot.placement as ShotPlacement,
       samples: shot.samples,
-      highQuality: shot.highQuality ?? true,
+      // The quality tier (below) sets caustics; only honor an explicit override.
+      highQuality: shot.highQuality,
       straightOn: shot.straightOn,
+      renderStyle: shot.renderStyle,
+      renderQuality: shot.renderQuality,
     },
     adapters,
   );

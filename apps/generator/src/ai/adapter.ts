@@ -237,7 +237,11 @@ export interface ModelRenderRequest {
   height?: number;
   engine?: string;
   samples?: number;
+  /** Enable the file's refractive caustics (the slow, glass/crystal sparkle). */
+  highQuality?: boolean;
   lightsOn?: boolean;
+  /** Override the fetch timeout (high-quality crystal renders can take minutes). */
+  timeoutMs?: number;
 }
 
 export interface ExportGlbRequest {
