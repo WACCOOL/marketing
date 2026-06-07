@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import "@google/model-viewer";
 import type { ModelViewerElement } from "@google/model-viewer";
 import type { AppShotPlacement, RenderQuality, RenderStyle } from "@wac/shared";
@@ -220,6 +221,14 @@ export interface EditProps {
   finalizing: boolean;
   finalStatus: string | null;
   finalAssetId: string | null;
+  /**
+   * Cam Solve / App Shot: a final render was just handed off to the background
+   * queue. The Asset Library is the source of truth — the user can leave the
+   * page and pick the finished render up there.
+   */
+  queued?: boolean;
+  /** The queued job's id, used to deep-link/highlight it in the Library. */
+  queuedJobId?: string | null;
   mountLabel: string;
   onPatch: (patch: Partial<AppShotPlacement>) => void;
   onPatchPose: (patch: Partial<AppShotPlacement["pose"]>, rerender?: boolean) => void;
@@ -313,9 +322,25 @@ export function EditPanel(p: EditProps) {
         </button>
         <button onClick={p.onFinalize} disabled={p.finalizing}>
           {p.finalizing ? <span className="spinner" /> : null}
-          {p.finalizing ? `Rendering… (${p.finalStatus})` : "Final render"}
+          {p.finalizing ? "Queuing…" : "Final render"}
         </button>
       </div>
+
+      {p.queued && (
+        <div className="alert good col" style={{ gap: 6 }}>
+          <div>
+            Added to the render queue. High and Max renders take several minutes
+            — you can leave this page and pick it up later.
+          </div>
+          <div className="muted" style={{ fontSize: 12 }}>
+            Track progress and download it from your{" "}
+            <Link to={p.queuedJobId ? `/library?job=${p.queuedJobId}` : "/library"}>
+              Asset Library
+            </Link>
+            . Tweak and render again for another version anytime.
+          </div>
+        </div>
+      )}
 
       {p.finalAssetId && (
         <div className="alert good col" style={{ gap: 8 }}>

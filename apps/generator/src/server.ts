@@ -773,6 +773,18 @@ async function recordAssetFile(
   if (error) throw new Error(`asset_files insert failed: ${error.message}`);
 }
 
+// FUTURE (email on completion — deferred, not built yet):
+// This is the natural hook for "your render is ready" emails. Once a job
+// reaches a terminal state here (succeeded) — or in `markFailed` below — we can
+// look up the owner's email (Supabase auth / public.users) and send a
+// transactional message with a deep link to the Asset Library
+// (e.g. /library?job=<jobId>). The queue consumer's failure finalizer in
+// apps/api/src/index.ts is the matching hook for the "render failed after
+// retries" case. Intentionally left as a no-op for now: the Library already
+// surfaces queued/rendering/done state so users can queue-and-walk-away without
+// email. When implementing, prefer an email provider binding (e.g. Cloudflare
+// Email) over blocking this status write, and make sending best-effort so a
+// mail failure never marks an otherwise-successful render as failed.
 async function markSucceeded(
   sb: SupabaseClient,
   jobId: string,

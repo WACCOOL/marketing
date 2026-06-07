@@ -12,11 +12,26 @@ import {
 
 export const jobRoutes = new Hono<AppBindings>();
 
+/**
+ * Best-effort label for a job whose `name` predates the column (or was never
+ * set). shot3d jobs carry the SKU in params; otherwise fall back to the tool.
+ */
+function deriveJobName(row: GenerationJobRow): string {
+  if (row.name) return row.name;
+  const params = row.params_json as
+    | { shot?: { sku?: unknown }; sku?: unknown }
+    | undefined;
+  const sku = params?.shot?.sku ?? params?.sku;
+  if (typeof sku === "string" && sku) return `${sku} app shot`;
+  return row.tool;
+}
+
 /** Shape a job row for the client (camelCase, no internal owner_id noise). */
 function toJobResponse(row: GenerationJobRow) {
   return {
     jobId: row.id,
     tool: row.tool,
+    name: deriveJobName(row),
     status: row.status,
     assetId: row.asset_id,
     error: row.error,

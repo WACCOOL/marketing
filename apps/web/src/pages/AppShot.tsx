@@ -8,7 +8,6 @@ import type {
 import { isAllowedImageType, uploadImage } from "../lib/uploads.js";
 import { generateScene } from "../lib/scenes.js";
 import { apiBlob } from "../lib/api.js";
-import { pollJob } from "../lib/jobs.js";
 import {
   cutoutShot,
   finalizeShot,
@@ -171,6 +170,8 @@ export function AppShot() {
   const [previewBusy, setPreviewBusy] = useState(false);
 
   const [finalizing, setFinalizing] = useState(false);
+  const [queued, setQueued] = useState(false);
+  const [queuedJobId, setQueuedJobId] = useState<string | null>(null);
   const [finalStatus, setFinalStatus] = useState<string | null>(null);
   const [finalAssetId, setFinalAssetId] = useState<string | null>(
     saved.current?.finalAssetId ?? null,
@@ -280,6 +281,8 @@ export function AppShot() {
     setShowPreview(false);
     setFinalAssetId(null);
     setFinalStatus(null);
+    setQueued(false);
+    setQueuedJobId(null);
   }
 
   /** Measure the scene's natural aspect so the cutout is rendered to match it. */
@@ -473,12 +476,18 @@ export function AppShot() {
   }
 
   // --- final render ----------------------------------------------------------
+  // Hand the final render off to the background queue and return immediately.
+  // High/Max renders take minutes; rather than pin the user to this page with a
+  // long poll, we enqueue and point them at the Asset Library, where the job
+  // shows as "Rendering" and the finished asset drops in when it completes.
   async function runFinalize() {
     if (!sku || !sceneUrl || !placement) return;
     setError(null);
-    setFinalizing(true);
+    setQueued(false);
+    setQueuedJobId(null);
     setFinalAssetId(null);
-    setFinalStatus("queued…");
+    setFinalStatus(null);
+    setFinalizing(true);
     try {
       const { jobId } = await finalizeShot({
         sku,
@@ -488,23 +497,10 @@ export function AppShot() {
         straightOn,
         renderQuality,
       });
-      const job = await pollJob(jobId, {
-        intervalMs: 3000,
-        // Outlast the worker's render stack (Blender cap 900s < generator fetch
-        // 960s) so a slow High/Max hero render finishes rather than the client
-        // giving up first.
-        timeoutMs: 18 * 60_000,
-        onUpdate: (j) => setFinalStatus(j.status),
-      });
-      if (job.status === "succeeded" && job.assetId) {
-        setFinalAssetId(job.assetId);
-        setFinalStatus("succeeded");
-      } else {
-        throw new Error(job.error ?? "final render failed");
-      }
+      setQueuedJobId(jobId);
+      setQueued(true);
     } catch (e) {
       setError(formatErr(e));
-      setFinalStatus("failed");
     } finally {
       setFinalizing(false);
     }
@@ -593,6 +589,8 @@ export function AppShot() {
           finalizing={finalizing}
           finalStatus={finalStatus}
           finalAssetId={finalAssetId}
+          queued={queued}
+          queuedJobId={queuedJobId}
           mountLabel={fixture ? MOUNT_LABELS[fixture.mount] : ""}
           onPatch={patchPlacement}
           onPatchPose={patchPose}

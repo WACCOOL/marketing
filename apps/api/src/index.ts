@@ -144,6 +144,10 @@ async function queue(
       );
       // `attempts` counts deliveries including this one; once we've used up the
       // configured retries, finalize the job as failed so the poller terminates.
+      // FUTURE (email on completion — deferred): this is the "render failed
+      // after retries" hook that pairs with the success hook in the generator's
+      // markSucceeded (apps/generator/src/server.ts). When email is added, send
+      // a best-effort "render failed" notice to the job owner from here.
       if (message.attempts >= 3) {
         try {
           await updateJobStatus(serviceSupabase(env), job.jobId, {

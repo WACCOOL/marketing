@@ -28,6 +28,7 @@ export interface GenerationJobRow {
   owner_id: string;
   asset_id: string | null;
   tool: GenerationTool;
+  name: string | null;
   status: GenerationJobStatus;
   params_json: Record<string, unknown>;
   result_json: Record<string, unknown> | null;
@@ -40,7 +41,7 @@ export interface GenerationJobRow {
 }
 
 const JOB_COLUMNS =
-  "id, owner_id, asset_id, tool, status, params_json, result_json, error, attempts, created_at, updated_at, started_at, finished_at";
+  "id, owner_id, asset_id, tool, name, status, params_json, result_json, error, attempts, created_at, updated_at, started_at, finished_at";
 
 /**
  * Insert a queued job (user-scoped client → RLS enforces owner_id) and enqueue
@@ -63,6 +64,7 @@ export async function createGenerationJob(
     .insert({
       owner_id: args.ownerId,
       tool: args.tool,
+      name: args.name,
       params_json: args.params,
     })
     .select(JOB_COLUMNS)

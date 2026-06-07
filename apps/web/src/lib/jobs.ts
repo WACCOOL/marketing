@@ -11,6 +11,7 @@ import { api } from "./api.js";
 export interface JobResponse {
   jobId: string;
   tool: GenerationTool;
+  name: string;
   status: GenerationJobStatus;
   assetId: string | null;
   error: string | null;
@@ -36,6 +37,12 @@ export async function createJob(
 
 export async function getJob(jobId: string): Promise<JobResponse> {
   return api(`/api/jobs/${jobId}`);
+}
+
+/** List the caller's recent generation jobs (newest first). */
+export async function listJobs(): Promise<JobResponse[]> {
+  const res = await api<{ jobs: JobResponse[] }>("/api/jobs");
+  return res.jobs;
 }
 
 export interface PollOptions {
