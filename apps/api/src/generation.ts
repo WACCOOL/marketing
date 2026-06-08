@@ -127,6 +127,48 @@ export async function listGenerationJobs(
   return (data as GenerationJobRow[] | null) ?? [];
 }
 
+/** Sentinel error recorded when a user stops a queued/running render. */
+export const STOP_REASON = "Stopped by user";
+
+/**
+ * Delete a job row (the "clear" action). RLS restricts this to owner/admin.
+ * Best-effort: clearing the row does not recall any in-flight Container work,
+ * but the row stops appearing in the render queue.
+ */
+export async function deleteGenerationJob(
+  sb: SupabaseClient,
+  id: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error } = await sb.from("generation_jobs").delete().eq("id", id);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/**
+ * Stop a still-pending job: flip a queued/running row to failed with the
+ * STOP_REASON sentinel. Only affects rows currently queued/running, so a job
+ * that finished moments earlier is left untouched. Best-effort — a Container
+ * already mid-render may still complete and produce its asset.
+ */
+export async function stopGenerationJob(
+  sb: SupabaseClient,
+  id: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const now = new Date().toISOString();
+  const { error } = await sb
+    .from("generation_jobs")
+    .update({
+      status: "failed",
+      error: STOP_REASON,
+      finished_at: now,
+      updated_at: now,
+    })
+    .eq("id", id)
+    .in("status", ["queued", "running"]);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
 /**
  * Service-role status patch used by the queue consumer's failure finalizer.
  * The Container performs the running/succeeded transitions itself.

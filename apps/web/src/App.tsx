@@ -8,6 +8,7 @@ import { Builder } from "./pages/Builder.js";
 import { Social } from "./pages/Social.js";
 import { Bulk } from "./pages/Bulk.js";
 import { Library } from "./pages/Library.js";
+import { RenderQueue } from "./pages/RenderQueue.js";
 import { UtmQr } from "./pages/UtmQr.js";
 import { Products } from "./pages/Products.js";
 import { AppImage } from "./pages/AppImage.js";
@@ -116,6 +117,7 @@ function Shell() {
             }
           />
           <Route path="/library" element={<Library />} />
+          <Route path="/render-queue" element={<RenderQueue />} />
           <Route path="*" element={<Navigate to="/builder" replace />} />
         </Routes>
       </main>

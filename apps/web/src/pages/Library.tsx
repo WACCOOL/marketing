@@ -1,7 +1,6 @@
-import { type CSSProperties, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { type CSSProperties, useEffect, useState } from "react";
+import { zipSync } from "fflate";
 import { api, apiBlob } from "../lib/api.js";
-import { listJobs, type JobResponse } from "../lib/jobs.js";
 
 interface AssetFile {
   format: string;
@@ -22,25 +21,45 @@ interface Asset {
   asset_files: AssetFile[];
 }
 
-const QUEUE_POLL_MS = 4000;
+// Smallest transfer first: there's no server-side thumbnailing, so the browser
+// downloads the full-res file and scales it to ~48px. SVG ranks high so QR
+// assets (svg + png) render crisp vectors.
+const THUMB_FORMAT_PRIORITY = ["avif", "webp", "svg", "png", "jpeg", "jpg"];
 
-const HIGHLIGHT_STYLE: CSSProperties = {
-  background: "color-mix(in srgb, var(--accent) 14%, transparent)",
-};
+function pickThumbFormat(files: AssetFile[]): string | null {
+  for (const fmt of THUMB_FORMAT_PRIORITY) {
+    if (files.some((f) => f.format === fmt)) return fmt;
+  }
+  return null;
+}
+
+function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function sanitizeFilename(s: string): string {
+  const cleaned = s
+    .replace(/[\/\\:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned.length > 0 ? cleaned.slice(0, 80) : "asset";
+}
 
 export function Library() {
   const [assets, setAssets] = useState<Asset[]>([]);
-  const [jobs, setJobs] = useState<JobResponse[]>([]);
   const [q, setQ] = useState("");
   const [tool, setTool] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-
-  // Deep link from a finalize confirmation / future "render ready" email:
-  // /library?job=<id> highlights that job's queue row, or — once it has
-  // finished — its produced asset row.
-  const [searchParams] = useSearchParams();
-  const highlightJobId = searchParams.get("job");
+  const [busy, setBusy] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
   async function load(opts: { spinner?: boolean } = {}) {
     if (opts.spinner) setLoading(true);
@@ -49,14 +68,17 @@ export function Library() {
       const params = new URLSearchParams();
       if (q) params.set("q", q);
       if (tool) params.set("tool", tool);
-      const [assetsRes, jobsRes] = await Promise.all([
-        api<{ assets: Asset[] }>(
-          "/api/assets" + (params.toString() ? "?" + params.toString() : ""),
-        ),
-        listJobs().catch(() => [] as JobResponse[]),
-      ]);
+      const assetsRes = await api<{ assets: Asset[] }>(
+        "/api/assets" + (params.toString() ? "?" + params.toString() : ""),
+      );
       setAssets(assetsRes.assets);
-      setJobs(jobsRes);
+      // Drop selections that no longer exist after a delete/refresh.
+      setSelected((prev) => {
+        const live = new Set(assetsRes.assets.map((a) => a.id));
+        const next = new Set<string>();
+        for (const id of prev) if (live.has(id)) next.add(id);
+        return next;
+      });
     } catch (e) {
       setErr(formatErr(e));
     } finally {
@@ -67,53 +89,6 @@ export function Library() {
     void load({ spinner: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // A queued/rendering job has no asset yet; surface it as "in the queue" and
-  // drop it once it succeeds (the produced asset shows in the table below) or
-  // once its assetId already appears in the loaded assets.
-  const assetIds = new Set(assets.map((a) => a.id));
-  const queueJobs = jobs.filter((j) => {
-    if (tool && j.tool !== tool) return false;
-    if (q && !j.name.toLowerCase().includes(q.toLowerCase())) return false;
-    if (j.status === "queued" || j.status === "running") return true;
-    if (j.status === "failed") return true;
-    return false; // succeeded -> represented by its asset row
-  });
-  const queueJobsToShow = queueJobs.filter(
-    (j) => !(j.assetId && assetIds.has(j.assetId)),
-  );
-  const hasActive = jobs.some(
-    (j) => j.status === "queued" || j.status === "running",
-  );
-
-  // Resolve the deep-linked job to the row we should highlight: its queue row
-  // while pending, or its produced asset row once it has finished.
-  const highlightedJob = highlightJobId
-    ? jobs.find((j) => j.jobId === highlightJobId)
-    : undefined;
-  const highlightAssetId = highlightedJob?.assetId ?? null;
-
-  // Scroll the highlighted row into view the first time it renders (reset when
-  // the deep link itself changes).
-  const scrolledFor = useRef<string | null>(null);
-  const highlightRow = (el: HTMLTableRowElement | null) => {
-    if (el && highlightJobId && scrolledFor.current !== highlightJobId) {
-      scrolledFor.current = highlightJobId;
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  };
-
-  // While a render is queued/rendering, refresh quietly so a finished render
-  // appears (and the queue entry clears) without the user lifting a finger.
-  const loadRef = useRef<() => void>();
-  loadRef.current = () => {
-    void load();
-  };
-  useEffect(() => {
-    if (!hasActive) return;
-    const id = setInterval(() => loadRef.current?.(), QUEUE_POLL_MS);
-    return () => clearInterval(id);
-  }, [hasActive]);
 
   async function download(asset: Asset, format: string) {
     setErr(null);
@@ -132,6 +107,99 @@ export function Library() {
       URL.revokeObjectURL(url);
     } catch (e) {
       setErr(formatErr(e));
+    }
+  }
+
+  function toggleSelected(id: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  function toggleSelectAll() {
+    setSelected((prev) => {
+      const ids = assets.map((a) => a.id);
+      const allSelected = ids.length > 0 && ids.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (allSelected) {
+        for (const id of ids) next.delete(id);
+      } else {
+        for (const id of ids) next.add(id);
+      }
+      return next;
+    });
+  }
+  const allSelected =
+    assets.length > 0 && assets.every((a) => selected.has(a.id));
+  const hasSelection = selected.size > 0;
+
+  async function downloadSelected() {
+    if (selected.size === 0) return;
+    setBusy(true);
+    setErr(null);
+    const stamp = new Date().toISOString().slice(0, 10);
+    try {
+      const chosen = assets.filter((a) => selected.has(a.id));
+      const files: Record<string, Uint8Array> = {};
+      const used = new Set<string>();
+      for (const a of chosen) {
+        const base = sanitizeFilename(a.name || a.id);
+        for (const f of a.asset_files) {
+          let filename = `${base}.${f.format}`;
+          let n = 2;
+          while (used.has(filename)) filename = `${base}-${n++}.${f.format}`;
+          used.add(filename);
+          const blob = await apiBlob(`/api/assets/${a.id}/files/${f.format}`);
+          files[filename] = new Uint8Array(await blob.arrayBuffer());
+        }
+      }
+      const zipped = zipSync(files, { level: 6 });
+      saveBlob(
+        new Blob([new Uint8Array(zipped)], { type: "application/zip" }),
+        `assets-${stamp}.zip`,
+      );
+    } catch (e) {
+      setErr(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSelected() {
+    if (selected.size === 0) return;
+    const n = selected.size;
+    if (
+      !confirm(
+        `Delete ${n} asset${n === 1 ? "" : "s"}? This permanently removes ${n === 1 ? "its" : "their"} stored files and cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const res = await api<{
+        okCount: number;
+        errorCount: number;
+        results: { id: string; ok: boolean; error?: string }[];
+      }>("/api/assets/bulk-delete", {
+        method: "POST",
+        body: JSON.stringify({ ids: [...selected] }),
+      });
+      if (res.errorCount > 0) {
+        const firstErr = res.results.find((r) => !r.ok);
+        setErr(
+          `${res.errorCount} of ${n} failed${firstErr ? `: ${firstErr.id} — ${firstErr.error ?? "unknown"}` : ""}`,
+        );
+      }
+      setSelected(new Set());
+      await load();
+    } catch (e) {
+      setErr(formatErr(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -167,59 +235,55 @@ export function Library() {
           Search
         </button>
       </div>
-      {err && <div className="alert error">{err}</div>}
-      {queueJobsToShow.length > 0 && (
-        <div className="card col" style={{ gap: 12 }}>
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <h3 style={{ margin: 0 }}>Render queue</h3>
-            {hasActive && (
-              <span className="muted row" style={{ gap: 6, fontSize: 12 }}>
-                <span className="spinner" />
-                Rendering in the background — finished renders drop in below.
-              </span>
-            )}
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Tool</th>
-                <th>Status</th>
-                <th>Queued</th>
-              </tr>
-            </thead>
-            <tbody>
-              {queueJobsToShow.map((j) => (
-                <tr
-                  key={j.jobId}
-                  ref={j.jobId === highlightJobId ? highlightRow : undefined}
-                  style={
-                    j.jobId === highlightJobId ? HIGHLIGHT_STYLE : undefined
-                  }
-                >
-                  <td>{j.name}</td>
-                  <td>{j.tool}</td>
-                  <td>
-                    <StatusPill status={j.status} />
-                    {j.status === "failed" && j.error ? (
-                      <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
-                        {j.error}
-                      </div>
-                    ) : null}
-                  </td>
-                  <td className="muted" style={{ fontSize: 12 }}>
-                    {new Date(j.createdAt).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {hasSelection && (
+        <div
+          className="card row"
+          style={{
+            gap: 8,
+            flexWrap: "wrap",
+            position: "sticky",
+            top: 0,
+            zIndex: 5,
+            boxShadow: "0 6px 16px rgba(0,0,0,0.35)",
+          }}
+        >
+          <div className="muted">{selected.size} selected</div>
+          <button onClick={() => void downloadSelected()} disabled={busy}>
+            {busy ? <span className="spinner" /> : null}
+            Download (.zip)
+          </button>
+          <button
+            className="secondary"
+            onClick={() => void deleteSelected()}
+            disabled={busy}
+            style={{ color: "var(--bad)", borderColor: "var(--bad)" }}
+          >
+            Delete selected
+          </button>
+          <button
+            className="secondary"
+            onClick={() => setSelected(new Set())}
+            disabled={busy}
+          >
+            Clear selection
+          </button>
         </div>
       )}
+      {err && <div className="alert error">{err}</div>}
       <div className="card">
         <table>
           <thead>
             <tr>
+              <th style={{ width: 32 }}>
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleSelectAll}
+                  style={{ width: "auto" }}
+                  aria-label="Select all"
+                />
+              </th>
+              <th style={{ width: 56 }} />
               <th>Name</th>
               <th>Tool</th>
               <th>Tags</th>
@@ -229,11 +293,19 @@ export function Library() {
           </thead>
           <tbody>
             {assets.map((a) => (
-              <tr
-                key={a.id}
-                ref={a.id === highlightAssetId ? highlightRow : undefined}
-                style={a.id === highlightAssetId ? HIGHLIGHT_STYLE : undefined}
-              >
+              <tr key={a.id}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(a.id)}
+                    onChange={() => toggleSelected(a.id)}
+                    style={{ width: "auto" }}
+                    aria-label={`Select ${a.name || a.id}`}
+                  />
+                </td>
+                <td>
+                  <AssetThumbnail asset={a} />
+                </td>
                 <td>{a.name}</td>
                 <td>{a.tool}</td>
                 <td>
@@ -265,7 +337,7 @@ export function Library() {
             ))}
             {assets.length === 0 && (
               <tr>
-                <td colSpan={5} className="muted">
+                <td colSpan={7} className="muted">
                   No assets match.
                 </td>
               </tr>
@@ -277,29 +349,72 @@ export function Library() {
   );
 }
 
-function StatusPill({ status }: { status: JobResponse["status"] }) {
-  const map: Record<string, { label: string; color: string; spin?: boolean }> = {
-    queued: { label: "Queued", color: "var(--warn)", spin: true },
-    running: { label: "Rendering", color: "var(--accent)", spin: true },
-    failed: { label: "Failed", color: "var(--bad)" },
-    succeeded: { label: "Done", color: "var(--good)" },
-  };
-  const s = map[status] ?? { label: status, color: "var(--muted)" };
-  return (
-    <span
-      className="tag"
-      style={{
-        borderColor: s.color,
-        color: s.color,
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-      }}
-    >
-      {s.spin ? <span className="spinner" style={{ width: 10, height: 10 }} /> : null}
-      {s.label}
-    </span>
+// Module-level cache of fetched thumbnail object URLs, keyed by `${id}:${format}`,
+// so re-renders / re-filters don't refetch the same bytes. These URLs live for
+// the lifetime of the page (revoking them would break still-mounted <img>s).
+const thumbUrlCache = new Map<string, string>();
+
+function AssetThumbnail({ asset }: { asset: Asset }) {
+  const format = pickThumbFormat(asset.asset_files);
+  const cacheKey = format ? `${asset.id}:${format}` : null;
+  const [src, setSrc] = useState<string | null>(() =>
+    cacheKey ? thumbUrlCache.get(cacheKey) ?? null : null,
   );
+
+  useEffect(() => {
+    if (!format || !cacheKey) return;
+    const cached = thumbUrlCache.get(cacheKey);
+    if (cached) {
+      setSrc(cached);
+      return;
+    }
+    let cancelled = false;
+    apiBlob(`/api/assets/${asset.id}/files/${format}`)
+      .then((blob) => {
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        thumbUrlCache.set(cacheKey, url);
+        setSrc(url);
+      })
+      .catch(() => {
+        // thumbnail is non-critical
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [asset.id, format, cacheKey]);
+
+  const boxStyle: CSSProperties = {
+    width: 48,
+    height: 48,
+    borderRadius: 4,
+    background: "#fff",
+    objectFit: "contain",
+  };
+
+  if (!format) {
+    const label = asset.asset_files[0]?.format ?? "—";
+    return (
+      <div
+        className="muted"
+        style={{
+          ...boxStyle,
+          background: "var(--border)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 10,
+          textTransform: "uppercase",
+        }}
+        title={label}
+      >
+        {label}
+      </div>
+    );
+  }
+
+  if (!src) return <div style={boxStyle} />;
+  return <img src={src} alt={asset.name || "asset"} style={boxStyle} />;
 }
 
 function formatErr(e: unknown): string {

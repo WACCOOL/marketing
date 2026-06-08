@@ -1,12 +1,15 @@
 import { Hono } from "hono";
+import { z } from "zod";
 import { AppImageParamsSchema, GenerationJobRequestSchema } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
 import { userSupabase } from "../supabase.js";
 import {
   createGenerationJob,
+  deleteGenerationJob,
   getGenerationJob,
   listGenerationJobs,
+  stopGenerationJob,
   type GenerationJobRow,
 } from "../generation.js";
 
@@ -93,4 +96,46 @@ jobRoutes.get("/", requireAuth, async (c) => {
   const sb = userSupabase(c.env, c.get("jwt"));
   const rows = await listGenerationJobs(sb);
   return c.json({ jobs: rows.map(toJobResponse) });
+});
+
+const BulkDeleteSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
+});
+
+/** Bulk-clear job rows (e.g. failed renders). */
+jobRoutes.post("/bulk-delete", requireAuth, async (c) => {
+  const parsed = BulkDeleteSchema.safeParse(
+    await c.req.json().catch(() => null),
+  );
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const results: { id: string; ok: boolean; error?: string }[] = [];
+  for (const id of parsed.data.ids) {
+    const r = await deleteGenerationJob(sb, id);
+    if (r.ok) results.push({ id, ok: true });
+    else results.push({ id, ok: false, error: r.error });
+  }
+  return c.json({
+    okCount: results.filter((r) => r.ok).length,
+    errorCount: results.filter((r) => !r.ok).length,
+    results,
+  });
+});
+
+/** Stop a still-pending render (queued/running -> failed). */
+jobRoutes.post("/:id/stop", requireAuth, async (c) => {
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const r = await stopGenerationJob(sb, c.req.param("id"));
+  if (!r.ok) return c.json({ error: r.error }, 400);
+  return c.json({ ok: true });
+});
+
+/** Clear a single job row. */
+jobRoutes.delete("/:id", requireAuth, async (c) => {
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const r = await deleteGenerationJob(sb, c.req.param("id"));
+  if (!r.ok) return c.json({ error: r.error }, 400);
+  return c.json({ ok: true });
 });

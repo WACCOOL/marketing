@@ -333,11 +333,18 @@ export function EditPanel(p: EditProps) {
             — you can leave this page and pick it up later.
           </div>
           <div className="muted" style={{ fontSize: 12 }}>
-            Track progress and download it from your{" "}
-            <Link to={p.queuedJobId ? `/library?job=${p.queuedJobId}` : "/library"}>
-              Asset Library
+            Track progress in your{" "}
+            <Link
+              to={
+                p.queuedJobId
+                  ? `/render-queue?job=${p.queuedJobId}`
+                  : "/render-queue"
+              }
+            >
+              Render Queue
             </Link>
-            . Tweak and render again for another version anytime.
+            ; finished renders land in your Asset Library. Tweak and render
+            again for another version anytime.
           </div>
         </div>
       )}

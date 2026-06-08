@@ -7,6 +7,7 @@ import {
   FolderOpen,
   ImageIcon,
   Link2,
+  ListChecks,
   Minus,
   Moon,
   Package,
@@ -61,6 +62,7 @@ const NAV: NavEntry[] = [
       { to: "/app-image", label: "Image Generator", icon: ImageIcon },
     ],
   },
+  { to: "/render-queue", label: "Render Queue", icon: ListChecks },
   { to: "/library", label: "Asset Library", icon: FolderOpen },
   { to: "/products", label: "Products", icon: Package },
 ];

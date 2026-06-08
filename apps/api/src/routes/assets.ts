@@ -1,6 +1,8 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AppBindings } from "../auth.js";
+import type { Env } from "../env.js";
 import { requireAuth } from "../auth.js";
 import { userSupabase } from "../supabase.js";
 
@@ -40,6 +42,68 @@ assetRoutes.get("/", requireAuth, async (c) => {
   const { data, error } = await query;
   if (error) return c.json({ error: error.message }, 500);
   return c.json({ assets: data ?? [] });
+});
+
+/**
+ * Delete a single asset: prune its R2 objects (best-effort) then delete the
+ * row. `asset_files` rows cascade via FK, and the `assets_delete` RLS policy
+ * restricts this to the owner / admins.
+ */
+async function deleteAsset(
+  env: Env,
+  sb: SupabaseClient,
+  id: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { data: rows, error: filesErr } = await sb
+    .from("asset_files")
+    .select("r2_key")
+    .eq("asset_id", id);
+  if (filesErr) return { ok: false, error: filesErr.message };
+
+  for (const f of (rows ?? []) as { r2_key: string }[]) {
+    try {
+      await env.ASSETS_BUCKET.delete(f.r2_key);
+    } catch {
+      // best-effort; row deletion proceeds even if R2 already pruned
+    }
+  }
+
+  const { error: delErr } = await sb.from("assets").delete().eq("id", id);
+  if (delErr) return { ok: false, error: delErr.message };
+  return { ok: true };
+}
+
+const BulkDeleteSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
+});
+
+assetRoutes.post("/bulk-delete", requireAuth, async (c) => {
+  const parsed = BulkDeleteSchema.safeParse(
+    await c.req.json().catch(() => null),
+  );
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const results: { id: string; ok: boolean; error?: string }[] = [];
+  for (const id of parsed.data.ids) {
+    const r = await deleteAsset(c.env, sb, id);
+    if (r.ok) results.push({ id, ok: true });
+    else results.push({ id, ok: false, error: r.error });
+  }
+  return c.json({
+    okCount: results.filter((r) => r.ok).length,
+    errorCount: results.filter((r) => !r.ok).length,
+    results,
+  });
+});
+
+assetRoutes.delete("/:id", requireAuth, async (c) => {
+  const id = c.req.param("id");
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const r = await deleteAsset(c.env, sb, id);
+  if (!r.ok) return c.json({ error: r.error }, 400);
+  return c.json({ ok: true });
 });
 
 assetRoutes.get("/:id/files/:format", requireAuth, async (c) => {

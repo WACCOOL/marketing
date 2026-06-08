@@ -45,6 +45,33 @@ export async function listJobs(): Promise<JobResponse[]> {
   return res.jobs;
 }
 
+/** Sentinel error recorded when a user stops a queued/running render. */
+export const STOP_REASON = "Stopped by user";
+
+export interface BulkResult {
+  okCount: number;
+  errorCount: number;
+  results: { id: string; ok: boolean; error?: string }[];
+}
+
+/** Clear a single job row (e.g. a failed render). */
+export async function deleteJob(jobId: string): Promise<void> {
+  await api(`/api/jobs/${jobId}`, { method: "DELETE" });
+}
+
+/** Bulk-clear job rows. */
+export async function bulkDeleteJobs(ids: string[]): Promise<BulkResult> {
+  return api<BulkResult>("/api/jobs/bulk-delete", {
+    method: "POST",
+    body: JSON.stringify({ ids }),
+  });
+}
+
+/** Stop a still-pending render (queued/running). */
+export async function stopJob(jobId: string): Promise<void> {
+  await api(`/api/jobs/${jobId}/stop`, { method: "POST" });
+}
+
 export interface PollOptions {
   intervalMs?: number;
   timeoutMs?: number;
