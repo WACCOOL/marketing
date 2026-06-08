@@ -22,6 +22,7 @@ import {
   plateLongEdge,
   type BackgroundChoice,
 } from "../lib/background.js";
+import { usePrewarmWorker } from "../lib/usePrewarm.js";
 import { MOUNT_LABELS } from "../lib/fixtureKind.js";
 import {
   EditPanel,
@@ -126,6 +127,10 @@ function loadPersisted(): Persisted | null {
 
 export function CamSolve() {
   const saved = useRef<Persisted | null>(loadPersisted());
+
+  // Boot the render worker while the editor is open so the first Test/Final
+  // render skips the cold-container boot (kernels are already cached).
+  usePrewarmWorker();
 
   const [fixtures, setFixtures] = useState<ShotFixture[]>([]);
   const [fixturesErr, setFixturesErr] = useState<string | null>(null);

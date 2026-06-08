@@ -17,6 +17,7 @@ import {
   previewShot,
   type ShotFixture,
 } from "../lib/appshot.js";
+import { usePrewarmWorker } from "../lib/usePrewarm.js";
 import { MOUNT_LABELS } from "../lib/fixtureKind.js";
 import {
   EditPanel,
@@ -204,6 +205,10 @@ export function AppShot() {
       })
       .catch((e) => setFixturesErr(formatErr(e)));
   }, []);
+
+  // Boot the render worker while the editor is open so the first Test/Final
+  // render skips the cold-container boot (kernels are already cached).
+  usePrewarmWorker();
 
   // Persist the whole studio so navigating away never loses progress.
   useEffect(() => {

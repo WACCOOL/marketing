@@ -259,10 +259,21 @@ def configure_render(scene, job):
     print(f"[render.py] compute={gpu_status}")
 
     # The VSE often holds a BAKED image strip that would replace our 3D render
-    # (so the output never changes with the camera). Disable it. Leave the
-    # compositor / view transform (AgX) exactly as authored — that grade is part
-    # of the look.
+    # (so the output never changes with the camera). Disable it.
     scene.render.use_sequencer = False
+
+    # Color management parity: the CG team delivers with the Standard view
+    # transform on an sRGB display (NOT Blender 4.x's AgX default), so force it
+    # here — otherwise the cloud render would tone-map differently than the
+    # studio's render.st output.
+    try:
+        scene.view_settings.view_transform = "Standard"
+    except (TypeError, AttributeError):
+        pass
+    try:
+        scene.display_settings.display_device = "sRGB"
+    except (TypeError, AttributeError):
+        pass
 
     scene.render.film_transparent = True
     scene.render.resolution_x = int(job.get("width", scene.render.resolution_x))
@@ -276,10 +287,35 @@ def configure_render(scene, job):
     samples = int(job.get("samples") or 0)
     if scene.render.engine == "CYCLES":
         c = scene.cycles
+        # --- CG render-settings parity (match the studio's render.st / OptiX) ---
+        # Denoise with OpenImageDenoise on the GPU. The file only toggled
+        # use_denoising, which inherits Blender's default denoiser (OptiX on an
+        # NVIDIA box); the CG team delivers with OIDN, and OIDN vs OptiX read
+        # visibly differently, so pin the denoiser explicitly.
         c.use_denoising = True
+        try:
+            c.denoiser = "OPENIMAGEDENOISE"
+        except (TypeError, AttributeError):
+            pass
+        try:
+            c.denoising_use_gpu = True  # Blender 4.x: run OIDN on the render GPU
+        except AttributeError:
+            pass
+        # Render transparent glass over the transparent film (CG: "transparent +
+        # transparent glass") so the crystal keeps its alpha roll-off in cutouts.
+        try:
+            c.film_transparent_glass = True
+        except AttributeError:
+            pass
+        # Studio scenes carry no volumetrics (CG: "volumetric = 0").
+        try:
+            c.volume_bounces = 0
+        except AttributeError:
+            pass
         if job.get("highQuality"):
-            # Hero/catalog render: keep the file's gorgeous (slow) caustics.
-            c.samples = samples or 200
+            # Hero/catalog render: full GI at the CG team's final sample budget
+            # (1000 spp), keeping the file's gorgeous (slow) caustics.
+            c.samples = samples or 1000
         else:
             # Placement render (default): the fixture ends up <=~30% of the final
             # image, so refractive caustics (the ~30 min cost) aren't worth it.

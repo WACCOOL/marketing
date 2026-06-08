@@ -199,11 +199,22 @@ function runBlender(
       outPath,
     ];
     const child = spawn(BLENDER_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const label = scriptPath.split("/").pop() ?? scriptPath;
+    const startedAt = Date.now();
 
     let stderr = "";
     let stdout = "";
     child.stdout.on("data", (d: Buffer) => {
-      stdout += d.toString();
+      const s = d.toString();
+      stdout += s;
+      // Surface key Blender lines (compute device, our [render]/[composite] tags)
+      // to the worker console so they show up in `modal app logs` — otherwise the
+      // chosen GPU/CPU device and per-stage timings are invisible on success.
+      for (const line of s.split("\n")) {
+        if (/compute=|\[render\.py\]|\[composite|\[export/.test(line)) {
+          console.log(`[blender:${label}] ${line.trim()}`);
+        }
+      }
     });
     child.stderr.on("data", (d: Buffer) => {
       stderr += d.toString();
@@ -220,6 +231,8 @@ function runBlender(
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
+      console.log(`[worker] ${label} finished in ${secs}s (exit ${code})`);
       if (code === 0) return resolve();
       const tail = (stderr || stdout).split("\n").slice(-20).join("\n");
       reject(new Error(`Blender exited ${code}:\n${tail}`));
@@ -308,7 +321,7 @@ interface CompositeRequest {
   /** Render at this multiple of target then downscale (crisp fixture AA). */
   supersample?: number;
   /** Final export: upscale the room so its long edge is at least this many px
-   * (gives the fixture far more pixels). 0 disables. Default 3840. */
+   * (gives the fixture far more pixels). 0 disables. Default 4000. */
   finalLongEdge?: number;
 }
 
@@ -471,7 +484,9 @@ async function runComposite(body: CompositeRequest): Promise<CompositeArtifacts>
     let fixtureScale = 1;
     const composeBeauty = !preview && layers;
     if (!preview) {
-      const target = Math.max(0, body.finalLongEdge ?? 3840);
+      // Default to the CG team's 4000px final long edge so cloud finals match
+      // the studio's render.st output resolution (override per-request).
+      const target = Math.max(0, body.finalLongEdge ?? 4000);
       if (target > 0) {
         const rmeta = await sharp(roomPath).metadata();
         const long = Math.max(rmeta.width ?? 0, rmeta.height ?? 0);

@@ -33,9 +33,14 @@ GEMINI_API_KEY=
 # Gemini model for background removal (segmentation). Defaults to gemini-2.5-flash.
 # GEMINI_SEGMENT_MODEL=gemini-2.5-flash
 # Phase 3 — Blender render-worker base URL for 3D fixture rendering. Forwarded
-# into the generation Container. POC: a local/tunneled dev box (e.g.
-# http://host.docker.internal:8787); prod: the GPU server. Leave blank to disable
-# the 3D model path (fixtures then require a flat cutout image).
+# into the generation Container.
+#   LOCAL DEV: a local/tunneled dev box, e.g. http://host.docker.internal:8787
+#   PRODUCTION: the Modal deployment URL (see apps/render-worker/modal_app.py and
+#     its README). Deploy with `modal deploy apps/render-worker/modal_app.py`;
+#     the printed *.modal.run URL goes here, e.g.
+#     https://<workspace>--wac-render-worker-worker.modal.run
+# The generator follows Modal's 303 redirects for long renders automatically.
+# Leave blank to disable the 3D model path (fixtures then require a flat cutout).
 RENDER_WORKER_URL=
 # LOCAL DEV — base URL of a host-run generator (node) so the API calls it directly
 # instead of the GENERATION_CONTAINER (the local container proxy sidecar is flaky).

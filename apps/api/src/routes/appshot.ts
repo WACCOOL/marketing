@@ -9,7 +9,7 @@ import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
 import { generatorFetch } from "../generatorClient.js";
 import { createGenerationJob } from "../generation.js";
-import { publicOrigin } from "../publicUrl.js";
+import { normalizeAssetUrl, publicOrigin } from "../publicUrl.js";
 import { userSupabase } from "../supabase.js";
 
 /**
@@ -34,8 +34,14 @@ export const appShotRoutes = new Hono<AppBindings>();
 
 // Auto-place runs a few preview renders + Gemini critiques; a single preview is
 // faster but still pays Blender's per-call cost. Give both generous headroom.
-const COMPOSE_TIMEOUT_MS = 180_000;
-const PREVIEW_TIMEOUT_MS = 120_000;
+// These bound the API -> generator call. The generator in turn waits on the Modal
+// worker, which on a COLD container pays boot + OptiX kernel compile + a 300MB
+// .blend load before rendering (easily 3-4 min), so keep generous headroom or the
+// API aborts a render that Modal is still (successfully) running. Compose can do
+// several critic-loop renders, but the container stays warm across them so only
+// the first is cold.
+const COMPOSE_TIMEOUT_MS = 420_000;
+const PREVIEW_TIMEOUT_MS = 360_000;
 
 /**
  * POC fixture catalog (mirrors the generator's hardcoded FIXTURE_MAP). The web
@@ -121,6 +127,32 @@ appShotRoutes.get("/fixtures", requireAuth, (c) => {
   return c.json({ fixtures: POC_FIXTURES });
 });
 
+// Boot the (Modal) render worker ahead of time so the first Test/Final render
+// skips the cold container boot. The web editor calls this on mount and on a
+// heartbeat while open; the worker stays warm for its scaledown window, then
+// scales to zero on its own. A cold boot can take ~30s, so allow generous
+// headroom — but this never blocks the UI (fired in the background).
+const PREWARM_TIMEOUT_MS = 100_000;
+
+appShotRoutes.post("/prewarm", requireAuth, async (c) => {
+  if (!c.env.RENDER_WORKER_URL) {
+    return c.json({ ok: false, warm: false, reason: "no render worker configured" });
+  }
+  const user = c.get("user");
+  try {
+    const res = await generatorFetch(c.env, `shot:${user.id}`, "/prewarm-3d", {
+      method: "POST",
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(PREWARM_TIMEOUT_MS),
+    });
+    if (!res.ok) return c.json({ ok: false, warm: false, status: res.status });
+    return c.json((await res.json()) as Record<string, unknown>);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return c.json({ ok: false, warm: false, error: msg });
+  }
+});
+
 // Room analysis is a single vision call; the cutout is one fast Blender render.
 const PLACE_TIMEOUT_MS = 45_000;
 const CUTOUT_TIMEOUT_MS = 120_000;
@@ -157,7 +189,10 @@ appShotRoutes.post("/place", requireAuth, async (c) => {
   try {
     res = await generatorFetch(c.env, `shot:${user.id}`, "/autoplace-3d", {
       method: "POST",
-      body: JSON.stringify({ sku: raw.sku, roomUrl: raw.sceneUrl }),
+      body: JSON.stringify({
+        sku: raw.sku,
+        roomUrl: normalizeAssetUrl(c, raw.sceneUrl),
+      }),
       signal: AbortSignal.timeout(PLACE_TIMEOUT_MS),
     });
   } catch (e) {
@@ -349,7 +384,7 @@ appShotRoutes.post("/compose", requireAuth, async (c) => {
     user.id,
     {
       sku: parsed.data.sku,
-      roomUrl: parsed.data.sceneUrl,
+      roomUrl: normalizeAssetUrl(c, parsed.data.sceneUrl),
       placement: parsed.data.placement,
       maxIterations: parsed.data.maxIterations,
     },
@@ -397,7 +432,7 @@ appShotRoutes.post("/preview", requireAuth, async (c) => {
     user.id,
     {
       sku: parsed.data.sku,
-      roomUrl: parsed.data.sceneUrl,
+      roomUrl: normalizeAssetUrl(c, parsed.data.sceneUrl),
       placement: parsed.data.placement,
       skipCritic: true,
       maxIterations: 1,
@@ -444,7 +479,7 @@ appShotRoutes.post("/finalize", requireAuth, async (c) => {
     mode: "shot3d",
     shot: {
       sku: parsed.data.sku,
-      sceneUrl: parsed.data.sceneUrl,
+      sceneUrl: normalizeAssetUrl(c, parsed.data.sceneUrl),
       placement: parsed.data.placement,
       // Caustics/samples/resolution come from the quality tier (defaults to
       // `standard`, which keeps the previous "high quality" behavior).

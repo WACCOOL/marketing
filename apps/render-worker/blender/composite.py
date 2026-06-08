@@ -436,7 +436,9 @@ def main():
         base_w = max(1, int(round(rw * s)))
         base_h = max(1, int(round(rh * s)))
         if samples is None:
-            samples = 48
+            # CG team's preview sample budget (denoised), so the crystal/metal
+            # detail reads correctly in the interactive slider loop.
+            samples = 150
 
     # Supersample: render larger than the target then downscale each file, so the
     # fixture's geometry edges anti-alias crisply. 1.0 = off.

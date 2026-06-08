@@ -970,6 +970,37 @@ function main(): void {
         return;
       }
 
+      // Pre-warm the render worker: a GET /ping to the (Modal) worker boots a GPU
+      // container so the first Test/Final render skips the cold-boot tax. The web
+      // editor calls this on mount and on a heartbeat while open; the worker's
+      // scaledown window keeps it warm through the session, then scales to zero.
+      // Always 200s (with a `warm` flag) so the heartbeat never error-spams.
+      if (req.method === "POST" && url.pathname === "/prewarm-3d") {
+        const workerUrl = config.renderWorkerUrl;
+        if (!workerUrl) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, warm: false, reason: "no render worker configured" }));
+          return;
+        }
+        const started = Date.now();
+        try {
+          const base = workerUrl.replace(/\/$/, "");
+          // A cold container takes ~15-30s to boot before /ping answers; allow for
+          // it but cap so a wedged worker can't hang the heartbeat indefinitely.
+          const r = await fetch(`${base}/ping`, {
+            method: "GET",
+            signal: AbortSignal.timeout(90_000),
+          });
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: r.ok, warm: r.ok, bootMs: Date.now() - started }));
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, warm: false, bootMs: Date.now() - started, error: message }));
+        }
+        return;
+      }
+
       if (req.method === "POST" && url.pathname === "/generate") {
         let parsed: GenerateRequest | null;
         try {

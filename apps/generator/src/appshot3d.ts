@@ -74,8 +74,10 @@ export const FIXTURE_MAP: Record<string, FixtureMeta> = {
   },
   "ma1012n-48o": {
     sku: "ma1012n-48o",
-    modelPath:
-      "/Users/davis/Downloads/11405375040_ma1012n-48o_pro_scn010_lighting_v002_pub.blend",
+    // Lives on the Modal `wac-fixtures` Volume (mounted at /fixtures in the
+    // worker), so the worker reads the 300MB+ .blend off disk with no per-render
+    // download. Upload via `modal volume put wac-fixtures <local.blend> /<sku>.blend`.
+    modelPath: "/fixtures/ma1012n-48o.blend",
     // Decorative chandelier: no IES file — falls back to its own lamps for spill.
     fixtureType: "chandelier",
     mount: "ceiling",
@@ -710,9 +712,11 @@ export async function layeredShot(
     lightsOn: true,
     // A final at the High/Max tiers (caustics on, hi-res, many samples) can take
     // well over an hour on a crystal fixture on a CPU box; previews stay fast and
-    // bounded. The final cap sits above the worker's Blender hard-cap so the
-    // worker's clean timeout surfaces rather than an opaque fetch abort.
-    timeoutMs: input.preview ? 110_000 : RENDER_FINAL_TIMEOUT_MS,
+    // bounded. The preview cap must clear a COLD Modal container (boot + OptiX
+    // kernel compile + 300MB .blend load before pixels) and Modal's 150s
+    // single-request cap, so it sits at several minutes. The final cap sits above
+    // the worker's Blender hard-cap so the worker's clean timeout surfaces.
+    timeoutMs: input.preview ? 300_000 : RENDER_FINAL_TIMEOUT_MS,
   });
 
   // Tight-trim transparent margins so the fixture's own bbox drives sizing.

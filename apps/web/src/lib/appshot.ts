@@ -41,6 +41,23 @@ export interface PreviewResult {
   placement: AppShotPlacement;
 }
 
+/**
+ * Boot the render worker ahead of time so the first Test/Final render skips the
+ * cold-container boot. Fire-and-forget: call on editor mount and on a heartbeat
+ * while the page is open. Never throws — a failed pre-warm just means the first
+ * render pays the normal boot cost.
+ */
+export async function prewarmShot(): Promise<{ ok: boolean; warm?: boolean }> {
+  try {
+    return await api<{ ok: boolean; warm?: boolean }>("/api/appshot/prewarm", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  } catch {
+    return { ok: false };
+  }
+}
+
 export async function listFixtures(): Promise<ShotFixture[]> {
   const { fixtures } = await api<{ fixtures: ShotFixture[] }>(
     "/api/appshot/fixtures",

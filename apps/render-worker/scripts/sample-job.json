@@ -1,0 +1,12 @@
+{
+  "modelUrl": "https://REPLACE-with-public-url/reference-fixture.blend",
+  "sku": "bwsw58618-bk",
+  "roomUrl": "https://REPLACE-with-public-url/reference-room.png",
+  "highQuality": true,
+  "samples": 1000,
+  "finalLongEdge": 4000,
+  "pose": { "azimuthDeg": 30, "elevationDeg": 10, "fovDeg": 35 },
+  "coverage": 0.34,
+  "xPct": 0.5,
+  "yPct": 0.5
+}
