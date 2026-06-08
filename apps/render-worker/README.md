@@ -30,7 +30,7 @@ Environment:
 |-----|---------|-------|
 | `PORT` | `8787` | HTTP port |
 | `BLENDER_BIN` | macOS app bundle path | Path to the Blender executable |
-| `RENDER_TIMEOUT_MS` | `300000` | Per-render hard cap |
+| `RENDER_TIMEOUT_MS` | `3600000` | Per-render hard cap (60m; Max renders are slow on CPU — raise if needed) |
 
 ## API
 

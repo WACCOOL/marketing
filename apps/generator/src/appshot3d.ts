@@ -21,6 +21,7 @@ import type {
   ModelRenderPose,
   PlacementAdjust,
 } from "./ai/adapter.js";
+import { RENDER_FINAL_TIMEOUT_MS } from "./ai/modelRender.js";
 
 export type Mount = "ceiling" | "wall" | "floor" | "recessed";
 
@@ -708,10 +709,10 @@ export async function layeredShot(
     highQuality: input.highQuality,
     lightsOn: true,
     // A final at the High/Max tiers (caustics on, hi-res, many samples) can take
-    // many minutes on a crystal fixture; previews stay fast and bounded. The
-    // final cap sits above the worker's Blender hard-cap (900s) so the worker's
-    // clean timeout surfaces rather than an opaque fetch abort.
-    timeoutMs: input.preview ? 110_000 : 960_000,
+    // well over an hour on a crystal fixture on a CPU box; previews stay fast and
+    // bounded. The final cap sits above the worker's Blender hard-cap so the
+    // worker's clean timeout surfaces rather than an opaque fetch abort.
+    timeoutMs: input.preview ? 110_000 : RENDER_FINAL_TIMEOUT_MS,
   });
 
   // Tight-trim transparent margins so the fixture's own bbox drives sizing.

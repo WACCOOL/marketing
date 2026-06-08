@@ -72,4 +72,11 @@ export interface Env {
   // flaky under some Docker/kernel setups; see workers-sdk#12965). MUST be unset
   // in production so the real container path is used.
   GENERATOR_URL?: string;
+
+  // Outermost ceiling (ms) the queue consumer waits on a shot3d (3D app-shot /
+  // cam-solve) render before aborting. A Max-tier render can take well over an
+  // hour on a CPU box, so this must sit ABOVE the generator→worker fetch cap
+  // (RENDER_FINAL_TIMEOUT_MS) which in turn sits above the worker's Blender
+  // hard-cap (RENDER_TIMEOUT_MS). Optional; defaults to 70 minutes.
+  SHOT3D_CONTAINER_TIMEOUT_MS?: string;
 }

@@ -1337,6 +1337,14 @@ function main(): void {
     })();
   });
 
+  // A final render holds the /generate request open for many minutes while the
+  // worker renders. Disable Node's default headersTimeout/requestTimeout so the
+  // HTTP layer never severs a legitimate long render; the caller's AbortSignal
+  // (SHOT3D_CONTAINER_TIMEOUT_MS) remains the real upper bound.
+  server.requestTimeout = 0;
+  server.headersTimeout = 0;
+  server.timeout = 0;
+
   server.listen(PORT, () => {
     console.log(`[generator] listening on :${PORT}`);
   });

@@ -43,9 +43,11 @@ const BLENDER_BIN =
   "/Applications/Blender.app/Contents/MacOS/Blender";
 // Hard cap so a *stuck* render can't wedge the worker. Must comfortably exceed
 // the slowest legitimate render — the Max quality tier (refractive caustics +
-// ~1024 samples + hi-res) can take many minutes on a crystal fixture — so this
-// only fires on a genuine hang, not a healthy hero render. Overridable via env.
-const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS ?? 900_000);
+// ~1024 samples + hi-res) can take well over an hour on a CPU box (e.g. a
+// MacBook) for a crystal fixture — so the default is deliberately generous and
+// only fires on a genuine hang, not a healthy hero render. Raise RENDER_TIMEOUT_MS
+// further if a legitimate Max render needs more than the default 60 minutes.
+const RENDER_TIMEOUT_MS = Number(process.env.RENDER_TIMEOUT_MS ?? 3_600_000);
 // Where render.py lives, relative to this file at runtime (dist/ -> ../blender).
 // Use fileURLToPath so spaces (e.g. the OneDrive path) are decoded, not %20.
 const RENDER_SCRIPT = path.resolve(
@@ -659,6 +661,14 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ error: "not found" }));
   })();
 });
+
+// A single Max render can hold one request open for many minutes while Blender
+// works. Node's default headersTimeout (60s) and requestTimeout (300s) only
+// bound *receiving* a request, but disable them outright so nothing in the HTTP
+// layer can sever a long render; the real cap is RENDER_TIMEOUT_MS on Blender.
+server.requestTimeout = 0;
+server.headersTimeout = 0;
+server.timeout = 0;
 
 server.listen(PORT, () => {
   console.log(`[render-worker] listening on :${PORT}`);

@@ -110,11 +110,12 @@ async function scheduled(_event: ScheduledController, env: Env): Promise<void> {
 const CONTAINER_TIMEOUT_MS = 150_000;
 // 3D app-shot (shot3d) finals run Blender Cycles over a full-quality layered
 // export, which at the High/Max quality tiers (refractive caustics + high
-// samples + hi-res) can take many minutes on a crystal fixture. This is the
-// outermost server ceiling, so it sits ABOVE the generator→worker fetch (960s)
-// and the worker's Blender hard-cap (900s) — letting their cleaner errors
-// surface first — while still outlasting a legitimate hero render.
-const SHOT3D_CONTAINER_TIMEOUT_MS = 1_020_000;
+// samples + hi-res) can take well over an hour on a CPU box. This is the
+// outermost server ceiling, so it sits ABOVE the generator→worker fetch
+// (RENDER_FINAL_TIMEOUT_MS) and the worker's Blender hard-cap (RENDER_TIMEOUT_MS)
+// — letting their cleaner errors surface first — while still outlasting a
+// legitimate hero render. Env-overridable via SHOT3D_CONTAINER_TIMEOUT_MS.
+const SHOT3D_CONTAINER_TIMEOUT_MS_DEFAULT = 4_200_000;
 
 async function queue(
   batch: MessageBatch<GenerationMessage>,
@@ -122,11 +123,15 @@ async function queue(
 ): Promise<void> {
   for (const message of batch.messages) {
     const job = message.body;
+    const isShot3d =
+      (job.params as { mode?: string } | undefined)?.mode === "shot3d";
     try {
-      const timeoutMs =
-        (job.params as { mode?: string } | undefined)?.mode === "shot3d"
-          ? SHOT3D_CONTAINER_TIMEOUT_MS
-          : CONTAINER_TIMEOUT_MS;
+      const timeoutMs = isShot3d
+        ? Number(
+            env.SHOT3D_CONTAINER_TIMEOUT_MS ??
+              SHOT3D_CONTAINER_TIMEOUT_MS_DEFAULT,
+          )
+        : CONTAINER_TIMEOUT_MS;
       const res = await generatorFetch(env, job.jobId, "/generate", {
         method: "POST",
         body: JSON.stringify(job),
@@ -142,13 +147,17 @@ async function queue(
         `[queue] job ${job.jobId} attempt ${message.attempts} failed:`,
         errMessage,
       );
-      // `attempts` counts deliveries including this one; once we've used up the
-      // configured retries, finalize the job as failed so the poller terminates.
-      // FUTURE (email on completion — deferred): this is the "render failed
-      // after retries" hook that pairs with the success hook in the generator's
-      // markSucceeded (apps/generator/src/server.ts). When email is added, send
-      // a best-effort "render failed" notice to the job owner from here.
-      if (message.attempts >= 3) {
+      // shot3d (3D app-shot / cam-solve) renders are expensive, deterministic,
+      // and run one-at-a-time on the single-threaded render-worker. Retrying only
+      // re-runs the whole render and double-books the worker behind the original
+      // (which manifests as a cascading "fetch failed"), wasting time without
+      // improving the odds. So a shot3d failure is terminal: mark failed + ack,
+      // no retry. Cheap composite/hybrid jobs keep the normal retry budget.
+      // FUTURE (email on completion — deferred): this is the "render failed"
+      // hook that pairs with the success hook in the generator's markSucceeded
+      // (apps/generator/src/server.ts). When email is added, send a best-effort
+      // "render failed" notice to the job owner from here.
+      if (isShot3d || message.attempts >= 3) {
         try {
           await updateJobStatus(serviceSupabase(env), job.jobId, {
             status: "failed",
