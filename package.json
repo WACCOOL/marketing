@@ -10,6 +10,7 @@
     "build": "pnpm -r build",
     "deploy:web": "pnpm --filter @wac/web build && pnpm --filter @wac/api exec wrangler deploy --containers-rollout none",
     "deploy:all": "pnpm --filter @wac/web build && pnpm --filter @wac/api exec wrangler deploy --containers-rollout immediate",
+    "deploy:container": "bash scripts/deploy-container.sh",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint --if-present"
