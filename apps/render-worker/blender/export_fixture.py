@@ -15,6 +15,7 @@ import bpy
 import sys
 import json
 import math
+import os
 import re
 
 # Sub-collections inside the fixture collection that should NOT be exported
@@ -316,6 +317,56 @@ def gather_objects(coll, excluded):
     return objects
 
 
+def _node_tree_has_broken_group(ntree, seen=None):
+    """True if `ntree` references a node group whose own tree is missing (linked
+    from a library that's unavailable at render time, e.g. polygoniq/materialiq)
+    or that lacks a GROUP_OUTPUT node. Blender's glTF exporter crashes with
+    StopIteration descending into exactly such a group, which aborts the whole
+    export (it returns CANCELLED + prints a traceback, producing no file)."""
+    if ntree is None:
+        return False
+    if seen is None:
+        seen = set()
+    if ntree.as_pointer() in seen:
+        return False
+    seen.add(ntree.as_pointer())
+    for node in ntree.nodes:
+        if node.type == "GROUP":
+            sub = node.node_tree
+            if sub is None or not any(n.type == "GROUP_OUTPUT" for n in sub.nodes):
+                return True
+            if _node_tree_has_broken_group(sub, seen):
+                return True
+    return False
+
+
+def _force_neutral_material(mat):
+    """Rebuild a material as a single Principled BSDF wired to the output, so a
+    broken/unexportable node tree can't crash the glTF exporter."""
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.inputs["Base Color"].default_value = (0.6, 0.6, 0.6, 1.0)
+    bsdf.inputs["Roughness"].default_value = 0.4
+    bsdf.inputs["Metallic"].default_value = 0.6
+    nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+
+
+def neutralize_broken_material_groups(materials):
+    """Replace any material that references a broken/missing-library node group
+    with a plain Principled BSDF so the glTF export can't crash on it. The GLB is
+    only used to orbit/position the fixture, so losing material nuance on these
+    is acceptable — packing/relinking the missing library in the .blend is the
+    real fix for fidelity."""
+    for mat in materials:
+        if not mat or not mat.use_nodes or mat.node_tree is None:
+            continue
+        if _node_tree_has_broken_group(mat.node_tree):
+            _force_neutral_material(mat)
+            print(f"  Neutralized '{mat.name}' (broken/missing-library node group)")
+
+
 def main():
     job, out_path = parse_args()
     scene = bpy.context.scene
@@ -354,6 +405,7 @@ def main():
     print("Translating materials for glTF...")
     materialize_for_gltf(mats)
     neutralize_desaturated_metals(mats)
+    neutralize_broken_material_groups(mats)
 
     # Keep the proxy small: it's only for interactive placement, not final pixels.
     downscale_textures(int(job.get("maxTexture", 1024)))
@@ -385,14 +437,27 @@ def main():
             export_draco_normal_quantization=10,
             export_draco_texcoord_quantization=12,
         )
-    try:
-        bpy.ops.export_scene.gltf(**export_kwargs)
-    except TypeError as e:
-        print(f"  Draco kwargs unsupported ({e}); retrying without compression")
-        for k in list(export_kwargs):
-            if k.startswith("export_draco"):
-                export_kwargs.pop(k)
-        bpy.ops.export_scene.gltf(**export_kwargs)
+    def run_gltf_export():
+        try:
+            bpy.ops.export_scene.gltf(**export_kwargs)
+        except TypeError as e:
+            print(f"  Draco kwargs unsupported ({e}); retrying without compression")
+            for k in list(export_kwargs):
+                if k.startswith("export_draco"):
+                    export_kwargs.pop(k)
+            bpy.ops.export_scene.gltf(**export_kwargs)
+
+    run_gltf_export()
+    if not os.path.exists(out_path):
+        # The exporter cancelled WITHOUT raising (it prints a traceback and
+        # returns CANCELLED), so a try/except can't catch it — typically a
+        # broken node group the pass above didn't reach. Force every material to
+        # a plain Principled BSDF and retry once so the placement proxy exports.
+        print("  No GLB produced; forcing neutral materials and retrying export")
+        for mat in mats:
+            if mat and mat.use_nodes and mat.node_tree is not None:
+                _force_neutral_material(mat)
+        run_gltf_export()
     print("export_fixture: done.")
 
 
