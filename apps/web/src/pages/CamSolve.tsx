@@ -192,7 +192,6 @@ export function CamSolve() {
   const placementReady =
     viewerMode === "viewer" ? Boolean(glb && glb.sku === sku) : Boolean(cutout);
   const editing = Boolean(placement && sceneUrl && placementReady);
-  const straightOn = viewerMode === "viewer";
   const transparentBg = choice.kind === "transparent";
 
   // Studio (lit backdrop) needs a surface for light/shadow; a transparent plate
@@ -515,7 +514,6 @@ export function CamSolve() {
         sku,
         sceneUrl,
         placement,
-        straightOn,
         renderStyle: effectiveStyle,
         renderQuality,
       });
@@ -546,7 +544,6 @@ export function CamSolve() {
         sceneUrl,
         placement,
         name: `${sku} cam solve`,
-        straightOn,
         renderStyle: effectiveStyle,
         renderQuality,
       });

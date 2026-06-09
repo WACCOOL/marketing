@@ -462,6 +462,13 @@ def main():
             "highQuality": job.get("highQuality"),
             "width": render_w,
             "height": render_h,
+            # The background here is a BAKED sRGB room photo emitted onto the
+            # catcher plane, not linear scene data. Pin Standard/sRGB so the plate
+            # renders back as itself; AgX (the fixture .blend's authored transform,
+            # now respected by render.configure_render) would re-tone-map and
+            # darken/desaturate the room. Callers can still override per job.
+            "viewTransform": job.get("viewTransform", "Standard"),
+            "displayDevice": job.get("displayDevice", "sRGB"),
         })
         # configure_render forces film_transparent=True; re-apply per pass AFTER it.
         scene.render.film_transparent = transparent

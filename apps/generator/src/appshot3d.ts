@@ -129,12 +129,6 @@ export interface AutoPlaceInput extends RoomRef {
    */
   skipCritic?: boolean;
   /**
-   * Use the straight-on 2D-layered render (the WYSIWYG 3D-viewer path) instead of
-   * the in-Blender catcher composite (the fallback). The critic loop is only
-   * meaningful for the old path, so callers set this with skipCritic.
-   */
-  straightOn?: boolean;
-  /**
    * Cam Solve render style. `studio` (default) uses the in-Blender catcher
    * composite; `clean`/`cleanShadow` use the flat layered cutout (alpha
    * preserved), with `cleanShadow` adding a soft drop shadow.
@@ -824,8 +818,6 @@ export interface FinalRenderInput extends RoomRef {
   supersample?: number;
   /** Upscale the room so its long edge is >= this many px (more fixture pixels). */
   finalLongEdge?: number;
-  /** Use the straight-on 2D-layered render (WYSIWYG 3D-viewer path). */
-  straightOn?: boolean;
   /**
    * Cam Solve render style. `studio` (default) runs the in-Blender catcher
    * composite; `clean`/`cleanShadow` run the flat layered cutout (alpha

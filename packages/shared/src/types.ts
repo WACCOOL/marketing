@@ -407,8 +407,6 @@ export const AppShotInputSchema = z.object({
   placement: AppShotPlacementSchema,
   samples: z.number().int().positive().max(2048).optional(),
   highQuality: z.boolean().optional(),
-  /** Use the straight-on 2D-layered render (WYSIWYG 3D-viewer path). */
-  straightOn: z.boolean().optional(),
   /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
   renderStyle: RenderStyleSchema.optional(),
   /** Quality tier (samples + caustics + resolution). Defaults to standard. */
@@ -440,8 +438,6 @@ export const AppShotPreviewRequestSchema = z.object({
   sku: z.string().trim().min(1),
   sceneUrl: z.string().url(),
   placement: AppShotPlacementSchema,
-  /** Use the straight-on 2D-layered render (WYSIWYG 3D-viewer path). */
-  straightOn: z.boolean().optional(),
   /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
   renderStyle: RenderStyleSchema.optional(),
   /** Quality tier (samples + caustics + resolution). Defaults to standard. */
@@ -459,8 +455,6 @@ export const AppShotFinalizeRequestSchema = z.object({
   placement: AppShotPlacementSchema,
   /** Optional asset name; defaults to the SKU. */
   name: z.string().trim().min(1).max(200).optional(),
-  /** Use the straight-on 2D-layered render (WYSIWYG 3D-viewer path). */
-  straightOn: z.boolean().optional(),
   /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
   renderStyle: RenderStyleSchema.optional(),
   /** Quality tier (samples + caustics + resolution). Defaults to standard. */

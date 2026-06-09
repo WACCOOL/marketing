@@ -495,7 +495,6 @@ async function runShot3d(
       samples: shot.samples,
       // The quality tier (below) sets caustics; only honor an explicit override.
       highQuality: shot.highQuality,
-      straightOn: shot.straightOn,
       renderStyle: shot.renderStyle,
       renderQuality: shot.renderQuality,
     },

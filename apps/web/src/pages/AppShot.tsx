@@ -195,7 +195,6 @@ export function AppShot() {
   const placementReady =
     viewerMode === "viewer" ? Boolean(glb && glb.sku === sku) : Boolean(cutout);
   const editing = Boolean(placement && sceneUrl && placementReady);
-  const straightOn = viewerMode === "viewer";
 
   useEffect(() => {
     listFixtures()
@@ -470,7 +469,7 @@ export function AppShot() {
     setError(null);
     setPreviewBusy(true);
     try {
-      const r = await previewShot({ sku, sceneUrl, placement, straightOn, renderQuality });
+      const r = await previewShot({ sku, sceneUrl, placement, renderQuality });
       setPreviewUrl(r.previewUrl);
       setShowPreview(true);
     } catch (e) {
@@ -499,7 +498,6 @@ export function AppShot() {
         sceneUrl,
         placement,
         name: `${sku} app shot`,
-        straightOn,
         renderQuality,
       });
       setQueuedJobId(jobId);

@@ -102,8 +102,6 @@ export async function previewShot(req: {
   sku: string;
   sceneUrl: string;
   placement: AppShotPlacement;
-  /** Use the straight-on 2D-layered render (the new 3D-viewer path). */
-  straightOn?: boolean;
   /** Cam Solve render style (clean / cleanShadow / studio). */
   renderStyle?: RenderStyle;
   /** Quality tier (samples + caustics + resolution). */
@@ -160,8 +158,6 @@ export async function finalizeShot(req: {
   sceneUrl: string;
   placement: AppShotPlacement;
   name?: string;
-  /** Use the straight-on 2D-layered render (the new 3D-viewer path). */
-  straightOn?: boolean;
   /** Cam Solve render style (clean / cleanShadow / studio). */
   renderStyle?: RenderStyle;
   /** Quality tier (samples + caustics + resolution). */

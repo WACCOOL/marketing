@@ -98,8 +98,101 @@ def make_lightcard(obj):
     try:
         obj.visible_camera = False
         obj.visible_shadow = False
+        # Keep the card in every INDIRECT ray so the fixture still reflects and
+        # refracts the studio backdrop + softboxes — that environment is what
+        # gives the crystal/metal its depth. Only the primary camera ray is
+        # suppressed, so film_transparent still yields a clean alpha cutout.
+        obj.visible_glossy = True
+        obj.visible_transmission = True
+        obj.visible_diffuse = True
     except AttributeError:
         obj.hide_render = True
+
+
+def setup_fixture_mask(scene, view_layer, fixture_objs):
+    """Render the fixture INSIDE the full studio set (backdrop + softboxes visible,
+    exactly as the CG team renders it) and use the fixture itself as a matte to
+    crop the background away — the cutout then keeps the real reflections /
+    refractions of the studio environment, and goes transparent everywhere else.
+
+    This mirrors the CG workflow ("use the fixture as a mask to crop the
+    background") instead of hiding the studio set from the camera. It works by
+    tagging the fixture with an Object Index, enabling the IndexOB pass, and
+    wiring an ID Mask -> Set Alpha graph in the compositor so the single output
+    PNG is the beauty with the fixture matte as its (anti-aliased) alpha.
+
+    Returns True if the mask graph was built, False if this Blender lacks the
+    needed nodes (caller then falls back to lightcard isolation).
+    """
+    FIX_INDEX = 1
+    for obj in fixture_objs:
+        try:
+            obj.pass_index = FIX_INDEX
+        except AttributeError:
+            pass
+    try:
+        view_layer.use_pass_object_index = True
+    except AttributeError:
+        return False
+
+    scene.render.use_compositing = True
+    # Classic compositor (Blender 4.x LTS, the production target): scene.use_nodes
+    # + scene.node_tree. Blender 5.x replaced this with a compositing node group;
+    # if node_tree isn't available we bail and the caller uses lightcard isolation.
+    try:
+        scene.use_nodes = True
+    except (TypeError, AttributeError):
+        return False
+    nt = getattr(scene, "node_tree", None)
+    if nt is None:
+        return False
+
+    # PRESERVE the file's existing compositor. Many WAC/Schonbek studio files
+    # render with a Raw view transform and bake their entire photographic look
+    # into a compositor group (e.g. "Render Raw"): clearing the node tree would
+    # output the flat, un-tone-mapped Raw image (dark, muddy brass). Instead we
+    # reuse the file's Render Layers + Composite nodes and only splice the fixture
+    # matte into the FINAL alpha — after whatever look the file already applies.
+    rlayers = [n for n in nt.nodes if n.type == "R_LAYERS"]
+    composites = [n for n in nt.nodes if n.type == "COMPOSITE"]
+    try:
+        rl = rlayers[0] if rlayers else nt.nodes.new("CompositorNodeRLayers")
+        comp = composites[0] if composites else nt.nodes.new("CompositorNodeComposite")
+        idmask = nt.nodes.new("CompositorNodeIDMask")
+        setalpha = nt.nodes.new("CompositorNodeSetAlpha")
+    except RuntimeError:
+        return False
+
+    if "IndexOB" not in rl.outputs:
+        return False
+
+    idmask.index = FIX_INDEX
+    # Anti-alias the matte edge so the cutout composites cleanly (no jaggies).
+    try:
+        idmask.use_antialiasing = True
+    except AttributeError:
+        pass
+    # Replace the image's alpha outright with the fixture matte (don't multiply
+    # into the existing alpha, which film_transparent may have already set).
+    try:
+        setalpha.mode = "REPLACE_ALPHA"
+    except (TypeError, AttributeError):
+        pass
+
+    # The image currently feeding the Composite output is the fully-looked beauty
+    # (post "Render Raw" group); tap that as our color source. If nothing is
+    # wired to Composite yet, fall back to the raw render-layer beauty pass.
+    comp_image_in = comp.inputs["Image"]
+    if comp_image_in.is_linked:
+        src_socket = comp_image_in.links[0].from_socket
+    else:
+        src_socket = rl.outputs["Image"]
+
+    nt.links.new(src_socket, setalpha.inputs["Image"])
+    nt.links.new(rl.outputs["IndexOB"], idmask.inputs["ID value"])
+    nt.links.new(idmask.outputs["Alpha"], setalpha.inputs["Alpha"])
+    nt.links.new(setalpha.outputs["Image"], comp.inputs["Image"])
+    return True
 
 
 def pick_fixture_collection(scene, sku):
@@ -262,18 +355,27 @@ def configure_render(scene, job):
     # (so the output never changes with the camera). Disable it.
     scene.render.use_sequencer = False
 
-    # Color management parity: the CG team delivers with the Standard view
-    # transform on an sRGB display (NOT Blender 4.x's AgX default), so force it
-    # here — otherwise the cloud render would tone-map differently than the
-    # studio's render.st output.
-    try:
-        scene.view_settings.view_transform = "Standard"
-    except (TypeError, AttributeError):
-        pass
-    try:
-        scene.display_settings.display_device = "sRGB"
-    except (TypeError, AttributeError):
-        pass
+    # Color management: RESPECT the .blend's authored view transform. The WAC
+    # studio files are authored in AgX (the filmic transform that gives the
+    # crystal/metal its photographic highlight roll-off + neutral tone). Forcing
+    # Blender's "Standard" here — as this used to — clips the highlights and
+    # oversaturates, so the isolated fixture reads cartoonish next to the CG
+    # team's own export of the same file (which keeps AgX). Only override when the
+    # caller explicitly passes a transform/device (e.g. the room-composite path,
+    # which renders a baked sRGB room photo and wants Standard so the plate isn't
+    # re-tone-mapped).
+    view_transform = job.get("viewTransform")
+    if view_transform:
+        try:
+            scene.view_settings.view_transform = view_transform
+        except (TypeError, AttributeError):
+            pass
+    display_device = job.get("displayDevice")
+    if display_device:
+        try:
+            scene.display_settings.display_device = display_device
+        except (TypeError, AttributeError):
+            pass
 
     scene.render.film_transparent = True
     scene.render.resolution_x = int(job.get("width", scene.render.resolution_x))
@@ -343,13 +445,29 @@ def main():
 
     fixture_meshes = set(mesh_objects_in(fixture))
 
-    # Isolate the product WITHOUT killing the lighting: every non-fixture mesh
-    # (studio backdrop / softbox cards / floor) becomes an invisible lightcard —
-    # gone from the plate (transparent bg) but still lighting + reflecting in the
-    # fixture. Studio lights and the world HDRI are untouched.
-    for obj in scene.objects:
-        if obj.type == "MESH" and obj not in fixture_meshes:
-            make_lightcard(obj)
+    # Two ways to get the fixture onto a transparent background:
+    #   cropToFixture (default, the CG workflow): render the fixture INSIDE the
+    #     full studio set (backdrop + softboxes visible) so the crystal/metal
+    #     reflect + refract the real environment, then matte the fixture out with
+    #     an Object Index mask — the cutout keeps that studio look.
+    #   legacy lightcards: hide the studio set from the camera (still lighting +
+    #     reflecting via indirect rays) and rely on film_transparent for alpha.
+    # Lightcards remain the fallback if this Blender can't build the mask graph.
+    crop_to_fixture = bool(job.get("cropToFixture", True))
+    mask_built = False
+    if crop_to_fixture:
+        mask_built = setup_fixture_mask(
+            scene, bpy.context.view_layer, set(fixture.all_objects)
+        )
+    if not mask_built:
+        crop_to_fixture = False
+        # Isolate the product WITHOUT killing the lighting: every non-fixture mesh
+        # (studio backdrop / softbox cards / floor) becomes an invisible lightcard
+        # — gone from the plate (transparent bg) but still lighting + reflecting in
+        # the fixture. Studio lights and the world HDRI are untouched.
+        for obj in scene.objects:
+            if obj.type == "MESH" and obj not in fixture_meshes:
+                make_lightcard(obj)
 
     # Studio files bind a hero camera per frame via timeline markers, which
     # OVERRIDES scene.camera at render time. Clear them so our camera wins.
@@ -373,8 +491,15 @@ def main():
 
     configure_render(scene, job)
 
+    # In crop mode the alpha comes from the fixture matte, so the film must NOT be
+    # transparent — we WANT the studio backdrop rendered (for the reflections /
+    # refractions); the compositor crops it. RGBA still keeps the matte as alpha.
+    if crop_to_fixture:
+        scene.render.film_transparent = False
+
     scene.render.filepath = out_path
     print(f"[render.py] fixture='{fixture.name}' meshes={len(fixture_meshes)} "
+          f"crop_to_fixture={crop_to_fixture} "
           f"center={tuple(round(c, 3) for c in center)} radius={round(radius, 3)}")
     print(f"[render.py] active_cam='{scene.camera.name if scene.camera else None}' "
           f"cam_loc={tuple(round(c, 3) for c in cam.location)} engine={scene.render.engine} "

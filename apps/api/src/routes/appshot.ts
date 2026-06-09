@@ -436,7 +436,6 @@ appShotRoutes.post("/preview", requireAuth, async (c) => {
       placement: parsed.data.placement,
       skipCritic: true,
       maxIterations: 1,
-      straightOn: parsed.data.straightOn,
       renderStyle: parsed.data.renderStyle,
       renderQuality: parsed.data.renderQuality,
     },
@@ -483,7 +482,6 @@ appShotRoutes.post("/finalize", requireAuth, async (c) => {
       placement: parsed.data.placement,
       // Caustics/samples/resolution come from the quality tier (defaults to
       // `standard`, which keeps the previous "high quality" behavior).
-      straightOn: parsed.data.straightOn,
       renderStyle: parsed.data.renderStyle,
       renderQuality: parsed.data.renderQuality,
     },

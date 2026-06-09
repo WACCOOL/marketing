@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import "@google/model-viewer";
-import type { ModelViewerElement } from "@google/model-viewer";
 import type { AppShotPlacement, RenderQuality, RenderStyle } from "@wac/shared";
+import { FixtureScene } from "../lib/fixtureScene.js";
 
 /**
  * Render-quality tiers surfaced in both studios. The tier bundles Cycles
@@ -68,123 +67,12 @@ export function QualityPicker(p: QualityPickerProps) {
 /** Which placement canvas is active. */
 export type ViewerMode = "viewer" | "overlay";
 
-const RAD2DEG = 180 / Math.PI;
-
-/**
- * Map an AppShotPlacement pose to a model-viewer `camera-orbit` string. The
- * viewer azimuth (theta) is our azimuthDeg; its polar angle (phi) is measured
- * from the top, so phi = 90 - elevationDeg (elevation negative = looking up from
- * below). Radius is "auto" so changing the lens (FOV) re-frames instead of
- * zooming — the on-screen size is set by the element box (= coverage).
- */
-function poseToOrbit(pose: AppShotPlacement["pose"]): string {
-  const az = pose.azimuthDeg ?? 0;
-  const phi = 90 - (pose.elevationDeg ?? 0);
-  return `${az}deg ${phi}deg auto`;
-}
-
-/**
- * The viewer's perspective must match the Blender render's. In `place_camera` the
- * camera distance is `radius / sin(fov/2) * marginFactor` with `marginFactor =
- * 1/coverage`, so the fixture's bounding sphere subtends a half-angle α where
- * `sin(α) = sin(fov/2) * coverage / distanceFactor`. With model-viewer auto-
- * framing (radius = R/sin(FOV/2)), setting the viewer field-of-view to `2α`
- * reproduces the exact same distance/size ratio — i.e. the same foreshortening.
- */
-function viewerFovDeg(pose: AppShotPlacement["pose"], coverage: number): number {
-  const fov = pose.fovDeg ?? 35;
-  const df = pose.distanceFactor ?? 1;
-  const s = (Math.sin(((fov * Math.PI) / 180) / 2) * coverage) / Math.max(df, 0.01);
-  const clamped = Math.min(0.9999, Math.max(0.0001, s));
-  const deg = (2 * Math.asin(clamped) * 180) / Math.PI;
-  return Math.min(60, Math.max(6, deg));
-}
-
-// model-viewer auto-framing fills its element with the fixture's silhouette up to
-// this fraction (measured empirically and stable across fixtures/poses).
-const MV_FILL = 0.918;
-
-/**
- * Size of the square placement box (as a fraction of the room *height*) so the
- * fixture renders at EXACTLY the size Blender will produce. Projects the model's
- * bounding box under Blender's exact camera to get the true on-screen silhouette
- * size, then sizes the box to that / MV_FILL so auto-framing reproduces it.
- */
-function projectedBoxFrac(
-  dims: { x: number; y: number; z: number },
-  pose: AppShotPlacement["pose"],
-  coverage: number,
-  aspect: number, // room width / height
-): number {
-  const RAD = Math.PI / 180;
-  const fovH = (pose.fovDeg ?? 36) * RAD;
-  const df = pose.distanceFactor ?? 1;
-  const az = (pose.azimuthDeg ?? 0) * RAD;
-  const el = (pose.elevationDeg ?? 0) * RAD;
-  type Vec = [number, number, number];
-  const R = 0.5 * Math.hypot(dims.x, dims.y, dims.z);
-  const D = (R / Math.sin(fovH / 2) / Math.max(coverage, 0.01)) * df;
-  const sub = (a: Vec, b: Vec): Vec => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-  const dot = (a: Vec, b: Vec) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-  const cross = (a: Vec, b: Vec): Vec => [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
-  const norm = (a: Vec): Vec => {
-    const l = Math.hypot(a[0], a[1], a[2]) || 1;
-    return [a[0] / l, a[1] / l, a[2] / l];
-  };
-  const dir: Vec = [
-    Math.cos(el) * Math.sin(az),
-    -Math.cos(el) * Math.cos(az),
-    Math.sin(el),
-  ];
-  const C: Vec = [dir[0] * D, dir[1] * D, dir[2] * D];
-  const f = norm(sub([0, 0, 0], C)); // forward
-  const right = norm(cross(f, [0, 0, 1])); // screen right (world Z up)
-  const up = cross(right, f); // screen up
-  const fovV = 2 * Math.atan(Math.tan(fovH / 2) / Math.max(aspect, 0.01));
-  const hx = dims.x / 2,
-    hy = dims.y / 2,
-    hz = dims.z / 2;
-  let minY = Infinity,
-    maxY = -Infinity,
-    minX = Infinity,
-    maxX = -Infinity;
-  for (const sx of [-1, 1])
-    for (const sy of [-1, 1])
-      for (const sz of [-1, 1]) {
-        const v = sub([sx * hx, sy * hy, sz * hz], C);
-        const depth = dot(v, f);
-        if (depth <= 1e-4) continue;
-        const ndcx = dot(v, right) / depth / Math.tan(fovH / 2);
-        const ndcy = dot(v, up) / depth / Math.tan(fovV / 2);
-        if (ndcy < minY) minY = ndcy;
-        if (ndcy > maxY) maxY = ndcy;
-        if (ndcx < minX) minX = ndcx;
-        if (ndcx > maxX) maxX = ndcx;
-      }
-  const projH = (maxY - minY) / 2; // fraction of frame HEIGHT
-  const projW = (maxX - minX) / 2; // fraction of frame WIDTH
-  const frac = Math.max(projH, projW * aspect) / MV_FILL;
-  // Cap generously so the fixture can be pushed to fill the frame and clip past
-  // its edges (Cam Solve), not just sit comfortably inside it.
-  return Math.min(3, Math.max(0.02, frac));
-}
-
 /** Default upper bound for the fixture-size slider (overridable per studio). */
 const DEFAULT_MAX_COVERAGE = 0.9;
 
-/** Inverse of poseToOrbit: read the viewer camera back into pose degrees. */
-function orbitToPose(
-  thetaRad: number,
-  phiRad: number,
-): Partial<AppShotPlacement["pose"]> {
-  return {
-    azimuthDeg: thetaRad * RAD2DEG,
-    elevationDeg: 90 - phiRad * RAD2DEG,
-  };
+/** Wrap a degree value into [-180, 180] (orbit can drag past the slider range). */
+function wrapDeg(d: number): number {
+  return ((((d + 180) % 360) + 360) % 360) - 180;
 }
 
 export function clamp(n: number, lo: number, hi: number): number {
@@ -549,75 +437,114 @@ interface ViewerCanvasProps {
 }
 
 /**
- * Real-time 3D placement: a transparent <model-viewer> sits in a square box over
- * the room (box side = coverage of the room height = how the Blender render sizes
- * it). Orbit (drag) rotates/tilts the fixture; the move bar drags its position;
- * scroll resizes. The camera maps 1:1 to the pose Blender renders from, so Test
- * render lands at the exact same angle/size/position — no jump.
+ * Real-time 3D placement: a transparent WebGL canvas spans the whole room image
+ * and renders the fixture through a three.js camera configured IDENTICALLY to the
+ * Blender render (render.py `place_camera` + composite.py fixture offset). Drag on
+ * the canvas orbits (rotate/tilt), the move bar drags its screen position, scroll
+ * resizes. Because the preview camera/FOV/roll/offset are 1:1 with the render,
+ * Test render lands at the exact same angle/size/position — no jump, no mirror.
  */
 function ModelViewerCanvas(p: ViewerCanvasProps) {
   const roomRef = useRef<HTMLDivElement | null>(null);
-  const mvRef = useRef<ModelViewerElement | null>(null);
-  const drag = useRef<{ x: number; y: number; xPct: number; yPct: number } | null>(
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sceneRef = useRef<FixtureScene | null>(null);
+  const move = useRef<{ x: number; y: number; xPct: number; yPct: number } | null>(
     null,
   );
-  const fromCamera = useRef(false);
-  const [modelDims, setModelDims] = useState<{ x: number; y: number; z: number } | null>(
+  const orbit = useRef<{ x: number; y: number; az: number; el: number } | null>(
     null,
   );
   const [roomAspect, setRoomAspect] = useState(16 / 9);
 
   const pose = p.placement.pose;
 
+  // Create the WebGL scene once, sizing it to the room overlay via a ResizeObserver.
   useEffect(() => {
-    const mv = mvRef.current;
-    if (!mv) return;
-    setModelDims(null);
-    const onLoad = () => {
-      try {
-        const d = mv.getDimensions();
-        if (d && d.x > 0 && d.y > 0) setModelDims({ x: d.x, y: d.y, z: d.z });
-      } catch {
-        /* dims unavailable */
-      }
+    const canvas = canvasRef.current;
+    const container = roomRef.current;
+    if (!canvas || !container) return;
+    const scene = new FixtureScene(canvas);
+    sceneRef.current = scene;
+    const syncSize = () => {
+      const r = container.getBoundingClientRect();
+      scene.setSize(r.width, r.height);
     };
-    mv.addEventListener("load", onLoad);
-    return () => mv.removeEventListener("load", onLoad);
+    const ro = new ResizeObserver(syncSize);
+    ro.observe(container);
+    syncSize();
+    return () => {
+      ro.disconnect();
+      scene.dispose();
+      sceneRef.current = null;
+    };
+  }, []);
+
+  // Load (or swap) the fixture GLB whenever the URL changes.
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene || !p.glbUrl) return;
+    scene.loadModel(p.glbUrl).catch(() => {
+      /* a newer load supersedes this one, or the URL 404s — non-fatal */
+    });
   }, [p.glbUrl]);
 
-  const boxFrac =
-    modelDims != null
-      ? projectedBoxFrac(modelDims, pose, p.placement.coverage, roomAspect)
-      : p.placement.coverage;
-
+  // Push the live pose/placement into the scene (cheap; renders one frame).
   useEffect(() => {
-    const mv = mvRef.current;
-    if (!mv) return;
-    if (fromCamera.current) {
-      fromCamera.current = false;
-      return;
-    }
-    mv.cameraOrbit = poseToOrbit(pose);
-    mv.fieldOfView = `${viewerFovDeg(pose, p.placement.coverage)}deg`;
-  }, [pose.azimuthDeg, pose.elevationDeg, pose.fovDeg, p.placement.coverage]);
+    const scene = sceneRef.current;
+    if (!scene) return;
+    scene.update({
+      pose,
+      coverage: p.placement.coverage,
+      xPct: p.placement.xPct,
+      yPct: p.placement.yPct,
+      aspect: roomAspect,
+    });
+  }, [
+    pose.azimuthDeg,
+    pose.elevationDeg,
+    pose.rollDeg,
+    pose.fovDeg,
+    pose.distanceFactor,
+    p.placement.coverage,
+    p.placement.xPct,
+    p.placement.yPct,
+    roomAspect,
+  ]);
 
-  useEffect(() => {
-    const mv = mvRef.current;
-    if (!mv) return;
-    const onCam = (e: Event) => {
-      const detail = (e as CustomEvent<{ source?: string }>).detail;
-      if (detail?.source !== "user-interaction") return;
-      const o = mv.getCameraOrbit();
-      fromCamera.current = true;
-      p.onPatchPose(orbitToPose(o.theta, o.phi), false);
+  function onOrbitDown(e: React.PointerEvent) {
+    if (p.showPreview) return;
+    orbit.current = {
+      x: e.clientX,
+      y: e.clientY,
+      az: pose.azimuthDeg ?? 0,
+      el: pose.elevationDeg ?? 0,
     };
-    mv.addEventListener("camera-change", onCam);
-    return () => mv.removeEventListener("camera-change", onCam);
-  }, [p.glbUrl, p.onPatchPose]);
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  }
+  function onOrbitMove(e: React.PointerEvent) {
+    const o = orbit.current;
+    if (!o) return;
+    const dx = e.clientX - o.x;
+    const dy = e.clientY - o.y;
+    p.onPatchPose(
+      {
+        azimuthDeg: wrapDeg(o.az + dx * 0.4),
+        elevationDeg: clamp(o.el - dy * 0.4, -40, 70),
+      },
+      false,
+    );
+  }
+  function endOrbit(e: React.PointerEvent) {
+    if (orbit.current) {
+      orbit.current = null;
+      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    }
+  }
 
   function onMovePointerDown(e: React.PointerEvent) {
     if (p.showPreview) return;
-    drag.current = {
+    e.stopPropagation();
+    move.current = {
       x: e.clientX,
       y: e.clientY,
       xPct: p.placement.xPct,
@@ -626,16 +553,17 @@ function ModelViewerCanvas(p: ViewerCanvasProps) {
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
   }
   function onMovePointerMove(e: React.PointerEvent) {
-    const d = drag.current;
+    const d = move.current;
     const rect = roomRef.current?.getBoundingClientRect();
     if (!d || !rect || rect.width === 0 || rect.height === 0) return;
+    e.stopPropagation();
     const dx = (e.clientX - d.x) / rect.width;
     const dy = (e.clientY - d.y) / rect.height;
     p.onPatch({ xPct: clamp(d.xPct + dx, 0, 1), yPct: clamp(d.yPct + dy, 0, 1) });
   }
   function endMove(e: React.PointerEvent) {
-    if (drag.current) {
-      drag.current = null;
+    if (move.current) {
+      move.current = null;
       (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
     }
   }
@@ -682,66 +610,49 @@ function ModelViewerCanvas(p: ViewerCanvasProps) {
           style={{ width: "100%", height: "auto", display: "block" }}
         />
 
+        {/* Full-frame WebGL fixture overlay (matches the render frame exactly). */}
+        <canvas
+          ref={canvasRef}
+          onPointerDown={onOrbitDown}
+          onPointerMove={onOrbitMove}
+          onPointerUp={endOrbit}
+          onPointerCancel={endOrbit}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            display: p.showPreview ? "none" : "block",
+            cursor: orbit.current ? "grabbing" : "grab",
+            touchAction: "none",
+          }}
+        />
+
         {!p.showPreview && p.glbUrl && (
           <div
+            onPointerDown={onMovePointerDown}
+            onPointerMove={onMovePointerMove}
+            onPointerUp={endMove}
+            onPointerCancel={endMove}
+            title="Drag to move"
             style={{
               position: "absolute",
               left: `${p.placement.xPct * 100}%`,
               top: `${p.placement.yPct * 100}%`,
-              height: `${boxFrac * 100}%`,
-              aspectRatio: "1 / 1",
-              transform: `translate(-50%, -50%) rotate(${pose.rollDeg ?? 0}deg)`,
+              transform: "translate(-50%, -50%)",
+              cursor: "move",
+              background: "rgba(0,0,0,0.6)",
+              color: "#fff",
+              fontSize: 11,
+              lineHeight: 1,
+              padding: "4px 10px",
+              borderRadius: 999,
+              userSelect: "none",
+              whiteSpace: "nowrap",
               touchAction: "none",
             }}
           >
-            <model-viewer
-              ref={mvRef as never}
-              src={p.glbUrl}
-              alt="fixture"
-              camera-controls=""
-              disable-zoom=""
-              disable-pan=""
-              disable-tap=""
-              interaction-prompt="none"
-              tone-mapping="neutral"
-              shadow-intensity="0"
-              exposure="1"
-              camera-orbit={poseToOrbit(pose)}
-              field-of-view={`${viewerFovDeg(pose, p.placement.coverage)}deg`}
-              min-field-of-view="1deg"
-              max-field-of-view="65deg"
-              style={{
-                width: "100%",
-                height: "100%",
-                backgroundColor: "transparent",
-                ["--poster-color" as never]: "transparent",
-              }}
-            />
-            <div
-              onPointerDown={onMovePointerDown}
-              onPointerMove={onMovePointerMove}
-              onPointerUp={endMove}
-              onPointerCancel={endMove}
-              title="Drag to move"
-              style={{
-                position: "absolute",
-                top: -10,
-                left: "50%",
-                transform: "translateX(-50%)",
-                cursor: "move",
-                background: "rgba(0,0,0,0.6)",
-                color: "#fff",
-                fontSize: 11,
-                lineHeight: 1,
-                padding: "4px 10px",
-                borderRadius: 999,
-                userSelect: "none",
-                whiteSpace: "nowrap",
-                touchAction: "none",
-              }}
-            >
-              ✥ move
-            </div>
+            ✥ move
           </div>
         )}
 
