@@ -178,15 +178,16 @@ function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
   return next;
 }
 
+/** Runs Blender headless; resolves with the captured stdout+stderr on success. */
 function runBlender(
   scriptPath: string,
   modelPath: string,
   jobPath: string,
   outPath: string,
-): Promise<void> {
+): Promise<string> {
   return runExclusive(
     () =>
-      new Promise<void>((resolve, reject) => {
+      new Promise<string>((resolve, reject) => {
     const args = [
       "-b",
       modelPath,
@@ -233,7 +234,7 @@ function runBlender(
       clearTimeout(timer);
       const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
       console.log(`[worker] ${label} finished in ${secs}s (exit ${code})`);
-      if (code === 0) return resolve();
+      if (code === 0) return resolve(stdout + stderr);
       const tail = (stderr || stdout).split("\n").slice(-20).join("\n");
       reject(new Error(`Blender exited ${code}:\n${tail}`));
     });
@@ -276,9 +277,19 @@ async function exportGlb(reqBody: ExportGlbRequest): Promise<Buffer> {
     }
 
     await writeFile(jobPath, JSON.stringify({ sku: reqBody.sku }));
-    await runBlender(EXPORT_GLB_SCRIPT, modelPath, jobPath, outPath);
+    const log = await runBlender(EXPORT_GLB_SCRIPT, modelPath, jobPath, outPath);
     if (!existsSync(outPath)) {
-      throw new Error("Blender finished but produced no GLB");
+      // Blender exited 0 but wrote no file. Usually the glTF exporter returned
+      // CANCELLED (fixture-specific material/geometry it rejects) or
+      // export_fixture.py found nothing to export. runBlender only surfaces
+      // output on a NON-zero exit, so include the tail here or the reason is
+      // lost behind a generic message.
+      const tail = log
+        .split("\n")
+        .filter((l) => l.trim())
+        .slice(-25)
+        .join("\n");
+      throw new Error(`Blender finished but produced no GLB:\n${tail}`);
     }
     return await readFile(outPath);
   } finally {
