@@ -69,12 +69,22 @@ export class FixtureScene {
   private width = 0;
   private height = 0;
 
-  constructor(canvas: HTMLCanvasElement) {
+  /**
+   * @param opts.preserveDrawingBuffer keep the drawing buffer readable after a
+   *   render so `canvas.toDataURL()` works — used by the offline thumbnail baker
+   *   (apps/fixture-sync), which renders one frame then reads it back. The live
+   *   editor leaves it off (the default) to avoid the small per-frame cost.
+   */
+  constructor(
+    canvas: HTMLCanvasElement,
+    opts: { preserveDrawingBuffer?: boolean } = {},
+  ) {
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       alpha: true,
       antialias: true,
       premultipliedAlpha: false,
+      preserveDrawingBuffer: opts.preserveDrawingBuffer ?? false,
     });
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));

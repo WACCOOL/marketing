@@ -8,6 +8,8 @@ import {
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { deriveFixtureKind, type FixtureMount } from "@wac/shared";
+import { bakeThumbnails, type BakeFixture } from "./thumbBaker.js";
 
 /**
  * One-shot bulk uploader for the scalable fixture pipeline (Phase 1).
@@ -38,10 +40,20 @@ interface Args {
   dryRun: boolean;
   skuFilter?: string;
   concurrency: number;
+  /** After uploading, bake a picker thumbnail for any fixture missing one. */
+  bakeThumbs: boolean;
+  /** Skip the .blend scan/upload entirely and only bake missing thumbnails. */
+  bakeOnly: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { source: DEFAULT_SOURCE, dryRun: false, concurrency: 4 };
+  const args: Args = {
+    source: DEFAULT_SOURCE,
+    dryRun: false,
+    concurrency: 4,
+    bakeThumbs: false,
+    bakeOnly: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
@@ -56,6 +68,13 @@ function parseArgs(argv: string[]): Args {
         break;
       case "--concurrency":
         args.concurrency = Math.max(1, Number(argv[++i]) || 4);
+        break;
+      case "--bake-thumbs":
+        args.bakeThumbs = true;
+        break;
+      case "--bake-only":
+        args.bakeOnly = true;
+        args.bakeThumbs = true;
         break;
       case "--help":
       case "-h":
@@ -73,7 +92,8 @@ function parseArgs(argv: string[]): Args {
 
 function printUsageAndExit(code: number): never {
   console.log(
-    "Usage: fixture-sync [--source <dir>] [--dry-run] [--sku <substr>] [--concurrency <n>]",
+    "Usage: fixture-sync [--source <dir>] [--dry-run] [--sku <substr>] " +
+      "[--concurrency <n>] [--bake-thumbs] [--bake-only]",
   );
   process.exit(code);
 }
@@ -85,6 +105,10 @@ interface Config {
   r2Bucket: string;
   supabaseUrl: string;
   supabaseServiceRoleKey: string;
+  /** Deployed API origin for the GLB-export trigger (thumbnail bake only). */
+  apiBaseUrl?: string;
+  /** ADMIN_API_TOKEN for the GLB-export trigger (thumbnail bake only). */
+  adminToken?: string;
 }
 
 function loadConfig(): Config {
@@ -109,6 +133,11 @@ function loadConfig(): Config {
     r2Bucket: required.R2_BUCKET!,
     supabaseUrl: required.SUPABASE_URL!,
     supabaseServiceRoleKey: required.SUPABASE_SERVICE_ROLE_KEY!,
+    // Optional — only needed for --bake-thumbs / --bake-only.
+    apiBaseUrl: (process.env.API_BASE_URL ?? process.env.PUBLIC_BASE_URL)
+      ?.trim()
+      .replace(/\/+$/, ""),
+    adminToken: process.env.ADMIN_API_TOKEN,
   };
 }
 
@@ -245,6 +274,86 @@ async function loadRegistry(sb: SupabaseClient): Promise<Map<string, RegistryRow
   return map;
 }
 
+interface FixtureMetaRow {
+  fixture_key: string;
+  sku: string;
+  mount: string | null;
+}
+
+/**
+ * Load every registered fixture with the mount used to frame its thumbnail.
+ * The registry's `mount` is usually null (the generator derives it at render
+ * time), so we mirror that derivation here: join the products catalog by SKU
+ * and run `deriveFixtureKind` (the same helper the API uses), defaulting to
+ * "ceiling" when the SKU isn't matched.
+ */
+async function loadBakeFixtures(
+  sb: SupabaseClient,
+  skuFilter?: string,
+): Promise<BakeFixture[]> {
+  const rows: FixtureMetaRow[] = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await sb
+      .from("fixtures")
+      .select("fixture_key, sku, mount")
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`load fixtures failed: ${error.message}`);
+    const page = (data ?? []) as FixtureMetaRow[];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+
+  const filtered = skuFilter
+    ? rows.filter(
+        (r) =>
+          r.sku.toLowerCase().includes(skuFilter) ||
+          r.fixture_key.toLowerCase().includes(skuFilter),
+      )
+    : rows;
+
+  // Derive missing mounts from the products catalog, like the API resolver.
+  const needKind = filtered.filter((r) => !r.mount);
+  const kinds = await loadProductKinds(
+    sb,
+    [...new Set(needKind.map((r) => r.sku.toLowerCase()))],
+  );
+
+  return filtered.map((r) => {
+    const mount =
+      (r.mount as FixtureMount | null) ??
+      kinds.get(r.sku.toLowerCase())?.mount ??
+      deriveFixtureKind(null, null).mount;
+    return { fixtureKey: r.fixture_key, mount };
+  });
+}
+
+/** Look up mount/type for a set of SKUs via the products catalog (batched). */
+async function loadProductKinds(
+  sb: SupabaseClient,
+  skus: string[],
+): Promise<Map<string, { mount: FixtureMount }>> {
+  const out = new Map<string, { mount: FixtureMount }>();
+  const batch = 200;
+  for (let i = 0; i < skus.length; i += batch) {
+    const chunk = skus.slice(i, i + batch);
+    const { data, error } = await sb
+      .from("products")
+      .select("sku, category, name")
+      .in("sku", chunk);
+    if (error) throw new Error(`load products failed: ${error.message}`);
+    for (const p of (data ?? []) as {
+      sku: string;
+      category: string | null;
+      name: string | null;
+    }[]) {
+      const kind = deriveFixtureKind(p.category, p.name);
+      out.set(p.sku.toLowerCase(), { mount: kind.mount });
+    }
+  }
+  return out;
+}
+
 /** HEAD the R2 object; return its byte size, or null if it doesn't exist. */
 async function r2ObjectBytes(
   s3: S3Client,
@@ -366,11 +475,40 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const config = loadConfig();
 
+  const s3 = new S3Client({
+    region: "auto",
+    endpoint: config.r2Endpoint,
+    credentials: {
+      accessKeyId: config.r2AccessKeyId,
+      secretAccessKey: config.r2SecretAccessKey,
+    },
+  });
+  const sb = createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  let hadFailure = false;
+  if (!args.bakeOnly) {
+    hadFailure = (await syncBlends(args, config, s3, sb)) || hadFailure;
+  }
+  if (args.bakeThumbs) {
+    hadFailure = (await bakeThumbsPhase(args, config, s3, sb)) || hadFailure;
+  }
+  if (hadFailure) process.exitCode = 1;
+}
+
+/** Scan the source tree and mirror new/changed .blends to R2 + the registry. */
+async function syncBlends(
+  args: Args,
+  config: Config,
+  s3: S3Client,
+  sb: SupabaseClient,
+): Promise<boolean> {
   console.log(`[fixture-sync] scanning ${args.source} ...`);
-  let scanned = await scanBlendFiles(args.source);
+  const scanned = await scanBlendFiles(args.source);
   if (scanned.length === 0) {
     console.log("[fixture-sync] no .blend files found — nothing to do");
-    return;
+    return false;
   }
 
   let candidates = buildCandidates(scanned);
@@ -388,21 +526,11 @@ async function main(): Promise<void> {
       (args.skuFilter ? ` (filtered by "${args.skuFilter}")` : ""),
   );
 
-  const s3 = new S3Client({
-    region: "auto",
-    endpoint: config.r2Endpoint,
-    credentials: {
-      accessKeyId: config.r2AccessKeyId,
-      secretAccessKey: config.r2SecretAccessKey,
-    },
-  });
-  const sb = createClient(config.supabaseUrl, config.supabaseServiceRoleKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
   // The registry is only used to skip unchanged files; a dry-run doesn't need it
   // (and shouldn't require the DB / latest migration to preview the plan).
-  const registry = args.dryRun ? new Map<string, RegistryRow>() : await loadRegistry(sb);
+  const registry = args.dryRun
+    ? new Map<string, RegistryRow>()
+    : await loadRegistry(sb);
   const stats: Stats = { uploaded: 0, skipped: 0, failed: 0 };
 
   await pool(candidates, args.concurrency, async (cand) => {
@@ -431,7 +559,46 @@ async function main(): Promise<void> {
     `[fixture-sync] done — ${stats.uploaded} ${args.dryRun ? "would upload" : "uploaded"}, ` +
       `${stats.skipped} skipped, ${stats.failed} failed`,
   );
-  if (stats.failed > 0) process.exitCode = 1;
+  return stats.failed > 0;
+}
+
+/**
+ * Bake a picker thumbnail (GLB → PNG, headless) for every in-scope fixture that
+ * doesn't already have one. Run after a normal sync to cover newly-added
+ * fixtures, or `--bake-only` to backfill the whole registry.
+ */
+async function bakeThumbsPhase(
+  args: Args,
+  config: Config,
+  s3: S3Client,
+  sb: SupabaseClient,
+): Promise<boolean> {
+  if (args.dryRun) {
+    console.log("[bake] dry-run: skipping thumbnail bake");
+    return false;
+  }
+  if (!config.apiBaseUrl || !config.adminToken) {
+    throw new Error(
+      "thumbnail bake needs API_BASE_URL (or PUBLIC_BASE_URL) and ADMIN_API_TOKEN",
+    );
+  }
+  console.log("[bake] loading fixtures…");
+  const fixtures = await loadBakeFixtures(sb, args.skuFilter);
+  console.log(`[bake] ${fixtures.length} fixtures in scope`);
+  const stats = await bakeThumbnails(
+    {
+      s3,
+      bucket: config.r2Bucket,
+      apiBaseUrl: config.apiBaseUrl,
+      adminToken: config.adminToken,
+      concurrency: args.concurrency,
+    },
+    fixtures,
+  );
+  console.log(
+    `[bake] done — ${stats.baked} baked, ${stats.skipped} skipped, ${stats.failed} failed`,
+  );
+  return stats.failed > 0;
 }
 
 main().catch((e) => {

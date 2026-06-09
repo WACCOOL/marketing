@@ -1,3 +1,4 @@
+import type { Context, Next } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { Env } from "./env.js";
 import { serviceSupabase, userSupabase } from "./supabase.js";
@@ -23,11 +24,53 @@ export interface AppBindings {
  * Hono context. Pending reps may authenticate but are blocked from writes
  * by RLS.
  */
-export const requireAuth = createMiddleware<AppBindings>(async (c, next) => {
-  const authHeader = c.req.header("Authorization") ?? "";
-  const match = authHeader.match(/^Bearer\s+(.+)$/i);
-  if (!match) return c.json({ error: "missing bearer token" }, 401);
-  const jwt = match[1]!;
+export const requireAuth = createMiddleware<AppBindings>(verifySession);
+
+/**
+ * Like `requireAuth`, but also accepts a shared admin token (the
+ * `ADMIN_API_TOKEN` Worker secret) presented as `Authorization: Bearer <token>`.
+ * A match authenticates as a synthetic `admin` user with no Supabase session —
+ * for server-to-server callers like the fixture-sync CLI triggering a GLB
+ * export to bake picker thumbnails. Falls back to normal session verification
+ * for everyone else.
+ */
+export const requireAuthOrAdmin = createMiddleware<AppBindings>(
+  async (c, next) => {
+    const token = bearerToken(c);
+    const adminToken = c.env.ADMIN_API_TOKEN;
+    if (token && adminToken && timingSafeEqual(token, adminToken)) {
+      c.set("jwt", token);
+      c.set("user", {
+        id: "admin-token",
+        email: "admin@token",
+        role: "admin",
+        status: "active",
+      });
+      await next();
+      return;
+    }
+    return verifySession(c, next);
+  },
+);
+
+/** Pull the Bearer token from the Authorization header, if present. */
+function bearerToken(c: Context<AppBindings>): string | null {
+  const match = (c.req.header("Authorization") ?? "").match(/^Bearer\s+(.+)$/i);
+  return match ? match[1]! : null;
+}
+
+/** Constant-time string compare so the admin token can't be timing-probed. */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/** Verify a Supabase session JWT and stash the user/jwt on the context. */
+async function verifySession(c: Context<AppBindings>, next: Next) {
+  const jwt = bearerToken(c);
+  if (!jwt) return c.json({ error: "missing bearer token" }, 401);
 
   const sb = userSupabase(c.env, jwt);
   const { data: userRes, error: userErr } = await sb.auth.getUser(jwt);
@@ -43,7 +86,7 @@ export const requireAuth = createMiddleware<AppBindings>(async (c, next) => {
   c.set("jwt", jwt);
   c.set("user", profile);
   await next();
-});
+}
 
 /**
  * Look up (or provision) the public.users row for this auth user. Implements

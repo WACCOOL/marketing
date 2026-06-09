@@ -5,11 +5,12 @@ import {
   AppShotFinalizeRequestSchema,
   AppShotPreviewRequestSchema,
   deriveFixtureKind,
+  normalizeFixtureKey,
   type DimensionsMm,
   type FixtureMount,
 } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
-import { requireAuth } from "../auth.js";
+import { requireAuth, requireAuthOrAdmin } from "../auth.js";
 import { generatorFetch } from "../generatorClient.js";
 import { createGenerationJob } from "../generation.js";
 import { normalizeAssetUrl, publicOrigin } from "../publicUrl.js";
@@ -210,7 +211,7 @@ async function cacheFixtureThumb(
   fixtureKey: string,
   base64: string,
 ): Promise<void> {
-  const key = fixtureKey.toLowerCase().replace(/[^a-z0-9_-]/g, "");
+  const key = normalizeFixtureKey(fixtureKey);
   if (!key) return;
   try {
     await c.env.ASSETS_BUCKET.put(`appshot/thumb/${key}.png`, base64ToBytes(base64), {
@@ -596,7 +597,7 @@ const GLB_TIMEOUT_MS = 180_000;
  * GLB is product geometry, not user data, so it's shared across users. Returns a
  * public URL that <model-viewer> can fetch directly.
  */
-appShotRoutes.post("/glb", requireAuth, async (c) => {
+appShotRoutes.post("/glb", requireAuthOrAdmin, async (c) => {
   if (!c.env.RENDER_WORKER_URL) {
     return c.json(
       { error: "3D app-shots are not configured (set RENDER_WORKER_URL)" },

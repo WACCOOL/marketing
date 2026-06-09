@@ -9,6 +9,7 @@ apps/render-worker/.review/
 __pycache__/
 *.pyc
 dist/
+dist-harness/
 build/
 .wrangler/
 .dev.vars

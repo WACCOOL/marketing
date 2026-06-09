@@ -707,73 +707,72 @@ function SetupPanel(p: SetupProps) {
             </select>
           )}
         </div>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))",
-            gap: 10,
-            maxHeight: 440,
-            overflowY: "auto",
-            paddingRight: 4,
-          }}
-        >
-          {p.fixtures.map((f) => {
-            const selected = f.options.some((o) => o.fixtureKey === p.sku);
-            return (
-              <button
-                key={f.sku}
-                type="button"
-                className={"product-card" + (selected ? " selected" : "")}
-                onClick={() => p.setSku(f.options[0]!.fixtureKey)}
-                title={f.name ?? f.sku}
-              >
-                <FixtureThumb
-                  fixtureKey={f.options[0]!.fixtureKey}
-                  mount={f.mount}
-                  imageUrl={f.thumbnailUrl}
-                  allow3d
-                />
-                <div className="product-meta">
-                  <div className="product-name" title={f.name ?? f.sku}>
-                    {f.name ?? f.sku}
-                  </div>
-                  {f.brand ? (
-                    <div className="muted product-brand">{f.brand}</div>
-                  ) : null}
-                  <div className="muted product-sku">{f.sku}</div>
-                  <div className="muted product-dims">
-                    {formatDimensions(f.dimensions ?? {})}
-                  </div>
-                  {(f.finish || f.options.length > 1) && (
-                    <div
-                      className="row"
-                      style={{ gap: 4, flexWrap: "wrap", marginTop: 2 }}
-                    >
-                      {f.finish ? (
-                        <span className="tag" style={{ fontWeight: 600 }}>
-                          {f.finish}
-                        </span>
-                      ) : null}
-                      {f.options.length > 1 ? (
-                        <span className="tag">{f.options.length} scenes</span>
-                      ) : null}
+        {/* The grid itself must NOT be the scroll container — WebKit mis-sizes
+            grid items inside an overflow:auto grid. Scroll a plain wrapper. */}
+        <div style={{ maxHeight: 440, overflowY: "auto", paddingRight: 4 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))",
+              gap: 10,
+            }}
+          >
+            {p.fixtures.map((f) => {
+              const selected = f.options.some((o) => o.fixtureKey === p.sku);
+              return (
+                <button
+                  key={f.sku}
+                  type="button"
+                  className={"product-card" + (selected ? " selected" : "")}
+                  onClick={() => p.setSku(f.options[0]!.fixtureKey)}
+                  title={f.name ?? f.sku}
+                >
+                  <FixtureThumb
+                    fixtureKey={f.options[0]!.fixtureKey}
+                    imageUrl={f.thumbnailUrl}
+                  />
+                  <div className="product-meta">
+                    <div className="product-name" title={f.name ?? f.sku}>
+                      {f.name ?? f.sku}
                     </div>
-                  )}
-                </div>
-              </button>
-            );
-          })}
-          {p.fixtures.length === 0 && !p.fixturesErr && (
-            <span className="muted">
-              {p.fixtureQuery.trim() || p.fixtureBrand ? (
-                "No fixtures match that search."
-              ) : (
-                <>
-                  <span className="spinner" /> loading fixtures…
-                </>
-              )}
-            </span>
-          )}
+                    {f.brand ? (
+                      <div className="muted product-brand">{f.brand}</div>
+                    ) : null}
+                    <div className="muted product-sku">{f.sku}</div>
+                    <div className="muted product-dims">
+                      {formatDimensions(f.dimensions ?? {})}
+                    </div>
+                    {(f.finish || f.options.length > 1) && (
+                      <div
+                        className="row"
+                        style={{ gap: 4, flexWrap: "wrap", marginTop: 2 }}
+                      >
+                        {f.finish ? (
+                          <span className="tag" style={{ fontWeight: 600 }}>
+                            {f.finish}
+                          </span>
+                        ) : null}
+                        {f.options.length > 1 ? (
+                          <span className="tag">{f.options.length} scenes</span>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+            {p.fixtures.length === 0 && !p.fixturesErr && (
+              <span className="muted">
+                {p.fixtureQuery.trim() || p.fixtureBrand ? (
+                  "No fixtures match that search."
+                ) : (
+                  <>
+                    <span className="spinner" /> loading fixtures…
+                  </>
+                )}
+              </span>
+            )}
+          </div>
         </div>
         {p.fixturesTotal > p.fixtures.length && (
           <div className="muted" style={{ fontSize: 12 }}>
@@ -799,7 +798,7 @@ function SetupPanel(p: SetupProps) {
                   className={"product-card" + (p.sku === o.fixtureKey ? " selected" : "")}
                   onClick={() => p.setSku(o.fixtureKey)}
                 >
-                  <FixtureThumb fixtureKey={o.fixtureKey} mount={p.fixture!.mount} allow3d />
+                  <FixtureThumb fixtureKey={o.fixtureKey} />
                   <div className="product-meta">
                     <div className="product-name">{o.label}</div>
                   </div>
