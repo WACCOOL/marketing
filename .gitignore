@@ -4,6 +4,8 @@ node_modules/
 .npmrc
 # Render-worker scratch outputs (test renders / PSD / AVIF) and Python bytecode.
 apps/render-worker/exports/
+# Ad-hoc render comparison/debug scratch (reference PNGs, probe scripts, dumps).
+apps/render-worker/.review/
 __pycache__/
 *.pyc
 dist/

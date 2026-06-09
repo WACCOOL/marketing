@@ -4,6 +4,9 @@ import {
   AppShotComposeRequestSchema,
   AppShotFinalizeRequestSchema,
   AppShotPreviewRequestSchema,
+  deriveFixtureKind,
+  type DimensionsMm,
+  type FixtureMount,
 } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
@@ -16,7 +19,7 @@ import { userSupabase } from "../supabase.js";
  * 3D app-shot API (Phase C).
  *
  * The web UI flow:
- *   1. GET  /fixtures            list the POC fixtures the picker can choose.
+ *   1. GET  /fixtures            browse the fixtures registry (search + page).
  *   2. POST /compose             auto-place + hidden AI critic loop → preview URL
  *                                + the placement the sliders bind to.
  *   3. POST /preview             one render of the EXACT slider placement (no AI)
@@ -43,14 +46,122 @@ export const appShotRoutes = new Hono<AppBindings>();
 const COMPOSE_TIMEOUT_MS = 420_000;
 const PREVIEW_TIMEOUT_MS = 360_000;
 
+// The picker lists fixtures from the registry, so cap a page and how many rows
+// we scan to group. Defaults keep the first load light while the catalog grows.
+const FIXTURES_PAGE_DEFAULT = 60;
+const FIXTURES_PAGE_MAX = 200;
+const FIXTURES_SCAN_MAX = 5000;
+
+interface FixtureRegistryRow {
+  fixture_key: string;
+  sku: string;
+  scene: string | null;
+  mount: string | null;
+  fixture_type: string | null;
+}
+
+/** Subset of a catalog variant needed to distinguish finish-level fixtures. */
+interface ProductVariantRow {
+  sku?: string | null;
+  name?: string | null;
+  finish?: string | null;
+  dimensions_mm?: DimensionsMm | null;
+  image_urls?: string[] | null;
+}
+
+interface ProductKindRow {
+  sku: string;
+  name: string | null;
+  brand: string | null;
+  category: string | null;
+  primary_image_url: string | null;
+  dimensions_mm: DimensionsMm | null;
+  variants?: ProductVariantRow[] | null;
+  /** Space-joined variant SKUs; fixtures are often variant-level, not the base. */
+  variant_search?: string | null;
+}
+
+const PRODUCT_JOIN_COLS =
+  "sku, name, brand, category, primary_image_url, dimensions_mm, variants, variant_search";
+
+/** PostgREST caps `.in()` / `.or()` lists; chunk to stay under URL limits. */
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 /**
- * POC fixture catalog (mirrors the generator's hardcoded FIXTURE_MAP). The web
- * picker reads this; production will swap it for the Monday.com / Lucid lookup.
+ * Resolve a catalog product for each fixture SKU, keyed by the (lowercased)
+ * fixture SKU. Two passes: a direct SKU match, then a separator-insensitive
+ * `variant_search` fallback for variant-level fixture SKUs (e.g. catalog
+ * `BL234608-BV/BK` filed as `bl234608-bv-bk`). Queries are chunked so a large
+ * catalog page never blows the PostgREST query-string limit.
  */
-const POC_FIXTURES = [
-  { sku: "bwsw58618-bk", fixtureType: "wall sconce", mount: "wall" },
-  { sku: "ma1012n-48o", fixtureType: "chandelier", mount: "ceiling" },
-] as const;
+async function resolveProducts(
+  sb: ReturnType<typeof userSupabase>,
+  skus: string[],
+): Promise<Map<string, ProductKindRow>> {
+  const out = new Map<string, ProductKindRow>();
+  if (skus.length === 0) return out;
+
+  const candidates = [...new Set([...skus, ...skus.map((s) => s.toUpperCase())])];
+  const byProductSku = new Map<string, ProductKindRow>();
+  for (const part of chunk(candidates, 150)) {
+    const { data } = await sb.from("products").select(PRODUCT_JOIN_COLS).in("sku", part);
+    for (const p of (data ?? []) as ProductKindRow[]) {
+      byProductSku.set(p.sku.toLowerCase(), p);
+    }
+  }
+  for (const s of skus) {
+    const hit = byProductSku.get(s.toLowerCase());
+    if (hit) out.set(s.toLowerCase(), hit);
+  }
+
+  const norm = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const stemOf = (s: string) => (s.match(/^[a-z0-9]+/i)?.[0] ?? s).toUpperCase();
+  const missing = skus.filter((s) => !out.has(s.toLowerCase()));
+  if (missing.length === 0) return out;
+
+  const stems = [...new Set(missing.map(stemOf))];
+  const tokenized: Array<{ row: ProductKindRow; tokens: Set<string> }> = [];
+  for (const part of chunk(stems, 60)) {
+    const orFilter = part
+      .map((st) => `variant_search.ilike.*${st.replace(/[\\%_]/g, (ch) => `\\${ch}`)}*`)
+      .join(",");
+    const { data } = await sb
+      .from("products")
+      .select(PRODUCT_JOIN_COLS)
+      .or(orFilter)
+      .limit(FIXTURES_SCAN_MAX);
+    for (const p of (data ?? []) as ProductKindRow[]) {
+      tokenized.push({
+        row: p,
+        tokens: new Set((p.variant_search ?? "").split(/\s+/).map(norm)),
+      });
+    }
+  }
+  for (const s of missing) {
+    const key = norm(s);
+    const match = tokenized.find((t) => t.tokens.has(key));
+    if (match) out.set(s.toLowerCase(), match.row);
+  }
+  return out;
+}
+
+/** One selectable .blend within a fixture (a scene, or the single default). */
+interface FixtureOption {
+  fixtureKey: string;
+  scene: string | null;
+  label: string;
+}
+
+interface FixtureGroup {
+  sku: string;
+  mount: string | null;
+  fixtureType: string | null;
+  options: FixtureOption[];
+}
 
 interface ComposeContainerResponse {
   ok?: boolean;
@@ -85,6 +196,29 @@ async function storePreview(
     httpMetadata: { contentType: "image/png" },
   });
   return `${publicOrigin(c)}/api/uploads/${userId}/${file}`;
+}
+
+/**
+ * Cache a fixture's render as its shared picker thumbnail, keyed by fixture_key
+ * so every user's picker shows the same "this is what the .blend looks like"
+ * preview. Best-effort: a failed cache never breaks the render it piggybacks on.
+ * The cutout (clean transparent fixture) is the ideal source — it's the form,
+ * with no room clutter. Served back by GET /thumb-file/:file.
+ */
+async function cacheFixtureThumb(
+  c: import("hono").Context<AppBindings>,
+  fixtureKey: string,
+  base64: string,
+): Promise<void> {
+  const key = fixtureKey.toLowerCase().replace(/[^a-z0-9_-]/g, "");
+  if (!key) return;
+  try {
+    await c.env.ASSETS_BUCKET.put(`appshot/thumb/${key}.png`, base64ToBytes(base64), {
+      httpMetadata: { contentType: "image/png" },
+    });
+  } catch {
+    // best-effort only
+  }
 }
 
 /** Read a Container JSON error body into a single message string. */
@@ -123,8 +257,179 @@ async function composeProxy(
   return (await res.json()) as ComposeContainerResponse;
 }
 
-appShotRoutes.get("/fixtures", requireAuth, (c) => {
-  return c.json({ fixtures: POC_FIXTURES });
+/** A fully display-ready fixture: registry group + joined catalog metadata. */
+interface EnrichedFixture {
+  sku: string;
+  name: string;
+  brand: string | null;
+  category: string | null;
+  dimensions: DimensionsMm | null;
+  thumbnailUrl: string | null;
+  /** Variant finish (e.g. "Aged Brass") — the distinguishing trait between
+   *  finish-level fixtures that otherwise share a name/image/dimensions. */
+  finish: string | null;
+  fixtureType: string;
+  mount: FixtureMount;
+  options: FixtureOption[];
+  /** Precomputed lowercase haystack for free-text search. */
+  search: string;
+}
+
+const normSku = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+/** Does a dimensions object carry any actual measurement? */
+function hasDims(d: DimensionsMm | null | undefined): d is DimensionsMm {
+  return Boolean(d && (d.width || d.height || d.depth || d.diameter || d.length));
+}
+
+// The fixtures + catalog join is identical for every active user (both tables
+// are non-user catalog data behind the same is_active() RLS) and changes only
+// on a bulk upload / Sales Layer sync, so cache the enriched list briefly. This
+// turns search/brand keystrokes into instant in-memory filters instead of
+// re-scanning the 4k-row catalog (~4s) on every call.
+const CATALOG_TTL_MS = 120_000;
+let catalogCache: {
+  at: number;
+  fixtures: EnrichedFixture[];
+  brands: string[];
+} | null = null;
+
+async function loadFixtureCatalog(
+  sb: ReturnType<typeof userSupabase>,
+): Promise<{ fixtures: EnrichedFixture[]; brands: string[] }> {
+  if (catalogCache && Date.now() - catalogCache.at < CATALOG_TTL_MS) {
+    return catalogCache;
+  }
+
+  const { data, error } = await sb
+    .from("fixtures")
+    .select("fixture_key, sku, scene, mount, fixture_type")
+    .order("sku", { ascending: true })
+    .order("scene", { ascending: true, nullsFirst: true })
+    .limit(FIXTURES_SCAN_MAX);
+  if (error) throw new Error(error.message);
+  const rows = (data ?? []) as FixtureRegistryRow[];
+
+  // Group rows by base SKU, preserving the ordered scene options.
+  const groups = new Map<string, FixtureGroup>();
+  for (const r of rows) {
+    let g = groups.get(r.sku);
+    if (!g) {
+      g = { sku: r.sku, mount: r.mount, fixtureType: r.fixture_type, options: [] };
+      groups.set(r.sku, g);
+    }
+    g.options.push({
+      fixtureKey: r.fixture_key,
+      scene: r.scene,
+      label: r.scene ? `Scene ${r.scene}` : "Default",
+    });
+  }
+  const allGroups = [...groups.values()];
+
+  const products = await resolveProducts(
+    sb,
+    allGroups.map((g) => g.sku),
+  );
+
+  const fixtures: EnrichedFixture[] = allGroups.map((g) => {
+    const product = products.get(g.sku.toLowerCase());
+    const derived = deriveFixtureKind(product?.category, product?.name);
+    const mount = (g.mount as FixtureMount | null) ?? derived.mount;
+    const fixtureType = g.fixtureType ?? derived.fixtureType;
+    const name = product?.name ?? g.sku;
+
+    // A fixture SKU is usually a specific finish/variant (e.g. fm-50437-ab vs
+    // fm-50437-an). Pull THAT variant's finish + image so two finishes of the
+    // same product are visibly distinct instead of identical product-level art.
+    const variant = (product?.variants ?? []).find(
+      (v) => v.sku && normSku(v.sku) === normSku(g.sku),
+    );
+    const variantImg = variant?.image_urls?.[0] ?? null;
+
+    return {
+      sku: g.sku,
+      name,
+      brand: product?.brand ?? null,
+      category: product?.category ?? null,
+      dimensions: hasDims(variant?.dimensions_mm)
+        ? variant!.dimensions_mm!
+        : (product?.dimensions_mm ?? null),
+      thumbnailUrl: variantImg ?? product?.primary_image_url ?? null,
+      finish: variant?.finish ?? null,
+      fixtureType,
+      mount,
+      options: g.options,
+      search: [
+        g.sku,
+        ...g.options.map((o) => o.fixtureKey),
+        name,
+        product?.brand ?? "",
+        variant?.finish ?? "",
+      ]
+        .join(" ")
+        .toLowerCase(),
+    };
+  });
+
+  const brands = [
+    ...new Set(fixtures.map((f) => f.brand).filter((b): b is string => Boolean(b))),
+  ].sort((a, b) => a.localeCompare(b));
+
+  catalogCache = { at: Date.now(), fixtures, brands };
+  return catalogCache;
+}
+
+/**
+ * List fixtures from the registry for the picker. Browses every `.blend`
+ * mirrored to R2, grouped by base SKU so a fixture's `_scnNNN` scene variants
+ * appear as selectable options under one entry. Joins the products catalog for
+ * display (name, brand, dimensions, thumbnail) and derives mount/type — so the
+ * picker reads like the Products browser. Supports `?q=` search (SKU /
+ * fixture_key / name / brand), `?brand=` facet, and `?limit`/`?offset`
+ * pagination over the grouped fixtures; also returns the distinct `brands` that
+ * have fixtures so the UI can render the brand filter. Shared by the 3D
+ * App-Shot and Cam Solve pickers.
+ */
+appShotRoutes.get("/fixtures", requireAuth, async (c) => {
+  const sb = userSupabase(c.env, c.get("jwt"));
+
+  const q = (c.req.query("q") ?? "").trim().toLowerCase();
+  const brandFilter = (c.req.query("brand") ?? "").trim();
+  const limit = Math.min(
+    FIXTURES_PAGE_MAX,
+    Math.max(1, Number(c.req.query("limit")) || FIXTURES_PAGE_DEFAULT),
+  );
+  const offset = Math.max(0, Number(c.req.query("offset")) || 0);
+
+  let catalog: { fixtures: EnrichedFixture[]; brands: string[] };
+  try {
+    catalog = await loadFixtureCatalog(sb);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return c.json({ error: `failed to list fixtures: ${msg}` }, 500);
+  }
+
+  const filtered = catalog.fixtures.filter((f) => {
+    if (brandFilter && f.brand !== brandFilter) return false;
+    if (q && !f.search.includes(q)) return false;
+    return true;
+  });
+
+  const total = filtered.length;
+  const page = filtered.slice(offset, offset + limit).map((f) => ({
+    sku: f.sku,
+    name: f.name,
+    brand: f.brand,
+    category: f.category,
+    dimensions: f.dimensions,
+    thumbnailUrl: f.thumbnailUrl,
+    finish: f.finish,
+    fixtureType: f.fixtureType,
+    mount: f.mount,
+    options: f.options,
+  }));
+
+  return c.json({ fixtures: page, total, limit, offset, brands: catalog.brands });
 });
 
 // Boot the (Modal) render worker ahead of time so the first Test/Final render
@@ -272,6 +577,9 @@ appShotRoutes.post("/cutout", requireAuth, async (c) => {
     return c.json({ error: out.error ?? "cutout returned no image" }, 502);
   }
   const cutoutUrl = await storePreview(c, user.id, out.png);
+  // Piggyback the clean transparent cutout as this fixture's shared picker
+  // thumbnail so browsing it later shows the actual form (not just the SKU).
+  await cacheFixtureThumb(c, raw.sku, out.png);
   return c.json({
     cutoutUrl,
     coverageRef: out.coverageRef ?? 0.5,
@@ -339,6 +647,27 @@ appShotRoutes.post("/glb", requireAuth, async (c) => {
     httpMetadata: { contentType: "model/gltf-binary" },
   });
   return c.json({ url: fileUrl });
+});
+
+/**
+ * Public read for a fixture's cached render thumbnail (404s until a cutout has
+ * been rendered for it). No auth: the picker loads it as an <img>, and the key
+ * space is the (non-secret) fixture_key catalog. A short cache lets a freshly
+ * rendered fixture's thumbnail refresh without a hard reload.
+ */
+appShotRoutes.get("/thumb-file/:file", async (c) => {
+  const file = c.req.param("file");
+  if (!/^[a-z0-9_-]+\.png$/.test(file)) {
+    return c.json({ error: "not found" }, 404);
+  }
+  const obj = await c.env.ASSETS_BUCKET.get(`appshot/thumb/${file}`);
+  if (!obj) return c.json({ error: "not found" }, 404);
+  return new Response(obj.body, {
+    headers: {
+      "content-type": "image/png",
+      "cache-control": "public, max-age=300",
+    },
+  });
 });
 
 /**

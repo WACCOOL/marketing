@@ -30,10 +30,12 @@ import {
   planPlacement,
   renderCutout,
   resolveFixture,
+  setFixtureResolver,
   type AutoPlaceInput,
   type FinalRenderInput,
   type Placement as ShotPlacement,
 } from "./appshot3d.js";
+import { makeFixtureResolver } from "./fixtureResolver.js";
 
 /**
  * WAC generation Container (Phase 2d).
@@ -950,6 +952,11 @@ function main(): void {
     },
   });
 
+  // 3D app-shots resolve a SKU to its .blend (presigned from R2) + metadata
+  // through the fixtures registry. Wired here because this is where the Supabase
+  // + S3 clients live; appshot3d stays free of any DB/R2 dependency.
+  setFixtureResolver(makeFixtureResolver({ sb, s3, bucket: config.r2Bucket }));
+
   // Built once at startup from configured keys; unset providers leave slots
   // empty so hybrid/concept jobs fail with a precise "not configured" error.
   const adapters = makeImageGenAdapters({
@@ -1170,7 +1177,7 @@ function main(): void {
           return;
         }
         try {
-          const meta = resolveFixture(body.sku);
+          const meta = await resolveFixture(body.sku);
           const placement = await planPlacement(
             { sku: body.sku, roomUrl: body.roomUrl, roomPath: body.roomPath },
             adapters,

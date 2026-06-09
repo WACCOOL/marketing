@@ -23,12 +23,14 @@ import {
   type BackgroundChoice,
 } from "../lib/background.js";
 import { usePrewarmWorker } from "../lib/usePrewarm.js";
+import { formatDimensions } from "../lib/products.js";
 import { MOUNT_LABELS } from "../lib/fixtureKind.js";
 import {
   EditPanel,
   QualityPicker,
   type ViewerMode,
 } from "../components/appshotEditor.js";
+import { FixtureThumb } from "../components/fixtureThumb.js";
 
 /**
  * Cam Solve studio.
@@ -134,6 +136,10 @@ export function CamSolve() {
 
   const [fixtures, setFixtures] = useState<ShotFixture[]>([]);
   const [fixturesErr, setFixturesErr] = useState<string | null>(null);
+  const [fixtureQuery, setFixtureQuery] = useState("");
+  const [fixtureBrand, setFixtureBrand] = useState("");
+  const [fixtureBrands, setFixtureBrands] = useState<string[]>([]);
+  const [fixturesTotal, setFixturesTotal] = useState(0);
   const [sku, setSku] = useState<string | null>(saved.current?.sku ?? null);
 
   const [choice, setChoice] = useState<BackgroundChoice>(
@@ -188,7 +194,9 @@ export function CamSolve() {
   const cutoutBusyRef = useRef(false);
   const pendingCutout = useRef<AppShotPlacement | null>(null);
 
-  const fixture = fixtures.find((f) => f.sku === sku) ?? null;
+  // `sku` holds the selected fixtureKey (a scene option); find its fixture group.
+  const fixture =
+    fixtures.find((f) => f.options.some((o) => o.fixtureKey === sku)) ?? null;
   const placementReady =
     viewerMode === "viewer" ? Boolean(glb && glb.sku === sku) : Boolean(cutout);
   const editing = Boolean(placement && sceneUrl && placementReady);
@@ -199,14 +207,25 @@ export function CamSolve() {
   const effectiveStyle: RenderStyle =
     transparentBg && renderStyle === "studio" ? "clean" : renderStyle;
 
+  // Browse the fixtures registry, debounced on the search box. Auto-select the
+  // first result only when nothing is picked yet.
   useEffect(() => {
-    listFixtures()
-      .then((list) => {
-        setFixtures(list);
-        if (list[0]) setSku((cur) => cur ?? list[0]!.sku);
-      })
-      .catch((e) => setFixturesErr(formatErr(e)));
-  }, []);
+    const q = fixtureQuery.trim();
+    const handle = window.setTimeout(() => {
+      listFixtures({ q, brand: fixtureBrand })
+        .then(({ fixtures: list, total, brands }) => {
+          setFixtures(list);
+          setFixturesTotal(total);
+          setFixtureBrands(brands);
+          setFixturesErr(null);
+          if (list[0]?.options[0]) {
+            setSku((cur) => cur ?? list[0]!.options[0]!.fixtureKey);
+          }
+        })
+        .catch((e) => setFixturesErr(formatErr(e)));
+    }, q ? 250 : 0);
+    return () => window.clearTimeout(handle);
+  }, [fixtureQuery, fixtureBrand]);
 
   useEffect(() => {
     const snap: Persisted = {
@@ -604,6 +623,12 @@ export function CamSolve() {
         <SetupPanel
           fixtures={fixtures}
           fixturesErr={fixturesErr}
+          fixtureQuery={fixtureQuery}
+          setFixtureQuery={setFixtureQuery}
+          fixtureBrand={fixtureBrand}
+          setFixtureBrand={setFixtureBrand}
+          fixtureBrands={fixtureBrands}
+          fixturesTotal={fixturesTotal}
           sku={sku}
           setSku={setSku}
           fixture={fixture}
@@ -808,6 +833,12 @@ function RenderStylePicker(p: RenderStylePickerProps) {
 interface SetupProps {
   fixtures: ShotFixture[];
   fixturesErr: string | null;
+  fixtureQuery: string;
+  setFixtureQuery: (s: string) => void;
+  fixtureBrand: string;
+  setFixtureBrand: (s: string) => void;
+  fixtureBrands: string[];
+  fixturesTotal: number;
   sku: string | null;
   setSku: (s: string) => void;
   fixture: ShotFixture | null;
@@ -835,28 +866,138 @@ function SetupPanel(p: SetupProps) {
       <div className="card col" style={{ gap: 12 }}>
         <div>
           <h3 style={{ margin: 0 }}>1 · Fixture</h3>
-          <div className="muted">Pick the product to stage.</div>
+          <div className="muted">Search the fixture library by name, brand, or SKU.</div>
         </div>
-        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-          {p.fixtures.map((f) => (
-            <button
-              key={f.sku}
-              type="button"
-              className={"tag" + (p.sku === f.sku ? " tag-selected" : "")}
-              onClick={() => p.setSku(f.sku)}
+        <div className="row" style={{ gap: 8 }}>
+          <input
+            type="search"
+            placeholder="Search name, brand, or SKU…"
+            value={p.fixtureQuery}
+            onChange={(e) => p.setFixtureQuery(e.target.value)}
+            style={{ flex: 1 }}
+          />
+          {p.fixtureBrands.length > 0 && (
+            <select
+              value={p.fixtureBrand}
+              onChange={(e) => p.setFixtureBrand(e.target.value)}
+              style={{ maxWidth: 170 }}
             >
-              {f.fixtureType} · {f.sku}
-            </button>
-          ))}
+              <option value="">All brands</option>
+              {p.fixtureBrands.map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))",
+            gap: 10,
+            maxHeight: 440,
+            overflowY: "auto",
+            paddingRight: 4,
+          }}
+        >
+          {p.fixtures.map((f) => {
+            const selected = f.options.some((o) => o.fixtureKey === p.sku);
+            return (
+              <button
+                key={f.sku}
+                type="button"
+                className={"product-card" + (selected ? " selected" : "")}
+                onClick={() => p.setSku(f.options[0]!.fixtureKey)}
+                title={f.name ?? f.sku}
+              >
+                <FixtureThumb
+                  fixtureKey={f.options[0]!.fixtureKey}
+                  mount={f.mount}
+                  imageUrl={f.thumbnailUrl}
+                  allow3d
+                />
+                <div className="product-meta">
+                  <div className="product-name" title={f.name ?? f.sku}>
+                    {f.name ?? f.sku}
+                  </div>
+                  {f.brand ? (
+                    <div className="muted product-brand">{f.brand}</div>
+                  ) : null}
+                  <div className="muted product-sku">{f.sku}</div>
+                  <div className="muted product-dims">
+                    {formatDimensions(f.dimensions ?? {})}
+                  </div>
+                  {(f.finish || f.options.length > 1) && (
+                    <div
+                      className="row"
+                      style={{ gap: 4, flexWrap: "wrap", marginTop: 2 }}
+                    >
+                      {f.finish ? (
+                        <span className="tag" style={{ fontWeight: 600 }}>
+                          {f.finish}
+                        </span>
+                      ) : null}
+                      {f.options.length > 1 ? (
+                        <span className="tag">{f.options.length} scenes</span>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              </button>
+            );
+          })}
           {p.fixtures.length === 0 && !p.fixturesErr && (
             <span className="muted">
-              <span className="spinner" /> loading fixtures…
+              {p.fixtureQuery.trim() || p.fixtureBrand ? (
+                "No fixtures match that search."
+              ) : (
+                <>
+                  <span className="spinner" /> loading fixtures…
+                </>
+              )}
             </span>
           )}
         </div>
+        {p.fixturesTotal > p.fixtures.length && (
+          <div className="muted" style={{ fontSize: 12 }}>
+            Showing {p.fixtures.length} of {p.fixturesTotal} — refine your search.
+          </div>
+        )}
+        {p.fixture && p.fixture.options.length > 1 && (
+          <div className="col" style={{ gap: 6 }}>
+            <div className="muted" style={{ fontSize: 12 }}>
+              Scene — pick by form
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))",
+                gap: 10,
+              }}
+            >
+              {p.fixture.options.map((o) => (
+                <button
+                  key={o.fixtureKey}
+                  type="button"
+                  className={"product-card" + (p.sku === o.fixtureKey ? " selected" : "")}
+                  onClick={() => p.setSku(o.fixtureKey)}
+                >
+                  <FixtureThumb fixtureKey={o.fixtureKey} mount={p.fixture!.mount} allow3d />
+                  <div className="product-meta">
+                    <div className="product-name">{o.label}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {p.fixture && (
           <div className="muted" style={{ fontSize: 12 }}>
             Mount: {MOUNT_LABELS[p.fixture.mount]}
+            {p.fixture.dimensions
+              ? ` · ${formatDimensions(p.fixture.dimensions)}`
+              : ""}
           </div>
         )}
       </div>

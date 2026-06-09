@@ -1,5 +1,6 @@
 import type {
   AppShotPlacement,
+  DimensionsMm,
   FixtureMount,
   RenderQuality,
   RenderStyle,
@@ -9,7 +10,7 @@ import { api } from "./api.js";
 /**
  * Client for the 3D app-shot pipeline (Phase D).
  *
- *   listFixtures   POC fixture catalog for the picker.
+ *   listFixtures   browse the fixtures registry for the picker (search + page).
  *   composeShot    auto-place + hidden AI critic loop → approved preview + the
  *                  placement the sliders bind to (slow, runs a few renders).
  *   previewShot    one render of the EXACT slider placement, no AI (responsive).
@@ -19,10 +20,35 @@ import { api } from "./api.js";
  * (png/avif/psd) download from /api/assets/:id/files/:format.
  */
 
+/** One selectable .blend within a fixture (a scene, or the single default). */
+export interface FixtureOption {
+  /** Opaque identifier passed to compose/preview/cutout/glb/finalize. */
+  fixtureKey: string;
+  /** Scene number for `{sku}_scnNNN` files, else null. */
+  scene: string | null;
+  /** Human label, e.g. "Scene 010" or "Default". */
+  label: string;
+}
+
 export interface ShotFixture {
+  /** Base product SKU; a fixture's scene options share it. */
   sku: string;
   fixtureType: string;
   mount: FixtureMount;
+  /** Product display name (falls back to the SKU when unmatched). */
+  name?: string;
+  /** Sales Layer brand, when the SKU matches a product. */
+  brand?: string | null;
+  /** Sales Layer category, when the SKU matches a product. */
+  category?: string | null;
+  /** Variant finish (e.g. "Aged Brass") — distinguishes finish-level fixtures. */
+  finish?: string | null;
+  /** Physical dimensions (mm) from the catalog, when matched. */
+  dimensions?: DimensionsMm | null;
+  /** Sales Layer thumbnail URL, when the SKU matches a product. */
+  thumbnailUrl?: string | null;
+  /** Selectable scene options; one entry for a single-.blend fixture. */
+  options: FixtureOption[];
 }
 
 export interface ComposeResult {
@@ -58,11 +84,34 @@ export async function prewarmShot(): Promise<{ ok: boolean; warm?: boolean }> {
   }
 }
 
-export async function listFixtures(): Promise<ShotFixture[]> {
-  const { fixtures } = await api<{ fixtures: ShotFixture[] }>(
-    "/api/appshot/fixtures",
-  );
-  return fixtures;
+/**
+ * List fixtures for the picker. Browses the whole registry; pass `q` to search
+ * (SKU / name / brand), `brand` to filter by the brand facet, and
+ * `limit`/`offset` to paginate. Returns the page of fixtures, the total count,
+ * and the distinct `brands` that have fixtures (for the brand filter).
+ */
+export async function listFixtures(opts?: {
+  q?: string;
+  brand?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ fixtures: ShotFixture[]; total: number; brands: string[] }> {
+  const params = new URLSearchParams();
+  if (opts?.q) params.set("q", opts.q);
+  if (opts?.brand) params.set("brand", opts.brand);
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  if (opts?.offset != null) params.set("offset", String(opts.offset));
+  const qs = params.toString();
+  const res = await api<{
+    fixtures: ShotFixture[];
+    total?: number;
+    brands?: string[];
+  }>(`/api/appshot/fixtures${qs ? `?${qs}` : ""}`);
+  return {
+    fixtures: res.fixtures,
+    total: res.total ?? res.fixtures.length,
+    brands: res.brands ?? [],
+  };
 }
 
 export interface PlaceResult {
@@ -139,6 +188,15 @@ export async function cutoutShot(req: {
     method: "POST",
     body: JSON.stringify(req),
   });
+}
+
+/**
+ * Public URL for a fixture's cached render thumbnail (the clean transparent
+ * cutout from the last time it was rendered). 404s until one exists, so use it
+ * as an <img> with an onError fallback to the 3D form / placeholder.
+ */
+export function fixtureThumbUrl(fixtureKey: string): string {
+  return `/api/appshot/thumb-file/${encodeURIComponent(fixtureKey)}.png`;
 }
 
 /**
