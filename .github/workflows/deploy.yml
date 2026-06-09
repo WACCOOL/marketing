@@ -58,7 +58,10 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.include_container }}" = "true" ]; then
-            pnpm exec wrangler deploy
+            # immediate = roll the new image to 100% of instances in one step.
+            # NOTE: already-warm pool containers still keep the old image until
+            # they idle out + cold-restart (sleepAfter) — see README + CLAUDE.md.
+            pnpm exec wrangler deploy --containers-rollout immediate
           else
             pnpm exec wrangler deploy --containers-rollout none
           fi
