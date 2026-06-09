@@ -130,6 +130,11 @@ pnpm deploy:web
 # Use `deploy:all`, NOT `pnpm deploy` — bare `deploy` is a pnpm built-in that
 # silently no-ops instead of running this script.
 pnpm deploy:all
+
+# Deploy the Container AND force the warm pool onto the new image in one go
+# (deploy:all + the sleepAfter cycle below). Use this for generator changes so
+# the new image actually goes live; run it during a quiet window.
+pnpm deploy:container
 ```
 
 > **Container rollout gotcha.** Deploying a new Container image updates the
