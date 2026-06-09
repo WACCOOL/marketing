@@ -59,6 +59,12 @@ export interface Env {
   // fixtures that carry a 3D model fail with a precise "not configured" error.
   RENDER_WORKER_URL?: string;
 
+  // Shared secret for server-to-server callers that have no Supabase session —
+  // the fixture-sync CLI presents it (Bearer token) to trigger a GLB export when
+  // baking picker thumbnails. When unset, the admin path is closed and only real
+  // user sessions are accepted.
+  ADMIN_API_TOKEN?: string;
+
   // Origin used when building public URLs (uploads / generated scenes / shot
   // previews) that the render-worker and generator fetch back over HTTP. Defaults
   // to the request origin. LOCAL DEV: wrangler stamps the configured custom-domain

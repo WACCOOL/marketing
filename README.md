@@ -74,6 +74,7 @@ SHORT_LINK_HOST=https://gowac.cc
 HUBSPOT_TOKEN=                 # leave blank until live HubSpot is wired
 BFL_API_KEY=                   # Phase 2d: Black Forest Labs FLUX.1 Fill (hybrid mode)
 GEMINI_API_KEY=                # Phase 2: Google Gemini (harmonize/concept + scene gen + background removal)
+ADMIN_API_TOKEN=               # optional: lets fixture-sync trigger GLB export to bake picker thumbnails
 ```
 
 These AI keys are forwarded into the generation Container. Without `BFL_API_KEY`/

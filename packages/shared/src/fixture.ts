@@ -93,3 +93,14 @@ export const COVERAGE_DEFAULTS: Record<FixtureMount, number> = {
   wall: 0.34,
   floor: 0.34,
 };
+
+/**
+ * Canonical R2/URL form of a fixture_key, shared by every producer and consumer
+ * of the picker thumbnail cache (`appshot/thumb/{key}.png`). Lowercased and
+ * stripped to `[a-z0-9_-]` so the key the API *writes* always equals the key the
+ * web app *reads* and the bake CLI *uploads* — and so it's URL-safe with no
+ * percent-encoding (the thumb-file route requires `^[a-z0-9_-]+$`).
+ */
+export function normalizeFixtureKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9_-]/g, "");
+}

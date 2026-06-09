@@ -20,6 +20,12 @@ object) is skipped, so the ~1TB backfill can run over multiple sessions.
 - These env vars (same names the generator uses):
   - `R2_ENDPOINT`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`
   - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+- For the thumbnail bake (`--bake-thumbs` / `--bake-only`) only:
+  - `API_BASE_URL` (or `PUBLIC_BASE_URL`) — the deployed API origin, e.g.
+    `https://marketing.gowac.cc` (the bake triggers GLB export there).
+  - `ADMIN_API_TOKEN` — must match the Worker secret of the same name
+    (`wrangler secret put ADMIN_API_TOKEN` in `apps/api`).
+  - A Playwright Chromium: `pnpm --filter @wac/fixture-sync exec playwright install chromium`.
 
 ## Usage
 
@@ -36,7 +42,33 @@ node apps/fixture-sync/dist/index.js
 #   --source <dir>       root to scan (default /Volumes/graphix-working/team/3d_files/)
 #   --dry-run            scan + plan only, no uploads or registry writes
 #   --sku <substr>       only process SKUs containing this substring
-#   --concurrency <n>    parallel uploads (default 4)
+#   --concurrency <n>    parallel uploads / bake pages (default 4)
+#   --bake-thumbs        after uploading, bake a picker thumbnail for any
+#                        fixture missing one (covers newly-synced fixtures)
+#   --bake-only          skip the .blend scan/upload; only bake missing thumbs
+#                        (use this to backfill the existing registry)
+```
+
+## Picker thumbnails (`--bake-thumbs` / `--bake-only`)
+
+The fixture picker shows each fixture as a cheap pre-baked `<img>` served from
+`appshot/thumb/{fixture_key}.png` — no per-tile WebGL on the page. The bake step
+renders each fixture's GLB to a small PNG once, headlessly:
+
+1. Ensure the GLB exists in R2 (`appshot/glb/{key}.glb`), triggering the cheap
+   Blender geometry export via `POST /api/appshot/glb` (admin token) if missing.
+2. Render one frame with the web app's real `FixtureScene` in a headless Chromium
+   (the `dist-harness` single-file build, auto-built on first run), so the still
+   matches the editor's framing.
+3. Upload the PNG to R2. It's idempotent — fixtures that already have a thumbnail
+   are skipped, and a real render (Cam Solve cutout) always takes precedence.
+
+```bash
+# One-time backfill of every fixture missing a thumbnail:
+node apps/fixture-sync/dist/index.js --bake-only
+
+# A normal sync that also bakes thumbnails for the fixtures it just added:
+node apps/fixture-sync/dist/index.js --bake-thumbs
 ```
 
 ## SKU / scene derivation

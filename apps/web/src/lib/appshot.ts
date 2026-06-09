@@ -5,6 +5,7 @@ import type {
   RenderQuality,
   RenderStyle,
 } from "@wac/shared";
+import { normalizeFixtureKey } from "@wac/shared";
 import { api } from "./api.js";
 
 /**
@@ -196,7 +197,9 @@ export async function cutoutShot(req: {
  * as an <img> with an onError fallback to the 3D form / placeholder.
  */
 export function fixtureThumbUrl(fixtureKey: string): string {
-  return `/api/appshot/thumb-file/${encodeURIComponent(fixtureKey)}.png`;
+  // normalizeFixtureKey matches the key cacheFixtureThumb / the bake CLI write,
+  // and is URL-safe (^[a-z0-9_-]+$), so no encoding is needed.
+  return `/api/appshot/thumb-file/${normalizeFixtureKey(fixtureKey)}.png`;
 }
 
 /**
