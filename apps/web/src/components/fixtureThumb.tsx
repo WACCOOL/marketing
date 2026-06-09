@@ -30,17 +30,17 @@ const contentStyle: React.CSSProperties = {
   objectFit: "contain",
 };
 
-/** Fixed thumbnail height for fill mode (the card stretches the width). */
-const FILL_FRAME_PX = 150;
-
 /**
- * A fixed-size white box; the image is a normal-flow child centered inside it.
+ * A square white box; the image is a normal-flow child centered inside it.
  *
- * The height is an explicit pixel value rather than `aspect-ratio`, percentage
- * `padding-bottom`, or an intrinsic-ratio spacer. Safari collapsed every one of
- * those to zero height for tiles inside the list's scroll container (flex/grid
- * child sizing bugs), squashing the cards into pills. An explicit height is
- * immune to layout context, so it renders identically everywhere.
+ * In fill mode the frame is SQUARE via `aspect-ratio: 1/1` (height tracks the
+ * card width) — so a square product/baked image fills it with no white letterbox
+ * top or bottom. This is the same construction as the Library `.product-thumb`,
+ * which renders correctly in Safari; it's safe here now that the grid is no
+ * longer the `overflow:auto` scroll container (that scroll-on-grid context was
+ * what collapsed aspect-ratio to zero height in WebKit — the scroll now lives on
+ * a plain wrapper). A fixed `size` keeps an explicit square for the small
+ * scene-picker tiles.
  */
 function ThumbFrame({
   size,
@@ -53,7 +53,7 @@ function ThumbFrame({
     <div
       style={{
         width: size ?? "100%",
-        height: size ?? FILL_FRAME_PX,
+        ...(size ? { height: size } : { aspectRatio: "1 / 1" }),
         flex: "0 0 auto",
         borderRadius: size ? 6 : 0,
         overflow: "hidden",
