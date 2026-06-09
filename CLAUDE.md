@@ -26,8 +26,11 @@ pnpm dev:redirect # redirect Worker
 pnpm test         # all unit tests (vitest)
 pnpm typecheck    # all packages
 pnpm deploy:web   # Worker + SPA assets only (normal web/API changes)
-pnpm deploy       # full deploy incl. Container rebuild (needs Docker + container token)
+pnpm deploy:all   # full deploy incl. Container rebuild (needs Docker + container token)
 ```
+
+> Use `pnpm deploy:all`, NOT `pnpm deploy` — `deploy` is a pnpm built-in that
+> silently no-ops (it does not run the project script).
 
 ## UI conventions
 
@@ -39,7 +42,8 @@ pnpm deploy       # full deploy incl. Container rebuild (needs Docker + containe
 
 - Pure logic with tests goes in `packages/shared` (UTM, slug, bulk, social, fixture, appimage). Co-locate `*.test.ts`.
 - The SPA is served *by* the API Worker, so a web change still deploys through `apps/api`.
-- Container rebuilds are slow and gated on the Workers Paid plan + `Cloudflare Containers: Edit` token. Default to `pnpm deploy:web`; only rebuild the Container when `apps/generator` changes.
+- Container rebuilds are slow and gated on the Workers Paid plan + `Cloudflare Containers: Edit` token. Default to `pnpm deploy:web`; rebuild the Container with `pnpm deploy:all` when `apps/generator` changes. CI (`deploy.yml`) ships Worker+assets on every push to `main` but NEVER the Container (`--containers-rollout none`) — so a generator change is live ONLY after `pnpm deploy:all` (or the manual workflow: `gh workflow run deploy.yml -f include_container=true`).
+- After a Container deploy, the warm container pool keeps serving the OLD image until each instance idles out and cold-restarts (`sleepAfter` in `apps/api/src/container.ts`, default `10m`). So prod can run stale generator code for ~10 min of idle — or indefinitely under steady traffic that keeps the pool warm. A new image is NOT live just because `wrangler deploy` succeeded. To force it now: temporarily lower `sleepAfter` (e.g. `60s`), `pnpm deploy:web`, wait for the pool to cycle, run the generator work, then restore `sleepAfter` + redeploy. Verify by hitting a route only the new build has (a stale Container returns `{"error":"not found"}` from its catch-all).
 - Secrets are server-only Worker secrets set via `wrangler secret put` — not in CI, not in `.dev.vars` (local dev only). Only `VITE_SUPABASE_ANON_KEY` is safe to bundle.
 - Without `BFL_API_KEY`/`GEMINI_API_KEY` the image generator still runs in deterministic `composite` mode; `hybrid`/`concept`/scene jobs fail with a clear "not configured" error.
 - DB changes = a new SQL migration in `supabase/migrations` (include RLS). Apply via Supabase dashboard or CLI.

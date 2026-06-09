@@ -126,9 +126,23 @@ Assets, so deploying = building `apps/web` then `wrangler deploy` in `apps/api`.
 pnpm deploy:web
 
 # Full deploy, including a rebuild + rollout of the generation Container
-# (needs Docker running locally and a token with container registry perms)
-pnpm deploy
+# (needs Docker running locally and a token with container registry perms).
+# Use `deploy:all`, NOT `pnpm deploy` — bare `deploy` is a pnpm built-in that
+# silently no-ops instead of running this script.
+pnpm deploy:all
 ```
+
+> **Container rollout gotcha.** Deploying a new Container image updates the
+> config, but the warm container pool keeps serving the OLD image until each
+> instance idles out and cold-restarts (`sleepAfter` in
+> [`apps/api/src/container.ts`](./apps/api/src/container.ts), default `10m`). So
+> production can run stale generator code for ~10 min of idle — or indefinitely
+> under steady traffic. A new image is **not** live just because `wrangler
+> deploy` reported success. To force it immediately: temporarily lower
+> `sleepAfter` (e.g. `60s`), `pnpm deploy:web`, let the pool cycle, do the work,
+> then restore `sleepAfter`. A stale Container returns `{"error":"not found"}`
+> from its catch-all for any route the running image lacks — a quick way to tell
+> whether the new image is actually serving.
 
 ### Continuous deployment
 
