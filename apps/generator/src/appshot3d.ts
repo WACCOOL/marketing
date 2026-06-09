@@ -41,9 +41,9 @@ async function fetchRoomBuffer(room: RoomRef): Promise<Buffer> {
 
 export interface FixtureMeta {
   sku: string;
-  /** Local path (POC, same host as the worker). */
+  /** Local path (worker-local file; rarely used now that the .blend is in R2). */
   modelPath?: string;
-  /** Or a URL the worker fetches (production). */
+  /** Presigned R2 URL the worker fetches (the registry-backed default). */
   modelUrl?: string;
   /** Manufacturer IES photometry — omitted for decorative pieces that lack it. */
   iesPath?: string;
@@ -57,46 +57,27 @@ export interface FixtureMeta {
 }
 
 /**
- * Hardcoded POC fixture map (2 samples). Paths are local because the render
- * worker runs on the same machine for the POC; production swaps these for the
- * Monday.com/Lucid URLs (modelUrl/iesUrl) with no other changes.
+ * Resolves a SKU to its 3D model + metadata. The concrete implementation
+ * (registry-backed, presigning the `.blend` from R2 + deriving mount/type/pose)
+ * is injected at startup by the generator server, which owns the Supabase + S3
+ * clients. Kept behind a setter so this module has no DB/R2 dependency.
  */
-export const FIXTURE_MAP: Record<string, FixtureMeta> = {
-  "bwsw58618-bk": {
-    sku: "bwsw58618-bk",
-    modelPath:
-      "/Users/davis/Downloads/bwsw58618-bk_pro_scn010_lighting_v001.blend",
-    iesPath: "/Users/davis/Downloads/BWSW58618-3000-120325_IES.IES",
-    fixtureType: "wall sconce",
-    mount: "wall",
-    pose: { azimuthDeg: -8, elevationDeg: 2, fovDeg: 30 },
-    coverage: 0.34,
-  },
-  "ma1012n-48o": {
-    sku: "ma1012n-48o",
-    // Lives on the Modal `wac-fixtures` Volume (mounted at /fixtures in the
-    // worker), so the worker reads the 300MB+ .blend off disk with no per-render
-    // download. Upload via `modal volume put wac-fixtures <local.blend> /<sku>.blend`.
-    modelPath: "/fixtures/ma1012n-48o.blend",
-    // Decorative chandelier: no IES file — falls back to its own lamps for spill.
-    fixtureType: "chandelier",
-    mount: "ceiling",
-    // A ceiling fixture is photographed from BELOW (camera at standing height,
-    // fixture overhead), so look up into it — a catalog "from above" angle reads
-    // as pasted-on when composited into a room.
-    pose: { azimuthDeg: 0, elevationDeg: -18, fovDeg: 36 },
-    coverage: 0.34,
-  },
-};
+export type FixtureResolver = (sku: string) => Promise<FixtureMeta>;
 
-export function resolveFixture(sku: string): FixtureMeta {
-  const meta = FIXTURE_MAP[sku.toLowerCase()];
-  if (!meta) {
+let activeResolver: FixtureResolver | null = null;
+
+/** Install the fixture resolver (called once at server startup). */
+export function setFixtureResolver(resolver: FixtureResolver): void {
+  activeResolver = resolver;
+}
+
+export async function resolveFixture(sku: string): Promise<FixtureMeta> {
+  if (!activeResolver) {
     throw new Error(
-      `no 3D model mapped for SKU "${sku}" (POC supports: ${Object.keys(FIXTURE_MAP).join(", ")})`,
+      "fixture resolver not configured (generator missing Supabase/R2 wiring)",
     );
   }
-  return meta;
+  return activeResolver(sku);
 }
 
 export interface Placement {
@@ -190,7 +171,7 @@ export async function planPlacement(
   adapters: ImageGenAdapters,
   notes?: string[],
 ): Promise<Placement> {
-  const meta = resolveFixture(input.sku);
+  const meta = await resolveFixture(input.sku);
   let placement = startingPlacement(meta, input.placement);
   const analyzer = adapters.placementCritic;
   if (analyzer?.analyzeRoom && !input.placement) {
@@ -362,7 +343,7 @@ export async function autoPlace(
   input: AutoPlaceInput,
   adapters: ImageGenAdapters,
 ): Promise<AutoPlaceResult> {
-  const meta = resolveFixture(input.sku);
+  const meta = await resolveFixture(input.sku);
   const style = input.renderStyle ?? "studio";
   // The clean/cleanShadow styles render via the layered cutout (modelRenderer),
   // so they don't need the catcher compositor — only studio does.
@@ -481,7 +462,7 @@ export async function renderCutout(
   input: CutoutInput,
   adapters: ImageGenAdapters,
 ): Promise<CutoutResult> {
-  const meta = resolveFixture(input.sku);
+  const meta = await resolveFixture(input.sku);
   const renderer = adapters.modelRenderer;
   if (!renderer) {
     throw new Error(
@@ -795,7 +776,7 @@ export async function exportFixtureGlb(
   sku: string,
   adapters: ImageGenAdapters,
 ): Promise<Buffer> {
-  const meta = resolveFixture(sku);
+  const meta = await resolveFixture(sku);
   const renderer = adapters.modelRenderer;
   if (!renderer) {
     throw new Error(
@@ -833,7 +814,7 @@ export async function finalRender(
   input: FinalRenderInput,
   adapters: ImageGenAdapters,
 ): Promise<CompositeResult> {
-  const meta = resolveFixture(input.sku);
+  const meta = await resolveFixture(input.sku);
   if (!input.roomUrl && !input.roomPath) {
     throw new Error("final render requires a roomUrl or roomPath");
   }

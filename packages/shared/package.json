@@ -10,7 +10,8 @@
     "./utm": "./src/utm.ts",
     "./types": "./src/types.ts",
     "./social": "./src/social.ts",
-    "./bulk": "./src/bulk.ts"
+    "./bulk": "./src/bulk.ts",
+    "./fixture": "./src/fixture.ts"
   },
   "scripts": {
     "test": "vitest run",
