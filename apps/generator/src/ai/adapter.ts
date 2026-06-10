@@ -13,6 +13,7 @@
  * - segment:   return object segmentation masks for background removal (Gemini).
  */
 
+import type { RoomGeometry } from "@wac/shared";
 import { makeBflAdapter } from "./bfl.js";
 import { makeGeminiAdapter } from "./gemini.js";
 import { makeModelRenderAdapter } from "./modelRender.js";
@@ -275,6 +276,11 @@ export interface CompositeRenderRequest {
   iesUrl?: string;
   iesPath?: string;
   iesRotation?: [number, number, number];
+  /** Mounting type, so the room composite orients its catcher plane(s). */
+  mount?: "ceiling" | "wall" | "floor" | "recessed";
+  /** Cam Solve room-match: matched camera + ceiling/wall/floor planes from the
+   * user's traced room edges. When set, supersedes the orbit pose + billboard. */
+  roomGeometry?: RoomGeometry;
   pose?: ModelRenderPose;
   cameraName?: string;
   /** Fixture height as a fraction of the frame (0..1). */

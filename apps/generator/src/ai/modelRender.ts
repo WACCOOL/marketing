@@ -193,6 +193,8 @@ export function makeModelRenderAdapter(
             iesUrl: req.iesUrl,
             iesPath: req.iesPath,
             iesRotation: req.iesRotation,
+            mount: req.mount,
+            roomGeometry: req.roomGeometry,
             pose: req.pose,
             cameraName: req.cameraName,
             coverage: req.coverage,

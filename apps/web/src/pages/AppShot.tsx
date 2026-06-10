@@ -26,6 +26,7 @@ import {
   type ViewerMode,
 } from "../components/appshotEditor.js";
 import { FixtureThumb } from "../components/fixtureThumb.js";
+import { RoomCalibrator } from "../components/RoomCalibrator.js";
 
 /**
  * 3D App-Shot Studio.
@@ -602,6 +603,7 @@ export function AppShot() {
           onPlace={runPlace}
         />
       ) : (
+        <>
         <EditPanel
           sceneUrl={sceneUrl!}
           placement={placement!}
@@ -638,6 +640,25 @@ export function AppShot() {
             />
           }
         />
+        <details className="card" style={{ marginTop: 12 }}>
+          <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+            Cam Solve: room match{placement!.roomGeometry ? " ✓" : ""}
+          </summary>
+          <div className="muted" style={{ fontSize: 12, margin: "8px 0" }}>
+            Trace a few of the room's edges so the render matches the photo's perspective and casts the
+            fixture's real light &amp; shadow onto the actual ceiling, walls and floor — so it stops looking
+            like it floats. Leave blank to use the classic backdrop.
+          </div>
+          <RoomCalibrator
+            sceneUrl={sceneUrl!}
+            value={placement!.roomGeometry}
+            onChange={(geometry) => {
+              patchPlacement({ roomGeometry: geometry });
+              setShowPreview(false);
+            }}
+          />
+        </details>
+        </>
       )}
     </div>
   );

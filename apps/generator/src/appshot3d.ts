@@ -14,7 +14,7 @@
 
 import sharp from "sharp";
 import { writePsd } from "ag-psd";
-import type { RenderQuality, RenderStyle } from "@wac/shared";
+import type { RenderQuality, RenderStyle, RoomGeometry } from "@wac/shared";
 import type {
   CompositeResult,
   ImageGenAdapters,
@@ -90,6 +90,10 @@ export interface Placement {
   lightOutput: number;
   warm: number;
   pose: ModelRenderPose;
+  /** Cam Solve room-match: when set, the render matches the photo's camera and
+   * lights the real ceiling/wall/floor instead of the orbit camera + billboard.
+   * Scene-level + constant — the AI critic never adjusts it. */
+  roomGeometry?: RoomGeometry;
 }
 
 export interface RoomRef {
@@ -145,6 +149,7 @@ function startingPlacement(meta: FixtureMeta, over?: Partial<Placement>): Placem
     lightOutput: over?.lightOutput ?? 25,
     warm: over?.warm ?? 0.45,
     pose: over?.pose ?? meta.pose,
+    roomGeometry: over?.roomGeometry,
   };
 }
 
@@ -317,6 +322,8 @@ async function renderShotImage(
     sku: meta.sku,
     iesPath: meta.iesPath,
     iesUrl: meta.iesUrl,
+    mount: meta.mount,
+    roomGeometry: placement.roomGeometry,
     roomUrl: opts.roomUrl,
     roomPath: opts.roomPath,
     pose: placement.pose,

@@ -353,6 +353,45 @@ export type AppImageMode = z.infer<typeof AppImageModeSchema>;
 // ---------------------------------------------------------------------------
 
 /**
+ * Room calibration ("Cam Solve" room-match): the user traces a few edges of the
+ * room along its orthogonal axes; extending each axis's edges to a vanishing
+ * point recovers the photo's true camera + the ceiling/wall/floor planes, so the
+ * Blender render can match the photo's perspective and light the real surfaces
+ * (instead of a camera-facing billboard). The web app solves this with
+ * `solveRoomCalibration` and sends BOTH the drawn `axes` (so it can be re-edited)
+ * and the solved `camera` (what the render consumes). Omitted → the render uses
+ * the legacy orbit camera + backdrop billboard, unchanged.
+ */
+const RoomPointSchema = z.object({
+  x: z.number().min(-0.5).max(1.5),
+  y: z.number().min(-0.5).max(1.5),
+});
+const RoomSegSchema = z.object({ a: RoomPointSchema, b: RoomPointSchema });
+const RoomAxisLinesSchema = z.object({
+  axis: z.enum(["horizontalA", "horizontalB", "vertical"]),
+  lines: z.array(RoomSegSchema).min(1),
+});
+const Vec3Schema = z.object({ x: z.number(), y: z.number(), z: z.number() });
+export const RoomGeometrySchema = z.object({
+  /** Room photo width / height. */
+  imageAspect: z.number().positive(),
+  /** The user-drawn edge bundles, kept so the calibration can be re-edited. */
+  axes: z.array(RoomAxisLinesSchema).min(2),
+  /** Solved camera (computed client-side via solveRoomCalibration). World frame
+   * is Z-up; the basis vectors are the camera axes in WORLD coords. */
+  camera: z.object({
+    /** FOV along the larger image dimension, degrees (Blender camera.angle). */
+    fovDeg: z.number().positive(),
+    right: Vec3Schema,
+    up: Vec3Schema,
+    forward: Vec3Schema,
+    /** Ceiling/floor normal (world up) — (0,0,1). */
+    worldUp: Vec3Schema,
+  }),
+});
+export type RoomGeometry = z.infer<typeof RoomGeometrySchema>;
+
+/**
  * The user-adjustable placement of a 3D fixture in the room. `coverage` is the
  * fixture's on-screen height as a fraction of the frame; `brightness` scales how
  * bright the fixture's OWN diffusers/bulbs glow; `lightOutput` scales the real
@@ -360,6 +399,9 @@ export type AppImageMode = z.infer<typeof AppImageModeSchema>;
  * without photometry); `warm` (0..1) shifts color temperature; `pose` is the
  * orbit camera around the fixture. These are exactly the sliders the web UI binds
  * to, and the values the AI critic returns when correcting a placement.
+ *
+ * `roomGeometry` is the optional Cam Solve room-match (above); when present the
+ * render matches the photo's camera and lights the real ceiling/wall/floor.
  */
 export const AppShotPlacementSchema = z.object({
   xPct: z.number().min(0).max(1).default(0.5),
@@ -369,6 +411,7 @@ export const AppShotPlacementSchema = z.object({
   lightOutput: z.number().min(0).max(200).default(25),
   warm: z.number().min(0).max(1).default(0.45),
   pose: AppImageModelPoseSchema.default({}),
+  roomGeometry: RoomGeometrySchema.optional(),
 });
 export type AppShotPlacement = z.infer<typeof AppShotPlacementSchema>;
 
