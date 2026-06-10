@@ -3,7 +3,6 @@ import { NavLink, useLocation } from "react-router-dom";
 import {
   Aperture,
   Box,
-  Boxes,
   ChevronLeft,
   FileText,
   FolderOpen,
@@ -79,7 +78,6 @@ const NAV: NavEntry[] = [
       { to: "/product-info/romance", label: "Romance Copy", icon: PenLine },
       { to: "/product-info/seo", label: "SEO", icon: Search },
       { to: "/product-info/normalization", label: "Data Normalization", icon: Ruler },
-      { to: "/product-info/families", label: "Families", icon: Boxes },
     ],
   },
 ];

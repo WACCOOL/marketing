@@ -18,7 +18,6 @@ import {
   RomanceCopyPage,
   SeoPage,
 } from "./pages/ProductInfo.js";
-import { Families } from "./pages/Families.js";
 import { Admin } from "./pages/Admin.js";
 
 // Lazy-loaded: the 3D App-Shot + Cam Solve studios pull in <model-viewer>
@@ -101,7 +100,11 @@ function Shell() {
             path="/product-info/normalization"
             element={<NormalizationPage />}
           />
-          <Route path="/product-info/families" element={<Families />} />
+          {/* Families merged into the Products hub. */}
+          <Route
+            path="/product-info/families"
+            element={<Navigate to="/products" replace />}
+          />
           <Route
             path="/admin"
             element={

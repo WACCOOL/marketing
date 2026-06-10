@@ -136,6 +136,7 @@ export function AppImage() {
 
       {err && <div className="alert error">{err}</div>}
 
+      <div className="grid-2" style={{ gap: 16, alignItems: "start" }}>
       <div className="card col" style={{ gap: 10 }}>
         <div className="row" style={{ justifyContent: "space-between" }}>
           <h3 style={{ margin: 0 }}>1 · Fixture (optional)</h3>
@@ -195,6 +196,7 @@ export function AppImage() {
             {busy ? status ?? "Generating…" : "Generate"}
           </button>
         </div>
+      </div>
       </div>
 
       {previewUrl && job?.assetId && (
