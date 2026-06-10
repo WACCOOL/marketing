@@ -301,6 +301,10 @@ function guessContentType(format: string): string {
       return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     case "csv":
       return "text/csv";
+    case "pptx":
+      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    case "pdf":
+      return "application/pdf";
     default:
       return "application/octet-stream";
   }
