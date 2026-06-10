@@ -25,6 +25,7 @@ import {
   uploadVideo,
 } from "../../lib/uploads.js";
 import { ImageSlotPicker } from "./ImageSlotPicker.js";
+import { SlidePreview } from "./SlidePreview.js";
 import {
   formatErr,
   generateConceptImage,
@@ -826,7 +827,7 @@ export function DeckBuilder() {
             >
               <div className="ppt-slide-num muted">{i + 1}</div>
               <div className="ppt-slide-main">
-                <SlideThumb slide={s} />
+                <SlidePreview slide={s} size="thumb" />
                 <div className="muted ppt-slide-layout">
                   {PPT_LAYOUT_LABELS[s.layout]}
                 </div>
@@ -882,7 +883,7 @@ export function DeckBuilder() {
             </div>
           ))}
 
-          <div className="row" style={{ gap: 6 }}>
+          <div className="ppt-filmstrip-add row" style={{ gap: 6 }}>
             <select
               value={addLayout}
               onChange={(e) => setAddLayout(e.target.value as PptLayout)}
@@ -901,13 +902,16 @@ export function DeckBuilder() {
         {/* RIGHT: slide editor or document drafting */}
         <div className="col" style={{ gap: 16 }}>
           {selected ? (
-            <SlideEditor
-              key={selected.id}
-              slide={selected}
-              aiPrompts={aiPrompts}
-              onChange={(fn) => updateSlide(selected.id, fn)}
-              onError={setErr}
-            />
+            <>
+              <SlidePreview slide={selected} size="full" />
+              <SlideEditor
+                key={selected.id}
+                slide={selected}
+                aiPrompts={aiPrompts}
+                onChange={(fn) => updateSlide(selected.id, fn)}
+                onError={setErr}
+              />
+            </>
           ) : (
             <div className="card muted">
               No slides yet — add one on the left, or draft a deck from a
@@ -966,155 +970,6 @@ export function DeckBuilder() {
       </div>
     </div>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Filmstrip thumbnails: tiny CSS sketches of each canonical layout.
-// ---------------------------------------------------------------------------
-
-function SlideThumb({ slide }: { slide: PptSlide }) {
-  const img = slide.fields.images?.[0]?.url ?? null;
-  switch (slide.layout) {
-    case "title":
-      return (
-        <div className="ppt-slide-thumb ppt-thumb-centered">
-          <div className="ppt-thumb-bar" style={{ width: "70%" }} />
-          <div className="ppt-thumb-line" style={{ width: "45%" }} />
-        </div>
-      );
-    case "section":
-      return (
-        <div className="ppt-slide-thumb ppt-thumb-centered">
-          <div className="ppt-thumb-bar" style={{ width: "80%", height: 8 }} />
-        </div>
-      );
-    case "title_content":
-      return (
-        <div className="ppt-slide-thumb">
-          <div className="ppt-thumb-bar" style={{ width: "60%" }} />
-          <div className="ppt-thumb-line" />
-          <div className="ppt-thumb-line" />
-          <div className="ppt-thumb-line" style={{ width: "70%" }} />
-        </div>
-      );
-    case "title_content_image":
-      return (
-        <div className="ppt-slide-thumb">
-          <div className="ppt-thumb-bar" style={{ width: "60%" }} />
-          <div className="ppt-thumb-cols">
-            <div className="ppt-thumb-col">
-              <div className="ppt-thumb-line" />
-              <div className="ppt-thumb-line" style={{ width: "80%" }} />
-              <div className="ppt-thumb-line" style={{ width: "60%" }} />
-            </div>
-            <div className="ppt-thumb-image" style={{ flex: 1 }}>
-              {img ? (
-                <img src={img} alt="" />
-              ) : (
-                <div className="ppt-thumb-block" style={{ height: "100%" }} />
-              )}
-            </div>
-          </div>
-        </div>
-      );
-    case "two_column":
-      return (
-        <div className="ppt-slide-thumb">
-          <div className="ppt-thumb-bar" style={{ width: "60%" }} />
-          <div className="ppt-thumb-cols">
-            <div className="ppt-thumb-block" />
-            <div className="ppt-thumb-block" />
-          </div>
-        </div>
-      );
-    case "image_full":
-      return (
-        <div className="ppt-slide-thumb ppt-thumb-image">
-          {img ? <img src={img} alt="" /> : <div className="ppt-thumb-block" style={{ flex: 1 }} />}
-        </div>
-      );
-    case "image_caption":
-      return (
-        <div className="ppt-slide-thumb">
-          <div className="ppt-thumb-image" style={{ flex: 1 }}>
-            {img ? <img src={img} alt="" /> : <div className="ppt-thumb-block" style={{ height: "100%" }} />}
-          </div>
-          <div className="ppt-thumb-line" style={{ width: "50%" }} />
-        </div>
-      );
-    case "agenda":
-      return (
-        <div className="ppt-slide-thumb">
-          <div className="ppt-thumb-bar" style={{ width: "50%" }} />
-          {[1, 2, 3].map((n) => (
-            <div key={n} className="ppt-thumb-numline">
-              <span>{n}</span>
-              <div className="ppt-thumb-line" style={{ width: `${88 - n * 10}%` }} />
-            </div>
-          ))}
-        </div>
-      );
-    case "quote":
-      return (
-        <div className="ppt-slide-thumb ppt-thumb-quote">
-          <div className="ppt-thumb-quote-mark">“</div>
-          <div className="ppt-thumb-col" style={{ justifyContent: "center" }}>
-            <div className="ppt-thumb-line" />
-            <div className="ppt-thumb-line" style={{ width: "60%" }} />
-          </div>
-        </div>
-      );
-    case "chart":
-      return (
-        <div className="ppt-slide-thumb">
-          <div className="ppt-thumb-bar" style={{ width: "50%" }} />
-          <div className="ppt-thumb-chart">
-            {[40, 75, 55, 90].map((h, i) => (
-              <div key={i} style={{ height: `${h}%` }} />
-            ))}
-          </div>
-        </div>
-      );
-    case "diagram":
-      return (
-        <div className="ppt-slide-thumb">
-          <div className="ppt-thumb-bar" style={{ width: "50%" }} />
-          <div className="ppt-thumb-cols" style={{ alignItems: "center" }}>
-            {[0, 1, 2].map((i) => (
-              <div key={i} className="ppt-thumb-block" style={{ height: "55%" }} />
-            ))}
-          </div>
-        </div>
-      );
-    case "process":
-      return (
-        <div className="ppt-slide-thumb">
-          <div className="ppt-thumb-bar" style={{ width: "50%" }} />
-          <div className="ppt-thumb-process">
-            <div />
-            <div />
-            <div />
-          </div>
-        </div>
-      );
-    case "video":
-      return (
-        <div className="ppt-slide-thumb ppt-thumb-video">
-          <div className="ppt-thumb-play" />
-        </div>
-      );
-    case "table":
-      return (
-        <div className="ppt-slide-thumb">
-          <div className="ppt-thumb-bar" style={{ width: "50%" }} />
-          <div className="ppt-thumb-grid">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} />
-            ))}
-          </div>
-        </div>
-      );
-  }
 }
 
 // ---------------------------------------------------------------------------

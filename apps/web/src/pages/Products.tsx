@@ -671,9 +671,6 @@ function MarketingOverview({ ppid }: { ppid: string }) {
   const seoRows: [string, string][] = [
     ["Title tag", "seo_title"],
     ["Meta description", "seo_meta_description"],
-    ["H1", "h1"],
-    ["URL slug", "url_slug"],
-    ["Canonical", "canonical_url"],
     ["og:title", "og_title"],
     ["og:description", "og_description"],
   ];

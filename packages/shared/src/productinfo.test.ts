@@ -10,6 +10,9 @@ import {
   normalizeVoltage,
   toCsv,
   truncateAtWord,
+  normalizeBrand,
+  defaultSeoTitle,
+  defaultOgImage,
 } from "./productinfo.js";
 
 describe("normalizeCct", () => {
@@ -295,5 +298,81 @@ describe("toCsv", () => {
     expect(csv).toBe(
       'sku,value\r\nWS-123,"He said ""hi"", twice"\r\nWS-456,"line1\nline2"\r\nWS-789,\r\n',
     );
+  });
+});
+
+describe("normalizeBrand", () => {
+  it("maps catalog brand values to canonical brands", () => {
+    expect(normalizeBrand("WAC")).toBe("WAC Lighting");
+    expect(normalizeBrand("wac lighting")).toBe("WAC Lighting");
+    expect(normalizeBrand("WAC Landscape")).toBe("WAC Lighting");
+    expect(normalizeBrand("WAC Architectural")).toBe("WAC Architectural");
+    expect(normalizeBrand("Modern Forms")).toBe("Modern Forms");
+    expect(normalizeBrand("Modern Forms Fans")).toBe("Modern Forms");
+    expect(normalizeBrand("Schonbek")).toBe("Schonbek");
+    expect(normalizeBrand("Aispire")).toBe("Aispire");
+  });
+
+  it("folds sub-brands into their parent", () => {
+    expect(normalizeBrand("Ventrix")).toBe("WAC Lighting");
+    expect(normalizeBrand("Limited")).toBe("WAC Lighting");
+    expect(normalizeBrand("Dwel")).toBe("WAC Lighting");
+    expect(normalizeBrand("dweLED")).toBe("WAC Lighting");
+    expect(normalizeBrand("Beyond")).toBe("Schonbek");
+    expect(normalizeBrand("Signature")).toBe("Schonbek");
+    expect(normalizeBrand("Forever")).toBe("Schonbek");
+  });
+
+  it("detects unambiguous sub-brand tokens in the product name only", () => {
+    expect(normalizeBrand(null, "dweLED Puck 5in")).toBe("WAC Lighting");
+    expect(normalizeBrand("", "Ventrix Linear 4ft")).toBe("WAC Lighting");
+    // Generic words never match from a name — too ambiguous.
+    expect(normalizeBrand(null, "Beyond Limited Edition Sconce")).toBe(null);
+  });
+
+  it("returns null for unknown brands instead of guessing", () => {
+    expect(normalizeBrand("Acme Lighting")).toBe(null);
+    expect(normalizeBrand(null)).toBe(null);
+  });
+});
+
+describe("defaultSeoTitle", () => {
+  it("follows {name} – {category} | {brand}", () => {
+    expect(
+      defaultSeoTitle({ name: "Calliope 24in Pendant", category: "Pendants", brand: "WAC" }),
+    ).toBe("Calliope 24in Pendant – Pendants | WAC Lighting");
+  });
+
+  it("drops missing segments cleanly", () => {
+    expect(defaultSeoTitle({ name: "Calliope", brand: "Schonbek" })).toBe(
+      "Calliope | Schonbek",
+    );
+    expect(defaultSeoTitle({ name: "Calliope", category: "Pendants" })).toBe(
+      "Calliope – Pendants",
+    );
+    expect(defaultSeoTitle({ name: "Calliope" })).toBe("Calliope");
+  });
+});
+
+describe("defaultOgImage", () => {
+  it("prefers the image numbered 1, else the first", () => {
+    expect(
+      defaultOgImage([
+        "https://cdn.x.com/p/WS-123-3.jpg",
+        "https://cdn.x.com/p/WS-123-1.jpg",
+        "https://cdn.x.com/p/WS-123-2.jpg",
+      ]),
+    ).toBe("https://cdn.x.com/p/WS-123-1.jpg");
+    expect(defaultOgImage(["https://cdn.x.com/p/WS-9_01.png?v=2", "https://cdn.x.com/b.png"])).toBe(
+      "https://cdn.x.com/p/WS-9_01.png?v=2",
+    );
+    expect(defaultOgImage(["https://cdn.x.com/hero.jpg"])).toBe("https://cdn.x.com/hero.jpg");
+    expect(defaultOgImage([])).toBe(null);
+  });
+
+  it("does not treat trailing digits like 11 as image 1", () => {
+    expect(
+      defaultOgImage(["https://cdn.x.com/p/WS-123-11.jpg", "https://cdn.x.com/p/WS-123-4.jpg"]),
+    ).toBe("https://cdn.x.com/p/WS-123-11.jpg"); // falls back to first, no -1 match
   });
 });

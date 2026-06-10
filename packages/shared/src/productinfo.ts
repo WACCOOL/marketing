@@ -137,6 +137,109 @@ export function canonicalUrlFor(
   return `${brandSite(brand)}/products/${slug}`;
 }
 
+// ---------------------------------------------------------------------------
+// Canonical brands (SEO title tags)
+// ---------------------------------------------------------------------------
+
+/** The only brand names allowed in customer-facing SEO copy (per Davis). */
+export const CANONICAL_BRANDS = [
+  "WAC Lighting",
+  "WAC Architectural",
+  "Modern Forms",
+  "Schonbek",
+  "Aispire",
+] as const;
+
+export type CanonicalBrand = (typeof CANONICAL_BRANDS)[number];
+
+/** Exact brand-field values (lowercased) → canonical brand. Sub-brand labels
+ * fold into their parent: Ventrix/Limited/Dwel(ed) are WAC Lighting lines;
+ * Beyond/Signature/Forever are Schonbek collections; Modern Forms Fans is
+ * Modern Forms. Bare "WAC" and "WAC Landscape" are WAC Lighting (confirmed). */
+const BRAND_ALIASES: Record<string, CanonicalBrand> = {
+  wac: "WAC Lighting",
+  "wac lighting": "WAC Lighting",
+  "wac landscape": "WAC Lighting",
+  "wac architectural": "WAC Architectural",
+  ventrix: "WAC Lighting",
+  limited: "WAC Lighting",
+  dwel: "WAC Lighting",
+  dweled: "WAC Lighting",
+  "modern forms": "Modern Forms",
+  "modern forms fans": "Modern Forms",
+  schonbek: "Schonbek",
+  beyond: "Schonbek",
+  signature: "Schonbek",
+  forever: "Schonbek",
+  "schonbek beyond": "Schonbek",
+  "schonbek signature": "Schonbek",
+  "schonbek forever": "Schonbek",
+  aispire: "Aispire",
+};
+
+// Unambiguous sub-brand tokens that may appear inside a longer brand string or
+// a product name (e.g. "dwelLED Puck"). Generic words like "limited" or
+// "beyond" are deliberately excluded here — they only count as exact brand
+// values above, never as substrings.
+const BRAND_TOKEN_HINTS: [RegExp, CanonicalBrand][] = [
+  [/\bventrix\b/i, "WAC Lighting"],
+  [/\bdwell?ed\b/i, "WAC Lighting"],
+  [/\bdwel\b/i, "WAC Lighting"],
+  [/\baispire\b/i, "Aispire"],
+  [/\bschonbek\b/i, "Schonbek"],
+  [/\bmodern forms\b/i, "Modern Forms"],
+];
+
+/**
+ * Resolve a PIM brand value (plus optionally the product name, for sub-brand
+ * lines like dwelLED that surface only in the name) to one of the canonical
+ * customer-facing brands. Returns null when no rule matches — callers should
+ * surface that for a human call rather than guess.
+ */
+export function normalizeBrand(
+  brand: string | null | undefined,
+  productName?: string | null,
+): CanonicalBrand | null {
+  const key = (brand ?? "").trim().toLowerCase();
+  if (key && BRAND_ALIASES[key]) return BRAND_ALIASES[key];
+  for (const [re, canonical] of BRAND_TOKEN_HINTS) {
+    if (key && re.test(key)) return canonical;
+    if (productName && re.test(productName)) return canonical;
+  }
+  return null;
+}
+
+/**
+ * Deterministic title-tag default: {Product Name} – {Differentiator/Category}
+ * | {Brand}. The middle segment is the category until a curated differentiator
+ * exists; segments without data drop out cleanly.
+ */
+export function defaultSeoTitle(input: {
+  name: string;
+  category?: string | null;
+  brand?: string | null;
+}): string {
+  const brand = normalizeBrand(input.brand, input.name);
+  const middle = input.category?.trim();
+  return [
+    input.name.trim(),
+    ...(middle ? [`– ${middle}`] : []),
+    ...(brand ? [`| ${brand}`] : []),
+  ].join(" ");
+}
+
+/**
+ * og:image default: the first product image — preferring the shot whose
+ * filename ends in image-number 1 (…-1.jpg / …_01.png), which is the PIM's
+ * hero angle — falling back to the first URL.
+ */
+export function defaultOgImage(imageUrls: readonly string[]): string | null {
+  const hero = imageUrls.find((u) =>
+    /[-_]0*1\.(?:jpe?g|png|webp|avif)(?:\?.*)?$/i.test(u),
+  );
+  return hero ?? imageUrls[0] ?? null;
+}
+
 /** Truncate to `max` chars without cutting a word in half (best effort: falls
  * back to a hard cut when the first word is already longer than max). */
 export function truncateAtWord(value: string, max: number): string {

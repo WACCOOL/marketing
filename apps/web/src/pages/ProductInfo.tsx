@@ -6,7 +6,14 @@ import {
   useState,
 } from "react";
 import { useSearchParams } from "react-router-dom";
-import { FIELD_LIMITS, NORMALIZE_FIELDS, SEO_RULES, type NormalizeField } from "@wac/shared";
+import {
+  FIELD_LIMITS,
+  NORMALIZE_FIELDS,
+  SEO_RULES,
+  defaultOgImage,
+  defaultSeoTitle,
+  type NormalizeField,
+} from "@wac/shared";
 import { api, apiBlob } from "../lib/api.js";
 import { useAuth } from "../lib/auth.js";
 
@@ -774,13 +781,14 @@ function RomanceEditor(props: {
 const SEO_EDITOR_FIELDS: { field: string; label: string; rows: number; existingKey?: "seo_title" | "seo_meta_description" }[] = [
   { field: "seo_title", label: "Title tag", rows: 1, existingKey: "seo_title" },
   { field: "seo_meta_description", label: "Meta description", rows: 3, existingKey: "seo_meta_description" },
-  { field: "h1", label: "H1 (on-page heading)", rows: 1 },
   { field: "og_title", label: "og:title", rows: 1 },
   { field: "og_description", label: "og:description", rows: 2 },
 ];
 
-/** Deterministic head fields — generated, not AI-written; editable before approval. */
-const SEO_HEAD_FIELDS = ["url_slug", "canonical_url", "meta_robots"] as const;
+/** Deterministic head fields — generated, not AI-written; editable before
+ * approval. (url_slug/canonical_url still generate server-side for JSON-LD
+ * but are no longer edited here.) */
+const SEO_HEAD_FIELDS = ["meta_robots"] as const;
 
 function lengthBadge(field: string, len: number) {
   const rule = SEO_RULES[field];
@@ -834,6 +842,28 @@ function SeoEditor(props: {
     setDrafts(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [aiSignature]);
+
+  // Default populations for fields with a deterministic house answer: the
+  // title-tag format ({Name} – {Category} | {Canonical Brand}) and the
+  // catalog's image #1 for og:image. Only ever fills empty drafts.
+  useEffect(() => {
+    setDrafts((d) => {
+      const next = { ...d };
+      if (!next.seo_title?.trim()) {
+        next.seo_title = defaultSeoTitle({
+          name: item.name,
+          category: item.category,
+          brand: item.brand,
+        });
+      }
+      if (!next.og_image?.trim()) {
+        const hero = defaultOgImage(details?.image_urls ?? []);
+        if (hero) next.og_image = hero;
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiSignature, details, item.ppid]);
 
   async function loadPayload() {
     try {
@@ -899,31 +929,6 @@ function SeoEditor(props: {
       })}
 
       <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
-        <div className="col" style={{ gap: 4, flex: 1, minWidth: 180 }}>
-          <strong>
-            URL slug {rowFor("url_slug")?.status === "approved" && <StatusTag status="approved" />}
-          </strong>
-          <input
-            value={drafts.url_slug ?? ""}
-            onChange={(e) => setDrafts((d) => ({ ...d, url_slug: e.target.value }))}
-            placeholder="lowercase-hyphenated"
-          />
-          {drafts.url_slug && !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(drafts.url_slug) && (
-            <span style={{ color: "var(--bad)", fontSize: 12 }}>
-              must be lowercase, hyphenated
-            </span>
-          )}
-        </div>
-        <div className="col" style={{ gap: 4, flex: 2, minWidth: 240 }}>
-          <strong>
-            Canonical URL {rowFor("canonical_url")?.status === "approved" && <StatusTag status="approved" />}
-          </strong>
-          <input
-            value={drafts.canonical_url ?? ""}
-            onChange={(e) => setDrafts((d) => ({ ...d, canonical_url: e.target.value }))}
-            placeholder="https://… (absolute, self-referencing)"
-          />
-        </div>
         <div className="col" style={{ gap: 4 }}>
           <strong>Robots</strong>
           <select
@@ -955,7 +960,7 @@ function SeoEditor(props: {
           <input
             value={drafts.og_image ?? ""}
             onChange={(e) => setDrafts((d) => ({ ...d, og_image: e.target.value }))}
-            placeholder="Image URL (defaults to the primary catalog image on generate)"
+            placeholder="Image URL (defaults to the product's image #1)"
             style={{ flex: 1 }}
           />
         </div>

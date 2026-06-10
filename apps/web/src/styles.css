@@ -921,20 +921,44 @@ button.slim {
 
 .ppt-editor {
   display: grid;
-  grid-template-columns: 250px minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
   gap: 16px;
+  /* Both panes top-align so the filmstrip can stick while the form scrolls. */
   align-items: start;
+}
+
+/* The filmstrip scrolls in its own section and stays pinned while the user
+   scrolls the (taller) preview + form on the right. */
+.ppt-filmstrip {
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* Breathing room so the selected item's focus ring isn't clipped. */
+  padding: 2px 2px 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+/* "Add slide" stays reachable at the bottom of the scrolling filmstrip. */
+.ppt-filmstrip-add {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  padding: 4px 0 6px;
 }
 @media (max-width: 900px) {
   .ppt-editor {
     grid-template-columns: 1fr;
   }
-}
-
-.ppt-filmstrip {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  .ppt-filmstrip {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+  }
 }
 
 .ppt-slide-item {
@@ -976,140 +1000,376 @@ button.slim {
   justify-content: center;
 }
 
-/* Tiny CSS sketch of a slide for the filmstrip. */
-.ppt-slide-thumb {
+/* ---- Slide previews (SlidePreview.tsx) ----------------------------------
+   Real 16:9 mini-renders of slide content, used as filmstrip thumbnails and
+   as the live preview above the editor form. The canvas is white in BOTH
+   themes — exported slides are white — so it uses fixed slide-local inks
+   (--pv-*) instead of the theme tokens, which would invert on dark. All
+   sizing inside the canvas is em-based off a container-query (cqw) font, so
+   one set of rules scales from thumb to full width. */
+.ppt-preview {
+  --pv-ink: #1c1f26;
+  --pv-muted: #8c93a5;
+  --pv-block: #eef0f3;
+  --pv-on-accent: #ffffff;
+  container-type: inline-size;
+  width: 100%;
   aspect-ratio: 16 / 9;
-  background: var(--panel-2);
+  background: #ffffff;
   border: 1px solid var(--border);
   border-radius: calc(var(--radius) / 2);
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
   overflow: hidden;
-}
-.ppt-thumb-centered {
-  align-items: center;
-  justify-content: center;
-}
-.ppt-thumb-bar {
-  height: 6px;
-  border-radius: 2px;
-  background: var(--accent);
-  opacity: 0.75;
   flex-shrink: 0;
 }
-.ppt-thumb-line {
-  height: 4px;
-  width: 90%;
-  border-radius: 2px;
-  background: var(--border-strong);
-  flex-shrink: 0;
+/* Thumbs are inert — clicks/drags go to the filmstrip item around them. */
+.ppt-preview.thumb {
+  pointer-events: none;
 }
-.ppt-thumb-cols {
-  display: flex;
-  gap: 6px;
-  flex: 1;
-}
-.ppt-thumb-block {
-  flex: 1;
-  border-radius: 2px;
-  background: var(--border);
-}
-.ppt-thumb-grid {
-  flex: 1;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 3px;
-}
-.ppt-thumb-grid > div {
-  background: var(--border);
-  border-radius: 2px;
-}
-.ppt-thumb-image {
-  display: flex;
-  padding: 0;
-  min-height: 0;
-}
-.ppt-thumb-image img {
+.ppt-preview-canvas {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+  padding: 1.6em 2em;
+  overflow: hidden;
+  font-size: 2.2cqw;
+  line-height: 1.35;
+  color: var(--pv-ink);
 }
-.ppt-thumb-col {
+/* Thumbs render the same markup at a bigger relative scale so it stays
+   recognizable at ~200px wide. */
+.ppt-preview.thumb .ppt-preview-canvas {
+  font-size: 4.2cqw;
+  padding: 1em 1.2em;
+}
+.ppt-preview-canvas.center {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.ppt-preview-canvas.bottom {
+  justify-content: flex-end;
+}
+/* Section slides: dark background, light text. */
+.ppt-preview-canvas.dark {
+  background: var(--active-bg);
+  color: var(--active-text);
+}
+/* Full-bleed image slides. */
+.ppt-preview-canvas.bleed {
+  padding: 0;
+  gap: 0;
+}
+
+/* Preview typography. */
+.ppt-pv-title {
+  font-size: 1.45em;
+  font-weight: 600;
+  line-height: 1.25;
+  flex-shrink: 0;
+}
+.ppt-pv-title-xl {
+  font-size: 2.1em;
+  font-weight: 600;
+  line-height: 1.2;
+  flex-shrink: 0;
+}
+.ppt-pv-subtitle {
+  font-size: 1.15em;
+  color: var(--pv-muted);
+  flex-shrink: 0;
+}
+.ppt-preview-canvas.dark .ppt-pv-subtitle {
+  color: inherit;
+  opacity: 0.75;
+}
+.ppt-pv-body {
+  white-space: pre-line;
+}
+.ppt-pv-caption {
+  color: var(--pv-muted);
+}
+/* Muted placeholder rendering for empty fields. */
+.ppt-pv-ph {
+  color: var(--pv-muted);
+  opacity: 0.7;
+}
+.ppt-preview-canvas.dark .ppt-pv-ph {
+  color: inherit;
+  opacity: 0.5;
+}
+
+/* Line clamps — long content never breaks the 16:9 frame. */
+.ppt-pv-clamp-1,
+.ppt-pv-clamp-2,
+.ppt-pv-clamp-3,
+.ppt-pv-clamp-4,
+.ppt-pv-clamp-6 {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ppt-pv-clamp-1 {
+  -webkit-line-clamp: 1;
+}
+.ppt-pv-clamp-2 {
+  -webkit-line-clamp: 2;
+}
+.ppt-pv-clamp-3 {
+  -webkit-line-clamp: 3;
+}
+.ppt-pv-clamp-4 {
+  -webkit-line-clamp: 4;
+}
+.ppt-pv-clamp-6 {
+  -webkit-line-clamp: 6;
+}
+
+/* Bullet / numbered lists: one ellipsized line per item. */
+.ppt-pv-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+  min-height: 0;
+  overflow: hidden;
+}
+.ppt-pv-line {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+/* Two-region bodies (text + image, two columns). */
+.ppt-pv-cols {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  gap: 1.2em;
+}
+.ppt-pv-col {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 0.55em;
+  overflow: hidden;
 }
-/* Agenda: numbered lines. */
-.ppt-thumb-numline {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-.ppt-thumb-numline > span {
-  font-size: 7px;
-  line-height: 1;
-  color: var(--accent);
-  opacity: 0.85;
-}
-/* Quote: big quotation mark beside the lines. */
-.ppt-thumb-quote {
-  flex-direction: row;
-  align-items: center;
-  gap: 8px;
-}
-.ppt-thumb-quote-mark {
-  font-size: 24px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--accent);
-  opacity: 0.75;
-}
-/* Chart: mini bars. */
-.ppt-thumb-chart {
+.ppt-pv-imgbox {
   flex: 1;
+  min-width: 0;
   min-height: 0;
-  display: flex;
-  align-items: flex-end;
-  gap: 4px;
-  padding: 0 6px;
+  overflow: hidden;
 }
-.ppt-thumb-chart > div {
-  flex: 1;
-  background: var(--accent);
-  opacity: 0.6;
-  border-radius: 2px 2px 0 0;
-}
-/* Process: chevron-ish step blocks. */
-.ppt-thumb-process {
-  flex: 1;
+.ppt-pv-img {
+  display: block;
+  width: 100%;
+  height: 100%;
   min-height: 0;
+  object-fit: cover;
+}
+.ppt-pv-imgph {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: var(--pv-block);
   display: flex;
-  align-items: center;
-  gap: 3px;
-}
-.ppt-thumb-process > div {
-  flex: 1;
-  height: 55%;
-  background: var(--border-strong);
-  clip-path: polygon(0 0, 85% 0, 100% 50%, 85% 100%, 0 100%, 15% 50%);
-}
-/* Video: block with a play triangle. */
-.ppt-thumb-video {
   align-items: center;
   justify-content: center;
-  background: var(--border);
+  color: var(--pv-muted);
 }
-.ppt-thumb-play {
+.ppt-pv-imggrid {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-auto-rows: 1fr;
+  gap: 0.5em;
+  overflow: hidden;
+}
+.ppt-pv-imggrid.multi {
+  grid-template-columns: 1fr 1fr;
+}
+
+/* Quote. */
+.ppt-pv-quotewrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 1.5em;
+  overflow: hidden;
+}
+.ppt-pv-quote {
+  font-size: 1.6em;
+  font-style: italic;
+  text-align: center;
+  line-height: 1.4;
+}
+.ppt-pv-attr {
+  align-self: flex-end;
+  color: var(--pv-muted);
+  flex-shrink: 0;
+}
+
+/* Mini chart (inline SVG, viewBox 0 0 100 58). */
+.ppt-pv-chart {
+  flex: 1;
+  min-height: 0;
+}
+.ppt-pv-chart svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.ppt-pv-chart text {
+  font-size: 3.4px;
+  fill: var(--pv-muted);
+}
+.ppt-pv-fill {
+  fill: var(--accent);
+}
+.ppt-pv-slice {
+  fill: var(--accent);
+  stroke: #ffffff;
+  stroke-width: 0.6;
+}
+.ppt-pv-stroke {
+  stroke: var(--accent);
+  fill: none;
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.ppt-pv-axis {
+  stroke: var(--border-strong);
+  stroke-width: 0.4;
+}
+
+/* Diagram boxes (≤3 per row) and process chevrons (wrap past ~6). */
+.ppt-pv-diagram {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 0.6em;
+  align-content: center;
+  overflow: hidden;
+}
+.ppt-pv-diagram > div {
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0.5em 0.6em;
+  background: var(--accent);
+  color: var(--pv-on-accent);
+  border-radius: 0.4em;
+  font-size: 0.95em;
+  overflow: hidden;
+}
+.ppt-pv-process {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: center;
+  align-items: center;
+  gap: 0.35em;
+  overflow: hidden;
+}
+.ppt-pv-process > div {
+  flex: 1 0 13%;
+  min-width: 0;
+  padding: 0.55em 1em;
+  background: var(--accent);
+  color: var(--pv-on-accent);
+  clip-path: polygon(
+    0 0,
+    calc(100% - 0.7em) 0,
+    100% 50%,
+    calc(100% - 0.7em) 100%,
+    0 100%,
+    0.7em 50%
+  );
+  text-align: center;
+  font-size: 0.9em;
+  overflow: hidden;
+}
+
+/* Video: dark 16:9 block with a play triangle + filename. */
+.ppt-pv-videobox {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7em;
+  background: var(--active-bg);
+  color: var(--active-text);
+  border-radius: 0.3em;
+  overflow: hidden;
+}
+.ppt-pv-play {
   width: 0;
   height: 0;
   border-style: solid;
-  border-width: 8px 0 8px 13px;
-  border-color: transparent transparent transparent var(--accent);
+  border-width: 1.1em 0 1.1em 1.9em;
+  border-color: transparent transparent transparent var(--active-text);
+}
+.ppt-pv-videourl {
+  max-width: 85%;
+  font-size: 0.8em;
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Mini table: headers + up to 4 clamped rows. */
+.ppt-pv-tablewrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+  overflow: hidden;
+}
+.ppt-pv-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.9em;
+}
+.ppt-pv-table th,
+.ppt-pv-table td {
+  padding: 0.3em 0.5em;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 0.07em solid var(--pv-block);
+}
+.ppt-pv-table th {
+  font-weight: 600;
+  border-bottom: 0.15em solid var(--accent);
+}
+.ppt-pv-more {
+  font-size: 0.85em;
+}
+
+/* Empty-state filler ("No chart data" etc.). */
+.ppt-pv-empty {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--pv-muted);
 }
 
 /* Image option grid (product image choice) + current slot rows. */

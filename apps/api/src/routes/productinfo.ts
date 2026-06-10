@@ -11,6 +11,9 @@ import {
   SEO_LIMITS,
   brandSite,
   buildOrganizationJsonLd,
+  defaultOgImage,
+  defaultSeoTitle,
+  normalizeBrand,
   buildProductPageJsonLd,
   canonicalUrlFor,
   classifyCctType,
@@ -452,12 +455,20 @@ async function generateFor(
 
   // SEO: one call returns all text fields as JSON, then limits are enforced
   // deterministically (the model is asked, but never trusted, to stay short).
-  // og_image is not AI — it defaults to the primary catalog image.
+  // og_image is not AI — it defaults to the catalog's image #1 (hero angle).
+  // Title tags follow the house format with the canonical customer-facing
+  // brand name (never raw PIM brand strings or sub-brand labels).
+  const canonicalBrand = normalizeBrand(product.brand, product.name);
+  const titleTemplate = defaultSeoTitle({
+    name: product.name,
+    category: product.category,
+    brand: product.brand,
+  });
   const raw = await geminiText(env, {
     system: BRAND_VOICE,
     json: true,
     prompt: [
-      `Write SEO metadata for this lighting product page as JSON: {"seo_title": string (50-${SEO_LIMITS.seo_title} chars, unique, primary keyword near the front, include product name and brand), "seo_meta_description": string (150-${SEO_LIMITS.seo_meta_description} chars, compelling and specific), "h1": string (max ${SEO_LIMITS.h1} chars, the on-page heading, distinct wording from seo_title), "og_title": string (max ${SEO_LIMITS.og_title} chars, social-share headline), "og_description": string (max ${SEO_LIMITS.og_description} chars, social-share blurb)}.`,
+      `Write SEO metadata for this lighting product page as JSON: {"seo_title": string (50-${SEO_LIMITS.seo_title} chars, MUST follow the format "{Product Name} – {Key Differentiator/Category} | {Brand}" — brand is exactly "${canonicalBrand ?? "(omit the brand segment)"}", pick the key differentiator from the product data (fall back to the category), e.g. "${titleTemplate}"), "seo_meta_description": string (150-${SEO_LIMITS.seo_meta_description} chars, compelling and specific), "og_title": string (max ${SEO_LIMITS.og_title} chars, social-share headline), "og_description": string (max ${SEO_LIMITS.og_description} chars, social-share blurb)}.`,
       existingCopy ? `Product description:\n${existingCopy}` : "",
       `Product data:\n${summary}`,
     ]
@@ -487,11 +498,6 @@ async function generateFor(
       existing: null,
     },
     {
-      field: "h1",
-      value: truncateAtWord(seo.h1 ?? product.name, SEO_LIMITS.h1),
-      existing: null,
-    },
-    {
       field: "og_description",
       value: truncateAtWord(
         seo.og_description ?? seo.seo_meta_description ?? "",
@@ -511,12 +517,13 @@ async function generateFor(
     ai_value: f.value,
     status: "generated" as const,
   }));
-  if (details.image_url) {
+  const ogImage = defaultOgImage(product.image_urls ?? []) ?? details.image_url;
+  if (ogImage) {
     rows.push({
       ppid,
       sku: "",
       field: "og_image",
-      ai_value: details.image_url,
+      ai_value: ogImage,
       status: "generated",
     });
   }
