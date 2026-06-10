@@ -62,6 +62,8 @@ interface VariantRow {
   name: string | null;
   dimensions_mm: DimsMm;
   image_urls: string[];
+  /** Photometric (.ies) file URL, when the variant carries one. */
+  ies_url: string | null;
 }
 
 export interface ProductCacheRow {
@@ -73,6 +75,12 @@ export interface ProductCacheRow {
   dimensions_mm: DimsMm;
   primary_image_url: string | null;
   image_urls: string[];
+  /**
+   * Manufacturer IES photometry URL (Sales Layer CDN). The 3D App-Shot render
+   * feeds it to Blender's add_ies_light for a physically-accurate light spill;
+   * fixtures without one fall back to lamp + synthetic-fill lighting.
+   */
+  ies_url: string | null;
   variants: VariantRow[];
   variant_search: string | null;
   raw_json: Record<string, unknown>;
@@ -216,6 +224,7 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             dimensions_mm: {},
             primary_image_url: firstImage(p, PRODUCT_IMAGE_FIELDS),
             image_urls: collectImages(p, PRODUCT_IMAGE_FIELDS),
+            ies_url: findIesUrl(p),
             variants: [],
             variant_search: null,
             raw_json: stripImages(p),
@@ -234,6 +243,7 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             name: cleanText(decodeEntities(str(v.zprdtitle) ?? str(v.maktx) ?? "")),
             dimensions_mm: variantDims(v, dimFactor),
             image_urls: collectImages(v, VARIANT_IMAGE_FIELDS),
+            ies_url: findIesUrl(v),
           };
           if (!variant.variant_id) continue;
           const list = variantsByProduct.get(productId) ?? [];
@@ -264,6 +274,12 @@ export function makeProductAdapter(env: Env): ProductAdapter {
         product.image_urls = [...all];
         if (!product.primary_image_url && product.image_urls.length) {
           product.primary_image_url = product.image_urls[0]!;
+        }
+
+        // IES photometry: prefer the product-level file, else the first variant
+        // that carries one (the photometric throw is shared across finishes).
+        if (!product.ies_url) {
+          product.ies_url = vlist.find((v) => v.ies_url)?.ies_url ?? null;
         }
 
         // Searchable text: variant SKUs / ids / finishes.
@@ -303,6 +319,9 @@ export function makeProductAdapter(env: Env): ProductAdapter {
         }; ${brandCount}/${rows.length} products have a brand`,
       );
 
+      const iesCount = rows.filter((r) => r.ies_url).length;
+      console.log(`[products] ${iesCount}/${rows.length} products have an IES file`);
+
       const admin = serviceSupabase(env);
       const syncedAt = new Date().toISOString();
       const CHUNK = 300;
@@ -316,6 +335,7 @@ export function makeProductAdapter(env: Env): ProductAdapter {
           dimensions_mm: r.dimensions_mm,
           primary_image_url: r.primary_image_url,
           image_urls: r.image_urls,
+          ies_url: r.ies_url,
           variants: r.variants,
           variant_search: r.variant_search,
           raw_json: r.raw_json,
@@ -473,6 +493,18 @@ function collectImages(
   const out: string[] = [];
   for (const f of fields) out.push(...extractImageUrls(row[f]));
   return [...new Set(out)];
+}
+
+/**
+ * The photometric-file URL from Sales Layer's dedicated `ies_files` field
+ * (shape `[[STATUS, hash, URL], ...]`, like the image fields). WAC delivers the
+ * IES as a CDN `.zip` (e.g. `.../4031_IES.zip`), NOT a raw `.ies`, so we store
+ * the zip URL as-is; the render-worker downloads it and the Blender script
+ * (composite.py) unzips + extracts the `.ies` before lighting. Returns the first
+ * URL found, or null when the fixture ships no photometry.
+ */
+function findIesUrl(row: Record<string, unknown>): string | null {
+  return extractImageUrls(row["ies_files"])[0] ?? null;
 }
 
 /** Recursively pull every http(s) string out of a connector image value. */

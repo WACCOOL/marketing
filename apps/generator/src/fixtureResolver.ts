@@ -18,9 +18,11 @@ import type { FixtureMeta, FixtureResolver, Mount } from "./appshot3d.js";
  * deriveFixtureKind) and pose/coverage (from mount presets), unless the registry
  * row carries an explicit override. Any mirrored SKU becomes renderable.
  *
- * IES photometry is intentionally not wired in Phase 1 — decorative fixtures
- * render with their own lamps, exactly as the prior chandelier entry did. (When
- * the Sales Layer products record exposes an IES URL, it gets read here.)
+ * IES photometry comes from the Sales Layer products record (PIM): the daily
+ * sync extracts each product's `.ies` URL into `products.ies_url`, and we read
+ * it here so the worker downloads it and Blender's add_ies_light throws the
+ * fixture's true distribution into the room. Fixtures without an IES fall back to
+ * their own lamps + a synthetic fill (handled in composite.py).
  */
 
 // The worker downloads the .blend at the start of a render (within seconds of
@@ -41,6 +43,7 @@ interface ProductRow {
   sku: string;
   name: string | null;
   category: string | null;
+  ies_url: string | null;
 }
 
 /** Escape LIKE/ILIKE wildcards so a SKU is matched literally. */
@@ -62,14 +65,14 @@ async function findProduct(
   const pattern = escapeLike(sku);
   const direct = await sb
     .from("products")
-    .select("sku, name, category")
+    .select("sku, name, category, ies_url")
     .ilike("sku", pattern)
     .maybeSingle();
   if (direct.data) return direct.data as ProductRow;
 
   const variant = await sb
     .from("products")
-    .select("sku, name, category")
+    .select("sku, name, category, ies_url")
     .ilike("variant_search", `%${pattern}%`)
     .limit(1)
     .maybeSingle();
@@ -124,6 +127,9 @@ export function makeFixtureResolver(deps: {
     return {
       sku: row.sku,
       modelUrl,
+      // Manufacturer photometry when the catalog has it; absent → composite.py
+      // uses the fixture's own lamps + a synthetic fill.
+      iesUrl: product?.ies_url ?? undefined,
       fixtureType,
       mount,
       pose,

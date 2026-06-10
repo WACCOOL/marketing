@@ -4,3 +4,4 @@ export * from "./social.js";
 export * from "./bulk.js";
 export * from "./slug.js";
 export * from "./fixture.js";
+export * from "./roomcalib.js";

@@ -297,6 +297,33 @@ async function exportGlb(reqBody: ExportGlbRequest): Promise<Buffer> {
   }
 }
 
+interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * Cam Solve room-match, computed client-side (see @wac/shared roomcalib). The
+ * worker forwards it verbatim into the composite.py job; Blender builds a camera
+ * from `camera.{right,up,forward,fovDeg}` (camera axes in a Z-up world frame) and
+ * lights real ceiling/wall/floor planes instead of a camera-facing billboard.
+ */
+interface RoomGeometryPayload {
+  imageAspect: number;
+  axes: Array<{
+    axis: "horizontalA" | "horizontalB" | "vertical";
+    lines: Array<{ a: { x: number; y: number }; b: { x: number; y: number } }>;
+  }>;
+  camera: {
+    fovDeg: number;
+    right: Vec3;
+    up: Vec3;
+    forward: Vec3;
+    worldUp: Vec3;
+  };
+}
+
 interface CompositeRequest {
   /** Local path to the .blend, or a URL the worker downloads. */
   modelPath?: string;
@@ -309,6 +336,10 @@ interface CompositeRequest {
   iesPath?: string;
   iesUrl?: string;
   iesRotation?: [number, number, number];
+  /** Mounting type ("ceiling" | "wall" | "floor" | "recessed") — orients the catcher. */
+  mount?: string;
+  /** Cam Solve room-match (matched camera + real ceiling/wall/floor planes). */
+  roomGeometry?: RoomGeometryPayload;
   pose?: Pose;
   cameraName?: string;
   /** Fixture height as a fraction of the frame (0..1). */
@@ -511,6 +542,8 @@ async function runComposite(body: CompositeRequest): Promise<CompositeArtifacts>
       roomPath,
       iesPath,
       iesRotation: body.iesRotation,
+      mount: body.mount,
+      roomGeometry: body.roomGeometry,
       pose: body.pose ?? {},
       cameraName: body.cameraName,
       coverage: body.coverage ?? 0.34,

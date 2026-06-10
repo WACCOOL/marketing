@@ -10,7 +10,7 @@ export const productRoutes = new Hono<AppBindings>();
 // Columns returned to the client. raw_json is intentionally excluded — it can be
 // large and is only needed server-side by later generation phases.
 const PRODUCT_COLS =
-  "id, sku, name, brand, category, dimensions_mm, primary_image_url, image_urls, variants, synced_at";
+  "id, sku, name, brand, category, dimensions_mm, primary_image_url, image_urls, ies_url, variants, synced_at";
 
 const ListQuerySchema = z.object({
   q: z.string().trim().optional(),
