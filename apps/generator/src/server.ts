@@ -36,6 +36,7 @@ import {
   type Placement as ShotPlacement,
 } from "./appshot3d.js";
 import { makeFixtureResolver } from "./fixtureResolver.js";
+import { introspectPptTemplate, runPptGenerator } from "./ppt.js";
 
 /**
  * WAC generation Container (Phase 2d).
@@ -45,7 +46,8 @@ import { makeFixtureResolver } from "./fixtureResolver.js";
  * compositing engine (2c); `hybrid` composites then harmonizes lighting via
  * FLUX.1 Fill (+ optional Gemini pass) behind the ImageGenerationAdapter; and
  * `concept` is pure-generative via Gemini (flagged not product-accurate).
- * `ppt`/`layout` still emit the 2b placeholder until Phase 3. It uploads the
+ * `ppt` fills an admin-uploaded template via python-pptx (PRD §8, see ppt.ts);
+ * `layout` still emits the 2b placeholder until Phase 3. It uploads the
  * result to R2 over the S3 API, records the asset in Supabase, and flips the
  * generation_jobs row to succeeded/failed.
  *
@@ -116,7 +118,7 @@ function loadConfig(): Config {
   };
 }
 
-interface GenerateRequest {
+export interface GenerateRequest {
   jobId: string;
   ownerId: string;
   tool: "appimage" | "ppt" | "layout";
@@ -126,13 +128,13 @@ interface GenerateRequest {
   tags?: string[];
 }
 
-interface GeneratedFile {
+export interface GeneratedFile {
   format: string;
   body: Buffer;
   contentType: string;
 }
 
-interface GenerationResult {
+export interface GenerationResult {
   files: GeneratedFile[];
   /** Merged into the asset's metadata_json for reproducibility. */
   metadata: Record<string, unknown>;
@@ -213,7 +215,7 @@ function makePlaceholderPng(
 
 /**
  * Placeholder generator for tools whose real pipeline isn't built yet
- * (ppt/layout — Phase 3). Returns a recognizable WAC-slate PNG.
+ * (layout — Phase 3). Returns a recognizable WAC-slate PNG.
  */
 function runStubGenerator(req: GenerateRequest): GenerationResult {
   const png = makePlaceholderPng(1200, 630, [30, 41, 59, 255]);
@@ -696,11 +698,16 @@ async function runAppImageGenerator(
 
 function runGeneration(
   req: GenerateRequest,
+  config: Config,
+  sb: SupabaseClient,
+  s3: S3Client,
   adapters: ImageGenAdapters,
   prepareCutout?: PrepareCutout,
 ): Promise<GenerationResult> {
   if (req.tool === "appimage")
     return runAppImageGenerator(req, adapters, prepareCutout);
+  if (req.tool === "ppt")
+    return runPptGenerator(req, { sb, s3, bucket: config.r2Bucket });
   return Promise.resolve(runStubGenerator(req));
 }
 
@@ -879,7 +886,7 @@ async function handleGenerate(
   // (computed scale, placements). A failure here surfaces before any DB writes
   // beyond the running transition.
   const prepareCutout = makePrepareCutout(config, s3, adapters);
-  const generated = await runGeneration(req, adapters, prepareCutout);
+  const generated = await runGeneration(req, config, sb, s3, adapters, prepareCutout);
   const assetId = await createAssetRow(sb, req, generated.metadata);
 
   const uploaded: { format: string; key: string; bytes: number }[] = [];
@@ -1155,6 +1162,49 @@ function main(): void {
           console.error("[generator] cutout failed:", message);
           res.writeHead(500, { "content-type": "application/json" });
           res.end(JSON.stringify({ ok: false, error: message }));
+        }
+        return;
+      }
+
+      // Synchronous PPT template introspection: given the R2 key of an
+      // admin-uploaded .pptx, report its slide layouts/placeholders plus a
+      // suggested canonical layout map (python-pptx, see python/introspect.py).
+      // The API Worker calls this on template upload to seed
+      // ppt_templates.layout_map for the mapping UI.
+      if (req.method === "POST" && url.pathname === "/ppt-introspect") {
+        let body: { r2Key?: string } | null;
+        try {
+          const raw = await readJsonBody(req);
+          body = raw && typeof raw === "object" ? (raw as typeof body) : null;
+        } catch {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid JSON body" }));
+          return;
+        }
+        if (!body || typeof body.r2Key !== "string") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "ppt-introspect needs an r2Key" }));
+          return;
+        }
+        try {
+          const result = await introspectPptTemplate(body.r2Key, {
+            s3,
+            bucket: config.r2Bucket,
+          });
+          res.writeHead(result.ok === true ? 200 : 500, {
+            "content-type": "application/json",
+          });
+          res.end(JSON.stringify(result));
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          console.error("[generator] ppt-introspect failed:", message);
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: { code: "introspect_failed", message },
+            }),
+          );
         }
         return;
       }

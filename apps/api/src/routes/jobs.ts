@@ -1,6 +1,10 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { AppImageParamsSchema, GenerationJobRequestSchema } from "@wac/shared";
+import {
+  AppImageParamsSchema,
+  GenerationJobRequestSchema,
+  PptDeckSchema,
+} from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
 import { emailsForUserIds, userSupabase } from "../supabase.js";
@@ -70,6 +74,17 @@ jobRoutes.post("/", requireAuth, async (c) => {
       );
     }
     params = appimage.data as Record<string, unknown>;
+  }
+  // ppt carries the full deck contract (template + slides, see shared/ppt.ts).
+  if (parsed.data.tool === "ppt") {
+    const deck = PptDeckSchema.safeParse(params);
+    if (!deck.success) {
+      return c.json(
+        { error: "invalid ppt params", issues: deck.error.issues },
+        400,
+      );
+    }
+    params = deck.data as unknown as Record<string, unknown>;
   }
 
   const user = c.get("user");

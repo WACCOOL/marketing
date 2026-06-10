@@ -916,3 +916,173 @@ button.slim {
   gap: 16px;
   box-shadow: var(--shadow-pop);
 }
+
+/* ---- PPT Deck Builder -------------------------------------------------- */
+
+.ppt-editor {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .ppt-editor {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ppt-filmstrip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ppt-slide-item {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  cursor: pointer;
+}
+.ppt-slide-item:hover {
+  border-color: var(--border-strong);
+}
+.ppt-slide-item.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.ppt-slide-num {
+  font-size: 11px;
+  min-width: 14px;
+  text-align: right;
+}
+.ppt-slide-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ppt-slide-layout {
+  font-size: 11px;
+}
+.ppt-slide-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  justify-content: center;
+}
+
+/* Tiny CSS sketch of a slide for the filmstrip. */
+.ppt-slide-thumb {
+  aspect-ratio: 16 / 9;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) / 2);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow: hidden;
+}
+.ppt-thumb-centered {
+  align-items: center;
+  justify-content: center;
+}
+.ppt-thumb-bar {
+  height: 6px;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+.ppt-thumb-line {
+  height: 4px;
+  width: 90%;
+  border-radius: 2px;
+  background: var(--border-strong);
+  flex-shrink: 0;
+}
+.ppt-thumb-cols {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+}
+.ppt-thumb-block {
+  flex: 1;
+  border-radius: 2px;
+  background: var(--border);
+}
+.ppt-thumb-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+}
+.ppt-thumb-grid > div {
+  background: var(--border);
+  border-radius: 2px;
+}
+.ppt-thumb-image {
+  display: flex;
+  padding: 0;
+  min-height: 0;
+}
+.ppt-thumb-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Image option grid (product image choice) + current slot rows. */
+.ppt-image-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ppt-image-option {
+  width: 84px;
+  height: 84px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) / 2);
+  cursor: pointer;
+}
+.ppt-image-option:hover {
+  border-color: var(--accent);
+}
+.ppt-image-option img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.ppt-deck-image {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+}
+.ppt-deck-image > img {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  background: #fff;
+  border-radius: calc(var(--radius) / 2);
+  flex-shrink: 0;
+}
+
+/* Table editor: inputs in cells, horizontal scroll for wide tables. */
+.ppt-table-scroll {
+  overflow-x: auto;
+}
+.ppt-table-editor input {
+  min-width: 110px;
+}

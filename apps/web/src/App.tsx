@@ -19,6 +19,9 @@ import {
   SeoPage,
 } from "./pages/ProductInfo.js";
 import { Admin } from "./pages/Admin.js";
+import { DeckBuilder } from "./pages/ppt/DeckBuilder.js";
+import { MyDecks } from "./pages/ppt/MyDecks.js";
+import { PptTemplates } from "./pages/ppt/Templates.js";
 
 // Lazy-loaded: the 3D App-Shot + Cam Solve studios pull in <model-viewer>
 // (three.js), which is heavy. Code-split them so they only load when opened.
@@ -104,6 +107,31 @@ function Shell() {
           <Route
             path="/product-info/families"
             element={<Navigate to="/products" replace />}
+          />
+          {/* PPT Generator: internal-only (reps are hidden from the nav and
+              redirected; the API enforces access regardless). */}
+          <Route path="/ppt" element={<Navigate to="/ppt/builder" replace />} />
+          <Route
+            path="/ppt/builder"
+            element={
+              user.role === "rep" ? <Navigate to="/builder" replace /> : <DeckBuilder />
+            }
+          />
+          <Route
+            path="/ppt/decks"
+            element={
+              user.role === "rep" ? <Navigate to="/builder" replace /> : <MyDecks />
+            }
+          />
+          <Route
+            path="/ppt/templates"
+            element={
+              user.role === "admin" ? (
+                <PptTemplates />
+              ) : (
+                <Navigate to="/ppt/builder" replace />
+              )
+            }
           />
           <Route
             path="/admin"

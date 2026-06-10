@@ -1,6 +1,7 @@
 import { type CSSProperties, Fragment, useEffect, useState } from "react";
 import { zipSync } from "fflate";
 import { Link } from "react-router-dom";
+import { PPT_GENERATED_BY } from "@wac/shared";
 import { api, apiBlob } from "../lib/api.js";
 import { useAuth } from "../lib/auth.js";
 
@@ -65,10 +66,15 @@ export function Library() {
   );
 }
 
-/** Where an asset's "Edit" link should reopen, when it was a 3D render. */
+/** Where an asset's "Edit" link should reopen (3D renders and PPT decks). */
 function editHref(a: Asset): string | null {
-  const jobId = (a.metadata_json as { jobId?: unknown })?.jobId;
-  if (typeof jobId !== "string" || !a.tags.includes("shot3d")) return null;
+  const meta = a.metadata_json as { jobId?: unknown; generatedBy?: unknown };
+  const jobId = meta?.jobId;
+  if (typeof jobId !== "string") return null;
+  if (meta.generatedBy === PPT_GENERATED_BY) {
+    return `/ppt/builder?restore=${encodeURIComponent(jobId)}`;
+  }
+  if (!a.tags.includes("shot3d")) return null;
   const editor = a.tags.includes("editor:camsolve") ? "/cam-solve" : "/app-shot";
   return `${editor}?restore=${encodeURIComponent(jobId)}`;
 }

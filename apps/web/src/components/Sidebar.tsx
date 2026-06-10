@@ -5,9 +5,12 @@ import {
   Box,
   ChevronLeft,
   FileText,
+  Files,
+  FileUp,
   FolderOpen,
   ImageIcon,
   ImagePlay,
+  LayoutTemplate,
   Link2,
   ListChecks,
   Minus,
@@ -16,6 +19,7 @@ import {
   PanelLeft,
   PenLine,
   Plus,
+  Presentation,
   QrCode,
   Ruler,
   Search,
@@ -71,6 +75,15 @@ const NAV: NavEntry[] = [
     ],
   },
   {
+    label: "PPT Generator",
+    icon: Presentation,
+    children: [
+      { to: "/ppt/builder", label: "Deck Builder", icon: LayoutTemplate },
+      { to: "/ppt/decks", label: "My Decks", icon: Files },
+      { to: "/ppt/templates", label: "Templates", icon: FileUp },
+    ],
+  },
+  {
     label: "Product Info",
     icon: FileText,
     children: [
@@ -123,16 +136,27 @@ export function Sidebar() {
     loadExpandedGroups,
   );
 
-  // Role-scoped nav: Product Info is an internal-only workflow, and the Admin
-  // page only renders for admins (the API enforces both regardless).
+  // Role-scoped nav: Product Info and the PPT Generator are internal-only
+  // workflows, and the Admin page only renders for admins (the API enforces
+  // all of this regardless).
   const nav = useMemo(() => {
     let entries = NAV;
     if (user?.role === "rep") {
       // Reps keep the catalog but not the internal content workflows.
-      entries = entries.flatMap((e) =>
-        e.label === "Product Info"
-          ? [{ to: "/products", label: "Products", icon: Package } as NavLeaf]
-          : [e],
+      entries = entries.flatMap((e) => {
+        if (e.label === "PPT Generator") return [];
+        if (e.label === "Product Info") {
+          return [{ to: "/products", label: "Products", icon: Package } as NavLeaf];
+        }
+        return [e];
+      });
+    }
+    if (user?.role !== "admin") {
+      // Template management is admin-only.
+      entries = entries.map((e) =>
+        isParent(e) && e.label === "PPT Generator"
+          ? { ...e, children: e.children.filter((c) => c.to !== "/ppt/templates") }
+          : e,
       );
     }
     if (user?.role === "admin") entries = [...entries, ...ADMIN_ENTRIES];
