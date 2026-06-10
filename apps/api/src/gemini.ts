@@ -16,7 +16,14 @@ export function geminiConfigured(env: Env): boolean {
 
 export async function geminiText(
   env: Env,
-  opts: { prompt: string; system?: string; json?: boolean; model?: string },
+  opts: {
+    prompt: string;
+    system?: string;
+    json?: boolean;
+    model?: string;
+    /** Override for long generations (e.g. doc-to-deck drafting); default 30s. */
+    timeoutMs?: number;
+  },
 ): Promise<string> {
   if (!env.GEMINI_API_KEY) {
     throw new Error(
@@ -42,7 +49,7 @@ export async function geminiText(
         ...(opts.json ? { responseMimeType: "application/json" } : {}),
       },
     }),
-    signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+    signal: AbortSignal.timeout(opts.timeoutMs ?? GEMINI_TIMEOUT_MS),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");

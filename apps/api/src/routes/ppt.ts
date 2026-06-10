@@ -389,6 +389,10 @@ async function draftDeckOnce(
     prompt: feedback
       ? `${basePrompt}\n\nYour previous attempt was invalid — fix these problems and return the corrected JSON:\n${feedback}`
       : basePrompt,
+    // Long documents → big decks: the pro model can run minutes, not the
+    // default 30s. A timeout here throws (no validation retry), so the
+    // worst case stays one window, not two.
+    timeoutMs: 180_000,
   });
 
   let parsed: unknown;
@@ -475,6 +479,15 @@ pptRoutes.post("/draft", async (c) => {
     }
     return c.json({ deck: attempt.deck });
   } catch (e) {
+    if (e instanceof DOMException && e.name === "TimeoutError") {
+      return c.json(
+        {
+          error:
+            "AI drafting timed out — the document may be very long. Try again, or split it and draft in parts.",
+        },
+        504,
+      );
+    }
     const msg = e instanceof Error ? e.message : String(e);
     return c.json({ error: msg }, msg.includes("not configured") ? 503 : 502);
   }
