@@ -1,208 +1,124 @@
-import { useMemo, useState } from "react";
-import type { ReactNode } from "react";
-import type { AppImageMode, FixtureMount, Product } from "@wac/shared";
+import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import type { Product } from "@wac/shared";
 import { APPIMAGE_PARAMS_VERSION } from "@wac/shared";
 import { ProductPicker } from "../components/ProductPicker.js";
-import { SceneInput, type SceneSelection } from "../components/SceneInput.js";
-import { PlacementCanvas } from "../components/PlacementCanvas.js";
-import { ModePicker } from "../components/ModePicker.js";
-import {
-  GenerationPreview,
-  type JobRequest,
-} from "../components/GenerationPreview.js";
-import { pxPerMmFromSceneWidth } from "../lib/appimageScale.js";
-import { removeBackground } from "../lib/cutout.js";
-import {
-  autoPlaceForMount,
-  expandArray,
-  hasUsableDimension,
-  looksOpaque,
-  newFixtureFromProduct,
-  seedSceneWidthMm,
-  type FixtureDraft,
-} from "../lib/appimageDraft.js";
+import { apiBlob } from "../lib/api.js";
+import { createJob, pollJob, type JobResponse } from "../lib/jobs.js";
+import { formatDimensions } from "../lib/products.js";
 
 /**
- * Application Image Generator (Phase 2e). Pick fixtures, drop them into an
- * uploaded scene at a computed scale, adjust placement, choose a mode
- * (composite / hybrid / concept), then generate → preview → save. Assembles the
- * canonical AppImageParams and submits via the async job pipeline.
+ * Image Generator — the fast 2D path, shaped like the 3D App-Shot flow:
+ * optionally pick a fixture, describe the room, and AI generates the room
+ * featuring that fixture (via reference-image conditioning). No fixture
+ * selected → it just generates the room. Outputs save to Final Images
+ * automatically and can be downloaded in their native format.
+ *
+ * This is the "concept" pipeline: fast and flexible, but not guaranteed
+ * product-accurate — for exact fixtures at exact scale, use the 3D App-Shot.
  */
+
+type OutputFormat = "png" | "jpeg";
+
 export function AppImage() {
-  const [mode, setMode] = useState<AppImageMode>("hybrid");
-  const [scene, setScene] = useState<SceneSelection | null>(null);
-  const [sceneWidthMm, setSceneWidthMm] = useState(3048);
-  const [scaleAdjust, setScaleAdjust] = useState(1);
-  const [fixtures, setFixtures] = useState<FixtureDraft[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [fixture, setFixture] = useState<Product | null>(null);
   const [prompt, setPrompt] = useState("");
-  const [harmonizeStrength, setHarmonizeStrength] = useState(0.7);
-  const [harmonizeShadowPx, setHarmonizeShadowPx] = useState(0);
-  const [aiRelight, setAiRelight] = useState(false);
-  const [lightsOn, setLightsOn] = useState(false);
-  const [referenceImages, setReferenceImages] = useState<string[]>([]);
-  const [outputFormat, setOutputFormat] = useState<"png" | "jpeg">("png");
+  const [format, setFormat] = useState<OutputFormat>("png");
   const [name, setName] = useState("");
-  const [roomType, setRoomType] = useState("");
-  const [pickerOpen, setPickerOpen] = useState(false);
-  // Source image URLs currently having their background removed.
-  const [mattingUrls, setMattingUrls] = useState<Set<string>>(new Set());
-  const [matteError, setMatteError] = useState<string | null>(null);
 
-  const isComposite = mode === "composite" || mode === "hybrid";
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [job, setJob] = useState<JobResponse | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const previewRef = useRef<string | null>(null);
 
-  const pxPerMm = useMemo(
-    () =>
-      scene ? pxPerMmFromSceneWidth(scene.naturalWidth, sceneWidthMm) : null,
-    [scene, sceneWidthMm],
+  useEffect(
+    () => () => {
+      if (previewRef.current) URL.revokeObjectURL(previewRef.current);
+    },
+    [],
   );
 
-  // The "hero" fixture drives fixture-aware scene gen + auto-placement: the
-  // selected one, else the first placed.
-  const hero = fixtures.find((f) => f.id === selectedId) ?? fixtures[0] ?? null;
-
-  /** Seed a sane starting scale from the hero fixture for generated scenes. */
-  function maybeSeedScale(next: SceneSelection | null, heroFixture: FixtureDraft | null) {
-    if (!next?.generated || !heroFixture) return;
-    const mm = seedSceneWidthMm(heroFixture);
-    if (mm) setSceneWidthMm(mm);
+  function buildPrompt(): string {
+    const base = prompt.trim();
+    if (!fixture) return base;
+    const dims = formatDimensions(fixture.dimensions_mm);
+    return [
+      base,
+      `Feature this exact lighting fixture, matching the reference image closely: ${fixture.name}${fixture.brand ? ` by ${fixture.brand}` : ""}${dims ? ` (approx. ${dims})` : ""}. Keep its shape, finish, and proportions accurate, integrated naturally into the room's lighting.`,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
   }
 
-  function handleSceneChange(next: SceneSelection | null) {
-    setScene(next);
-    maybeSeedScale(next, hero);
-  }
-
-  function addFixture(product: Product) {
-    const draft = newFixtureFromProduct(product);
-    setFixtures((prev) => [...prev, draft]);
-    setSelectedId(draft.id);
-    setPickerOpen(false);
-    // First fixture dropped onto a generated scene: seed a starting scale.
-    if (fixtures.length === 0) maybeSeedScale(scene, draft);
-    // Remove the background up front so placement shows the real cutout.
-    if (draft.sourceImageUrl) void runMatte(draft.sourceImageUrl);
-  }
-
-  /**
-   * Remove a source image's background and store the transparent PNG as the
-   * cutout for every fixture using that image. Cached server-side, so picking
-   * the same image again (or an array copy) is instant.
-   */
-  async function runMatte(sourceUrl: string) {
-    setMatteError(null);
-    setMattingUrls((prev) => new Set(prev).add(sourceUrl));
+  async function generate() {
+    if (!prompt.trim()) {
+      setErr("Describe the room you want to generate.");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setJob(null);
+    setPreviewUrl(null);
+    setStatus("Queued…");
     try {
-      const { url } = await removeBackground(sourceUrl);
-      setFixtures((prev) =>
-        prev.map((f) =>
-          f.sourceImageUrl === sourceUrl ? { ...f, cutoutUrl: url } : f,
-        ),
-      );
-    } catch (e) {
-      setMatteError(
-        e instanceof Error ? e.message : "Background removal failed.",
-      );
-    } finally {
-      setMattingUrls((prev) => {
-        const next = new Set(prev);
-        next.delete(sourceUrl);
-        return next;
-      });
-    }
-  }
-
-  /** Switch the selected fixture's source image and re-run background removal. */
-  function changeFixtureImage(id: string, sourceUrl: string) {
-    changeFixture(id, { sourceImageUrl: sourceUrl, cutoutUrl: "" });
-    void runMatte(sourceUrl);
-  }
-
-  /** Override the hero fixture's mount and re-run its auto-placement. */
-  function changeMount(mount: FixtureMount) {
-    if (!hero) return;
-    changeFixture(hero.id, { mount, ...autoPlaceForMount(mount) });
-  }
-
-  function changeFixture(id: string, patch: Partial<FixtureDraft>) {
-    setFixtures((prev) =>
-      prev.map((f) => (f.id === id ? { ...f, ...patch } : f)),
-    );
-  }
-
-  function removeFixture(id: string) {
-    setFixtures((prev) => prev.filter((f) => f.id !== id));
-    setSelectedId((cur) => (cur === id ? null : cur));
-  }
-
-  function addArray(baseId: string, count: number, spacingPct: number) {
-    setFixtures((prev) => {
-      const base = prev.find((f) => f.id === baseId);
-      if (!base) return prev;
-      const expanded = expandArray(base, count, spacingPct);
-      const out = prev.flatMap((f) => (f.id === baseId ? expanded : [f]));
-      return out;
-    });
-  }
-
-  function buildRequest(): JobRequest | { error: string } {
-    const params: Record<string, unknown> = {
-      version: APPIMAGE_PARAMS_VERSION,
-      mode,
-      output: { format: outputFormat },
-    };
-
-    const tags = new Set<string>();
-    if (roomType.trim()) tags.add(`room:${roomType.trim().toLowerCase()}`);
-
-    if (mode === "concept") {
-      if (!prompt.trim()) return { error: "Concept mode needs a prompt." };
-      params.prompt = prompt.trim();
-      params.referenceImages = referenceImages;
-      return { params, tags: [...tags] };
-    }
-
-    // composite | hybrid
-    if (!scene) return { error: "Upload a scene image first." };
-    if (!pxPerMm) {
-      return { error: "Set the scene's real-world width to compute scale." };
-    }
-    if (fixtures.length === 0) return { error: "Add at least one fixture." };
-    for (const f of fixtures) {
-      if (!f.cutoutUrl) {
-        return { error: `Fixture ${f.sku} has no cutout image selected.` };
-      }
-      if (!hasUsableDimension(f.dimensionsMm)) {
-        return {
-          error: `Fixture ${f.sku} has no usable dimensions (width/height/diameter/length).`,
-        };
-      }
-      tags.add(`sku:${f.sku}`);
-    }
-
-    params.sceneUrl = scene.url;
-    params.scale = { pxPerMm, scaleAdjust };
-    params.fixtures = fixtures.map((f) => ({
-      cutoutUrl: f.cutoutUrl,
-      dimensionsMm: f.dimensionsMm,
-      anchor: f.anchor,
-      xPct: f.xPct,
-      yPct: f.yPct,
-      widthBasis: f.widthBasis,
-      ...(f.perspective ? { perspective: f.perspective } : {}),
-    }));
-    if (mode === "hybrid") {
-      if (prompt.trim()) params.prompt = prompt.trim();
-      params.harmonize = {
-        enabled: true,
-        strength: harmonizeStrength,
-        shadowPx: harmonizeShadowPx,
-        aiRelight: aiRelight || lightsOn,
-        lightsOn,
+      const referenceImages = fixture?.primary_image_url
+        ? [fixture.primary_image_url]
+        : [];
+      const params = {
+        version: APPIMAGE_PARAMS_VERSION,
+        mode: "concept",
+        prompt: buildPrompt(),
+        referenceImages,
+        output: { format },
       };
+      const tags = ["concept", ...(fixture ? [`sku:${fixture.sku}`] : [])];
+      const jobName =
+        name.trim() ||
+        (fixture ? `${fixture.name} concept room` : "Concept room");
+      const { jobId } = await createJob("appimage", jobName, params, tags);
+      setStatus("Generating…");
+      const finished = await pollJob(jobId);
+      setJob(finished);
+      if (finished.status !== "succeeded") {
+        setErr(finished.error ?? "Generation failed.");
+        setStatus(null);
+        return;
+      }
+      setStatus(null);
+      if (finished.assetId) {
+        const blob = await apiBlob(
+          `/api/assets/${finished.assetId}/files/${format}`,
+        );
+        const url = URL.createObjectURL(blob);
+        if (previewRef.current) URL.revokeObjectURL(previewRef.current);
+        previewRef.current = url;
+        setPreviewUrl(url);
+      }
+    } catch (e) {
+      setErr(formatErr(e));
+      setStatus(null);
+    } finally {
+      setBusy(false);
     }
+  }
 
-    return { params, tags: [...tags] };
+  async function download() {
+    if (!job?.assetId) return;
+    try {
+      const blob = await apiBlob(`/api/assets/${job.assetId}/files/${format}`);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${(name.trim() || fixture?.name || "concept-room").replace(/[^\w-]+/g, "-")}.${format}`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setErr(formatErr(e));
+    }
   }
 
   return (
@@ -210,134 +126,103 @@ export function AppImage() {
       <div>
         <h2>Image Generator</h2>
         <div className="muted">
-          Place real WAC fixtures into a room, sized to scale from Sales Layer
-          dimensions. Pick a fixture, set the scene, place and adjust it, then
-          generate and save to the library.
+          Pick a fixture (optional), describe the room, and AI generates the
+          scene — featuring your fixture when one is selected. Results save to{" "}
+          <Link to="/final-images">Final Images</Link> automatically. For
+          dimension-accurate renders of the actual product, use the 3D
+          App-Shot.
         </div>
       </div>
 
-      {isComposite && (
-        <>
-          <Step n={1} title="Choose your fixture(s)">
-            <div className="card col" style={{ gap: 12 }}>
-              <div className="row" style={{ justifyContent: "space-between" }}>
-                <div className="muted">
-                  {fixtures.length === 0
-                    ? "Start by picking the hero fixture you want to showcase."
-                    : `${fixtures.length} added. The selected one drives the scene + auto-placement.`}
-                </div>
-                <button onClick={() => setPickerOpen(true)}>Add fixture</button>
-              </div>
-              {fixtures.length > 0 && (
-                <div className="row" style={{ flexWrap: "wrap", gap: 6 }}>
-                  {fixtures.map((f) => (
-                    <button
-                      key={f.id}
-                      type="button"
-                      className={
-                        "tag" + (f.id === selectedId ? " tag-selected" : "")
-                      }
-                      onClick={() => setSelectedId(f.id)}
-                    >
-                      {f.sku}
-                    </button>
-                  ))}
-                </div>
-              )}
+      {err && <div className="alert error">{err}</div>}
 
-              {hero && (
-                <FixtureImagePicker
-                  fixture={hero}
-                  matting={mattingUrls.has(hero.sourceImageUrl)}
-                  error={matteError}
-                  onPick={(url) => changeFixtureImage(hero.id, url)}
-                  onRetry={() => runMatte(hero.sourceImageUrl)}
-                />
-              )}
-            </div>
-          </Step>
-
-          <Step n={2} title="Set the scene">
-            <SceneInput
-              scene={scene}
-              sceneWidthMm={sceneWidthMm}
-              onSceneChange={handleSceneChange}
-              onWidthMmChange={setSceneWidthMm}
-              fixtureType={hero?.fixtureType}
-              mount={hero?.mount}
-              onMountChange={changeMount}
-            />
-          </Step>
-
-          {scene && (
-            <Step n={3} title="Place, scale & adjust perspective">
-              <PlacementCanvas
-                scene={scene}
-                pxPerMm={pxPerMm}
-                scaleAdjust={scaleAdjust}
-                onScaleAdjustChange={setScaleAdjust}
-                fixtures={fixtures}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                onChangeFixture={changeFixture}
-                onRemoveFixture={removeFixture}
-                onAddArray={addArray}
-              />
-            </Step>
+      <div className="grid-2" style={{ gap: 16, alignItems: "start" }}>
+      <div className="card col" style={{ gap: 10 }}>
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <h3 style={{ margin: 0 }}>1 · Fixture (optional)</h3>
+          {fixture && (
+            <button className="secondary" onClick={() => setFixture(null)}>
+              Clear fixture
+            </button>
           )}
-        </>
-      )}
+        </div>
+        {fixture ? (
+          <div className="row" style={{ gap: 12, alignItems: "center" }}>
+            {fixture.primary_image_url && (
+              <img
+                src={fixture.primary_image_url}
+                alt={fixture.name}
+                style={{ width: 72, height: 72, objectFit: "contain", background: "#fff", borderRadius: 6 }}
+              />
+            )}
+            <div>
+              <strong>{fixture.name}</strong>
+              <div className="muted" style={{ fontSize: 12 }}>
+                {[fixture.brand, formatDimensions(fixture.dimensions_mm)]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </div>
+              <div className="muted" style={{ fontSize: 12 }}>
+                The AI uses this product's catalog image as a visual reference.
+              </div>
+            </div>
+          </div>
+        ) : (
+          <ProductPicker onSelect={setFixture} selectedSku={null} />
+        )}
+      </div>
 
-      <Step
-        n={isComposite ? 4 : 1}
-        title={isComposite ? "Finishing & output" : "Concept generation"}
-      >
-        <ModePicker
-          mode={mode}
-          onModeChange={setMode}
-          prompt={prompt}
-          onPromptChange={setPrompt}
-          harmonizeStrength={harmonizeStrength}
-          onHarmonizeStrengthChange={setHarmonizeStrength}
-          harmonizeShadowPx={harmonizeShadowPx}
-          onHarmonizeShadowPxChange={setHarmonizeShadowPx}
-          aiRelight={aiRelight}
-          onAiRelightChange={setAiRelight}
-          lightsOn={lightsOn}
-          onLightsOnChange={setLightsOn}
-          referenceImages={referenceImages}
-          onReferenceImagesChange={setReferenceImages}
-          outputFormat={outputFormat}
-          onOutputFormatChange={setOutputFormat}
+      <div className="card col" style={{ gap: 10 }}>
+        <h3 style={{ margin: 0 }}>2 · Describe the room</h3>
+        <textarea
+          rows={4}
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="e.g. A warm modern living room at dusk, double-height ceiling, walnut paneling, large windows with city views…"
         />
-      </Step>
+        <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+          <input
+            placeholder="Name (optional — used for the saved image)"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            style={{ flex: 1, minWidth: 220 }}
+          />
+          <select value={format} onChange={(e) => setFormat(e.target.value as OutputFormat)}>
+            <option value="png">PNG</option>
+            <option value="jpeg">JPEG</option>
+          </select>
+          <button onClick={() => void generate()} disabled={busy}>
+            {busy ? <span className="spinner" /> : null}
+            {busy ? status ?? "Generating…" : "Generate"}
+          </button>
+        </div>
+      </div>
+      </div>
 
-      <Step n={isComposite ? 5 : 2} title="Generate & save">
-        <GenerationPreview
-          name={name}
-          onNameChange={setName}
-          roomType={roomType}
-          onRoomTypeChange={setRoomType}
-          buildRequest={buildRequest}
-        />
-      </Step>
-
-      {pickerOpen && (
-        <div className="modal-overlay" onClick={() => setPickerOpen(false)}>
-          <div
-            className="modal"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <h3 style={{ margin: 0 }}>Pick a fixture</h3>
-              <button
-                className="secondary"
-                onClick={() => setPickerOpen(false)}
-              >
-                Close
+      {previewUrl && job?.assetId && (
+        <div className="card col" style={{ gap: 10 }}>
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <h3 style={{ margin: 0 }}>Result</h3>
+            <div className="row" style={{ gap: 8 }}>
+              <button onClick={() => void download()}>
+                Download {format.toUpperCase()}
+              </button>
+              <Link to="/final-images">
+                <button className="secondary">Open Final Images</button>
+              </Link>
+              <button className="secondary" onClick={() => void generate()} disabled={busy}>
+                Regenerate
               </button>
             </div>
-            <ProductPicker onSelect={addFixture} />
+          </div>
+          <img
+            src={previewUrl}
+            alt="Generated room"
+            style={{ maxWidth: "100%", borderRadius: "var(--radius)" }}
+          />
+          <div className="muted" style={{ fontSize: 12 }}>
+            Saved to Final Images{fixture ? ` (tagged sku:${fixture.sku})` : ""}.
+            Concept images are AI-generated and not guaranteed product-accurate.
           </div>
         </div>
       )}
@@ -345,95 +230,9 @@ export function AppImage() {
   );
 }
 
-/**
- * Image chooser for the hero fixture, shown in the fixture step. Picking an
- * option removes its background server-side and previews the transparent cutout
- * (with a spinner while it processes), so placement uses the finished cutout.
- */
-function FixtureImagePicker({
-  fixture,
-  matting,
-  error,
-  onPick,
-  onRetry,
-}: {
-  fixture: FixtureDraft;
-  matting: boolean;
-  error: string | null;
-  onPick: (url: string) => void;
-  onRetry: () => void;
-}) {
-  const ready = Boolean(fixture.cutoutUrl) && !matting;
-  return (
-    <div className="col" style={{ gap: 10, marginTop: 4 }}>
-      <label>Product image — background is removed automatically</label>
-      <div className="row" style={{ gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
-        <div className="fixture-cutout-preview">
-          {matting ? (
-            <div className="muted" style={{ textAlign: "center" }}>
-              <div className="spinner" />
-              Removing background…
-            </div>
-          ) : fixture.cutoutUrl ? (
-            <img src={fixture.cutoutUrl} alt={`${fixture.name} cutout`} />
-          ) : (
-            <div className="muted" style={{ textAlign: "center", padding: 8 }}>
-              {error ? "Couldn't remove background" : "No image"}
-            </div>
-          )}
-        </div>
-        <div className="row" style={{ flexWrap: "wrap", gap: 8, flex: 1 }}>
-          {fixture.imageOptions.map((url) => (
-            <button
-              key={url}
-              type="button"
-              className={
-                "cutout-option" +
-                (url === fixture.sourceImageUrl ? " selected" : "")
-              }
-              onClick={() => onPick(url)}
-              disabled={matting}
-              title={looksOpaque(url) ? "Background will be removed" : url}
-            >
-              <img src={url} alt="" loading="lazy" />
-            </button>
-          ))}
-        </div>
-      </div>
-      {error && !matting ? (
-        <div className="alert alert-error">
-          {error}{" "}
-          <button className="link-button" type="button" onClick={onRetry}>
-            Retry
-          </button>
-        </div>
-      ) : null}
-      {!ready && !matting && !error ? (
-        <div className="muted" style={{ fontSize: 12 }}>
-          Pick the product image you want to place.
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/** A numbered step wrapper for the guided generation flow. */
-function Step({
-  n,
-  title,
-  children,
-}: {
-  n: number;
-  title: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="col" style={{ gap: 10 }}>
-      <div className="row" style={{ gap: 10, alignItems: "center" }}>
-        <span className="step-badge">{n}</span>
-        <h3 style={{ margin: 0 }}>{title}</h3>
-      </div>
-      {children}
-    </div>
-  );
+function formatErr(e: unknown): string {
+  if (typeof e === "object" && e && "error" in e) {
+    return String((e as { error: unknown }).error);
+  }
+  return e instanceof Error ? e.message : String(e);
 }

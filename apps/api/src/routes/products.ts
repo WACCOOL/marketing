@@ -10,12 +10,16 @@ export const productRoutes = new Hono<AppBindings>();
 // Columns returned to the client. raw_json is intentionally excluded — it can be
 // large and is only needed server-side by later generation phases.
 const PRODUCT_COLS =
-  "id, sku, name, brand, category, dimensions_mm, primary_image_url, image_urls, ies_url, variants, synced_at";
+  "id, sku, name, brand, category, family, is_accessory, dimensions_mm, primary_image_url, image_urls, ies_url, variants, synced_at";
 
 const ListQuerySchema = z.object({
   q: z.string().trim().optional(),
   brand: z.string().trim().optional(),
   category: z.string().trim().optional(),
+  // family browse: family=<name> scopes to one family; family=__none returns
+  // products without a family. accessories=hide filters connector/channel/etc.
+  family: z.string().trim().optional(),
+  accessories: z.enum(["hide", "include"]).default("include"),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -27,7 +31,7 @@ productRoutes.get("/", requireAuth, async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid query", issues: parsed.error.issues }, 400);
   }
-  const { q, brand, category, limit, offset } = parsed.data;
+  const { q, brand, category, family, accessories, limit, offset } = parsed.data;
 
   const sb = userSupabase(c.env, c.get("jwt"));
   let query = sb
@@ -38,6 +42,9 @@ productRoutes.get("/", requireAuth, async (c) => {
 
   if (category) query = query.eq("category", category);
   if (brand) query = query.eq("brand", brand);
+  if (family === "__none") query = query.is("family", null);
+  else if (family) query = query.eq("family", family);
+  if (accessories === "hide") query = query.eq("is_accessory", false);
   if (q) {
     // Partial match on product name/brand/SKU and any variant model number/finish
     // (variant_search). Strip PostgREST `or` control characters so user input
@@ -53,6 +60,50 @@ productRoutes.get("/", requireAuth, async (c) => {
   const { data, error, count } = await query;
   if (error) return c.json({ error: error.message }, 500);
   return c.json({ products: data ?? [], total: count ?? 0 });
+});
+
+// Family browse facet: distinct families with counts (catalog-wide, all
+// active users — unlike the Product Info families endpoint this includes a
+// "no family" bucket so every product stays reachable).
+productRoutes.get("/families", requireAuth, async (c) => {
+  const url = new URL(c.req.url);
+  const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
+  const hideAccessories = url.searchParams.get("accessories") !== "include";
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const counts = new Map<string, { count: number; brands: Set<string>; image: string | null }>();
+  let noFamily = 0;
+  for (let offset = 0; ; offset += 1000) {
+    let pq = sb
+      .from("products")
+      .select("family, brand, primary_image_url")
+      .range(offset, offset + 999);
+    if (hideAccessories) pq = pq.eq("is_accessory", false);
+    const { data, error } = await pq;
+    if (error) return c.json({ error: error.message }, 500);
+    const page = (data ?? []) as { family: string | null; brand: string | null; primary_image_url: string | null }[];
+    for (const r of page) {
+      if (!r.family) {
+        noFamily++;
+        continue;
+      }
+      const entry = counts.get(r.family) ?? { count: 0, brands: new Set<string>(), image: null };
+      entry.count++;
+      if (r.brand) entry.brands.add(r.brand);
+      if (!entry.image && r.primary_image_url) entry.image = r.primary_image_url;
+      counts.set(r.family, entry);
+    }
+    if (page.length < 1000) break;
+  }
+  const families = [...counts.entries()]
+    .filter(([name]) => !q || name.toLowerCase().includes(q))
+    .map(([name, v]) => ({
+      family: name,
+      count: v.count,
+      brands: [...v.brands],
+      image: v.image,
+    }))
+    .sort((a, b) => a.family.localeCompare(b.family));
+  return c.json({ families, noFamilyCount: noFamily });
 });
 
 // Distinct brand list for the picker facet. Declared before "/:sku" so it isn't

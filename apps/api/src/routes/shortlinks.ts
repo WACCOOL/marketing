@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import { parseTaggedUrl } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
-import { userSupabase } from "../supabase.js";
+import { emailsForUserIds, userSupabase } from "../supabase.js";
 import {
   applyShortLinkPatch,
   createShortLink,
@@ -239,6 +239,7 @@ shortLinkRoutes.get("/", requireAuth, async (c) => {
     updated_at: string;
   }>;
   const slugs = rows.map((r) => r.slug);
+  const ownerEmails = await emailsForUserIds(c.env, rows.map((r) => r.owner_id));
 
   // Fan out to the linked qr assets (joined by metadata_json->>slug). RLS keeps
   // this scoped to the caller. We hydrate each row with the asset's name,
@@ -289,6 +290,7 @@ shortLinkRoutes.get("/", requireAuth, async (c) => {
       const asset = assetBySlug.get(r.slug);
       return {
         ...r,
+        owner_email: ownerEmails.get(r.owner_id) ?? null,
         shortUrl: shortLinkUrl(c.env, r.slug),
         assetId: asset?.assetId ?? null,
         name: asset?.name ?? null,

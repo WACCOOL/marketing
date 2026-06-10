@@ -1,6 +1,9 @@
-import { type CSSProperties, useEffect, useState } from "react";
+import { type CSSProperties, Fragment, useEffect, useState } from "react";
 import { zipSync } from "fflate";
+import { Link } from "react-router-dom";
+import { PPT_GENERATED_BY } from "@wac/shared";
 import { api, apiBlob } from "../lib/api.js";
+import { useAuth } from "../lib/auth.js";
 
 interface AssetFile {
   format: string;
@@ -10,6 +13,7 @@ interface AssetFile {
 interface Asset {
   id: string;
   owner_id: string;
+  owner_email: string | null;
   tool: string;
   name: string;
   org_visibility: "internal" | "private";
@@ -52,7 +56,48 @@ function sanitizeFilename(s: string): string {
   return cleaned.length > 0 ? cleaned.slice(0, 80) : "asset";
 }
 
+/** Admin view of everything in the library. */
 export function Library() {
+  return (
+    <AssetGallery
+      title="Asset Library"
+      blurb="Every generated asset across all tools, scoped to your visibility. Admin view."
+    />
+  );
+}
+
+/** Where an asset's "Edit" link should reopen (3D renders and PPT decks). */
+function editHref(a: Asset): string | null {
+  const meta = a.metadata_json as { jobId?: unknown; generatedBy?: unknown };
+  const jobId = meta?.jobId;
+  if (typeof jobId !== "string") return null;
+  if (meta.generatedBy === PPT_GENERATED_BY) {
+    return `/ppt/builder?restore=${encodeURIComponent(jobId)}`;
+  }
+  if (!a.tags.includes("shot3d")) return null;
+  const editor = a.tags.includes("editor:camsolve") ? "/cam-solve" : "/app-shot";
+  return `${editor}?restore=${encodeURIComponent(jobId)}`;
+}
+
+/**
+ * PPT decks only: "Clone" opens the deck unlinked from its asset, so the next
+ * export creates a new library entry (Edit overwrites, Clone duplicates).
+ */
+function cloneHref(a: Asset): string | null {
+  const meta = a.metadata_json as { jobId?: unknown; generatedBy?: unknown };
+  if (typeof meta?.jobId !== "string" || meta.generatedBy !== PPT_GENERATED_BY) {
+    return null;
+  }
+  return `/ppt/builder?clone=${encodeURIComponent(meta.jobId)}`;
+}
+
+export function AssetGallery(props: {
+  title: string;
+  blurb: string;
+  /** Fix the gallery to one tool (hides the tool dropdown). */
+  tool?: string;
+}) {
+  const { user } = useAuth();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [q, setQ] = useState("");
   const [tool, setTool] = useState("");
@@ -60,6 +105,7 @@ export function Library() {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [shareOpen, setShareOpen] = useState<string | null>(null);
 
   async function load(opts: { spinner?: boolean } = {}) {
     if (opts.spinner) setLoading(true);
@@ -67,7 +113,8 @@ export function Library() {
     try {
       const params = new URLSearchParams();
       if (q) params.set("q", q);
-      if (tool) params.set("tool", tool);
+      if (props.tool) params.set("tool", props.tool);
+      else if (tool) params.set("tool", tool);
       const assetsRes = await api<{ assets: Asset[] }>(
         "/api/assets" + (params.toString() ? "?" + params.toString() : ""),
       );
@@ -169,10 +216,19 @@ export function Library() {
 
   async function deleteSelected() {
     if (selected.size === 0) return;
-    const n = selected.size;
+    const isAdmin = user?.role === "admin";
+    const deletable = assets.filter(
+      (a) => selected.has(a.id) && (isAdmin || a.owner_id === user?.id),
+    );
+    const skipped = selected.size - deletable.length;
+    if (deletable.length === 0) {
+      setErr("You can only delete assets you created (admins can delete any).");
+      return;
+    }
+    const n = deletable.length;
     if (
       !confirm(
-        `Delete ${n} asset${n === 1 ? "" : "s"}? This permanently removes ${n === 1 ? "its" : "their"} stored files and cannot be undone.`,
+        `Delete ${n} asset${n === 1 ? "" : "s"}?${skipped > 0 ? ` (${skipped} skipped — created by someone else.)` : ""} This permanently removes ${n === 1 ? "its" : "their"} stored files and cannot be undone.`,
       )
     ) {
       return;
@@ -186,7 +242,7 @@ export function Library() {
         results: { id: string; ok: boolean; error?: string }[];
       }>("/api/assets/bulk-delete", {
         method: "POST",
-        body: JSON.stringify({ ids: [...selected] }),
+        body: JSON.stringify({ ids: deletable.map((a) => a.id) }),
       });
       if (res.errorCount > 0) {
         const firstErr = res.results.find((r) => !r.ok);
@@ -206,12 +262,8 @@ export function Library() {
   return (
     <div className="col" style={{ gap: 20 }}>
       <div>
-        <h2>Asset Library</h2>
-        <div className="muted">
-          Every generated UTM / short link / QR is saved here, scoped to your
-          visibility (internal users see all internal assets; reps see their
-          own + explicit shares).
-        </div>
+        <h2>{props.title}</h2>
+        <div className="muted">{props.blurb}</div>
       </div>
       <div className="card row">
         <input
@@ -222,14 +274,16 @@ export function Library() {
             if (e.key === "Enter") void load({ spinner: true });
           }}
         />
-        <select value={tool} onChange={(e) => setTool(e.target.value)}>
-          <option value="">All tools</option>
-          <option value="qr">QR</option>
-          <option value="utm">UTM batch</option>
-          <option value="appimage">App image</option>
-          <option value="ppt">PPT</option>
-          <option value="layout">Layout</option>
-        </select>
+        {!props.tool && (
+          <select value={tool} onChange={(e) => setTool(e.target.value)}>
+            <option value="">All tools</option>
+            <option value="qr">QR</option>
+            <option value="utm">UTM batch</option>
+            <option value="appimage">App image</option>
+            <option value="ppt">PPT</option>
+            <option value="layout">Layout</option>
+          </select>
+        )}
         <button onClick={() => void load({ spinner: true })} disabled={loading}>
           {loading ? <span className="spinner" /> : null}
           Search
@@ -289,55 +343,97 @@ export function Library() {
               <th>Tags</th>
               <th>Files</th>
               <th>Created</th>
+              <th>Created by</th>
+              <th />
             </tr>
           </thead>
           <tbody>
-            {assets.map((a) => (
-              <tr key={a.id}>
-                <td>
-                  <input
-                    type="checkbox"
-                    checked={selected.has(a.id)}
-                    onChange={() => toggleSelected(a.id)}
-                    style={{ width: "auto" }}
-                    aria-label={`Select ${a.name || a.id}`}
-                  />
-                </td>
-                <td>
-                  <AssetThumbnail asset={a} />
-                </td>
-                <td>{a.name}</td>
-                <td>{a.tool}</td>
-                <td>
-                  {a.tags.map((t) => (
-                    <span key={t} className="tag">
-                      {t}
-                    </span>
-                  ))}
-                </td>
-                <td>
-                  {a.asset_files.map((f) => (
-                    <a
-                      key={f.format}
-                      href={`/api/assets/${a.id}/files/${f.format}`}
-                      style={{ marginRight: 8 }}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        void download(a, f.format);
-                      }}
-                    >
-                      {f.format}
-                    </a>
-                  ))}
-                </td>
-                <td className="muted" style={{ fontSize: 12 }}>
-                  {new Date(a.created_at).toLocaleString()}
-                </td>
-              </tr>
-            ))}
+            {assets.map((a) => {
+              // Only the owner (or an admin) can manage shares — matches the
+              // asset_shares RLS write policy.
+              const canShare = user && (a.owner_id === user.id || user.role === "admin");
+              return (
+                <Fragment key={a.id}>
+                  <tr>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={selected.has(a.id)}
+                        onChange={() => toggleSelected(a.id)}
+                        style={{ width: "auto" }}
+                        aria-label={`Select ${a.name || a.id}`}
+                      />
+                    </td>
+                    <td>
+                      <AssetThumbnail asset={a} />
+                    </td>
+                    <td>{a.name}</td>
+                    <td>{a.tool}</td>
+                    <td>
+                      {a.tags.map((t) => (
+                        <span key={t} className="tag">
+                          {t}
+                        </span>
+                      ))}
+                    </td>
+                    <td>
+                      {a.asset_files.map((f) => (
+                        <a
+                          key={f.format}
+                          href={`/api/assets/${a.id}/files/${f.format}`}
+                          style={{ marginRight: 8 }}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            void download(a, f.format);
+                          }}
+                        >
+                          {f.format}
+                        </a>
+                      ))}
+                    </td>
+                    <td className="muted" style={{ fontSize: 12 }}>
+                      {new Date(a.created_at).toLocaleString()}
+                    </td>
+                    <td className="muted" style={{ fontSize: 12 }}>
+                      {a.owner_email ?? "—"}
+                      {user && a.owner_id === user.id ? " (you)" : ""}
+                    </td>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      {editHref(a) && (
+                        <Link to={editHref(a)!} style={{ marginRight: 8 }}>
+                          <button className="secondary">Edit</button>
+                        </Link>
+                      )}
+                      {cloneHref(a) && (
+                        <Link to={cloneHref(a)!} style={{ marginRight: 8 }}>
+                          <button className="secondary">Clone</button>
+                        </Link>
+                      )}
+                      {canShare && (
+                        <button
+                          className="secondary"
+                          onClick={() =>
+                            setShareOpen(shareOpen === a.id ? null : a.id)
+                          }
+                        >
+                          Share
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {shareOpen === a.id && (
+                    <tr>
+                      <td colSpan={9} style={{ background: "var(--panel)" }}>
+                        <SharePanel assetId={a.id} />
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
             {assets.length === 0 && (
               <tr>
-                <td colSpan={7} className="muted">
+                <td colSpan={9} className="muted">
                   No assets match.
                 </td>
               </tr>
@@ -415,6 +511,112 @@ function AssetThumbnail({ asset }: { asset: Asset }) {
 
   if (!src) return <div style={boxStyle} />;
   return <img src={src} alt={asset.name || "asset"} style={boxStyle} />;
+}
+
+/**
+ * §2 sharing: explicit per-user grants (asset_shares) that make an asset
+ * visible to a rep. Owner/admin only — enforced by RLS, mirrored in the UI.
+ */
+function SharePanel({ assetId }: { assetId: string }) {
+  const [shares, setShares] = useState<
+    { user_id: string; email: string; granted_at: string }[]
+  >([]);
+  const [email, setEmail] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    try {
+      const res = await api<{ shares: typeof shares }>(
+        `/api/assets/${assetId}/shares`,
+      );
+      setShares(res.shares);
+    } catch (e) {
+      setErr(formatErr(e));
+    }
+  }
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assetId]);
+
+  async function add() {
+    const target = email.trim().toLowerCase();
+    if (!target) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      await api(`/api/assets/${assetId}/shares`, {
+        method: "POST",
+        body: JSON.stringify({ email: target }),
+      });
+      setEmail("");
+      await load();
+    } catch (e) {
+      setErr(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(userId: string) {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api(`/api/assets/${assetId}/shares/${userId}`, {
+        method: "DELETE",
+      });
+      await load();
+    } catch (e) {
+      setErr(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="col" style={{ gap: 8, padding: 8 }}>
+      <strong>Shared with</strong>
+      {err && <div className="alert error">{err}</div>}
+      {shares.length === 0 && (
+        <span className="muted">
+          Not shared with anyone. Internal users already see internal assets;
+          shares grant access to specific reps.
+        </span>
+      )}
+      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+        {shares.map((s) => (
+          <span key={s.user_id} className="tag">
+            {s.email}{" "}
+            <a
+              href="#"
+              onClick={(e) => {
+                e.preventDefault();
+                void remove(s.user_id);
+              }}
+              title={`Remove ${s.email}`}
+            >
+              ×
+            </a>
+          </span>
+        ))}
+      </div>
+      <div className="row" style={{ gap: 8 }}>
+        <input
+          placeholder="rep@example.com"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void add();
+          }}
+        />
+        <button onClick={() => void add()} disabled={busy}>
+          {busy ? <span className="spinner" /> : null}
+          Share
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function formatErr(e: unknown): string {

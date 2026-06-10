@@ -40,7 +40,7 @@ pnpm deploy:all   # full deploy incl. Container rebuild (needs Docker + containe
 
 ## Conventions & gotchas
 
-- Pure logic with tests goes in `packages/shared` (UTM, slug, bulk, social, fixture, appimage). Co-locate `*.test.ts`.
+- Pure logic with tests goes in `packages/shared` (UTM, slug, bulk, social, fixture, appimage, productinfo). Co-locate `*.test.ts`.
 - The SPA is served *by* the API Worker, so a web change still deploys through `apps/api`.
 - Container rebuilds are slow and gated on the Workers Paid plan + `Cloudflare Containers: Edit` token. Default to `pnpm deploy:web`; rebuild the Container with `pnpm deploy:all` when `apps/generator` changes. CI (`deploy.yml`) ships Worker+assets on every push to `main` but NEVER the Container (`--containers-rollout none`) — so a generator change is live ONLY after `pnpm deploy:all` (or the manual workflow: `gh workflow run deploy.yml -f include_container=true`).
 - After a Container deploy, the warm container pool keeps serving the OLD image until each instance idles out and cold-restarts (`sleepAfter` in `apps/api/src/container.ts`, default `10m`). So prod can run stale generator code for ~10 min of idle — or indefinitely under steady traffic that keeps the pool warm. A new image is NOT live just because `wrangler deploy` succeeded. **`pnpm deploy:container`** ([`scripts/deploy-container.sh`](scripts/deploy-container.sh)) automates the whole thing: full deploy, then briefly drop `sleepAfter` + redeploy so the pool cycles onto the new image, then restore it — run it during a quiet window. (Manual equivalent: lower `sleepAfter` → `pnpm deploy:web` → wait → restore → redeploy.) Verify by hitting a route only the new build has (a stale Container returns `{"error":"not found"}` from its catch-all).

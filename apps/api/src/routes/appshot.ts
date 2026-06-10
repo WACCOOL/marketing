@@ -814,6 +814,7 @@ appShotRoutes.post("/finalize", requireAuth, async (c) => {
       // `standard`, which keeps the previous "high quality" behavior).
       renderStyle: parsed.data.renderStyle,
       renderQuality: parsed.data.renderQuality,
+      editor: parsed.data.editor ?? "appshot",
     },
   };
 
@@ -822,7 +823,11 @@ appShotRoutes.post("/finalize", requireAuth, async (c) => {
     tool: "appimage",
     name: parsed.data.name ?? `${parsed.data.sku} app shot`,
     params,
-    tags: [`sku:${parsed.data.sku}`, "shot3d"],
+    tags: [
+      `sku:${parsed.data.sku}`,
+      "shot3d",
+      `editor:${parsed.data.editor ?? "appshot"}`,
+    ],
   });
   if (!res.ok) return c.json({ error: res.error }, 500);
 

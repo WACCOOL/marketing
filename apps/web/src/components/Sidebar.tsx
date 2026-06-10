@@ -4,17 +4,27 @@ import {
   Aperture,
   Box,
   ChevronLeft,
+  FileText,
+  Files,
+  FileUp,
   FolderOpen,
   ImageIcon,
+  ImagePlay,
+  LayoutTemplate,
   Link2,
   ListChecks,
   Minus,
   Moon,
   Package,
   PanelLeft,
+  PenLine,
   Plus,
+  Presentation,
   QrCode,
+  Ruler,
+  Search,
   Share2,
+  ShieldCheck,
   Sun,
   Upload,
   type LucideIcon,
@@ -60,11 +70,35 @@ const NAV: NavEntry[] = [
       { to: "/app-shot", label: "3D App-Shot", icon: Box },
       { to: "/cam-solve", label: "Cam Solve", icon: Aperture },
       { to: "/app-image", label: "Image Generator", icon: ImageIcon },
+      { to: "/render-queue", label: "Render Queue", icon: ListChecks },
+      { to: "/final-images", label: "Final Images", icon: ImagePlay },
     ],
   },
-  { to: "/render-queue", label: "Render Queue", icon: ListChecks },
+  {
+    label: "PPT Generator",
+    icon: Presentation,
+    children: [
+      { to: "/ppt/builder", label: "Deck Builder", icon: LayoutTemplate },
+      { to: "/ppt/decks", label: "My Decks", icon: Files },
+      { to: "/ppt/templates", label: "Templates", icon: FileUp },
+    ],
+  },
+  {
+    label: "Product Info",
+    icon: FileText,
+    children: [
+      { to: "/products", label: "Products", icon: Package },
+      { to: "/product-info/romance", label: "Romance Copy", icon: PenLine },
+      { to: "/product-info/seo", label: "SEO", icon: Search },
+      { to: "/product-info/normalization", label: "Data Normalization", icon: Ruler },
+    ],
+  },
+];
+
+// Appended for admins only: the cross-tool Asset Library and the Admin page.
+const ADMIN_ENTRIES: NavLeaf[] = [
   { to: "/library", label: "Asset Library", icon: FolderOpen },
-  { to: "/products", label: "Products", icon: Package },
+  { to: "/admin", label: "Admin", icon: ShieldCheck },
 ];
 
 const COLLAPSED_KEY = "wac-sidebar-collapsed";
@@ -84,7 +118,16 @@ function loadExpandedGroups(): Record<string, boolean> {
 }
 
 export function Sidebar() {
-  const { user, signOut } = useAuth();
+  const { user, session, signOut } = useAuth();
+  const meta = (session?.user?.user_metadata ?? {}) as {
+    avatar_url?: string;
+    picture?: string;
+    full_name?: string;
+    name?: string;
+  };
+  const displayName =
+    meta.full_name ?? meta.name ?? user?.email.split("@")[0] ?? "";
+  const avatarUrl = meta.avatar_url ?? meta.picture ?? null;
   const { theme, toggleTheme } = useTheme();
   const location = useLocation();
 
@@ -93,15 +136,42 @@ export function Sidebar() {
     loadExpandedGroups,
   );
 
+  // Role-scoped nav: Product Info and the PPT Generator are internal-only
+  // workflows, and the Admin page only renders for admins (the API enforces
+  // all of this regardless).
+  const nav = useMemo(() => {
+    let entries = NAV;
+    if (user?.role === "rep") {
+      // Reps keep the catalog but not the internal content workflows.
+      entries = entries.flatMap((e) => {
+        if (e.label === "PPT Generator") return [];
+        if (e.label === "Product Info") {
+          return [{ to: "/products", label: "Products", icon: Package } as NavLeaf];
+        }
+        return [e];
+      });
+    }
+    if (user?.role !== "admin") {
+      // Template management is admin-only.
+      entries = entries.map((e) =>
+        isParent(e) && e.label === "PPT Generator"
+          ? { ...e, children: e.children.filter((c) => c.to !== "/ppt/templates") }
+          : e,
+      );
+    }
+    if (user?.role === "admin") entries = [...entries, ...ADMIN_ENTRIES];
+    return entries;
+  }, [user?.role]);
+
   // Which parent (if any) owns the active route, so we can auto-expand it.
   const activeParent = useMemo(() => {
-    for (const entry of NAV) {
+    for (const entry of nav) {
       if (isParent(entry) && entry.children.some((c) => c.to === location.pathname)) {
         return entry.label;
       }
     }
     return null;
-  }, [location.pathname]);
+  }, [nav, location.pathname]);
 
   useEffect(() => {
     if (activeParent) {
@@ -146,7 +216,7 @@ export function Sidebar() {
       </div>
 
       <nav className="nav">
-        {NAV.map((entry) => {
+        {nav.map((entry) => {
           if (!isParent(entry)) {
             const Icon = entry.icon;
             return (
@@ -223,22 +293,54 @@ export function Sidebar() {
         </button>
 
         {user && (
-          <div className="user">
-            <div className="user-email" title={user.email}>
-              {user.email}
-            </div>
-            <div className="muted user-meta">
-              {user.role}
-              {" · "}
-              <a
-                href="#"
-                onClick={(e) => {
-                  e.preventDefault();
-                  signOut();
+          <div className="user" style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt=""
+                referrerPolicy="no-referrer"
+                style={{ width: 34, height: 34, borderRadius: "50%", flexShrink: 0 }}
+              />
+            ) : (
+              <div
+                aria-hidden
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: "50%",
+                  flexShrink: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "var(--accent)",
+                  color: "#fff",
+                  fontSize: 14,
+                  fontWeight: 600,
                 }}
               >
-                sign out
-              </a>
+                {displayName.slice(0, 1).toUpperCase()}
+              </div>
+            )}
+            <div style={{ minWidth: 0 }}>
+              <div className="user-name" style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={displayName}>
+                {displayName}
+              </div>
+              <div className="user-email muted" style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={user.email}>
+                {user.email}
+              </div>
+              <div className="muted user-meta" style={{ fontSize: 11 }}>
+                {user.role}
+                {" · "}
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    signOut();
+                  }}
+                >
+                  sign out
+                </a>
+              </div>
             </div>
           </div>
         )}

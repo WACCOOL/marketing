@@ -29,11 +29,26 @@ RUN pnpm --filter @wac/generator build
 RUN node -e "const p=require('/repo/apps/generator/package.json'); delete p.devDependencies; require('fs').writeFileSync('/repo/apps/generator/package.runtime.json', JSON.stringify(p))"
 
 # ---- runtime ----------------------------------------------------------------
-FROM node:22-slim AS runtime
+FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
+
+# PPT Generator toolchain (PRD §8): python-pptx fills the template,
+# LibreOffice headless converts to PDF, poppler renders the PNG thumbnail.
+# fonts-liberation gives LibreOffice metric-compatible substitutes for the
+# Office core fonts so PDF text doesn't reflow.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       python3 python3-pip libreoffice-impress poppler-utils \
+       fonts-liberation fontconfig \
+  && rm -rf /var/lib/apt/lists/* \
+  && pip3 install --break-system-packages python-pptx
+
 COPY --from=builder /repo/apps/generator/package.runtime.json ./package.json
 RUN npm install --omit=dev && npm cache clean --force
 COPY --from=builder /repo/apps/generator/dist ./dist
+# python-pptx scripts (introspect.py / build_deck.py); src/ppt.ts resolves them
+# at PPT_SCRIPTS_DIR (default /app/python — WORKDIR above).
+COPY apps/generator/python ./python
 
 EXPOSE 8080
 CMD ["node", "dist/server.js"]

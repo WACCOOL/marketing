@@ -23,6 +23,18 @@ export interface Env {
   // Optional override pinning the exact Sales Layer product field that holds the
   // brand. When unset, the adapter auto-discovers it from common field names.
   SALES_LAYER_BRAND_FIELD?: string;
+  // Phase 2 (Product Information) — optional overrides pinning the exact
+  // raw_json field that holds existing romance copy / the raw CCT value. When
+  // unset, both are auto-discovered from common field names.
+  SALES_LAYER_ROMANCE_FIELD?: string;
+  SALES_LAYER_CCT_FIELD?: string;
+  // Gemini model for Product Information text generation (SEO metadata),
+  // called directly from the Worker (no container). Default: gemini-2.5-flash.
+  GEMINI_TEXT_MODEL?: string;
+  // Gemini model for ROMANCE COPY specifically — quality matters most there,
+  // so it defaults to gemini-3.1-pro-preview (the strongest text model the
+  // key exposes; SEO stays on flash). Override to pin/downgrade.
+  GEMINI_ROMANCE_MODEL?: string;
   SHORT_LINK_HOST: string;
   SHORT_LINKS: KVNamespace;
   ASSETS_BUCKET: R2Bucket;

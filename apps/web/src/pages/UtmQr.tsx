@@ -59,6 +59,7 @@ interface ServerRow {
   slug: string;
   destination_url: string;
   owner_id: string;
+  owner_email: string | null;
   scan_count: number;
   created_at: string;
   updated_at: string;
@@ -810,7 +811,14 @@ export function UtmQr() {
                           }
                         />
                       ) : (
-                        r.name ?? <span className="muted">—</span>
+                        <>
+                          {r.name ?? <span className="muted">—</span>}
+                          {r.owner_email && (
+                            <div className="muted" style={{ fontSize: 11 }}>
+                              by {r.owner_email}
+                            </div>
+                          )}
+                        </>
                       )}
                     </td>
                     <td>

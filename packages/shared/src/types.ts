@@ -114,6 +114,18 @@ export const ProductVariantSchema = z.object({
   name: z.string().nullable().optional(),
   dimensions_mm: DimensionsMmSchema.default({}),
   image_urls: z.array(z.string().url()).default([]),
+  /** Phase 2 normalization sources: SAP-style CCT code (`930`, `CS`), the
+   * human-readable CCT (`3000K`, `1800K-4000K`), beam description, and input
+   * voltage. Present after a re-sync. */
+  cct_code: z.string().nullable().optional(),
+  cct_desc: z.string().nullable().optional(),
+  beam_desc: z.string().nullable().optional(),
+  volt_in: z.string().nullable().optional(),
+  /** Spec fields for SEO structured data (additionalProperty). */
+  cri: z.string().nullable().optional(),
+  watts: z.string().nullable().optional(),
+  lumens: z.string().nullable().optional(),
+  ip_rating: z.string().nullable().optional(),
 });
 export type ProductVariant = z.infer<typeof ProductVariantSchema>;
 
@@ -502,6 +514,8 @@ export const AppShotFinalizeRequestSchema = z.object({
   renderStyle: RenderStyleSchema.optional(),
   /** Quality tier (samples + caustics + resolution). Defaults to standard. */
   renderQuality: RenderQualitySchema.optional(),
+  /** Which editor produced the render — drives the "Edit" restore link. */
+  editor: z.enum(["appshot", "camsolve"]).optional(),
 });
 export type AppShotFinalizeRequest = z.infer<
   typeof AppShotFinalizeRequestSchema

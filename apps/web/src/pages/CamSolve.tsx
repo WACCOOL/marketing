@@ -6,7 +6,7 @@ import type {
   RenderStyle,
 } from "@wac/shared";
 import { uploadImage } from "../lib/uploads.js";
-import { apiBlob } from "../lib/api.js";
+import { api, apiBlob } from "../lib/api.js";
 import {
   cutoutShot,
   finalizeShot,
@@ -129,6 +129,43 @@ function loadPersisted(): Persisted | null {
 
 export function CamSolve() {
   const saved = useRef<Persisted | null>(loadPersisted());
+
+  // "Edit" restore from a finished render (see AppShot for the mechanism).
+  useEffect(() => {
+    const jobId = new URLSearchParams(window.location.search).get("restore");
+    if (!jobId) return;
+    void api<{ params?: { shot?: Record<string, unknown> } }>(
+      `/api/jobs/${jobId}`,
+    ).then((job) => {
+      const shot = job.params?.shot as
+        | {
+            sku?: string;
+            sceneUrl?: string;
+            placement?: AppShotPlacement;
+            renderStyle?: RenderStyle;
+            renderQuality?: RenderQuality;
+          }
+        | undefined;
+      if (!shot?.sku || !shot.sceneUrl) return;
+      const persisted: Persisted = {
+        sku: shot.sku,
+        choice: { kind: "transparent" },
+        aspect: "3:2",
+        renderStyle: shot.renderStyle ?? "clean",
+        renderQuality: shot.renderQuality ?? "standard",
+        sceneUrl: shot.sceneUrl,
+        placement: shot.placement ?? null,
+        cutout: null,
+        glb: null,
+        viewerMode: "viewer",
+        previewUrl: null,
+        finalAssetId: null,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+      window.location.replace("/cam-solve");
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Boot the render worker while the editor is open so the first Test/Final
   // render skips the cold-container boot (kernels are already cached).
@@ -565,6 +602,7 @@ export function CamSolve() {
         name: `${sku} cam solve`,
         renderStyle: effectiveStyle,
         renderQuality,
+        editor: "camsolve",
       });
       setQueuedJobId(jobId);
       setQueued(true);

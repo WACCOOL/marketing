@@ -1,9 +1,13 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { AppImageParamsSchema, GenerationJobRequestSchema } from "@wac/shared";
+import {
+  AppImageParamsSchema,
+  GenerationJobRequestSchema,
+  PptDeckSchema,
+} from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
-import { userSupabase } from "../supabase.js";
+import { emailsForUserIds, userSupabase } from "../supabase.js";
 import {
   createGenerationJob,
   deleteGenerationJob,
@@ -30,9 +34,13 @@ function deriveJobName(row: GenerationJobRow): string {
 }
 
 /** Shape a job row for the client (camelCase, no internal owner_id noise). */
-function toJobResponse(row: GenerationJobRow) {
+function toJobResponse(row: GenerationJobRow, ownerEmail?: string | null) {
   return {
     jobId: row.id,
+    ownerEmail: ownerEmail ?? null,
+    // Exposed so "Edit" can reopen the App-Shot / Cam Solve editor with the
+    // exact fixture/scene/placement that produced the render.
+    params: row.params_json ?? null,
     tool: row.tool,
     name: deriveJobName(row),
     status: row.status,
@@ -67,6 +75,17 @@ jobRoutes.post("/", requireAuth, async (c) => {
     }
     params = appimage.data as Record<string, unknown>;
   }
+  // ppt carries the full deck contract (template + slides, see shared/ppt.ts).
+  if (parsed.data.tool === "ppt") {
+    const deck = PptDeckSchema.safeParse(params);
+    if (!deck.success) {
+      return c.json(
+        { error: "invalid ppt params", issues: deck.error.issues },
+        400,
+      );
+    }
+    params = deck.data as unknown as Record<string, unknown>;
+  }
 
   const user = c.get("user");
   const sb = userSupabase(c.env, c.get("jwt"));
@@ -95,7 +114,10 @@ jobRoutes.get("/:id", requireAuth, async (c) => {
 jobRoutes.get("/", requireAuth, async (c) => {
   const sb = userSupabase(c.env, c.get("jwt"));
   const rows = await listGenerationJobs(sb);
-  return c.json({ jobs: rows.map(toJobResponse) });
+  const emails = await emailsForUserIds(c.env, rows.map((r) => r.owner_id));
+  return c.json({
+    jobs: rows.map((r) => toJobResponse(r, emails.get(r.owner_id))),
+  });
 });
 
 const BulkDeleteSchema = z.object({
