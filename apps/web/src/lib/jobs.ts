@@ -10,6 +10,10 @@ import { api } from "./api.js";
 
 export interface JobResponse {
   jobId: string;
+  ownerEmail: string | null;
+  /** Raw generation params (e.g. shot3d's fixture/scene/placement) so "Edit"
+   * can restore the editor. */
+  params?: Record<string, unknown> | null;
   tool: GenerationTool;
   name: string;
   status: GenerationJobStatus;

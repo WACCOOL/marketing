@@ -7,7 +7,7 @@ import type {
 } from "@wac/shared";
 import { isAllowedImageType, uploadImage } from "../lib/uploads.js";
 import { generateScene } from "../lib/scenes.js";
-import { apiBlob } from "../lib/api.js";
+import { api, apiBlob } from "../lib/api.js";
 import {
   cutoutShot,
   finalizeShot,
@@ -137,6 +137,43 @@ function loadPersisted(): Persisted | null {
 
 export function AppShot() {
   const saved = useRef<Persisted | null>(loadPersisted());
+
+  // "Edit" restore: /app-shot?restore=<jobId> rehydrates the editor with the
+  // fixture/scene/placement that produced a finished render. The job params
+  // are written into the same localStorage snapshot the page already loads
+  // from, then the page reloads once without the query param so every lazy
+  // loader (GLB, cutout) runs its normal hydration path.
+  useEffect(() => {
+    const jobId = new URLSearchParams(window.location.search).get("restore");
+    if (!jobId) return;
+    void api<{ params?: { mode?: string; shot?: Record<string, unknown> } }>(
+      `/api/jobs/${jobId}`,
+    ).then((job) => {
+      const shot = job.params?.shot as
+        | {
+            sku?: string;
+            sceneUrl?: string;
+            placement?: AppShotPlacement;
+            renderQuality?: RenderQuality;
+          }
+        | undefined;
+      if (!shot?.sku || !shot.sceneUrl) return;
+      const persisted: Persisted = {
+        sku: shot.sku,
+        sceneUrl: shot.sceneUrl,
+        placement: shot.placement ?? null,
+        cutout: null,
+        glb: null,
+        viewerMode: "viewer",
+        previewUrl: null,
+        finalAssetId: null,
+        renderQuality: shot.renderQuality ?? "standard",
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));
+      window.location.replace("/app-shot");
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [fixtures, setFixtures] = useState<ShotFixture[]>([]);
   const [fixturesErr, setFixturesErr] = useState<string | null>(null);
@@ -520,6 +557,7 @@ export function AppShot() {
         placement,
         name: `${sku} app shot`,
         renderQuality,
+        editor: "appshot",
       });
       setQueuedJobId(jobId);
       setQueued(true);

@@ -230,6 +230,7 @@ export function RenderQueue() {
               </th>
               <th>Name</th>
               <th>Tool</th>
+              <th>By</th>
               <th>Status</th>
               <th>Queued</th>
               <th />
@@ -253,6 +254,9 @@ export function RenderQueue() {
                 </td>
                 <td>{j.name}</td>
                 <td>{j.tool}</td>
+                <td className="muted" style={{ fontSize: 12 }}>
+                  {j.ownerEmail ?? "—"}
+                </td>
                 <td>
                   <StatusPill status={j.status} error={j.error} />
                   {j.status === "failed" &&
@@ -267,6 +271,11 @@ export function RenderQueue() {
                   {new Date(j.createdAt).toLocaleString()}
                 </td>
                 <td style={{ whiteSpace: "nowrap" }}>
+                  {editHrefForJob(j) && (
+                    <a href={editHrefForJob(j)!} style={{ marginRight: 8 }}>
+                      <button className="secondary">Edit</button>
+                    </a>
+                  )}
                   {isActive(j.status) ? (
                     <button
                       className="secondary"
@@ -295,7 +304,7 @@ export function RenderQueue() {
             ))}
             {jobs.length === 0 && (
               <tr>
-                <td colSpan={6} className="muted" style={{ padding: 16 }}>
+                <td colSpan={7} className="muted" style={{ padding: 16 }}>
                   Nothing in the render queue. Queue a render from the 3D
                   App-Shot, Cam Solve, or Image Generator tools.
                 </td>
@@ -340,6 +349,17 @@ function StatusPill({
       {s.label}
     </span>
   );
+}
+
+/** Reopen a 3D render's editor with its fixture/scene/settings restored. */
+function editHrefForJob(j: {
+  jobId: string;
+  params?: Record<string, unknown> | null;
+}): string | null {
+  const params = j.params as { mode?: string; shot?: { editor?: string } } | null | undefined;
+  if (params?.mode !== "shot3d") return null;
+  const editor = params.shot?.editor === "camsolve" ? "/cam-solve" : "/app-shot";
+  return `${editor}?restore=${encodeURIComponent(j.jobId)}`;
 }
 
 function formatErr(e: unknown): string {

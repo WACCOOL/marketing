@@ -223,6 +223,8 @@ export async function finalizeShot(req: {
   renderStyle?: RenderStyle;
   /** Quality tier (samples + caustics + resolution). */
   renderQuality?: RenderQuality;
+  /** Which editor produced the render — drives the "Edit" restore link. */
+  editor?: "appshot" | "camsolve";
 }): Promise<{ jobId: string; status: string }> {
   return api("/api/appshot/finalize", {
     method: "POST",

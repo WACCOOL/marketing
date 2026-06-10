@@ -64,6 +64,20 @@ interface VariantRow {
   image_urls: string[];
   /** Photometric (.ies) file URL, when the variant carries one. */
   ies_url: string | null;
+  /** Phase 2 normalization sources. `cct_code` is the SAP-style code
+   * (`930`, `27`, `CS`, `TWA`…); `cct_desc` is the human-readable value
+   * (`3000K`, `2700K/3000K`, `1800K-4000K`) that normalization parses.
+   * `beam_desc` (zbeam_descript) and `volt_in` (zvoltin) feed the beam and
+   * input-voltage normalizers. */
+  cct_code: string | null;
+  cct_desc: string | null;
+  beam_desc: string | null;
+  volt_in: string | null;
+  /** Spec fields for SEO structured data (schema.org additionalProperty). */
+  cri: string | null; // zcri
+  watts: string | null; // zpwrin
+  lumens: string | null; // zlmt
+  ip_rating: string | null; // ziprat
 }
 
 export interface ProductCacheRow {
@@ -72,6 +86,11 @@ export interface ProductCacheRow {
   name: string;
   brand: string | null;
   category: string | null;
+  /** PIM family (zzfamily) — groups sibling PPIDs (e.g. CALLIOPE). */
+  family: string | null;
+  /** Accessories (connectors, channels, mounting kits) are hidden from the
+   * Product Info workflows by default — they need no copy/SEO/normalization. */
+  is_accessory: boolean;
   dimensions_mm: DimsMm;
   primary_image_url: string | null;
   image_urls: string[];
@@ -221,6 +240,8 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             name: decodeEntities(str(p.product_name) ?? sku),
             brand: brandHit?.value ?? null,
             category: str(p.ID_categories), // resolved to name after the loop
+            family: cleanText(decodeEntities(str(p.zzfamily) ?? "")),
+            is_accessory: isAccessory(p),
             dimensions_mm: {},
             primary_image_url: firstImage(p, PRODUCT_IMAGE_FIELDS),
             image_urls: collectImages(p, PRODUCT_IMAGE_FIELDS),
@@ -244,6 +265,14 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             dimensions_mm: variantDims(v, dimFactor),
             image_urls: collectImages(v, VARIANT_IMAGE_FIELDS),
             ies_url: findIesUrl(v),
+            cct_code: cleanText(str(v.zcct)),
+            cct_desc: cleanText(str(v.zcct_desc)),
+            beam_desc: cleanText(str(v.zbeam_descript)),
+            volt_in: cleanText(str(v.zvoltin)),
+            cri: cleanText(str(v.zcri)),
+            watts: cleanText(str(v.zpwrin)),
+            lumens: cleanText(str(v.zlmt)),
+            ip_rating: cleanText(str(v.ziprat)),
           };
           if (!variant.variant_id) continue;
           const list = variantsByProduct.get(productId) ?? [];
@@ -302,6 +331,21 @@ export function makeProductAdapter(env: Env): ProductAdapter {
         rows.push(p);
       }
 
+      // Family fallback: Schonbek/Signature lines leave zzfamily empty but
+      // sibling PPIDs share an identical product name (e.g. four "Calliope"
+      // pages). When 2+ same-brand products share a name, that name IS the
+      // family.
+      const nameCounts = new Map<string, number>();
+      for (const r of rows) {
+        const key = `${r.brand ?? ""}|${r.name.toLowerCase()}`;
+        nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+      }
+      for (const r of rows) {
+        if (r.family) continue;
+        const key = `${r.brand ?? ""}|${r.name.toLowerCase()}`;
+        if ((nameCounts.get(key) ?? 0) > 1) r.family = r.name;
+      }
+
       // Count variants on the deduped rows we actually store (not the raw
       // pre-dedup total, which double-counts regional duplicate products).
       const variantCount = rows.reduce((n, r) => n + r.variants.length, 0);
@@ -332,6 +376,8 @@ export function makeProductAdapter(env: Env): ProductAdapter {
           name: r.name,
           brand: r.brand,
           category: r.category,
+          family: r.family,
+          is_accessory: r.is_accessory,
           dimensions_mm: r.dimensions_mm,
           primary_image_url: r.primary_image_url,
           image_urls: r.image_urls,
@@ -368,6 +414,17 @@ export function makeProductAdapter(env: Env): ProductAdapter {
 // -----------------------------------------------------------------------------
 
 /** Map a positional row to a { fieldName: value } object using its schema. */
+/** Accessory detection: the PIM marks these via mount type / fixture type /
+ * product type, with the name as a fallback signal. */
+function isAccessory(p: Record<string, unknown>): boolean {
+  for (const key of ["zmntyp", "zzfixture", "zprdtyp"]) {
+    const v = str(p[key]);
+    if (v && /accessor/i.test(v)) return true;
+  }
+  const name = str(p.product_name);
+  return !!name && /\baccessor(y|ies)\b/i.test(name);
+}
+
 function mapRow(
   row: unknown[],
   schema: SchemaEntry[] | undefined,

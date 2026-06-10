@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AppBindings } from "../auth.js";
 import type { Env } from "../env.js";
 import { requireAuth } from "../auth.js";
-import { userSupabase } from "../supabase.js";
+import { emailsForUserIds, serviceSupabase, userSupabase } from "../supabase.js";
 
 export const assetRoutes = new Hono<AppBindings>();
 
@@ -41,7 +41,14 @@ assetRoutes.get("/", requireAuth, async (c) => {
 
   const { data, error } = await query;
   if (error) return c.json({ error: error.message }, 500);
-  return c.json({ assets: data ?? [] });
+  const rows = (data ?? []) as { owner_id: string }[];
+  const emails = await emailsForUserIds(c.env, rows.map((r) => r.owner_id));
+  return c.json({
+    assets: rows.map((a) => ({
+      ...a,
+      owner_email: emails.get(a.owner_id) ?? null,
+    })),
+  });
 });
 
 /**
@@ -190,6 +197,85 @@ assetRoutes.post("/:id/files/:format", requireAuth, async (c) => {
     .eq("asset_id", assetId)
     .eq("format", format);
 
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Sharing (§2): explicit per-user grants that let a rep see an asset. Reads
+// and writes go through the user client so the asset_shares RLS policies
+// (owner or admin) are the enforcement layer; the service client is only used
+// to translate between user ids and emails, which RLS hides from non-admins.
+// ---------------------------------------------------------------------------
+
+assetRoutes.get("/:id/shares", requireAuth, async (c) => {
+  const assetId = c.req.param("id");
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { data, error } = await sb
+    .from("asset_shares")
+    .select("user_id, granted_at")
+    .eq("asset_id", assetId);
+  if (error) return c.json({ error: error.message }, 500);
+  const rows = (data ?? []) as { user_id: string; granted_at: string }[];
+
+  const emails = new Map<string, string>();
+  if (rows.length > 0) {
+    const { data: users } = await serviceSupabase(c.env)
+      .from("users")
+      .select("id, email")
+      .in("id", rows.map((r) => r.user_id));
+    for (const u of (users ?? []) as { id: string; email: string }[]) {
+      emails.set(u.id, u.email);
+    }
+  }
+  return c.json({
+    shares: rows.map((r) => ({
+      user_id: r.user_id,
+      email: emails.get(r.user_id) ?? r.user_id,
+      granted_at: r.granted_at,
+    })),
+  });
+});
+
+const ShareSchema = z.object({ email: z.string().trim().toLowerCase().email() });
+
+assetRoutes.post("/:id/shares", requireAuth, async (c) => {
+  const assetId = c.req.param("id");
+  const parsed = ShareSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  const { data: target } = await serviceSupabase(c.env)
+    .from("users")
+    .select("id, email")
+    .eq("email", parsed.data.email)
+    .maybeSingle();
+  if (!target) {
+    return c.json(
+      { error: "no user with that email — they must sign in once first" },
+      404,
+    );
+  }
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { error } = await sb.from("asset_shares").upsert({
+    asset_id: assetId,
+    user_id: (target as { id: string }).id,
+    granted_by: c.get("user").id,
+  });
+  if (error) {
+    // RLS refuses the write when the caller isn't the owner/admin.
+    return c.json({ error: error.message }, 403);
+  }
+  return c.json({ ok: true });
+});
+
+assetRoutes.delete("/:id/shares/:userId", requireAuth, async (c) => {
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { error } = await sb
+    .from("asset_shares")
+    .delete()
+    .eq("asset_id", c.req.param("id"))
+    .eq("user_id", c.req.param("userId"));
+  if (error) return c.json({ error: error.message }, 500);
   return c.json({ ok: true });
 });
 

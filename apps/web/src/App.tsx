@@ -8,10 +8,18 @@ import { Builder } from "./pages/Builder.js";
 import { Social } from "./pages/Social.js";
 import { Bulk } from "./pages/Bulk.js";
 import { Library } from "./pages/Library.js";
+import { FinalImages } from "./pages/FinalImages.js";
 import { RenderQueue } from "./pages/RenderQueue.js";
 import { UtmQr } from "./pages/UtmQr.js";
 import { Products } from "./pages/Products.js";
 import { AppImage } from "./pages/AppImage.js";
+import {
+  NormalizationPage,
+  RomanceCopyPage,
+  SeoPage,
+} from "./pages/ProductInfo.js";
+import { Families } from "./pages/Families.js";
+import { Admin } from "./pages/Admin.js";
 
 // Lazy-loaded: the 3D App-Shot + Cam Solve studios pull in <model-viewer>
 // (three.js), which is heavy. Code-split them so they only load when opened.
@@ -83,6 +91,23 @@ function Shell() {
           <Route path="/utm-qr" element={<UtmQr />} />
           <Route path="/short-links" element={<Navigate to="/utm-qr" replace />} />
           <Route path="/products" element={<Products />} />
+          <Route
+            path="/product-info"
+            element={<Navigate to="/product-info/romance" replace />}
+          />
+          <Route path="/product-info/romance" element={<RomanceCopyPage />} />
+          <Route path="/product-info/seo" element={<SeoPage />} />
+          <Route
+            path="/product-info/normalization"
+            element={<NormalizationPage />}
+          />
+          <Route path="/product-info/families" element={<Families />} />
+          <Route
+            path="/admin"
+            element={
+              user.role === "admin" ? <Admin /> : <Navigate to="/builder" replace />
+            }
+          />
           <Route path="/app-image" element={<AppImage />} />
           <Route
             path="/app-shot"
@@ -116,7 +141,13 @@ function Shell() {
               </Suspense>
             }
           />
-          <Route path="/library" element={<Library />} />
+          <Route
+            path="/library"
+            element={
+              user.role === "admin" ? <Library /> : <Navigate to="/final-images" replace />
+            }
+          />
+          <Route path="/final-images" element={<FinalImages />} />
           <Route path="/render-queue" element={<RenderQueue />} />
           <Route path="*" element={<Navigate to="/builder" replace />} />
         </Routes>
