@@ -28,16 +28,19 @@ export interface FetchedImage {
   height: number | undefined;
 }
 
-async function readWithCap(
+/** Read a response body into a Buffer, aborting past maxBytes. `what` only
+ * labels the error ("image" here; ppt.ts reuses this for video downloads). */
+export async function readWithCap(
   res: Response,
   maxBytes: number,
   url: string,
+  what = "image",
 ): Promise<Buffer> {
   const reader = res.body?.getReader();
   if (!reader) {
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.byteLength > maxBytes) {
-      throw new Error(`image exceeds maxBytes (${maxBytes}): ${url}`);
+      throw new Error(`${what} exceeds maxBytes (${maxBytes}): ${url}`);
     }
     return buf;
   }
@@ -51,7 +54,7 @@ async function readWithCap(
       total += value.byteLength;
       if (total > maxBytes) {
         await reader.cancel().catch(() => {});
-        throw new Error(`image exceeds maxBytes (${maxBytes}): ${url}`);
+        throw new Error(`${what} exceeds maxBytes (${maxBytes}): ${url}`);
       }
       chunks.push(Buffer.from(value));
     }

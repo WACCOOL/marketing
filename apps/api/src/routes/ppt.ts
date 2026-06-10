@@ -314,19 +314,55 @@ pptRoutes.post("/templates/:id/introspect", async (c) => {
 const DraftSchema = z.object({
   text: z.string().min(1).max(100_000),
   templateId: z.string().uuid(),
+  /**
+   * Document images: the client extracts them from the .docx, uploads each via
+   * /api/uploads, and replaces it in `text` with an [IMAGE:n] marker. The
+   * model references them back as fields.imageRef, which we resolve to URLs.
+   */
+  images: z
+    .array(
+      z.object({
+        ref: z.number().int().min(1).max(99),
+        url: z.string().url(),
+      }),
+    )
+    .max(30)
+    .optional(),
 });
 
 const DRAFT_SYSTEM = [
   "You convert documents into presentation outlines for a premium architectural lighting company (WAC Group).",
   "Respond with JSON only, exactly this shape:",
-  '{"slides":[{"layout":"<one of: title|title_content|two_column|image_full|image_caption|table|section>","fields":{"title"?: string,"subtitle"?: string,"bullets"?: [string],"body"?: string,"body2"?: string,"table"?: {"headers": [string], "rows": [[string]]}}}]}',
+  '{"slides":[{"layout":"<layout name>","fields":{...}}]}',
+  "Layouts (the only valid names) and the fields each one uses:",
+  '- "title": {"title": string, "subtitle"?: string} — the opening slide.',
+  '- "title_content": {"title": string, "bullets"?: [string], "body"?: string}.',
+  '- "title_content_image": {"title": string, "bullets"?: [string], "body"?: string} plus an image (see the image rules).',
+  '- "two_column": {"title": string, "body": string, "body2": string} — left and right columns.',
+  '- "image_full": {"title"?: string} — a full-bleed image slide (see the image rules).',
+  '- "image_caption": {"title"?: string, "body"?: string} — an image with a caption (see the image rules).',
+  '- "agenda": {"title": string, "bullets": [string]} — the agenda items, 8 or fewer.',
+  '- "quote": {"quote": {"text": string, "attribution"?: string}} — a standout pull quote.',
+  '- "chart": {"title": string, "chart": {"chartType": "column"|"bar"|"line"|"pie", "categories": [string], "series": [{"name": string, "values": [number]}]}} — every series\'s "values" array must contain exactly as many numbers as there are categories.',
+  '- "diagram": {"title": string, "items": [string]} — grouped/related concepts as short labels.',
+  '- "process": {"title": string, "items": [string]} — sequential steps as short labels.',
+  '- "video": {"title"?: string, "video": {"url": string, "caption"?: string}} — an embedded movie.',
+  '- "table": {"title": string, "table": {"headers": [string], "rows": [[string]]}} — every row must have exactly as many cells as there are headers.',
+  '- "section": {"title": string, "subtitle"?: string} — a chapter/major-topic divider.',
   "Rules:",
   "- 5-20 slides is typical; never pad with filler slides.",
   '- Start with a "title" slide (title + subtitle).',
+  '- When the document has section structure worth an agenda, prefer an "agenda" slide right after the title slide; keep it to 8 items or fewer.',
   '- Use "section" slides to break chapters/major topics.',
   "- At most 8 bullets per slide; split dense content across slides.",
-  '- Use "table" only for genuinely tabular data, and every row must have exactly as many cells as there are headers.',
-  "- Do NOT include images — the user adds those in the builder.",
+  '- Use "quote" for standout pull quotes with attribution when the document contains them.',
+  '- Use "chart" ONLY when the document contains numeric data suited to one: "column" for comparisons, "line" for trends over time, "pie" for shares of a whole. Never invent numbers.',
+  '- Use "process" for step sequences and workflows, "diagram" for grouped concepts; both take "items" (8 or fewer short labels).',
+  '- Use "video" only when the document references a direct video file URL (.mp4/.webm); put that URL in fields.video.url.',
+  '- Use "table" only for genuinely tabular data.',
+  '- The document may contain [IMAGE:n] markers standing in for its images. Where a slide\'s content covers a marker, add "imageRef": n inside that slide\'s "fields" and choose an image-bearing layout (image_full, image_caption, or title_content_image) for it when appropriate.',
+  '- Where the document DESCRIBES a desired image (a figure caption, an "Image: ..." description) without an [IMAGE:n] marker, set fields.imagePrompt to a detailed photographic text-to-image prompt — mention the setting, mood, and lighting; this is an architectural-lighting brand.',
+  '- Never output an "images" field — the system attaches the actual images from your "imageRef" values.',
   "- Plain text only in every field: no markdown, no bullet glyphs, no HTML.",
 ].join("\n");
 
@@ -338,11 +374,12 @@ function stripFences(text: string): string {
     .trim();
 }
 
-/** One model pass: generate, parse, inject ids + templateId, validate. */
+/** One model pass: generate, parse, resolve imageRefs, inject ids + templateId, validate. */
 async function draftDeckOnce(
   env: Env,
   basePrompt: string,
   templateId: string,
+  imageByRef: ReadonlyMap<number, string>,
   feedback: string | null,
 ): Promise<{ ok: true; deck: PptDeck } | { ok: false; error: string }> {
   const raw = await geminiText(env, {
@@ -365,12 +402,35 @@ async function draftDeckOnce(
     return { ok: false, error: 'model output is missing a non-empty "slides" array' };
   }
   // Stable ids (s1..sN) + the template are ours to inject, never the model's.
+  // The model marks document images with fields.imageRef (the request's
+  // [IMAGE:n] uploads); resolve each valid first-use ref to its real URL and
+  // pop the marker either way. Refs that are malformed, unknown, or already
+  // used are dropped silently, and any model-emitted "images" (hallucinated
+  // URLs — the prompt forbids it) is discarded. fields.imagePrompt is
+  // schema-legal and passes through untouched for the builder.
+  const usedRefs = new Set<number>();
   const candidate = {
     templateId,
-    slides: slides.map((s, i) => ({
-      ...(typeof s === "object" && s !== null ? s : {}),
-      id: `s${i + 1}`,
-    })),
+    slides: slides.map((s, i) => {
+      const slide: Record<string, unknown> = {
+        ...(typeof s === "object" && s !== null ? s : {}),
+        id: `s${i + 1}`,
+      };
+      if (typeof slide.fields === "object" && slide.fields !== null) {
+        const { imageRef, images: _modelImages, ...fields } = slide.fields as Record<
+          string,
+          unknown
+        >;
+        const ref = typeof imageRef === "number" ? imageRef : NaN;
+        const url = imageByRef.get(ref);
+        if (url !== undefined && !usedRefs.has(ref)) {
+          usedRefs.add(ref);
+          fields.images = [{ url }];
+        }
+        slide.fields = fields;
+      }
+      return slide;
+    }),
   };
   const result = PptDeckSchema.safeParse(candidate);
   if (!result.success) {
@@ -380,25 +440,35 @@ async function draftDeckOnce(
 }
 
 /**
- * Flow 2 (doc-driven drafting): paste a document, get a draft deck back for
- * the builder. Validation failures get one retry with the errors fed back to
- * the model; a second failure is the model's problem, so it surfaces as 502.
+ * Flow 2 (doc-driven drafting): paste a document (with optional [IMAGE:n]
+ * markers + uploaded image URLs), get a draft deck back for the builder.
+ * Validation failures get one retry with the errors fed back to the model; a
+ * second failure is the model's problem, so it surfaces as 502.
  */
 pptRoutes.post("/draft", async (c) => {
   const parsed = DraftSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
     return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
   }
-  const { text, templateId } = parsed.data;
+  const { text, templateId, images } = parsed.data;
 
   const template = await loadTemplate(c, templateId);
   if (!template) return c.json({ error: "template not found" }, 404);
 
+  const imageByRef = new Map<number, string>();
+  for (const img of images ?? []) imageByRef.set(img.ref, img.url);
+
   const basePrompt = `Convert this document into a slide deck:\n\n${text}`;
   try {
-    let attempt = await draftDeckOnce(c.env, basePrompt, templateId, null);
+    let attempt = await draftDeckOnce(c.env, basePrompt, templateId, imageByRef, null);
     if (!attempt.ok) {
-      attempt = await draftDeckOnce(c.env, basePrompt, templateId, attempt.error);
+      attempt = await draftDeckOnce(
+        c.env,
+        basePrompt,
+        templateId,
+        imageByRef,
+        attempt.error,
+      );
     }
     if (!attempt.ok) {
       return c.json({ error: `AI drafting failed: ${attempt.error}` }, 502);

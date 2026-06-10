@@ -117,4 +117,80 @@ describe("PptDeckSchema", () => {
     });
     expect(res.success).toBe(false);
   });
+
+  it("accepts the new layout field groups", () => {
+    const res = PptDeckSchema.safeParse({
+      templateId: TEMPLATE_ID,
+      replaceAssetId: TEMPLATE_ID,
+      slides: [
+        slide({ layout: "agenda", fields: { title: "Agenda", bullets: ["One", "Two"] } }),
+        slide({
+          id: "s2",
+          layout: "quote",
+          fields: { quote: { text: "Light is material.", attribution: "WAC" } },
+        }),
+        slide({
+          id: "s3",
+          layout: "chart",
+          fields: {
+            title: "Sales",
+            chart: {
+              chartType: "column",
+              categories: ["Q1", "Q2"],
+              series: [{ name: "2026", values: [1, 2] }],
+            },
+          },
+        }),
+        slide({ id: "s4", layout: "process", fields: { title: "Flow", items: ["A", "B", "C"] } }),
+        slide({
+          id: "s5",
+          layout: "video",
+          fields: { video: { url: "https://example.com/clip.mp4" } },
+        }),
+        slide({
+          id: "s6",
+          layout: "title_content_image",
+          fields: {
+            title: "T",
+            body: "B",
+            images: [{ url: "https://example.com/a.png", prompt: "a lamp" }],
+            imagePrompt: "a pendant over a kitchen island",
+          },
+        }),
+      ],
+    });
+    expect(res.success).toBe(true);
+  });
+
+  it("rejects charts whose series length mismatches the categories", () => {
+    const res = PptDeckSchema.safeParse({
+      templateId: TEMPLATE_ID,
+      slides: [
+        slide({
+          layout: "chart",
+          fields: {
+            chart: {
+              chartType: "pie",
+              categories: ["A", "B", "C"],
+              series: [{ name: "s", values: [1, 2] }],
+            },
+          },
+        }),
+      ],
+    });
+    expect(res.success).toBe(false);
+  });
+
+  it("enforces the deck-wide video cap", () => {
+    const slides = Array.from({ length: 6 }, (_, i) =>
+      slide({
+        id: `s${i}`,
+        layout: "video",
+        fields: { video: { url: `https://example.com/${i}.mp4` } },
+      }),
+    );
+    expect(
+      PptDeckSchema.safeParse({ templateId: TEMPLATE_ID, slides }).success,
+    ).toBe(false);
+  });
 });

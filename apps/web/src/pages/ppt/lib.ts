@@ -92,9 +92,16 @@ export async function apiForm<T>(path: string, form: FormData): Promise<T> {
 export const PPT_LAYOUT_LABELS: Record<PptLayout, string> = {
   title: "Title",
   title_content: "Title + Content",
+  title_content_image: "Title + Content + Image",
   two_column: "Two Column",
   image_full: "Full Image",
   image_caption: "Image + Caption",
+  agenda: "Agenda",
+  quote: "Quote",
+  chart: "Chart",
+  diagram: "Diagram",
+  process: "Process",
+  video: "Video",
   table: "Table",
   section: "Section",
 };

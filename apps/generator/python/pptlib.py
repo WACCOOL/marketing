@@ -10,7 +10,8 @@ from pptx.enum.shapes import PP_PLACEHOLDER
 def classify_placeholder(ph_format):
     """Bucket a placeholder into the canonical types the deck engine fills.
 
-    Returns one of: "title", "subtitle", "body", "picture", "table", "other".
+    Returns one of: "title", "subtitle", "body", "picture", "table", "media",
+    "other".
     """
     t = ph_format.type
     if t in (PP_PLACEHOLDER.CENTER_TITLE, PP_PLACEHOLDER.TITLE):
@@ -23,6 +24,8 @@ def classify_placeholder(ph_format):
         return "picture"
     if t == PP_PLACEHOLDER.TABLE:
         return "table"
+    if t == PP_PLACEHOLDER.MEDIA_CLIP:
+        return "media"
     return "other"
 
 

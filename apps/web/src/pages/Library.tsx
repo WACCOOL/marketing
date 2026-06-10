@@ -79,6 +79,18 @@ function editHref(a: Asset): string | null {
   return `${editor}?restore=${encodeURIComponent(jobId)}`;
 }
 
+/**
+ * PPT decks only: "Clone" opens the deck unlinked from its asset, so the next
+ * export creates a new library entry (Edit overwrites, Clone duplicates).
+ */
+function cloneHref(a: Asset): string | null {
+  const meta = a.metadata_json as { jobId?: unknown; generatedBy?: unknown };
+  if (typeof meta?.jobId !== "string" || meta.generatedBy !== PPT_GENERATED_BY) {
+    return null;
+  }
+  return `/ppt/builder?clone=${encodeURIComponent(meta.jobId)}`;
+}
+
 export function AssetGallery(props: {
   title: string;
   blurb: string;
@@ -390,6 +402,11 @@ export function AssetGallery(props: {
                       {editHref(a) && (
                         <Link to={editHref(a)!} style={{ marginRight: 8 }}>
                           <button className="secondary">Edit</button>
+                        </Link>
+                      )}
+                      {cloneHref(a) && (
+                        <Link to={cloneHref(a)!} style={{ marginRight: 8 }}>
+                          <button className="secondary">Clone</button>
                         </Link>
                       )}
                       {canShare && (

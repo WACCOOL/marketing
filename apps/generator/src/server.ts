@@ -2,7 +2,12 @@ import http from "node:http";
 import zlib from "node:zlib";
 import sharp from "sharp";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import {
   AppImageParamsSchema,
   APPIMAGE_PARAMS_VERSIONS,
@@ -138,6 +143,12 @@ export interface GenerationResult {
   files: GeneratedFile[];
   /** Merged into the asset's metadata_json for reproducibility. */
   metadata: Record<string, unknown>;
+  /**
+   * Overwrite-on-edit (PPT decks): when set, handleGenerate updates this
+   * existing library asset in place — new files at the same R2 keys — instead
+   * of creating a new asset row.
+   */
+  replaceAssetId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -749,6 +760,82 @@ async function createAssetRow(
   return (data as { id: string }).id;
 }
 
+/**
+ * Overwrite-on-edit (PPT decks): verify the target asset is the job owner's
+ * and refresh its row in place. Only columns that exist on public.assets are
+ * touched (name, tags, metadata_json — see supabase/migrations/0002_schema.sql).
+ */
+async function updateAssetRow(
+  sb: SupabaseClient,
+  req: GenerateRequest,
+  assetId: string,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  const { data, error } = await sb
+    .from("assets")
+    .select("id, tool, owner_id")
+    .eq("id", assetId)
+    .maybeSingle();
+  if (error) throw new Error(`asset lookup failed: ${error.message}`);
+  if (!data) throw new Error(`cannot update deck: asset not found (${assetId})`);
+  const row = data as { tool: string; owner_id: string };
+  if (row.tool !== req.tool || row.owner_id !== req.ownerId) {
+    throw new Error("cannot update deck: asset not owned by you");
+  }
+
+  const tags = [...new Set([`tool:${req.tool}`, ...(req.tags ?? [])])];
+  const { error: upErr } = await sb
+    .from("assets")
+    .update({
+      name: req.name,
+      tags,
+      metadata_json: { jobId: req.jobId, ...metadata },
+    })
+    .eq("id", assetId);
+  if (upErr) throw new Error(`assets update failed: ${upErr.message}`);
+}
+
+/**
+ * Replace an asset's files in place. New files land at the SAME key scheme
+ * (assets/{assetId}/{format} — R2 put overwrites), formats that vanished this
+ * run (e.g. an old pdf when LibreOffice was unavailable) lose their R2 object,
+ * and asset_files rows are rebuilt delete-then-insert so the (asset_id,
+ * format) uniqueness stays trivially satisfied.
+ */
+async function replaceAssetFiles(
+  sb: SupabaseClient,
+  s3: S3Client,
+  bucket: string,
+  assetId: string,
+  files: GeneratedFile[],
+): Promise<{ format: string; key: string; bytes: number }[]> {
+  const { data, error } = await sb
+    .from("asset_files")
+    .select("format, r2_key")
+    .eq("asset_id", assetId);
+  if (error) throw new Error(`asset_files lookup failed: ${error.message}`);
+  const existing = (data ?? []) as { format: string; r2_key: string }[];
+
+  const newFormats = new Set(files.map((f) => f.format));
+  for (const stale of existing.filter((r) => !newFormats.has(r.format))) {
+    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: stale.r2_key }));
+  }
+
+  const { error: delErr } = await sb
+    .from("asset_files")
+    .delete()
+    .eq("asset_id", assetId);
+  if (delErr) throw new Error(`asset_files delete failed: ${delErr.message}`);
+
+  const uploaded: { format: string; key: string; bytes: number }[] = [];
+  for (const file of files) {
+    const meta = await uploadFile(s3, bucket, assetId, file);
+    await recordAssetFile(sb, assetId, meta);
+    uploaded.push(meta);
+  }
+  return uploaded;
+}
+
 async function uploadFile(
   s3: S3Client,
   bucket: string,
@@ -887,13 +974,24 @@ async function handleGenerate(
   // beyond the running transition.
   const prepareCutout = makePrepareCutout(config, s3, adapters);
   const generated = await runGeneration(req, config, sb, s3, adapters, prepareCutout);
-  const assetId = await createAssetRow(sb, req, generated.metadata);
 
-  const uploaded: { format: string; key: string; bytes: number }[] = [];
-  for (const file of generated.files) {
-    const meta = await uploadFile(s3, config.r2Bucket, assetId, file);
-    await recordAssetFile(sb, assetId, meta);
-    uploaded.push(meta);
+  let assetId: string;
+  let uploaded: { format: string; key: string; bytes: number }[];
+  if (generated.replaceAssetId) {
+    // Overwrite-on-edit (PPT decks): update the existing library asset in
+    // place — same asset id, same R2 key scheme — instead of creating a new
+    // one. "Edit overwrites, clone duplicates."
+    assetId = generated.replaceAssetId;
+    await updateAssetRow(sb, req, assetId, generated.metadata);
+    uploaded = await replaceAssetFiles(sb, s3, config.r2Bucket, assetId, generated.files);
+  } else {
+    assetId = await createAssetRow(sb, req, generated.metadata);
+    uploaded = [];
+    for (const file of generated.files) {
+      const meta = await uploadFile(s3, config.r2Bucket, assetId, file);
+      await recordAssetFile(sb, assetId, meta);
+      uploaded.push(meta);
+    }
   }
 
   await markSucceeded(sb, req.jobId, assetId, uploaded);

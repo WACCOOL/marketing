@@ -1036,6 +1036,81 @@ button.slim {
   height: 100%;
   object-fit: cover;
 }
+.ppt-thumb-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+/* Agenda: numbered lines. */
+.ppt-thumb-numline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.ppt-thumb-numline > span {
+  font-size: 7px;
+  line-height: 1;
+  color: var(--accent);
+  opacity: 0.85;
+}
+/* Quote: big quotation mark beside the lines. */
+.ppt-thumb-quote {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.ppt-thumb-quote-mark {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+  opacity: 0.75;
+}
+/* Chart: mini bars. */
+.ppt-thumb-chart {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  padding: 0 6px;
+}
+.ppt-thumb-chart > div {
+  flex: 1;
+  background: var(--accent);
+  opacity: 0.6;
+  border-radius: 2px 2px 0 0;
+}
+/* Process: chevron-ish step blocks. */
+.ppt-thumb-process {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.ppt-thumb-process > div {
+  flex: 1;
+  height: 55%;
+  background: var(--border-strong);
+  clip-path: polygon(0 0, 85% 0, 100% 50%, 85% 100%, 0 100%, 15% 50%);
+}
+/* Video: block with a play triangle. */
+.ppt-thumb-video {
+  align-items: center;
+  justify-content: center;
+  background: var(--border);
+}
+.ppt-thumb-play {
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 8px 0 8px 13px;
+  border-color: transparent transparent transparent var(--accent);
+}
 
 /* Image option grid (product image choice) + current slot rows. */
 .ppt-image-options {

@@ -25,9 +25,16 @@ from pptlib import build_layout_index, classify_placeholder
 CANONICAL_LAYOUTS = [
     "title",
     "title_content",
+    "title_content_image",
     "two_column",
     "image_full",
     "image_caption",
+    "agenda",
+    "quote",
+    "chart",
+    "diagram",
+    "process",
+    "video",
     "table",
     "section",
 ]
@@ -48,7 +55,15 @@ def emu(value):
 
 
 def placeholder_counts(layout):
-    counts = {"title": 0, "subtitle": 0, "body": 0, "picture": 0, "table": 0, "other": 0}
+    counts = {
+        "title": 0,
+        "subtitle": 0,
+        "body": 0,
+        "picture": 0,
+        "table": 0,
+        "media": 0,
+        "other": 0,
+    }
     for ph in layout.placeholders:
         counts[classify_placeholder(ph.placeholder_format)] += 1
     return counts
@@ -78,6 +93,17 @@ def score_layout(canonical, name, counts):
             score += 2
         if counts["title"] and counts["body"] == 1 and not counts["picture"] and not counts["table"]:
             score += 3
+    elif canonical == "title_content_image":
+        if (
+            "content and image" in n
+            or "text and image" in n
+            or "content with image" in n
+        ):
+            score += 4
+        elif ("picture" in n or "image" in n) and ("content" in n or "text" in n):
+            score += 2
+        if counts["title"] and counts["body"] and counts["picture"]:
+            score += 3
     elif canonical == "two_column":
         if "two" in n or "comparison" in n:
             score += 4
@@ -99,6 +125,38 @@ def score_layout(canonical, name, counts):
             score += 1
         if counts["picture"] and has_text:
             score += 3
+    elif canonical == "agenda":
+        if "agenda" in n:
+            score += 4
+        if counts["title"] and counts["body"]:
+            score += 1  # weak: any title+body layout can host a numbered list
+    elif canonical == "quote":
+        if "quote" in n or "quotation" in n:
+            score += 4
+        if counts["body"] and not counts["picture"] and not counts["table"]:
+            score += 1  # weak: a body area can host the pull quote
+    elif canonical == "chart":
+        if "chart" in n or "graph" in n:
+            score += 4
+        if counts["title"] and counts["body"] and not counts["picture"]:
+            score += 1  # weak: the chart is drawn over a body area
+    elif canonical == "diagram":
+        if "diagram" in n:
+            score += 4
+        if counts["title"] and counts["body"]:
+            score += 1  # weak: shapes are drawn over a body area
+    elif canonical == "process":
+        if "process" in n or "flow" in n or "steps" in n or "timeline" in n:
+            score += 4
+        if counts["title"] and counts["body"]:
+            score += 1  # weak: chevrons are drawn over a body area
+    elif canonical == "video":
+        if "video" in n or "media" in n:
+            score += 4
+        if counts["media"]:
+            score += 4  # a media placeholder is a definitive signal
+        elif counts["picture"]:
+            score += 1  # weak: the movie can sit over a picture area
     elif canonical == "table":
         if "table" in n:
             score += 4

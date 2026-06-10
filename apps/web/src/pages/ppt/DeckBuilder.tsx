@@ -1,17 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import mammoth from "mammoth";
 import {
+  PPT_CHART_TYPES,
   PPT_LAYOUTS,
   PptDeckSchema,
+  type PptChart,
+  type PptChartType,
+  type PptImage,
   type PptLayout,
+  type PptQuote,
   type PptSlide,
   type PptSlideFields,
   type PptTable,
+  type PptVideo,
 } from "@wac/shared";
 import { ArrowDown, ArrowUp, Copy, Trash2 } from "lucide-react";
 import { api, apiBlob } from "../../lib/api.js";
 import { createJob, getJob, pollJob } from "../../lib/jobs.js";
+import {
+  isAllowedVideoType,
+  MAX_VIDEO_BYTES,
+  uploadImage,
+  uploadVideo,
+} from "../../lib/uploads.js";
 import { ImageSlotPicker } from "./ImageSlotPicker.js";
 import {
   formatErr,
@@ -39,27 +51,51 @@ const LAYOUT_FIELDS: Record<
   {
     subtitle?: boolean;
     bullets?: boolean;
+    /** Custom label for the bullets textarea (agenda). */
+    bulletsLabel?: string;
     body?: boolean;
     body2?: boolean;
     images?: number;
     table?: boolean;
+    quote?: boolean;
+    chart?: boolean;
+    /** Label for the items textarea (diagram/process). */
+    items?: string;
+    video?: boolean;
   }
 > = {
   title: { subtitle: true },
   title_content: { bullets: true, body: true },
+  title_content_image: { bullets: true, body: true, images: 1 },
   two_column: { body: true, body2: true },
   image_full: { images: 1 },
   image_caption: { images: 4 },
+  agenda: { bullets: true, bulletsLabel: "Agenda items (one per line)" },
+  quote: { quote: true },
+  chart: { chart: true },
+  diagram: { items: "Boxes (one per line)" },
+  process: { items: "Steps (one per line)" },
+  video: { video: true },
   table: { table: true },
   section: { subtitle: true },
+};
+
+const CHART_TYPE_LABELS: Record<PptChartType, string> = {
+  column: "Column",
+  bar: "Bar",
+  line: "Line",
+  pie: "Pie",
 };
 
 interface Draft {
   name: string;
   templateId: string;
   slides: PptSlide[];
-  /** image URL → AI prompt that produced it (for the Regenerate field). */
+  /** image URL → AI prompt that produced it. Legacy — new images carry the
+   * prompt on the image object itself; this sidecar keeps old drafts working. */
   aiPrompts: Record<string, string>;
+  /** Asset this deck edits in place (exports update it instead of creating). */
+  deckAssetId: string | null;
 }
 
 function loadDraft(): Draft | null {
@@ -72,9 +108,14 @@ function loadDraft(): Draft | null {
 }
 
 /** Trim/strip empty fields so the exported deck is clean for the generator. */
-function cleanDeck(templateId: string, slides: PptSlide[]) {
+function cleanDeck(
+  templateId: string,
+  slides: PptSlide[],
+  replaceAssetId: string | null,
+) {
   return {
     templateId,
+    ...(replaceAssetId ? { replaceAssetId } : {}),
     slides: slides.map((s) => {
       const f = s.fields;
       const fields: PptSlideFields = {};
@@ -84,11 +125,37 @@ function cleanDeck(templateId: string, slides: PptSlide[]) {
       if (f.body2?.trim()) fields.body2 = f.body2.trim();
       const bullets = (f.bullets ?? []).map((b) => b.trim()).filter(Boolean);
       if (bullets.length > 0) fields.bullets = bullets;
-      const images = (f.images ?? []).map((i) =>
-        i.caption?.trim() ? { url: i.url, caption: i.caption.trim() } : { url: i.url },
-      );
+      const images = (f.images ?? []).map((i) => {
+        const img: PptImage = { url: i.url };
+        if (i.caption?.trim()) img.caption = i.caption.trim();
+        if (i.prompt?.trim()) img.prompt = i.prompt.trim();
+        return img;
+      });
       if (images.length > 0) fields.images = images;
       if (f.table) fields.table = f.table;
+      if (f.quote?.text.trim()) {
+        fields.quote = f.quote.attribution?.trim()
+          ? { text: f.quote.text.trim(), attribution: f.quote.attribution.trim() }
+          : { text: f.quote.text.trim() };
+      }
+      if (f.chart) {
+        fields.chart = {
+          chartType: f.chart.chartType,
+          categories: f.chart.categories.map((c) => c.trim()),
+          series: f.chart.series.map((sr) => ({
+            name: sr.name.trim(),
+            values: sr.values,
+          })),
+        };
+      }
+      const items = (f.items ?? []).map((x) => x.trim()).filter(Boolean);
+      if (items.length > 0) fields.items = items;
+      if (f.video?.url.trim()) {
+        fields.video = f.video.caption?.trim()
+          ? { url: f.video.url.trim(), caption: f.video.caption.trim() }
+          : { url: f.video.url.trim() };
+      }
+      if (f.imagePrompt?.trim()) fields.imagePrompt = f.imagePrompt.trim();
       return { id: s.id, layout: s.layout, fields };
     }),
   };
@@ -101,6 +168,66 @@ interface ExportResult {
   formats: string[];
   warnings: string[];
   thumbUrl: string | null;
+}
+
+// ---- Docx → marked text ----------------------------------------------------
+// Images extracted from the doc are uploaded and replaced by [IMAGE:n] markers
+// the /api/ppt/draft endpoint resolves back onto the drafted slides.
+
+const MAX_DOC_IMAGES = 10;
+const MAX_DOC_IMAGE_BYTES = 10 * 1024 * 1024;
+const DOC_IMAGE_SRC_PREFIX = "wac-doc-image:";
+
+/**
+ * Flatten mammoth's HTML into plain text: one line per block element, with
+ * each extracted image emitted as a `[IMAGE:n]` marker on its own line.
+ */
+function docHtmlToMarkedText(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const lines: string[] = [];
+  emitDocBlocks(doc.body, lines);
+  return lines.join("\n\n");
+}
+
+const DOC_CONTAINER_TAGS = new Set([
+  "ul",
+  "ol",
+  "table",
+  "thead",
+  "tbody",
+  "tfoot",
+  "tr",
+  "div",
+  "section",
+]);
+
+function emitDocBlocks(el: Element, lines: string[]) {
+  for (const child of Array.from(el.children)) {
+    const tag = child.tagName.toLowerCase();
+    if (tag === "img") {
+      emitDocImage(child, lines);
+    } else if (DOC_CONTAINER_TAGS.has(tag)) {
+      emitDocBlocks(child, lines);
+    } else {
+      // Block leaf (p, h1–h6, li, td/th…): its images become marker lines,
+      // then whatever text remains becomes one line.
+      for (const img of Array.from(child.querySelectorAll("img"))) {
+        emitDocImage(img, lines);
+        img.remove();
+      }
+      const text = (child.textContent ?? "").replace(/\s+/g, " ").trim();
+      if (text) lines.push(text);
+    }
+  }
+}
+
+function emitDocImage(img: Element, lines: string[]) {
+  const src = img.getAttribute("src") ?? "";
+  if (!src.startsWith(DOC_IMAGE_SRC_PREFIX)) return; // skipped/oversized image
+  const ref = Number(src.slice(DOC_IMAGE_SRC_PREFIX.length));
+  if (Number.isInteger(ref) && ref >= 1 && ref <= 99) {
+    lines.push(`[IMAGE:${ref}]`);
+  }
 }
 
 export function DeckBuilder() {
@@ -116,6 +243,9 @@ export function DeckBuilder() {
     saved.current?.aiPrompts ?? {},
   );
   const [name, setName] = useState(saved.current?.name ?? "");
+  const [deckAssetId, setDeckAssetId] = useState<string | null>(
+    saved.current?.deckAssetId ?? null,
+  );
   const [selectedId, setSelectedId] = useState<string | null>(
     saved.current?.slides[0]?.id ?? null,
   );
@@ -127,7 +257,14 @@ export function DeckBuilder() {
 
   // Draft-from-document
   const [docText, setDocText] = useState("");
+  const [docImages, setDocImages] = useState<{ ref: number; url: string }[]>([]);
+  const [docNote, setDocNote] = useState<string | null>(null);
+  const [docReading, setDocReading] = useState(false);
   const [docBusy, setDocBusy] = useState(false);
+
+  // Auto-generation of drafted slide images (fields.imagePrompt)
+  const [genStatus, setGenStatus] = useState<string | null>(null);
+  const [genWarning, setGenWarning] = useState<string | null>(null);
 
   // Export
   const [exporting, setExporting] = useState(false);
@@ -141,9 +278,14 @@ export function DeckBuilder() {
   }, []);
 
   // "Edit" restore: /ppt/builder?restore=<jobId> reloads a finished deck from
-  // the job's params (the same mechanism the 3D render Edit buttons use).
+  // the job's params (the same mechanism the 3D render Edit buttons use) and
+  // links it to the existing asset so exports update it in place.
+  // "Clone": /ppt/builder?clone=<jobId> loads the same deck unlinked, so the
+  // next export creates a new asset.
   useEffect(() => {
-    const jobId = new URLSearchParams(window.location.search).get("restore");
+    const search = new URLSearchParams(window.location.search);
+    const cloneId = search.get("clone");
+    const jobId = search.get("restore") ?? cloneId;
     if (!jobId) return;
     getJob(jobId)
       .then((job) => {
@@ -155,7 +297,8 @@ export function DeckBuilder() {
         setTemplateId(parsed.data.templateId);
         setSlides(parsed.data.slides);
         setSelectedId(parsed.data.slides[0]?.id ?? null);
-        setName(job.name);
+        setName(cloneId ? `Copy of ${job.name}` : job.name);
+        setDeckAssetId(cloneId ? null : job.assetId);
         setExported(null);
       })
       .catch((e) => setErr(formatErr(e)))
@@ -165,16 +308,17 @@ export function DeckBuilder() {
 
   // Draft persistence: everything needed to come back later.
   useEffect(() => {
-    const draft: Draft = { name, templateId, slides, aiPrompts };
+    const draft: Draft = { name, templateId, slides, aiPrompts, deckAssetId };
     try {
       localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
     } catch {
       // quota — non-critical
     }
-  }, [name, templateId, slides, aiPrompts]);
+  }, [name, templateId, slides, aiPrompts, deckAssetId]);
 
   const template = templates.find((t) => t.id === templateId) ?? null;
   const selected = slides.find((s) => s.id === selectedId) ?? slides[0] ?? null;
+  const deckLabel = name.trim() || `${template?.name ?? "Untitled"} deck`;
 
   function updateSlide(id: string, fn: (s: PptSlide) => PptSlide) {
     setSlides((prev) => prev.map((s) => (s.id === id ? fn(s) : s)));
@@ -222,14 +366,79 @@ export function DeckBuilder() {
     });
   }
 
+  /** Blank slate (keeps the selected template); the draft effect persists it. */
+  function startOver() {
+    if (!confirm("Start over? This clears the current slides and starts a new deck.")) {
+      return;
+    }
+    setSlides([]);
+    setSelectedId(null);
+    setName("");
+    setAiPrompts({});
+    setExported(null);
+    setDocText("");
+    setDocImages([]);
+    setDocNote(null);
+    setIssues([]);
+    setErr(null);
+    setGenStatus(null);
+    setGenWarning(null);
+    setDeckAssetId(null);
+  }
+
   async function readDocx(file: File) {
     setErr(null);
+    setDocNote(null);
+    setDocReading(true);
     try {
       const arrayBuffer = await file.arrayBuffer();
-      const result = await mammoth.extractRawText({ arrayBuffer });
-      setDocText(result.value);
+      const collected: { ref: number; url: string }[] = [];
+      const notes: string[] = [];
+      let accepted = 0;
+      let skippedExtra = 0;
+      const result = await mammoth.convertToHtml(
+        { arrayBuffer },
+        {
+          // Each embedded image is uploaded to /api/uploads; the HTML keeps a
+          // sentinel src that docHtmlToMarkedText turns into [IMAGE:n].
+          convertImage: mammoth.images.imgElement(async (image) => {
+            if (accepted >= MAX_DOC_IMAGES) {
+              skippedExtra += 1;
+              return { src: "" };
+            }
+            try {
+              const bytes = await image.readAsArrayBuffer();
+              if (bytes.byteLength > MAX_DOC_IMAGE_BYTES) {
+                notes.push("Skipped an image over 10MB.");
+                return { src: "" };
+              }
+              const ref = ++accepted;
+              const ext = (image.contentType.split("/")[1] ?? "png").split("+")[0];
+              const upload = new File([bytes], `doc-image-${ref}.${ext}`, {
+                type: image.contentType,
+              });
+              const { url } = await uploadImage(upload);
+              collected.push({ ref, url });
+              return { src: `${DOC_IMAGE_SRC_PREFIX}${ref}` };
+            } catch (e) {
+              notes.push(`Skipped an image that could not be uploaded (${formatErr(e)}).`);
+              return { src: "" };
+            }
+          }),
+        },
+      );
+      if (skippedExtra > 0) {
+        notes.push(
+          `Only the first ${MAX_DOC_IMAGES} images were carried over (${skippedExtra} skipped).`,
+        );
+      }
+      setDocText(docHtmlToMarkedText(result.value));
+      setDocImages(collected);
+      if (notes.length > 0) setDocNote(notes.join(" "));
     } catch (e) {
       setErr(`Could not read the document: ${formatErr(e)}`);
+    } finally {
+      setDocReading(false);
     }
   }
 
@@ -251,14 +460,22 @@ export function DeckBuilder() {
     }
     setDocBusy(true);
     setErr(null);
+    setGenWarning(null);
     try {
+      const body: {
+        text: string;
+        templateId: string;
+        images?: { ref: number; url: string }[];
+      } = { text, templateId };
+      if (docImages.length > 0) body.images = docImages;
       const res = await api<{ deck: { templateId: string; slides: PptSlide[] } }>(
         "/api/ppt/draft",
-        { method: "POST", body: JSON.stringify({ text, templateId }) },
+        { method: "POST", body: JSON.stringify(body) },
       );
       setSlides(res.deck.slides);
       setSelectedId(res.deck.slides[0]?.id ?? null);
       setExported(null);
+      await autoGenerateImages(res.deck.slides);
     } catch (e) {
       setErr(formatErr(e));
     } finally {
@@ -266,11 +483,64 @@ export function DeckBuilder() {
     }
   }
 
+  /**
+   * Generate an image for every drafted slide that carries an imagePrompt but
+   * no images yet (concurrency 2). Successes land on fields.images with the
+   * prompt attached; failures keep the prompt so "Generate image" can retry.
+   */
+  async function autoGenerateImages(drafted: PptSlide[]) {
+    const targets = drafted.filter(
+      (s) =>
+        (s.fields.imagePrompt ?? "").trim().length > 0 &&
+        (s.fields.images?.length ?? 0) === 0,
+    );
+    if (targets.length === 0) return;
+    const total = targets.length;
+    let done = 0;
+    const failures: string[] = [];
+    setGenStatus(`Generating slide images 0/${total}…`);
+    const queue = [...targets];
+    const worker = async () => {
+      for (;;) {
+        const slide = queue.shift();
+        if (!slide) return;
+        const prompt = (slide.fields.imagePrompt ?? "").trim();
+        try {
+          const url = await generateConceptImage(prompt);
+          setSlides((prev) =>
+            prev.map((s) => {
+              if (s.id !== slide.id) return s;
+              const fields: PptSlideFields = {
+                ...s.fields,
+                images: [{ url, prompt }],
+              };
+              delete fields.imagePrompt;
+              return { ...s, fields };
+            }),
+          );
+        } catch (e) {
+          failures.push(`slide ${drafted.indexOf(slide) + 1}: ${formatErr(e)}`);
+        }
+        done += 1;
+        setGenStatus(`Generating slide images ${done}/${total}…`);
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    setGenStatus(null);
+    if (failures.length > 0) {
+      setGenWarning(
+        `Could not generate ${failures.length === 1 ? "an image" : `${failures.length} images`} (${failures.join(
+          "; ",
+        )}). The prompts stay on those slides — use “Generate image” there to retry.`,
+      );
+    }
+  }
+
   async function exportDeck() {
     setIssues([]);
     setErr(null);
     setExported(null);
-    const deck = cleanDeck(templateId, slides);
+    const deck = cleanDeck(templateId, slides, deckAssetId);
     const parsed = PptDeckSchema.safeParse(deck);
     if (!parsed.success) {
       setIssues(
@@ -283,8 +553,7 @@ export function DeckBuilder() {
     setExporting(true);
     setExportStatus("Queued…");
     try {
-      const jobName =
-        name.trim() || `${template?.name ?? "Untitled"} deck`;
+      const jobName = deckLabel;
       const { jobId } = await createJob("ppt", jobName, parsed.data, [
         `template:${templateId}`,
       ]);
@@ -294,6 +563,8 @@ export function DeckBuilder() {
         setErr(job.error ?? "Export failed.");
         return;
       }
+      // Further exports keep updating this deck asset in place.
+      setDeckAssetId(job.assetId);
       // Formats + warnings live on the saved asset row (metadata_json.warnings
       // and asset_files); the jobs endpoint doesn't return asset metadata.
       let formats = job.result?.files?.map((f) => f.format) ?? [];
@@ -434,6 +705,13 @@ export function DeckBuilder() {
           </ul>
         </div>
       )}
+      {genStatus && (
+        <div className="card row" style={{ gap: 8 }}>
+          <span className="spinner" />
+          <span className="muted">{genStatus}</span>
+        </div>
+      )}
+      {genWarning && <div className="alert warn">{genWarning}</div>}
 
       <div className="card row" style={{ gap: 8, flexWrap: "wrap" }}>
         <label className="muted" style={{ fontSize: 13 }}>
@@ -462,10 +740,25 @@ export function DeckBuilder() {
           onChange={(e) => setName(e.target.value)}
           style={{ minWidth: 240 }}
         />
+        {(slides.length > 0 || deckAssetId !== null) && (
+          <button className="secondary" onClick={startOver} disabled={exporting}>
+            Start over
+          </button>
+        )}
         <button onClick={() => void exportDeck()} disabled={exporting || slides.length === 0}>
           {exporting ? <span className="spinner" /> : null}
-          {exporting ? exportStatus ?? "Exporting…" : "Export deck"}
+          {exporting
+            ? exportStatus ?? "Exporting…"
+            : deckAssetId
+              ? "Save deck"
+              : "Export deck"}
         </button>
+        {deckAssetId && (
+          <div className="muted" style={{ width: "100%", fontSize: 12 }}>
+            Exports update “{deckLabel}” in My Decks — use Clone there for a
+            copy.
+          </div>
+        )}
       </div>
 
       {exported && (
@@ -504,7 +797,8 @@ export function DeckBuilder() {
             />
           )}
           <div className="muted" style={{ fontSize: 12 }}>
-            Saved to My Decks. You can re-open it there with Edit.
+            Saved to My Decks. Further exports here update it in place; use
+            Clone there for a copy.
           </div>
         </div>
       )}
@@ -611,9 +905,6 @@ export function DeckBuilder() {
               key={selected.id}
               slide={selected}
               aiPrompts={aiPrompts}
-              setAiPrompt={(url, prompt) =>
-                setAiPrompts((prev) => ({ ...prev, [url]: prompt }))
-              }
               onChange={(fn) => updateSlide(selected.id, fn)}
               onError={setErr}
             />
@@ -624,34 +915,53 @@ export function DeckBuilder() {
             </div>
           )}
 
-          <div className="card col" style={{ gap: 10 }}>
-            <h3 style={{ margin: 0 }}>Draft from document</h3>
-            <div className="muted" style={{ fontSize: 13 }}>
-              Upload a Word doc or paste text; AI structures it into slides for
-              review. Drafting replaces the current slides.
+          {slides.length === 0 && (
+            <div className="card col" style={{ gap: 10 }}>
+              <h3 style={{ margin: 0 }}>Draft from document</h3>
+              <div className="muted" style={{ fontSize: 13 }}>
+                Upload a Word doc or paste text; AI structures it into slides
+                for review. Document images come along, and described images
+                are generated automatically.
+              </div>
+              <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                <input
+                  type="file"
+                  accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  disabled={docReading}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void readDocx(f);
+                    e.target.value = "";
+                  }}
+                />
+                {docReading && (
+                  <span className="muted">
+                    <span className="spinner" /> Reading document…
+                  </span>
+                )}
+              </div>
+              {docNote && (
+                <div className="muted" style={{ fontSize: 12 }}>
+                  {docNote}
+                </div>
+              )}
+              <textarea
+                rows={5}
+                value={docText}
+                onChange={(e) => setDocText(e.target.value)}
+                placeholder="…or paste the source text here."
+              />
+              <div className="row">
+                <button
+                  onClick={() => void draftFromText()}
+                  disabled={docBusy || docReading}
+                >
+                  {docBusy ? <span className="spinner" /> : null}
+                  {docBusy ? "Drafting…" : "Draft deck"}
+                </button>
+              </div>
             </div>
-            <input
-              type="file"
-              accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void readDocx(f);
-                e.target.value = "";
-              }}
-            />
-            <textarea
-              rows={5}
-              value={docText}
-              onChange={(e) => setDocText(e.target.value)}
-              placeholder="…or paste the source text here."
-            />
-            <div className="row">
-              <button onClick={() => void draftFromText()} disabled={docBusy}>
-                {docBusy ? <span className="spinner" /> : null}
-                {docBusy ? "Drafting…" : "Draft deck"}
-              </button>
-            </div>
-          </div>
+          )}
         </div>
       </div>
     </div>
@@ -687,6 +997,26 @@ function SlideThumb({ slide }: { slide: PptSlide }) {
           <div className="ppt-thumb-line" style={{ width: "70%" }} />
         </div>
       );
+    case "title_content_image":
+      return (
+        <div className="ppt-slide-thumb">
+          <div className="ppt-thumb-bar" style={{ width: "60%" }} />
+          <div className="ppt-thumb-cols">
+            <div className="ppt-thumb-col">
+              <div className="ppt-thumb-line" />
+              <div className="ppt-thumb-line" style={{ width: "80%" }} />
+              <div className="ppt-thumb-line" style={{ width: "60%" }} />
+            </div>
+            <div className="ppt-thumb-image" style={{ flex: 1 }}>
+              {img ? (
+                <img src={img} alt="" />
+              ) : (
+                <div className="ppt-thumb-block" style={{ height: "100%" }} />
+              )}
+            </div>
+          </div>
+        </div>
+      );
     case "two_column":
       return (
         <div className="ppt-slide-thumb">
@@ -712,6 +1042,67 @@ function SlideThumb({ slide }: { slide: PptSlide }) {
           <div className="ppt-thumb-line" style={{ width: "50%" }} />
         </div>
       );
+    case "agenda":
+      return (
+        <div className="ppt-slide-thumb">
+          <div className="ppt-thumb-bar" style={{ width: "50%" }} />
+          {[1, 2, 3].map((n) => (
+            <div key={n} className="ppt-thumb-numline">
+              <span>{n}</span>
+              <div className="ppt-thumb-line" style={{ width: `${88 - n * 10}%` }} />
+            </div>
+          ))}
+        </div>
+      );
+    case "quote":
+      return (
+        <div className="ppt-slide-thumb ppt-thumb-quote">
+          <div className="ppt-thumb-quote-mark">“</div>
+          <div className="ppt-thumb-col" style={{ justifyContent: "center" }}>
+            <div className="ppt-thumb-line" />
+            <div className="ppt-thumb-line" style={{ width: "60%" }} />
+          </div>
+        </div>
+      );
+    case "chart":
+      return (
+        <div className="ppt-slide-thumb">
+          <div className="ppt-thumb-bar" style={{ width: "50%" }} />
+          <div className="ppt-thumb-chart">
+            {[40, 75, 55, 90].map((h, i) => (
+              <div key={i} style={{ height: `${h}%` }} />
+            ))}
+          </div>
+        </div>
+      );
+    case "diagram":
+      return (
+        <div className="ppt-slide-thumb">
+          <div className="ppt-thumb-bar" style={{ width: "50%" }} />
+          <div className="ppt-thumb-cols" style={{ alignItems: "center" }}>
+            {[0, 1, 2].map((i) => (
+              <div key={i} className="ppt-thumb-block" style={{ height: "55%" }} />
+            ))}
+          </div>
+        </div>
+      );
+    case "process":
+      return (
+        <div className="ppt-slide-thumb">
+          <div className="ppt-thumb-bar" style={{ width: "50%" }} />
+          <div className="ppt-thumb-process">
+            <div />
+            <div />
+            <div />
+          </div>
+        </div>
+      );
+    case "video":
+      return (
+        <div className="ppt-slide-thumb ppt-thumb-video">
+          <div className="ppt-thumb-play" />
+        </div>
+      );
     case "table":
       return (
         <div className="ppt-slide-thumb">
@@ -732,19 +1123,48 @@ function SlideThumb({ slide }: { slide: PptSlide }) {
 
 function SlideEditor(props: {
   slide: PptSlide;
+  /** Legacy url → prompt sidecar (old drafts); new images carry img.prompt. */
   aiPrompts: Record<string, string>;
-  setAiPrompt: (url: string, prompt: string) => void;
   onChange: (fn: (s: PptSlide) => PptSlide) => void;
   onError: (msg: string | null) => void;
 }) {
   const { slide } = props;
   const cfg = LAYOUT_FIELDS[slide.layout];
+  const [promptBusy, setPromptBusy] = useState(false);
 
   function setField<K extends keyof PptSlideFields>(
     key: K,
     value: PptSlideFields[K],
   ) {
     props.onChange((s) => ({ ...s, fields: { ...s.fields, [key]: value } }));
+  }
+
+  function setQuote(patch: Partial<PptQuote>) {
+    const next: PptQuote = { text: "", ...slide.fields.quote, ...patch };
+    setField("quote", next.text || next.attribution ? next : undefined);
+  }
+
+  /** Turn the drafted imagePrompt into a generated image on this slide. */
+  async function generateFromPrompt() {
+    const prompt = (slide.fields.imagePrompt ?? "").trim();
+    if (!prompt) return;
+    setPromptBusy(true);
+    props.onError(null);
+    try {
+      const url = await generateConceptImage(prompt);
+      props.onChange((s) => {
+        const fields: PptSlideFields = {
+          ...s.fields,
+          images: [...(s.fields.images ?? []), { url, prompt }],
+        };
+        delete fields.imagePrompt;
+        return { ...s, fields };
+      });
+    } catch (e) {
+      props.onError(formatErr(e));
+    } finally {
+      setPromptBusy(false);
+    }
   }
 
   return (
@@ -790,7 +1210,7 @@ function SlideEditor(props: {
       {cfg.bullets && (
         <div className="col" style={{ gap: 4 }}>
           <label className="muted" style={{ fontSize: 13 }}>
-            Bullets (one per line)
+            {cfg.bulletsLabel ?? "Bullets (one per line)"}
           </label>
           <textarea
             rows={5}
@@ -832,6 +1252,61 @@ function SlideEditor(props: {
         </div>
       )}
 
+      {cfg.quote && (
+        <div className="col" style={{ gap: 6 }}>
+          <label className="muted" style={{ fontSize: 13 }}>
+            Quote
+          </label>
+          <textarea
+            rows={3}
+            value={slide.fields.quote?.text ?? ""}
+            onChange={(e) => setQuote({ text: e.target.value })}
+            placeholder="The pull quote…"
+          />
+          <input
+            placeholder="Attribution (optional)"
+            value={slide.fields.quote?.attribution ?? ""}
+            onChange={(e) => setQuote({ attribution: e.target.value })}
+          />
+        </div>
+      )}
+
+      {cfg.chart && (
+        <ChartEditor
+          chart={slide.fields.chart ?? null}
+          onChange={(c) => setField("chart", c ?? undefined)}
+        />
+      )}
+
+      {cfg.items && (
+        <div className="col" style={{ gap: 4 }}>
+          <label className="muted" style={{ fontSize: 13 }}>
+            {cfg.items}
+          </label>
+          <textarea
+            rows={5}
+            value={(slide.fields.items ?? []).join("\n")}
+            onChange={(e) =>
+              setField(
+                "items",
+                e.target.value.length > 0
+                  ? e.target.value.split("\n")
+                  : undefined,
+              )
+            }
+            placeholder={"First\nSecond\nThird"}
+          />
+        </div>
+      )}
+
+      {cfg.video && (
+        <VideoEditor
+          video={slide.fields.video ?? null}
+          onChange={(v) => setField("video", v ?? undefined)}
+          onError={props.onError}
+        />
+      )}
+
       {cfg.table && (
         <TableEditor
           table={slide.fields.table ?? null}
@@ -839,12 +1314,35 @@ function SlideEditor(props: {
         />
       )}
 
+      {slide.fields.imagePrompt !== undefined && (
+        <div className="col" style={{ gap: 4 }}>
+          <label className="muted" style={{ fontSize: 13 }}>
+            AI image prompt
+          </label>
+          <div className="row" style={{ gap: 6 }}>
+            <input
+              value={slide.fields.imagePrompt}
+              onChange={(e) => setField("imagePrompt", e.target.value)}
+              placeholder="Describe the image to generate…"
+              style={{ flex: 1 }}
+            />
+            <button
+              className="secondary"
+              onClick={() => void generateFromPrompt()}
+              disabled={promptBusy || !slide.fields.imagePrompt.trim()}
+            >
+              {promptBusy ? <span className="spinner" /> : null}
+              Generate image
+            </button>
+          </div>
+        </div>
+      )}
+
       {(cfg.images ?? 0) > 0 && (
         <ImageSlots
           slide={slide}
           max={cfg.images ?? 1}
           aiPrompts={props.aiPrompts}
-          setAiPrompt={props.setAiPrompt}
           setImages={(images) =>
             setField("images", images.length > 0 ? images : undefined)
           }
@@ -862,9 +1360,9 @@ function SlideEditor(props: {
 function ImageSlots(props: {
   slide: PptSlide;
   max: number;
+  /** Legacy url → prompt sidecar; new images carry img.prompt directly. */
   aiPrompts: Record<string, string>;
-  setAiPrompt: (url: string, prompt: string) => void;
-  setImages: (images: { url: string; caption?: string }[]) => void;
+  setImages: (images: PptImage[]) => void;
   onError: (msg: string | null) => void;
 }) {
   const images = props.slide.fields.images ?? [];
@@ -872,17 +1370,23 @@ function ImageSlots(props: {
   const [regenBusy, setRegenBusy] = useState<string | null>(null);
   const [regenPrompts, setRegenPrompts] = useState<Record<string, string>>({});
 
-  async function regenerate(url: string) {
-    const prompt = (regenPrompts[url] ?? props.aiPrompts[url] ?? "").trim();
+  async function regenerate(img: PptImage) {
+    const prompt = (
+      regenPrompts[img.url] ??
+      img.prompt ??
+      props.aiPrompts[img.url] ??
+      ""
+    ).trim();
     if (!prompt) return;
-    setRegenBusy(url);
+    setRegenBusy(img.url);
     props.onError(null);
     try {
       const newUrl = await generateConceptImage(prompt);
       props.setImages(
-        images.map((img) => (img.url === url ? { ...img, url: newUrl } : img)),
+        images.map((m) =>
+          m.url === img.url ? { ...m, url: newUrl, prompt } : m,
+        ),
       );
-      props.setAiPrompt(newUrl, prompt);
     } catch (e) {
       props.onError(formatErr(e));
     } finally {
@@ -897,7 +1401,7 @@ function ImageSlots(props: {
       </label>
 
       {images.map((img, i) => {
-        const aiPrompt = props.aiPrompts[img.url];
+        const aiPrompt = img.prompt ?? props.aiPrompts[img.url];
         return (
           <div key={`${img.url}-${i}`} className="ppt-deck-image">
             <img src={img.url} alt="" />
@@ -930,7 +1434,7 @@ function ImageSlots(props: {
                   />
                   <button
                     className="secondary"
-                    onClick={() => void regenerate(img.url)}
+                    onClick={() => void regenerate(img)}
                     disabled={regenBusy !== null}
                   >
                     {regenBusy === img.url ? <span className="spinner" /> : null}
@@ -953,12 +1457,261 @@ function ImageSlots(props: {
 
       {images.length < props.max && (
         <ImageSlotPicker
-          onAdd={({ url, aiPrompt }) => {
-            props.setImages([...images, { url }]);
-            if (aiPrompt) props.setAiPrompt(url, aiPrompt);
-          }}
+          onAdd={({ url, aiPrompt }) =>
+            props.setImages([
+              ...images,
+              aiPrompt ? { url, prompt: aiPrompt } : { url },
+            ])
+          }
         />
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Chart editor.
+// ---------------------------------------------------------------------------
+
+const EMPTY_CHART: PptChart = {
+  chartType: "column",
+  categories: ["Category 1", "Category 2", "Category 3"],
+  series: [{ name: "Series 1", values: [0, 0, 0] }],
+};
+
+/** Pad with zeroes / truncate so a series always has one value per category. */
+function alignValues(values: number[], len: number): number[] {
+  return Array.from({ length: len }, (_, i) => values[i] ?? 0);
+}
+
+function parseValues(text: string, len: number): number[] {
+  const nums = text
+    .split(",")
+    .map((v) => Number(v.trim()))
+    .map((n) => (Number.isFinite(n) ? n : 0));
+  return alignValues(nums, len);
+}
+
+function ChartEditor(props: {
+  chart: PptChart | null;
+  onChange: (c: PptChart | null) => void;
+}) {
+  const chart = props.chart;
+  // Raw text shadows so typing "1," doesn't get reformatted mid-keystroke;
+  // the parsed numbers/categories land in the slide state on every change.
+  const [catText, setCatText] = useState<string | null>(null);
+  const [valText, setValText] = useState<Record<number, string>>({});
+
+  if (!chart) {
+    return (
+      <div>
+        <button className="secondary" onClick={() => props.onChange(EMPTY_CHART)}>
+          Add chart
+        </button>
+      </div>
+    );
+  }
+
+  function update(fn: (c: PptChart) => PptChart) {
+    props.onChange(fn(chart!));
+  }
+
+  return (
+    <div className="col" style={{ gap: 8 }}>
+      <div className="row" style={{ gap: 8 }}>
+        <label className="muted" style={{ fontSize: 13 }}>
+          Chart type
+        </label>
+        <select
+          value={chart.chartType}
+          onChange={(e) =>
+            update((c) => ({ ...c, chartType: e.target.value as PptChartType }))
+          }
+        >
+          {PPT_CHART_TYPES.map((t) => (
+            <option key={t} value={t}>
+              {CHART_TYPE_LABELS[t]}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="col" style={{ gap: 4 }}>
+        <label className="muted" style={{ fontSize: 13 }}>
+          Categories (comma-separated)
+        </label>
+        <input
+          value={catText ?? chart.categories.join(", ")}
+          placeholder="Q1, Q2, Q3, Q4"
+          onChange={(e) => {
+            setCatText(e.target.value);
+            const categories = e.target.value.split(",").map((c) => c.trim());
+            update((c) => ({
+              ...c,
+              categories,
+              series: c.series.map((s) => ({
+                ...s,
+                values: alignValues(s.values, categories.length),
+              })),
+            }));
+          }}
+        />
+      </div>
+
+      <label className="muted" style={{ fontSize: 13 }}>
+        Series
+      </label>
+      {chart.series.map((s, i) => (
+        <div key={i} className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+          <input
+            value={s.name}
+            placeholder={`Series ${i + 1}`}
+            onChange={(e) =>
+              update((c) => ({
+                ...c,
+                series: c.series.map((x, n) =>
+                  n === i ? { ...x, name: e.target.value } : x,
+                ),
+              }))
+            }
+            style={{ width: 140 }}
+          />
+          <input
+            value={valText[i] ?? s.values.join(", ")}
+            placeholder="10, 20, 30"
+            onChange={(e) => {
+              setValText((prev) => ({ ...prev, [i]: e.target.value }));
+              const values = parseValues(e.target.value, chart.categories.length);
+              update((c) => ({
+                ...c,
+                series: c.series.map((x, n) =>
+                  n === i ? { ...x, values } : x,
+                ),
+              }));
+            }}
+            style={{ flex: 1, minWidth: 160 }}
+          />
+          <button
+            type="button"
+            className="icon-btn"
+            title="Remove series"
+            disabled={chart.series.length <= 1}
+            onClick={() => {
+              setValText({}); // indexes shift — drop the raw-text shadows
+              update((c) => ({
+                ...c,
+                series: c.series.filter((_, n) => n !== i),
+              }));
+            }}
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      ))}
+      <div className="muted" style={{ fontSize: 12 }}>
+        Each series needs one value per category — values are padded with 0 or
+        truncated when the categories change.
+      </div>
+      <div className="row" style={{ gap: 6 }}>
+        <button
+          className="secondary"
+          disabled={chart.series.length >= 6}
+          onClick={() =>
+            update((c) => ({
+              ...c,
+              series: [
+                ...c.series,
+                {
+                  name: `Series ${c.series.length + 1}`,
+                  values: c.categories.map(() => 0),
+                },
+              ],
+            }))
+          }
+        >
+          Add series
+        </button>
+        <button className="secondary" onClick={() => props.onChange(null)}>
+          Remove chart
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Video editor: URL or upload (mp4/webm ≤50MB via /api/uploads) + caption.
+// ---------------------------------------------------------------------------
+
+function VideoEditor(props: {
+  video: PptVideo | null;
+  onChange: (v: PptVideo | null) => void;
+  onError: (msg: string | null) => void;
+}) {
+  const video = props.video;
+  const [busy, setBusy] = useState(false);
+
+  function set(patch: Partial<PptVideo>) {
+    const next: PptVideo = { url: "", ...video, ...patch };
+    props.onChange(next.url || next.caption ? next : null);
+  }
+
+  async function handleUpload(file: File) {
+    if (!isAllowedVideoType(file)) {
+      props.onError("Use an MP4 or WebM video.");
+      return;
+    }
+    if (file.size > MAX_VIDEO_BYTES) {
+      props.onError("That video is over the 50MB limit.");
+      return;
+    }
+    setBusy(true);
+    props.onError(null);
+    try {
+      const { url } = await uploadVideo(file);
+      set({ url });
+    } catch (e) {
+      props.onError(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="col" style={{ gap: 6 }}>
+      <label className="muted" style={{ fontSize: 13 }}>
+        Video
+      </label>
+      <input
+        placeholder="https://… (.mp4 or .webm)"
+        value={video?.url ?? ""}
+        onChange={(e) => set({ url: e.target.value })}
+      />
+      <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+        <input
+          type="file"
+          accept="video/mp4,video/webm,.mp4,.webm"
+          disabled={busy}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void handleUpload(f);
+            e.target.value = "";
+          }}
+        />
+        {busy && (
+          <span className="muted">
+            <span className="spinner" /> Uploading…
+          </span>
+        )}
+      </div>
+      <input
+        placeholder="Caption (optional)"
+        value={video?.caption ?? ""}
+        onChange={(e) => set({ caption: e.target.value })}
+      />
+      <div className="muted" style={{ fontSize: 12 }}>
+        MP4 or WebM up to 50MB — the video is embedded in the exported deck.
+      </div>
     </div>
   );
 }

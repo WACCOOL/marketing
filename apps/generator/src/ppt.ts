@@ -7,7 +7,7 @@ import sharp from "sharp";
 import { GetObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { PptDeckSchema, PPT_GENERATED_BY, type PptDeck } from "@wac/shared";
-import { fetchImageBuffer } from "./fetchImage.js";
+import { fetchImageBuffer, readWithCap } from "./fetchImage.js";
 import type { GenerateRequest, GenerationResult, GeneratedFile } from "./server.js";
 
 /**
@@ -31,6 +31,18 @@ const PPTX_CONTENT_TYPE =
 // Slide images are normalized (and capped) before they go into the deck so a
 // 12000px hero shot can't balloon the .pptx.
 const MAX_IMAGE_EDGE = 3000;
+
+// Slide videos are embedded as-is (no transcode in the container); the cap and
+// timeout bound what one deck can pull in. Mirrors fetchImage.ts's URL guards.
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024;
+const VIDEO_TIMEOUT_MS = 60_000;
+// Accepted video content-types -> tmp-file extension (quicktime ships fine in
+// an .mp4-named part; python-pptx embeds bytes + the declared mimeType).
+const VIDEO_CONTENT_TYPES = new Map<string, "mp4" | "webm">([
+  ["video/mp4", "mp4"],
+  ["video/webm", "webm"],
+  ["video/quicktime", "mp4"],
+]);
 
 const BUILD_TIMEOUT_MS = 60_000;
 const SOFFICE_TIMEOUT_MS = 120_000;
@@ -192,20 +204,81 @@ interface SpecImage {
   caption?: string;
 }
 
+interface SpecVideo {
+  path: string;
+  mimeType: string;
+  caption?: string;
+}
+
+interface FetchedVideo {
+  buffer: Buffer;
+  mimeType: string;
+  ext: "mp4" | "webm";
+}
+
 /**
- * Fetch every slide image through the shared URL guards, normalize via sharp
- * (PNG when it carries alpha, JPEG otherwise; long edge capped), and write it
- * into the job tmpdir. Returns the deck's slides with images rewritten to
- * local {path, width, height, caption} for the python build spec.
+ * Video fetch with the same URL guards as fetchImageBuffer: https-only, an
+ * allowed content-type (mp4/webm/quicktime), a byte cap, and a timeout. No
+ * decode/transcode — python-pptx embeds the bytes verbatim.
  */
-async function localizeImages(
+export async function fetchVideoBuffer(url: string): Promise<FetchedVideo> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`invalid video URL: ${url}`);
+  }
+  if (parsed.protocol !== "https:") {
+    throw new Error(`video URL must use https (got ${parsed.protocol}): ${url}`);
+  }
+
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(VIDEO_TIMEOUT_MS),
+    headers: { accept: "video/*" },
+  });
+  if (!res.ok) {
+    throw new Error(`fetch failed ${res.status} ${res.statusText}: ${url}`);
+  }
+
+  const rawType = (res.headers.get("content-type") ?? "")
+    .split(";")[0]!
+    .trim()
+    .toLowerCase();
+  if (rawType && !VIDEO_CONTENT_TYPES.has(rawType)) {
+    throw new Error(
+      `URL did not return a supported video (content-type: ${rawType}; ` +
+        `allowed: ${[...VIDEO_CONTENT_TYPES.keys()].join(", ")}): ${url}`,
+    );
+  }
+  const mimeType = rawType || "video/mp4";
+  const lenHeader = res.headers.get("content-length");
+  if (lenHeader && Number(lenHeader) > MAX_VIDEO_BYTES) {
+    throw new Error(`video exceeds maxBytes (${MAX_VIDEO_BYTES}): ${url}`);
+  }
+
+  const buffer = await readWithCap(res, MAX_VIDEO_BYTES, url, "video");
+  return { buffer, mimeType, ext: VIDEO_CONTENT_TYPES.get(mimeType) ?? "mp4" };
+}
+
+/**
+ * Fetch every slide image/video through the shared URL guards and write it
+ * into the job tmpdir. Images are normalized via sharp (PNG when they carry
+ * alpha, JPEG otherwise; long edge capped); videos are embedded byte-for-byte.
+ * Returns the deck's slides with images rewritten to local {path, width,
+ * height, caption} and video to local {path, mimeType, caption} for the
+ * python build spec. AI-drafting leftovers (fields.imagePrompt and each
+ * image's `prompt`) are dropped here — they're builder plumbing, not content.
+ */
+async function localizeMedia(
   deck: PptDeck,
   tmp: string,
 ): Promise<{ id: string; layout: string; fields: Record<string, unknown> }[]> {
-  let n = 0;
+  let imageN = 0;
+  let videoN = 0;
   const slides = [];
   for (const slide of deck.slides) {
     const fields: Record<string, unknown> = { ...slide.fields };
+    delete fields.imagePrompt;
     if (slide.fields.images && slide.fields.images.length > 0) {
       const localized: SpecImage[] = [];
       for (const image of slide.fields.images) {
@@ -217,7 +290,7 @@ async function localizeImages(
         const { data, info } = fetched.hasAlpha
           ? await pipeline.png().toBuffer({ resolveWithObject: true })
           : await pipeline.jpeg({ quality: 90 }).toBuffer({ resolveWithObject: true });
-        const file = path.join(tmp, `img-${n++}.${fetched.hasAlpha ? "png" : "jpg"}`);
+        const file = path.join(tmp, `img-${imageN++}.${fetched.hasAlpha ? "png" : "jpg"}`);
         await fs.writeFile(file, data);
         localized.push({
           path: file,
@@ -227,6 +300,18 @@ async function localizeImages(
         });
       }
       fields.images = localized;
+    }
+    if (slide.fields.video) {
+      const video = slide.fields.video;
+      const fetched = await fetchVideoBuffer(video.url);
+      const file = path.join(tmp, `video-${videoN++}.${fetched.ext}`);
+      await fs.writeFile(file, fetched.buffer);
+      const localized: SpecVideo = {
+        path: file,
+        mimeType: fetched.mimeType,
+        ...(video.caption ? { caption: video.caption } : {}),
+      };
+      fields.video = localized;
     }
     slides.push({ id: slide.id, layout: slide.layout, fields });
   }
@@ -256,6 +341,11 @@ export async function runPptGenerator(
     throw new Error(`invalid ppt deck params: ${detail}`);
   }
   const deck = parsed.data;
+  // replaceAssetId is job plumbing (overwrite-on-edit), not deck content: keep
+  // it out of the build spec and the stored metadata.deck, and surface it on
+  // the result so the server updates the existing asset instead of creating
+  // a new one.
+  const { replaceAssetId, ...deckContent } = deck;
 
   const { data, error } = await deps.sb
     .from("ppt_templates")
@@ -288,7 +378,7 @@ export async function runPptGenerator(
       templatePath,
       layoutMap,
       outPath,
-      slides: await localizeImages(deck, tmp),
+      slides: await localizeMedia(deck, tmp),
     };
 
     const scriptsDir = await resolveScriptsDir();
@@ -390,12 +480,13 @@ export async function runPptGenerator(
     return {
       files,
       metadata: {
-        deck,
+        deck: deckContent,
         templateId: deck.templateId,
         templateVersion: row.version,
         warnings,
         generatedBy: PPT_GENERATED_BY,
       },
+      ...(replaceAssetId ? { replaceAssetId } : {}),
     };
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
