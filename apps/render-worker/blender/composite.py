@@ -483,6 +483,7 @@ def setup_matched_room(scene, fixture_objs, fixture_meshes, center, radius,
 
     size = max(distance * 4.0, radius * 20.0)
     m = (mount or "ceiling").lower()
+    catcher = None
     if m == "wall":
         # Vertical plane just behind the fixture; normal faces the room/camera.
         flat = Vector((-forward.x, -forward.y, 0.0))
@@ -491,9 +492,26 @@ def setup_matched_room(scene, fixture_objs, fixture_meshes, center, radius,
     elif m == "floor":
         normal = Vector((0.0, 0.0, 1.0))
         point = Vector((placed_center.x, placed_center.y, bottom_z))
+        # A "floor" above the camera is a mis-mounted fixture (wrong registry
+        # mount or a placement dragged high); the giant horizontal shadow-catcher
+        # would veil the whole upper frame. Render without it instead.
+        if bottom_z > cam_pos.z - 0.05:
+            catcher = False
     else:  # ceiling / recessed / flush
         normal = Vector((0.0, 0.0, 1.0))  # horizontal ceiling, normal up
         point = Vector((placed_center.x, placed_center.y, top_z))
+        # Same guard, mirrored: a "ceiling" below the camera (e.g. a wall sconce
+        # whose registry says ceiling, placed at table height) puts the plane
+        # under the lens and washes out everything below its horizon line.
+        if top_z < cam_pos.z + 0.05:
+            catcher = False
+    if catcher is False:
+        print(f"[composite] room-match: SKIPPED {m} catcher — plane at "
+              f"z={point.z:.3f} vs camera z={cam_pos.z:.3f} is on the wrong "
+              f"side (check the fixture's mount in the registry)")
+        print(f"[composite] room-match: mount={m} fov={fov_deg:.1f} dist={distance:.2f} "
+              f"canopy_z={top_z:.3f} planes=[bg]")
+        return cam, placed_center, [bg]
     catcher = make_oriented_catcher(scene, room_path, point, normal, size)
 
     print(f"[composite] room-match: mount={m} fov={fov_deg:.1f} dist={distance:.2f} "

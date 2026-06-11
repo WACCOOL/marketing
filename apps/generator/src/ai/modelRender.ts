@@ -105,10 +105,20 @@ function singleRequest(
 // method + body. The cap is generous since each hop is a fresh poll.
 const MAX_REDIRECTS = 50;
 
+// Modal sheds load with 429 when a burst (e.g. a multi-fixture preview chain
+// plus per-fixture cutouts, each wanting its own one-render GPU container)
+// outruns the autoscaler. That's transient by definition — back off and retry
+// instead of failing the whole render.
+const MAX_429_RETRIES = 4;
+const RETRY_BASE_DELAY_MS = 5_000;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 /**
  * POST to the render-worker, transparently following the 303 redirects Modal
- * uses to keep long renders alive. Locally (a direct node worker) there are no
- * redirects, so this behaves exactly like a single request.
+ * uses to keep long renders alive, and retrying 429 load-shedding with backoff.
+ * Locally (a direct node worker) there are no redirects, so this behaves
+ * exactly like a single request.
  */
 async function workerRequest(
   label: string,
@@ -120,9 +130,18 @@ async function workerRequest(
   let method = init.method ?? "GET";
   let body = init.body;
   const headers = init.headers;
+  let retries = 0;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const res = await singleRequest(label, url, { method, headers, body }, timeoutMs);
+    if (res.status === 429 && retries < MAX_429_RETRIES) {
+      retries++;
+      const delay = RETRY_BASE_DELAY_MS * 2 ** (retries - 1); // 5s/10s/20s/40s
+      console.warn(`[modelRender] ${label}: 429 — retry ${retries}/${MAX_429_RETRIES} in ${delay / 1000}s`);
+      await sleep(delay);
+      hop--; // a retry is not a redirect hop
+      continue;
+    }
     const isRedirect = res.status >= 300 && res.status < 400 && !!res.location;
     if (!isRedirect) {
       return {
