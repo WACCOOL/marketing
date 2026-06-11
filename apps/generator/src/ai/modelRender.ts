@@ -175,9 +175,14 @@ export function makeModelRenderAdapter(
   return {
     provider: "render-worker",
     async composite(req: CompositeRenderRequest): Promise<CompositeResult> {
+      // Multi-fixture shots render sequentially on the worker, so a preview's
+      // socket budget scales with the chain length (finals already have hours).
+      const fixtureCount = Math.max(1, req.fixtures?.length ?? 1);
       const t =
         req.timeoutMs ??
-        (req.preview ? COMPOSITE_PREVIEW_TIMEOUT_MS : COMPOSITE_FINAL_TIMEOUT_MS);
+        (req.preview
+          ? COMPOSITE_PREVIEW_TIMEOUT_MS * fixtureCount
+          : COMPOSITE_FINAL_TIMEOUT_MS);
       const res = await workerRequest(
         "render-worker /composite",
         `${base}/composite`,
@@ -188,6 +193,7 @@ export function makeModelRenderAdapter(
             modelUrl: req.modelUrl,
             modelPath: req.modelPath,
             sku: req.sku,
+            fixtures: req.fixtures,
             roomUrl: req.roomUrl,
             roomPath: req.roomPath,
             iesUrl: req.iesUrl,

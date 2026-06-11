@@ -6,6 +6,7 @@ import {
   AppShotPreviewRequestSchema,
   deriveFixtureKind,
   normalizeFixtureKey,
+  normalizeShotFixtures,
   type DimensionsMm,
   type FixtureMount,
 } from "@wac/shared";
@@ -46,6 +47,9 @@ export const appShotRoutes = new Hono<AppBindings>();
 // the first is cold.
 const COMPOSE_TIMEOUT_MS = 420_000;
 const PREVIEW_TIMEOUT_MS = 360_000;
+// Each extra fixture in a multi-fixture preview adds one more (warm-container)
+// Blender render to the chain.
+const PREVIEW_PER_FIXTURE_MS = 120_000;
 
 // The picker lists fixtures from the registry, so cap a page and how many rows
 // we scan to group. Defaults keep the first load light while the catalog grows.
@@ -757,11 +761,15 @@ appShotRoutes.post("/preview", requireAuth, async (c) => {
   }
 
   const user = c.get("user");
+  // Multi-fixture chains render sequentially on the worker, so the proxy's
+  // budget scales with the fixture count.
+  const fixtureCount = Math.max(1, parsed.data.fixtures?.length ?? 1);
   const out = await composeProxy(
     c,
     user.id,
     {
       sku: parsed.data.sku,
+      fixtures: parsed.data.fixtures,
       roomUrl: normalizeAssetUrl(c, parsed.data.sceneUrl),
       placement: parsed.data.placement,
       skipCritic: true,
@@ -769,7 +777,7 @@ appShotRoutes.post("/preview", requireAuth, async (c) => {
       renderStyle: parsed.data.renderStyle,
       renderQuality: parsed.data.renderQuality,
     },
-    PREVIEW_TIMEOUT_MS,
+    PREVIEW_TIMEOUT_MS + PREVIEW_PER_FIXTURE_MS * (fixtureCount - 1),
   );
   if ("__error" in out) return c.json({ error: out.__error }, out.status as 502);
   if (!out.previewPng) {
@@ -803,13 +811,21 @@ appShotRoutes.post("/finalize", requireAuth, async (c) => {
   const user = c.get("user");
   const sb = userSupabase(c.env, c.get("jwt"));
 
+  // Normalize both request shapes to the fixture list, and ALSO mirror the
+  // first fixture into the legacy sku/placement fields so older readers (and a
+  // not-yet-redeployed generator) keep working on new jobs.
+  const fixtures = normalizeShotFixtures(parsed.data);
+  const first = fixtures[0]!;
+  const skus = [...new Set(fixtures.map((f) => f.sku))];
+
   const params: Record<string, unknown> = {
     version: APPIMAGE_PARAMS_VERSION,
     mode: "shot3d",
     shot: {
-      sku: parsed.data.sku,
+      sku: first.sku,
       sceneUrl: normalizeAssetUrl(c, parsed.data.sceneUrl),
-      placement: parsed.data.placement,
+      placement: first.placement,
+      fixtures,
       // Caustics/samples/resolution come from the quality tier (defaults to
       // `standard`, which keeps the previous "high quality" behavior).
       renderStyle: parsed.data.renderStyle,
@@ -821,10 +837,12 @@ appShotRoutes.post("/finalize", requireAuth, async (c) => {
   const res = await createGenerationJob(c.env, sb, {
     ownerId: user.id,
     tool: "appimage",
-    name: parsed.data.name ?? `${parsed.data.sku} app shot`,
+    name:
+      parsed.data.name ??
+      `${skus.join(" + ")} app shot`,
     params,
     tags: [
-      `sku:${parsed.data.sku}`,
+      ...skus.map((sku) => `sku:${sku}`),
       "shot3d",
       `editor:${parsed.data.editor ?? "appshot"}`,
     ],
