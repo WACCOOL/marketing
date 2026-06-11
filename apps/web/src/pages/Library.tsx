@@ -96,6 +96,10 @@ export function AssetGallery(props: {
   blurb: string;
   /** Fix the gallery to one tool (hides the tool dropdown). */
   tool?: string;
+  /** Only assets carrying this tag (e.g. the PPT section's deck images). */
+  tag?: string;
+  /** Hide assets carrying this tag (e.g. deck images out of Final Images). */
+  excludeTag?: string;
 }) {
   const { user } = useAuth();
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -115,6 +119,8 @@ export function AssetGallery(props: {
       if (q) params.set("q", q);
       if (props.tool) params.set("tool", props.tool);
       else if (tool) params.set("tool", tool);
+      if (props.tag) params.set("tag", props.tag);
+      if (props.excludeTag) params.set("excludeTag", props.excludeTag);
       const assetsRes = await api<{ assets: Asset[] }>(
         "/api/assets" + (params.toString() ? "?" + params.toString() : ""),
       );

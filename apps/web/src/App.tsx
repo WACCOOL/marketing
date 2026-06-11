@@ -21,6 +21,7 @@ import {
 import { Admin } from "./pages/Admin.js";
 import { DeckBuilder } from "./pages/ppt/DeckBuilder.js";
 import { MyDecks } from "./pages/ppt/MyDecks.js";
+import { PptRenderedImages } from "./pages/ppt/RenderedImages.js";
 import { PptTemplates } from "./pages/ppt/Templates.js";
 
 // Lazy-loaded: the 3D App-Shot + Cam Solve studios pull in <model-viewer>
@@ -121,6 +122,16 @@ function Shell() {
             path="/ppt/decks"
             element={
               user.role === "rep" ? <Navigate to="/builder" replace /> : <MyDecks />
+            }
+          />
+          <Route
+            path="/ppt/images"
+            element={
+              user.role === "rep" ? (
+                <Navigate to="/builder" replace />
+              ) : (
+                <PptRenderedImages />
+              )
             }
           />
           <Route
