@@ -1,5 +1,5 @@
 import type { PptLayout, PptSlide } from "@wac/shared";
-import { APPIMAGE_PARAMS_VERSION } from "@wac/shared";
+import { APPIMAGE_PARAMS_VERSION, PPT_IMAGE_TAG } from "@wac/shared";
 import { api, apiBlob, type ApiError } from "../../lib/api.js";
 import { supabase } from "../../lib/supabase.js";
 import { createJob, pollJob } from "../../lib/jobs.js";
@@ -132,8 +132,11 @@ export async function generateConceptImage(prompt: string): Promise<string> {
     referenceImages: [],
     output: { format: "png" },
   };
+  // PPT_IMAGE_TAG routes the asset to the PPT section's Rendered Images
+  // gallery (and out of the Image Generation section's Final Images).
   const { jobId } = await createJob("appimage", "Deck image concept", params, [
     "concept",
+    PPT_IMAGE_TAG,
   ]);
   const job = await pollJob(jobId);
   if (job.status !== "succeeded" || !job.assetId) {

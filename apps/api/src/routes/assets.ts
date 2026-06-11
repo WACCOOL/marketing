@@ -8,9 +8,17 @@ import { emailsForUserIds, serviceSupabase, userSupabase } from "../supabase.js"
 
 export const assetRoutes = new Hono<AppBindings>();
 
+/** Tag filters take simple slugs only (they're interpolated into a PostgREST
+ * array literal, so keep braces/commas/quotes out by construction). */
+const TagSchema = z.string().regex(/^[a-z0-9_:-]+$/i);
+
 const ListSchema = z.object({
   q: z.string().optional(),
   tool: z.enum(["utm", "qr", "appimage", "ppt", "layout"]).optional(),
+  /** Only assets carrying this tag (e.g. the PPT section's deck images). */
+  tag: TagSchema.optional(),
+  /** Drop assets carrying this tag (e.g. hide deck images from Final Images). */
+  excludeTag: TagSchema.optional(),
   limit: z.coerce.number().int().min(1).max(200).optional().default(50),
   offset: z.coerce.number().int().min(0).optional().default(0),
 });
@@ -31,6 +39,10 @@ assetRoutes.get("/", requireAuth, async (c) => {
     .range(parsed.data.offset, parsed.data.offset + parsed.data.limit - 1);
 
   if (parsed.data.tool) query = query.eq("tool", parsed.data.tool);
+  if (parsed.data.tag) query = query.contains("tags", [parsed.data.tag]);
+  if (parsed.data.excludeTag) {
+    query = query.not("tags", "cs", `{${parsed.data.excludeTag}}`);
+  }
   if (parsed.data.q && parsed.data.q.length > 0) {
     // Full-text over the tsvector column populated by trigger (see migrations).
     query = query.textSearch("search_tsv", parsed.data.q, {

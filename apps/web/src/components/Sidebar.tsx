@@ -80,6 +80,7 @@ const NAV: NavEntry[] = [
     children: [
       { to: "/ppt/builder", label: "Deck Builder", icon: LayoutTemplate },
       { to: "/ppt/decks", label: "My Decks", icon: Files },
+      { to: "/ppt/images", label: "Rendered Images", icon: ImagePlay },
       { to: "/ppt/templates", label: "Templates", icon: FileUp },
     ],
   },

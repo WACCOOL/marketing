@@ -195,3 +195,11 @@ function jsonByteLength(value: unknown): number {
 
 /** Asset metadata marker for decks built by this pipeline. */
 export const PPT_GENERATED_BY = "ppt-v1";
+
+/**
+ * Tag on appimage assets that were generated FOR a deck image slot. They ride
+ * the normal image-generation pipeline (tool="appimage"), so this tag is what
+ * keeps them out of the Image Generation section's Final Images gallery and
+ * groups them under the PPT section's Rendered Images instead.
+ */
+export const PPT_IMAGE_TAG = "ppt-image";
