@@ -896,6 +896,30 @@ def run_room_box(scene, job, out_path):
                             float(job.get("roomStrength", 1.0)), 0.0)
     plates.append(bg)
 
+    # "Window wall" fill: a big soft-DIRECTIONAL area light across the room's
+    # open front, present in BOTH relight passes. The diffuse self-emission is a
+    # huge wraparound source that casts no usable shadow; this light's grazing
+    # path along the ceiling/walls is what a canopy or sconce body visibly
+    # BLOCKS — it restores the crisp contact shadow next to the mount without
+    # touching the photo (identical in both passes, so it divides out except
+    # where the fixture occludes it).
+    front_w = (x1 - x0) + 2 * ov
+    front_data = bpy.data.lights.new("wac_front_fill", type="AREA")
+    front_data.shape = "SQUARE"
+    # A COMPACT panel, not a wall-sized one: a huge source casts only penumbra;
+    # this size keeps the canopy/sconce contact shadow a readable edge.
+    front_data.size = 1.2
+    # Total flux lands at roughly a third of the base light: enough for a
+    # readable contact shadow, not enough to drown the fixture's own light
+    # (or clip the base pass).
+    front_data.energy = float(job.get("frontFillWatts", 12.0 * front_w * hgt))
+    front = bpy.data.objects.new("wac_front_fill", front_data)
+    scene.collection.objects.link(front)
+    # Hung LOW so its light grazes the ceiling at a shallow angle — a canopy or
+    # flush body then throws a long, readable shadow instead of a sliver.
+    front.location = ((x0 + x1) / 2.0, min(float(boxd["yFront"]), 0.0) - 0.4, hgt * 0.3)
+    front.rotation_euler = (math.pi / 2.0, 0.0, 0.0)  # emit toward +Y (into the room)
+
     # --- place each fixture + its light ----------------------------------------
     focal = RB.focal_from_fov(fov_deg, aspect)
     gamma = float(job.get("lightGamma", SLIDER_GAMMA))
@@ -924,7 +948,10 @@ def run_room_box(scene, job, out_path):
                 # the real fixture (its lobes light ceiling/walls/floor naturally)
                 # and spin it with the fixture.
                 loc = light_centroid(g["objs"], center)
-                power = lamp_boost * float(job.get("iesRefWatts", IES_REF_WATTS))
+                # The relight base is the photo's own (bright) light, so the
+                # slider-50 anchor is ~5x the legacy billboard path's — below
+                # that the pool measures under +10% and reads as OFF.
+                power = lamp_boost * float(job.get("iesRefWatts", IES_REF_WATTS * 5.0))
                 ies_obj = add_ies_light(scene, loc, ies_path, power, (0.0, 0.0, yaw), warm)
                 boost_fixture_lamps(g["objs"], glow, warm, lamp_cap)
                 ies_used = True
@@ -933,7 +960,7 @@ def run_room_box(scene, job, out_path):
                 print(f"[composite] IES setup failed ({e}); falling back to lamps")
         if not ies_used:
             boost_fixture_lamps(g["objs"], lamp_boost, warm, lamp_cap)
-            watts = lamp_boost * float(job.get("fallbackWatts", 250.0))
+            watts = lamp_boost * float(job.get("fallbackWatts", 1250.0))
             ies_obj = add_fallback_light(scene, light_centroid(g["objs"], center), watts, warm)
             print(f"[composite] room-box fill sku={spec.get('sku')} watts={watts:.1f} lamp x{lamp_boost:.3f}")
         g["light"] = ies_obj

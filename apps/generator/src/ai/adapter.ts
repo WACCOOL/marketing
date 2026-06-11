@@ -275,6 +275,9 @@ export interface CompositeFixtureRequest {
   yPct?: number;
   brightness?: number;
   lightOutput?: number;
+  /** Room-box relight: light-spots / shadows map strengths (scene-level). */
+  highlights?: number;
+  shadows?: number;
   warm?: number;
   /** Mount-surface attachment inside a solved room box (true-scale placement). */
   surface?: AppShotSurface;
@@ -316,6 +319,9 @@ export interface CompositeRenderRequest {
   brightness?: number;
   /** Light-output slider (0..200, 25 = neutral): real light thrown into the room. */
   lightOutput?: number;
+  /** Room-box relight: light-spots / shadows map strengths (scene-level). */
+  highlights?: number;
+  shadows?: number;
   warm?: number;
   /** Mount-surface attachment inside a solved room box (true-scale placement). */
   surface?: AppShotSurface;

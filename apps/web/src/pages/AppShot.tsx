@@ -69,6 +69,8 @@ const DEFAULT_PLACEMENT: AppShotPlacement = {
   coverage: 0.34,
   brightness: 50,
   lightOutput: 50,
+  highlights: 50,
+  shadows: 50,
   warm: 0.45,
   pose: { azimuthDeg: 0, elevationDeg: -18, rollDeg: 0, fovDeg: 36, distanceFactor: 1, marginFactor: 1.25 },
 };
@@ -86,6 +88,8 @@ function defaultPlacementFor(mount: string | undefined): AppShotPlacement {
       coverage: 0.26,
       brightness: 50,
       lightOutput: 50,
+      highlights: 50,
+      shadows: 50,
       warm: 0.45,
       pose: { azimuthDeg: -8, elevationDeg: 2, rollDeg: 0, fovDeg: 30, distanceFactor: 1, marginFactor: 1.25 },
     };
@@ -97,6 +101,8 @@ function defaultPlacementFor(mount: string | undefined): AppShotPlacement {
       coverage: 0.4,
       brightness: 50,
       lightOutput: 50,
+      highlights: 50,
+      shadows: 50,
       warm: 0.45,
       pose: { azimuthDeg: 0, elevationDeg: -5, rollDeg: 0, fovDeg: 35, distanceFactor: 1, marginFactor: 1.25 },
     };
