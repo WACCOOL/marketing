@@ -1,5 +1,31 @@
 import { describe, expect, it } from "vitest";
-import { normalizeFixtureKey } from "./fixture.js";
+import { normalizeFixtureKey, skuLookupCandidates } from "./fixture.js";
+
+describe("skuLookupCandidates", () => {
+  it("yields the full SKU then progressively strips dash-joined suffix tokens", () => {
+    expect(skuLookupCandidates("bl248606-wv-ab")).toEqual([
+      "bl248606-wv-ab",
+      "bl248606-wv",
+      "bl248606",
+    ]);
+  });
+
+  it("lowercases and trims", () => {
+    expect(skuLookupCandidates("  BFM31612-AB ")).toEqual([
+      "bfm31612-ab",
+      "bfm31612",
+    ]);
+  });
+
+  it("returns a dash-less SKU as a single candidate", () => {
+    expect(skuLookupCandidates("bpd42635")).toEqual(["bpd42635"]);
+  });
+
+  it("never strips down to an absurdly short stem", () => {
+    expect(skuLookupCandidates("ab-cd-ef")).toEqual(["ab-cd-ef", "ab-cd"]);
+    expect(skuLookupCandidates("ab")).toEqual(["ab"]);
+  });
+});
 
 describe("normalizeFixtureKey", () => {
   it("lowercases and is idempotent for ordinary keys", () => {

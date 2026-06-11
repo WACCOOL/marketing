@@ -5,6 +5,7 @@ import {
   COVERAGE_DEFAULTS,
   POSE_DEFAULTS,
   deriveFixtureKind,
+  skuLookupCandidates,
   type FixtureMount,
 } from "@wac/shared";
 import type { FixtureMeta, FixtureResolver, Mount } from "./appshot3d.js";
@@ -51,32 +52,57 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
+/** Separator-stripped uppercase form for catalog-vs-stem SKU comparison. */
+function normSku(s: string): string {
+  return s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
 /**
- * Best-effort catalog lookup for a fixture SKU. Fixture filenames are often
- * variant SKUs, so try the product SKU first, then fall back to a match against
- * the space-joined variant SKUs (`variant_search`). Returns null when nothing
- * matches — the resolver then uses default mount/type so the fixture still
- * renders.
+ * Best-effort catalog lookup for a fixture SKU.
+ *
+ * Fixture .blend stems are variant-level SKUs whose separators don't match the
+ * catalog's (a variant filed as `BL248606-WV/AB` becomes the stem
+ * `bl248606-wv-ab`), and they carry finish/variant suffixes the base product
+ * row lacks. So: try the product SKU directly at every `skuLookupCandidates`
+ * truncation, then fetch the SKU family by its alphanumeric stem and match
+ * `variant_search` tokens separator-insensitively (mirrors the API picker's
+ * resolveProducts). Returns null when nothing matches — the resolver then uses
+ * default mount/type so the fixture still renders, but a miss here is what
+ * turns a wall sconce into a "ceiling" fixture, so match aggressively.
  */
 async function findProduct(
   sb: SupabaseClient,
   sku: string,
 ): Promise<ProductRow | null> {
-  const pattern = escapeLike(sku);
-  const direct = await sb
-    .from("products")
-    .select("sku, name, category, ies_url")
-    .ilike("sku", pattern)
-    .maybeSingle();
-  if (direct.data) return direct.data as ProductRow;
+  const candidates = skuLookupCandidates(sku);
+  for (const candidate of candidates) {
+    const direct = await sb
+      .from("products")
+      .select("sku, name, category, ies_url")
+      .ilike("sku", escapeLike(candidate))
+      .limit(1)
+      .maybeSingle();
+    if (direct.data) return direct.data as ProductRow;
+  }
 
-  const variant = await sb
+  // Variant fallback: the leading alphanumeric run (e.g. `bl248606`) has no
+  // separators, so it survives the catalog's `/` vs the stem's `-`.
+  const stem = sku.match(/^[a-z0-9]+/i)?.[0] ?? sku;
+  const { data } = await sb
     .from("products")
-    .select("sku, name, category, ies_url")
-    .ilike("variant_search", `%${pattern}%`)
-    .limit(1)
-    .maybeSingle();
-  return (variant.data as ProductRow | null) ?? null;
+    .select("sku, name, category, ies_url, variant_search")
+    .ilike("variant_search", `%${escapeLike(stem)}%`)
+    .limit(20);
+  const rows = (data ?? []) as Array<ProductRow & { variant_search?: string | null }>;
+  if (rows.length === 0) return null;
+  for (const target of candidates.map(normSku)) {
+    for (const row of rows) {
+      const tokens = (row.variant_search ?? "").split(/\s+/).map(normSku);
+      if (tokens.includes(target)) return row;
+    }
+  }
+  // Same numeric family — close enough for mount/type derivation.
+  return rows[0] ?? null;
 }
 
 export function makeFixtureResolver(deps: {
