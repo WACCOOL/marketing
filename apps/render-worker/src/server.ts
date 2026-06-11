@@ -589,6 +589,11 @@ async function runComposite(body: CompositeRequest): Promise<CompositeArtifacts>
         modelPath,
         sku: f.sku,
         roomPath: plate,
+        // The catcher's light-receptive layer picks up the WORLD ambient as
+        // well as fixture light, so every chained pass would re-brighten the
+        // plate by ~world*receive. Pass 0 keeps the default (that bake is the
+        // accepted single-fixture look); later passes add no ambient drift.
+        worldStrength: i === 0 ? undefined : 0,
         iesPath,
         iesRotation: f.iesRotation,
         mount: f.mount,

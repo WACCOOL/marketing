@@ -322,13 +322,26 @@ async function renderShotImage(
       "3D app-shot requires a configured render-worker (set RENDER_WORKER_URL)",
     );
   }
+  // roomGeometry is scene-level (Cam Solve) — every fixture carries the same
+  // one. It is SINGLE-FIXTURE ONLY: its oriented planes are Cycles shadow
+  // catchers whose ratio-based compositing is not idempotent, so re-rendering
+  // the chained plate through them once per fixture compounds into a washed-out
+  // veil (observed: a 3-fixture final blown out with near-zero fixture light).
+  // Multi-fixture shots fall back to the legacy camera-facing catcher, which is
+  // plain emission+diffuse and stable under chaining.
+  const roomGeometry =
+    entries.length === 1 ? entries[0]!.placement.roomGeometry : undefined;
+  if (entries.length > 1 && entries[0]!.placement.roomGeometry) {
+    console.warn(
+      "[appshot3d] multi-fixture shot: dropping Cam Solve room-match (single-fixture only)",
+    );
+  }
   const shared = {
     preview: opts.preview,
     layers: opts.layers,
     roomUrl: opts.roomUrl,
     roomPath: opts.roomPath,
-    // roomGeometry is scene-level (Cam Solve) — every fixture carries the same one.
-    roomGeometry: entries[0]!.placement.roomGeometry,
+    roomGeometry,
     samples,
     highQuality,
     supersample: opts.supersample,

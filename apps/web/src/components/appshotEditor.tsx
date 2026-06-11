@@ -519,7 +519,10 @@ export function EditPanel(p: EditProps) {
                 maxCoverage={maxCoverage}
               />
             )
-          ) : p.cutout ? (
+          ) : p.cutout || multi || (p.showPreview && p.previewUrl) ? (
+            // Render the canvas even while the SELECTED fixture's cutout is
+            // still baking: other fixtures' cutouts (multi) and — critically —
+            // a finished Test render must never be masked by the placeholder.
             <ShotCanvas
               sceneUrl={p.sceneUrl}
               placement={p.placement}
@@ -1104,7 +1107,8 @@ function MultiViewerCanvas(p: MultiViewerCanvasProps) {
 interface CanvasProps {
   sceneUrl: string;
   placement: AppShotPlacement;
-  cutout: { url: string; coverageRef: number };
+  /** Null while the selected fixture's cutout is still rendering. */
+  cutout: { url: string; coverageRef: number } | null;
   cutoutBusy: boolean;
   previewUrl: string | null;
   showPreview: boolean;
@@ -1136,7 +1140,8 @@ function ShotCanvas(p: CanvasProps) {
   );
 
   // Single-fixture (and Cam Solve) renders exactly one overlay; multi-fixture
-  // stacks every fixture that has a cutout, selected one outlined.
+  // stacks every fixture that has a cutout, selected one outlined. A fixture
+  // whose cutout is still baking simply isn't drawn yet.
   const overlays = p.fixtures
     ? p.fixtures
         .filter((f) => f.cutout)
@@ -1146,14 +1151,16 @@ function ShotCanvas(p: CanvasProps) {
           transform: cutoutTransform(f.placement, f.cutout!.coverageRef),
           selected: f.id === (p.selectedId ?? p.fixtures![0]!.id),
         }))
-    : [
-        {
-          key: "single",
-          url: p.cutout.url,
-          transform: cutoutTransform(p.placement, p.cutout.coverageRef),
-          selected: false, // no selection ring when there's nothing to choose
-        },
-      ];
+    : p.cutout
+      ? [
+          {
+            key: "single",
+            url: p.cutout.url,
+            transform: cutoutTransform(p.placement, p.cutout.coverageRef),
+            selected: false, // no selection ring when there's nothing to choose
+          },
+        ]
+      : [];
 
   function onPointerDown(e: React.PointerEvent) {
     if (p.showPreview) return;
