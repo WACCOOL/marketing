@@ -617,16 +617,21 @@ def duplicate_fixture_group(scene, objs):
     return new_objs
 
 
-def make_room_plate(scene, img, name, verts, receive):
-    """One wall/floor/ceiling of the solved room box: a PURE-DIFFUSE plane with
-    the room photo Window- (screen-)mapped as its albedo. No emission — these
-    planes are not the background, they are the room's light-receiving
-    geometry. The worker divides a lit pass by an ambient-only pass and
-    multiplies the PHOTO by that ratio, so the photo (already properly exposed)
-    only ever gets RELATIVE highlights (fixture light) and RELATIVE shadows
-    (the fixture blocking the ambient) — adding light on top of the plate, the
-    old approach, could only ever brighten. The photo albedo makes bounce light
-    + the crystal's refraction carry the room's real colors."""
+def make_room_plate(scene, img, name, verts, receive, emit):
+    """One wall/floor/ceiling of the solved room box, split by ray type:
+
+      - CAMERA rays see a pure-diffuse surface (photo albedo): the pixel value
+        is purely RECEIVED light, so the worker's lit/base ratio keeps full
+        sensitivity to fixture highlights and blocked-light shadows.
+      - All OTHER rays (bounce, glossy, refraction) see the photo as EMISSION:
+        the room LIGHTS ITSELF exactly the way the photo says it is lit. The
+        ceiling's base light comes from the bright floor/windows (no more
+        divide-by-near-zero burn up there), the fixture body is bathed in real
+        room light instead of silhouetting black, and its glass refracts the
+        actual photo.
+
+    The worker multiplies the PHOTO by lit/base, so the photo (already
+    properly exposed) only ever gets RELATIVE highlights and shadows."""
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata([tuple(p) for p in verts], [], [(0, 1, 2, 3)])
     mesh.update()
@@ -642,15 +647,26 @@ def make_room_plate(scene, img, name, verts, receive):
     tex.image = img
     tex.extension = "EXTEND"
     nt.links.new(coord.outputs["Window"], tex.inputs["Vector"])
+
     diff = nt.nodes.new("ShaderNodeBsdfDiffuse")
-    mix = nt.nodes.new("ShaderNodeMixRGB")
-    mix.blend_type = "MULTIPLY"
-    mix.inputs["Fac"].default_value = 1.0
-    mix.inputs["Color2"].default_value = (receive, receive, receive, 1.0)
-    nt.links.new(tex.outputs["Color"], mix.inputs["Color1"])
-    nt.links.new(mix.outputs["Color"], diff.inputs["Color"])
+    albedo = nt.nodes.new("ShaderNodeMixRGB")
+    albedo.blend_type = "MULTIPLY"
+    albedo.inputs["Fac"].default_value = 1.0
+    albedo.inputs["Color2"].default_value = (receive, receive, receive, 1.0)
+    nt.links.new(tex.outputs["Color"], albedo.inputs["Color1"])
+    nt.links.new(albedo.outputs["Color"], diff.inputs["Color"])
+
+    emis = nt.nodes.new("ShaderNodeEmission")
+    emis.inputs["Strength"].default_value = emit
+    nt.links.new(tex.outputs["Color"], emis.inputs["Color"])
+
+    lp = nt.nodes.new("ShaderNodeLightPath")
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    nt.links.new(lp.outputs["Is Camera Ray"], mix.inputs["Fac"])
+    nt.links.new(emis.outputs["Emission"], mix.inputs[1])  # fac 0: non-camera rays
+    nt.links.new(diff.outputs["BSDF"], mix.inputs[2])  # fac 1: camera rays
     out = nt.nodes.new("ShaderNodeOutputMaterial")
-    nt.links.new(diff.outputs["BSDF"], out.inputs["Surface"])
+    nt.links.new(mix.outputs["Shader"], out.inputs["Surface"])
     plane.data.materials.append(mat)
     return plane
 
@@ -801,17 +817,17 @@ def run_room_box(scene, job, out_path):
         if obj.type == "LIGHT" and obj not in groups[0]["objs"]:
             obj.hide_render = True  # studio softboxes — the room lights the shot
     scene.timeline_markers.clear()
-    # Uniform WHITE ambient: the exposure baseline of the relight ratio (the
-    # photo "is" this light). Identical in the lit and base passes, so it
-    # cancels exactly — its strength only sets how strong fixture light reads
-    # RELATIVE to the room's existing exposure (lower = punchier highlights).
+    # The room LIGHTS ITSELF via the plates' indirect-only photo emission (see
+    # make_room_plate) — that is the relight ratio's exposure baseline. The
+    # world env is just a dim white floor so no denominator pixel can reach
+    # true zero (a black base pixel would blow the ratio up).
     if scene.world is None:
         scene.world = bpy.data.worlds.new("wac_world")
     scene.world.use_nodes = True
     for n in scene.world.node_tree.nodes:
         if n.type == "BACKGROUND":
             n.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
-            n.inputs["Strength"].default_value = float(job.get("worldStrength", 1.0))
+            n.inputs["Strength"].default_value = float(job.get("worldStrength", 0.05))
 
     # --- append fixtures 1..N-1 into this scene -------------------------------
     # Fixtures sharing a .blend (identical pendants; the worker dedupes the
@@ -855,22 +871,23 @@ def run_room_box(scene, job, out_path):
     yf = min(float(boxd["yFront"]), 0.0) - 2.0
     ov = 0.5
     recv = float(job.get("catcherReceive", 1.0))
+    emit = float(job.get("roomEmit", 1.0))
     plates = [
         make_room_plate(scene, img, "wac_room_floor",
                         [(x0 - ov, yf, 0), (x1 + ov, yf, 0), (x1 + ov, yb + ov, 0), (x0 - ov, yb + ov, 0)],
-                        recv),
+                        recv, emit),
         make_room_plate(scene, img, "wac_room_ceiling",
                         [(x0 - ov, yf, hgt), (x1 + ov, yf, hgt), (x1 + ov, yb + ov, hgt), (x0 - ov, yb + ov, hgt)],
-                        recv),
+                        recv, emit),
         make_room_plate(scene, img, "wac_room_back",
                         [(x0 - ov, yb, -ov), (x1 + ov, yb, -ov), (x1 + ov, yb, hgt + ov), (x0 - ov, yb, hgt + ov)],
-                        recv),
+                        recv, emit),
         make_room_plate(scene, img, "wac_room_left",
                         [(x0, yf, -ov), (x0, yb + ov, -ov), (x0, yb + ov, hgt + ov), (x0, yf, hgt + ov)],
-                        recv),
+                        recv, emit),
         make_room_plate(scene, img, "wac_room_right",
                         [(x1, yf, -ov), (x1, yb + ov, -ov), (x1, yb + ov, hgt + ov), (x1, yf, hgt + ov)],
-                        recv),
+                        recv, emit),
     ]
     # Far emission-only backdrop: covers any frustum sliver past the box. It is
     # identical in the lit and base passes, so it divides out to ratio=1 there

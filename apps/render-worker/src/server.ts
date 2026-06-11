@@ -485,18 +485,25 @@ async function relightPlate(
   basePath: string,
   outPath: string,
   // How hard the redistribution reads: 1 = the physical ratio, <1 compresses
-  // highlights AND shadows toward the untouched photo. Job-overridable for
-  // live calibration sweeps (`relightStrength`).
-  strength = 1,
+  // highlights AND shadows toward the untouched photo (gamma on the gain).
+  // Job-overridable for live calibration sweeps (`relightStrength`).
+  strength = 0.8,
 ): Promise<void> {
   const meta = await sharp(litPath).metadata();
   const w = meta.width ?? 0;
   const h = meta.height ?? 0;
   if (!w || !h) throw new Error("relight: unreadable wall pass");
+  // The gain map is low-frequency by nature (light gradients), but it is the
+  // QUOTIENT of two renders — Cycles noise and denoiser splotches in the dark
+  // base amplify into speckle/banding. A gentle blur of both passes before
+  // dividing kills that (the manual Photoshop remedy was exactly blur +
+  // soft-light at reduced opacity); real shadow/highlight edges this soft
+  // survive fine.
+  const blurSigma = Math.max(1.2, w / 500);
   const [photo, lit, ambient] = await Promise.all([
     sharp(photoPath).resize(w, h, { fit: "fill" }).removeAlpha().raw().toBuffer(),
-    sharp(litPath).removeAlpha().raw().toBuffer(),
-    sharp(basePath).removeAlpha().raw().toBuffer(),
+    sharp(litPath).blur(blurSigma).removeAlpha().raw().toBuffer(),
+    sharp(basePath).blur(blurSigma).removeAlpha().raw().toBuffer(),
   ]);
   // Pass 1: per-pixel linear gain, capped so a speck of near-black base can't
   // blow a pixel out. The normalizer is the median GREEN-channel gain (a cheap
@@ -504,22 +511,26 @@ async function relightPlate(
   const ratio = new Float32Array(photo.length);
   for (let i = 0; i < ratio.length; i++) {
     const l = SRGB_TO_LINEAR[lit[i]!]!;
-    const b = Math.max(SRGB_TO_LINEAR[ambient[i]!]!, 1e-4);
-    ratio[i] = Math.min(l / b, 6);
+    const b = Math.max(SRGB_TO_LINEAR[ambient[i]!]!, 5e-4);
+    ratio[i] = Math.min(l / b, 4);
   }
   const greens: number[] = [];
   for (let i = 1; i < ratio.length; i += 3) greens.push(ratio[i]!);
   greens.sort((a, b) => a - b);
-  const median = Math.min(Math.max(greens[greens.length >> 1] ?? 1, 0.2), 6);
-  // Pass 2: photo × normalized gain.
+  const median = Math.min(Math.max(greens[greens.length >> 1] ?? 1, 0.2), 4);
+  // Pass 2: photo × normalized gain. The strength is a POWER curve (gamma on
+  // the gain), which compresses highlights and shadows symmetrically in log
+  // space — the "soft light at reduced opacity" feel, without flattening the
+  // gain's center.
   const out = Buffer.alloc(photo.length);
   for (let i = 0; i < out.length; i++) {
-    const norm = Math.min(Math.max(ratio[i]! / median, 0.1), 6);
-    const r = 1 + (norm - 1) * strength;
-    out[i] = linearToSrgb(SRGB_TO_LINEAR[photo[i]!]! * Math.max(r, 0.05));
+    const norm = Math.min(Math.max(ratio[i]! / median, 0.15), 4);
+    const r = Math.pow(norm, strength);
+    out[i] = linearToSrgb(SRGB_TO_LINEAR[photo[i]!]! * r);
   }
   console.log(
-    `[render-worker] relight: median gain ${median.toFixed(3)} normalized out (strength ${strength})`,
+    `[render-worker] relight: median gain ${median.toFixed(3)} normalized out ` +
+      `(strength ${strength}, blur ${blurSigma.toFixed(1)})`,
   );
   await sharp(out, { raw: { width: w, height: h, channels: 3 } })
     .png()
@@ -736,7 +747,7 @@ async function runComposite(body: CompositeRequest): Promise<CompositeArtifacts>
       const relitPlate = path.join(dir, "plate.png");
       await relightPlate(
         roomPath, wallLit, wallBase, relitPlate,
-        body.relightStrength ?? 1,
+        body.relightStrength ?? 0.8,
       );
 
       const cutouts: typeof rendered = [];
