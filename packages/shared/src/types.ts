@@ -398,6 +398,10 @@ const RoomBoxCornersSchema = z.object({
   backBottomRight: RoomPointSchema,
   frontBottomLeft: RoomPointSchema,
   frontBottomRight: RoomPointSchema,
+  /** Draggable ceiling-seam corners — optional (older calibrations derived
+   * them from the solve). */
+  frontTopLeft: RoomPointSchema.optional(),
+  frontTopRight: RoomPointSchema.optional(),
 });
 const RoomBoxExtentsSchema = z.object({
   xMin: z.number(),
