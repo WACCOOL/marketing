@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { AppShotPlacement, RenderQuality, RenderStyle } from "@wac/shared";
+import {
+  raycastSurface,
+  type AppShotPlacement,
+  type AppShotSurface,
+  type RenderQuality,
+  type RenderStyle,
+  type RoomBoxView,
+  type RoomSurfaceKind,
+} from "@wac/shared";
 import { FixtureScene, MultiFixtureScene } from "../lib/fixtureScene.js";
 import { FixtureThumb } from "./fixtureThumb.js";
 
@@ -161,7 +169,29 @@ export interface EditProps {
   onRemoveFixture?: (id: string) => void;
   /** Open the fixture picker to add another fixture to the layout. */
   onAddFixture?: () => void;
+  /** Solved room box (App Shot's corner-drag room match). When present AND the
+   * selected fixture carries a `surface`, the editor switches to MATCHED mode:
+   * the photo's camera frames the scene, fixtures sit on their mount surfaces
+   * at true scale, and the position/size controls become surface-relative. */
+  roomBox?: RoomBoxView | null;
 }
+
+/** Surface-relative slider labels per mount surface. */
+const SURFACE_AXIS_LABELS: Record<RoomSurfaceKind, { u: string; v: string }> = {
+  ceiling: { u: "Left / right", v: "Near / far" },
+  floor: { u: "Left / right", v: "Near / far" },
+  "wall-back": { u: "Left / right", v: "Floor / ceiling" },
+  "wall-left": { u: "Near / far", v: "Floor / ceiling" },
+  "wall-right": { u: "Near / far", v: "Floor / ceiling" },
+};
+
+const SURFACE_LABELS: Record<RoomSurfaceKind, string> = {
+  ceiling: "Ceiling",
+  "wall-back": "Back wall",
+  "wall-left": "Left wall",
+  "wall-right": "Right wall",
+  floor: "Floor",
+};
 
 const RENDER_STYLE_LABELS: Record<RenderStyle, string> = {
   clean: "Clean cutout",
@@ -172,9 +202,16 @@ const RENDER_STYLE_LABELS: Record<RenderStyle, string> = {
 export function EditPanel(p: EditProps) {
   const viewer = p.viewerMode === "viewer";
   const maxCoverage = p.maxCoverage ?? DEFAULT_MAX_COVERAGE;
+  // Matched mode: a solved room box + a surface-attached selection.
+  const surface = (p.roomBox && p.placement.surface) || null;
   // Multi-fixture canvases kick in past one fixture; a single fixture keeps the
-  // exact single-fixture code paths (incl. Cam Solve, which never passes fixtures).
-  const multi = p.fixtures && p.fixtures.length > 1 ? p.fixtures : null;
+  // exact single-fixture code paths (incl. Cam Solve, which never passes fixtures)
+  // — EXCEPT in matched mode, whose room camera lives in the multi scene.
+  const multi =
+    p.fixtures && (p.fixtures.length > 1 || (surface && viewer)) ? p.fixtures : null;
+  const patchSurface = (patch: Partial<AppShotSurface>) => {
+    if (surface) p.onPatch({ surface: { ...surface, ...patch } });
+  };
   return (
     <div className="col" style={{ gap: 14 }}>
       {/* top bar: placement method + edit/test toggle + render actions */}
@@ -355,8 +392,11 @@ export function EditPanel(p: EditProps) {
               {p.fixtures.length > 1 && (
                 <div className="muted" style={{ fontSize: 11 }}>
                   Later fixtures render in front of earlier ones.
-                  {p.fixtures.length > 4 &&
-                    " Renders run one fixture at a time, so test/final time grows with each fixture — Standard quality is recommended for large layouts."}
+                  {p.roomBox
+                    ? " Room matched: all fixtures render together in one scene with realistic combined lighting."
+                    : p.fixtures.length > 4
+                      ? " Renders run one fixture at a time, so test/final time grows with each fixture — Standard quality is recommended for large layouts."
+                      : ""}
                 </div>
               )}
             </div>
@@ -365,88 +405,151 @@ export function EditPanel(p: EditProps) {
             <div className="card col" style={{ gap: 12 }}>{p.renderControls}</div>
           )}
           <div className="card col appshot-sliders">
-            <div className="slider-section">
-              <div className="slider-section-title">Size & position</div>
-              <Slider
-                label="Fixture size"
-                min={MIN_COVERAGE}
-                max={maxCoverage}
-                step={0.005}
-                value={p.placement.coverage}
-                onChange={(v) => p.onPatch({ coverage: v })}
-                fmt={(v) => `${Math.round(v * 100)}%`}
-              />
-              <Slider
-                label="Left / right"
-                min={0}
-                max={1}
-                step={0.01}
-                value={p.placement.xPct}
-                onChange={(v) => p.onPatch({ xPct: v })}
-                fmt={(v) => `${Math.round(v * 100)}%`}
-              />
-              <Slider
-                label="Up / down"
-                min={0}
-                max={1}
-                step={0.01}
-                value={1 - p.placement.yPct}
-                onChange={(v) => p.onPatch({ yPct: 1 - v })}
-                fmt={(v) => `${Math.round(v * 100)}%`}
-              />
-              <div className="row" style={{ gap: 8 }}>
-                <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 0.9, MIN_COVERAGE, maxCoverage) })}>– smaller</button>
-                <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 1.1, MIN_COVERAGE, maxCoverage) })}>+ larger</button>
+            {surface ? (
+              <div className="slider-section">
+                <div className="slider-section-title">Mount & position</div>
+                <div className="row" style={{ gap: 6, alignItems: "center" }}>
+                  <label style={{ margin: 0, fontSize: 12 }}>Mounted on</label>
+                  <select
+                    value={surface.kind}
+                    onChange={(e) =>
+                      patchSurface({ kind: e.target.value as RoomSurfaceKind })
+                    }
+                  >
+                    {(Object.keys(SURFACE_LABELS) as RoomSurfaceKind[]).map((k) => (
+                      <option key={k} value={k}>
+                        {SURFACE_LABELS[k]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <Slider
+                  label="True size ×"
+                  min={0.25}
+                  max={4}
+                  step={0.05}
+                  value={surface.scale}
+                  onChange={(v) => patchSurface({ scale: v })}
+                  fmt={(v) => `×${v.toFixed(2)}`}
+                />
+                <Slider
+                  label={SURFACE_AXIS_LABELS[surface.kind].u}
+                  min={0}
+                  max={1}
+                  step={0.005}
+                  value={surface.u}
+                  onChange={(v) => patchSurface({ u: v })}
+                  fmt={(v) => `${Math.round(v * 100)}%`}
+                />
+                <Slider
+                  label={SURFACE_AXIS_LABELS[surface.kind].v}
+                  min={0}
+                  max={1}
+                  step={0.005}
+                  value={surface.v}
+                  onChange={(v) => patchSurface({ v })}
+                  fmt={(v) => `${Math.round(v * 100)}%`}
+                />
+                <Slider
+                  label="Spin"
+                  min={-180}
+                  max={180}
+                  step={1}
+                  value={surface.lightYawDeg}
+                  onChange={(v) => patchSurface({ lightYawDeg: v })}
+                  fmt={(v) => `${Math.round(v)}°`}
+                />
+                <div className="muted" style={{ fontSize: 11 }}>
+                  Room matched: the camera is the photo's, and ×1 is the
+                  fixture's true physical size in the room.
+                </div>
               </div>
-            </div>
+            ) : (
+              <>
+                <div className="slider-section">
+                  <div className="slider-section-title">Size & position</div>
+                  <Slider
+                    label="Fixture size"
+                    min={MIN_COVERAGE}
+                    max={maxCoverage}
+                    step={0.005}
+                    value={p.placement.coverage}
+                    onChange={(v) => p.onPatch({ coverage: v })}
+                    fmt={(v) => `${Math.round(v * 100)}%`}
+                  />
+                  <Slider
+                    label="Left / right"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={p.placement.xPct}
+                    onChange={(v) => p.onPatch({ xPct: v })}
+                    fmt={(v) => `${Math.round(v * 100)}%`}
+                  />
+                  <Slider
+                    label="Up / down"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={1 - p.placement.yPct}
+                    onChange={(v) => p.onPatch({ yPct: 1 - v })}
+                    fmt={(v) => `${Math.round(v * 100)}%`}
+                  />
+                  <div className="row" style={{ gap: 8 }}>
+                    <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 0.9, MIN_COVERAGE, maxCoverage) })}>– smaller</button>
+                    <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 1.1, MIN_COVERAGE, maxCoverage) })}>+ larger</button>
+                  </div>
+                </div>
 
-            <div className="slider-section">
-              <div className="slider-section-title">
-                Angle & lens
-                {!viewer && p.cutoutBusy && (
-                  <>
-                    {" "}
-                    <span className="spinner" />
-                  </>
-                )}
-              </div>
-              <Slider
-                label="Rotate"
-                min={-180}
-                max={180}
-                step={1}
-                value={p.placement.pose.azimuthDeg ?? 0}
-                onChange={(v) => p.onPatchPose({ azimuthDeg: v })}
-                fmt={(v) => `${Math.round(v)}°`}
-              />
-              <Slider
-                label="Tilt (f/b)"
-                min={-180}
-                max={180}
-                step={1}
-                value={p.placement.pose.elevationDeg ?? 0}
-                onChange={(v) => p.onPatchPose({ elevationDeg: v })}
-                fmt={(v) => `${Math.round(v)}°`}
-              />
-              <Slider
-                label="Tilt (l/r)"
-                min={-180}
-                max={180}
-                step={1}
-                value={p.placement.pose.rollDeg ?? 0}
-                onChange={(v) => p.onPatchPose({ rollDeg: v })}
-                fmt={(v) => `${Math.round(v)}°`}
-              />
-              <Slider
-                label="Lens (FOV)"
-                min={15}
-                max={60}
-                step={1}
-                value={p.placement.pose.fovDeg ?? 32}
-                onChange={(v) => p.onPatchPose({ fovDeg: v })}
-                fmt={(v) => `${Math.round(v)}°`}
-              />
-            </div>
+                <div className="slider-section">
+                  <div className="slider-section-title">
+                    Angle & lens
+                    {!viewer && p.cutoutBusy && (
+                      <>
+                        {" "}
+                        <span className="spinner" />
+                      </>
+                    )}
+                  </div>
+                  <Slider
+                    label="Rotate"
+                    min={-180}
+                    max={180}
+                    step={1}
+                    value={p.placement.pose.azimuthDeg ?? 0}
+                    onChange={(v) => p.onPatchPose({ azimuthDeg: v })}
+                    fmt={(v) => `${Math.round(v)}°`}
+                  />
+                  <Slider
+                    label="Tilt (f/b)"
+                    min={-180}
+                    max={180}
+                    step={1}
+                    value={p.placement.pose.elevationDeg ?? 0}
+                    onChange={(v) => p.onPatchPose({ elevationDeg: v })}
+                    fmt={(v) => `${Math.round(v)}°`}
+                  />
+                  <Slider
+                    label="Tilt (l/r)"
+                    min={-180}
+                    max={180}
+                    step={1}
+                    value={p.placement.pose.rollDeg ?? 0}
+                    onChange={(v) => p.onPatchPose({ rollDeg: v })}
+                    fmt={(v) => `${Math.round(v)}°`}
+                  />
+                  <Slider
+                    label="Lens (FOV)"
+                    min={15}
+                    max={60}
+                    step={1}
+                    value={p.placement.pose.fovDeg ?? 32}
+                    onChange={(v) => p.onPatchPose({ fovDeg: v })}
+                    fmt={(v) => `${Math.round(v)}°`}
+                  />
+                </div>
+              </>
+            )}
 
             <div className="slider-section">
               <div className="slider-section-title">Light</div>
@@ -503,6 +606,7 @@ export function EditPanel(p: EditProps) {
                 onPatchPose={p.onPatchPose}
                 transparentBg={p.transparentBg}
                 maxCoverage={maxCoverage}
+                roomBox={p.roomBox}
               />
             ) : (
               <ModelViewerCanvas
@@ -837,6 +941,8 @@ interface MultiViewerCanvasProps {
   onPatchPose: (patch: Partial<AppShotPlacement["pose"]>, rerender?: boolean) => void;
   transparentBg?: boolean;
   maxCoverage?: number;
+  /** Solved room box — switches the scene & interactions to MATCHED mode. */
+  roomBox?: RoomBoxView | null;
 }
 
 /**
@@ -857,9 +963,41 @@ function MultiViewerCanvas(p: MultiViewerCanvasProps) {
   const orbit = useRef<{ x: number; y: number; az: number; el: number } | null>(
     null,
   );
+  // Matched-mode drag: slide the selected fixture along its mount surface.
+  const slide = useRef<{ x: number; y: number; u: number; v: number } | null>(null);
   const [roomAspect, setRoomAspect] = useState(16 / 9);
 
   const pose = p.placement.pose;
+  const surface = (p.roomBox && p.placement.surface) || null;
+
+  /** Pointer event → normalized image coords inside the room overlay. */
+  function pointerToNorm(e: React.PointerEvent): { x: number; y: number } | null {
+    const rect = roomRef.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0) return null;
+    return {
+      x: (e.clientX - rect.left) / rect.width,
+      y: (e.clientY - rect.top) / rect.height,
+    };
+  }
+
+  /** Matched mode: drag deltas in surface (u,v) space — raycast the pointer's
+   * start and current image points onto the mount surface and move by the
+   * difference, so the fixture follows the cursor along the real plane. */
+  function slideTo(e: React.PointerEvent) {
+    const s = slide.current;
+    if (!s || !p.roomBox || !surface) return;
+    const start = raycastSurface(p.roomBox, { x: s.x, y: s.y }, surface.kind);
+    const now = pointerToNorm(e);
+    const cur = now && raycastSurface(p.roomBox, now, surface.kind);
+    if (!start || !cur) return;
+    p.onPatch({
+      surface: {
+        ...surface,
+        u: clamp(s.u + (cur.u - start.u), 0, 1),
+        v: clamp(s.v + (cur.v - start.v), 0, 1),
+      },
+    });
+  }
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -914,14 +1052,25 @@ function MultiViewerCanvas(p: MultiViewerCanvasProps) {
         coverage: f.placement.coverage,
         xPct: f.placement.xPct,
         yPct: f.placement.yPct,
+        surface: f.placement.surface,
       })),
       selectedId: p.selectedId,
       aspect: roomAspect,
+      room: p.roomBox,
     });
-  }, [p.fixtures, p.selectedId, roomAspect]);
+  }, [p.fixtures, p.selectedId, roomAspect, p.roomBox]);
 
   function onOrbitDown(e: React.PointerEvent) {
     if (p.showPreview) return;
+    if (surface) {
+      // Matched mode: the camera is the photo's — dragging the canvas slides
+      // the selected fixture along its mount surface instead of orbiting.
+      const pt = pointerToNorm(e);
+      if (!pt) return;
+      slide.current = { ...pt, u: surface.u, v: surface.v };
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+      return;
+    }
     orbit.current = {
       x: e.clientX,
       y: e.clientY,
@@ -931,6 +1080,10 @@ function MultiViewerCanvas(p: MultiViewerCanvasProps) {
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
   }
   function onOrbitMove(e: React.PointerEvent) {
+    if (slide.current) {
+      slideTo(e);
+      return;
+    }
     const o = orbit.current;
     if (!o) return;
     const dx = e.clientX - o.x;
@@ -944,8 +1097,9 @@ function MultiViewerCanvas(p: MultiViewerCanvasProps) {
     );
   }
   function endOrbit(e: React.PointerEvent) {
-    if (orbit.current) {
+    if (orbit.current || slide.current) {
       orbit.current = null;
+      slide.current = null;
       (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
     }
   }
@@ -953,6 +1107,13 @@ function MultiViewerCanvas(p: MultiViewerCanvasProps) {
   function onMovePointerDown(e: React.PointerEvent) {
     if (p.showPreview) return;
     e.stopPropagation();
+    if (surface) {
+      const pt = pointerToNorm(e);
+      if (!pt) return;
+      slide.current = { ...pt, u: surface.u, v: surface.v };
+      (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+      return;
+    }
     move.current = {
       x: e.clientX,
       y: e.clientY,
@@ -962,6 +1123,11 @@ function MultiViewerCanvas(p: MultiViewerCanvasProps) {
     (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
   }
   function onMovePointerMove(e: React.PointerEvent) {
+    if (slide.current) {
+      e.stopPropagation();
+      slideTo(e);
+      return;
+    }
     const d = move.current;
     const rect = roomRef.current?.getBoundingClientRect();
     if (!d || !rect || rect.width === 0 || rect.height === 0) return;
@@ -971,14 +1137,21 @@ function MultiViewerCanvas(p: MultiViewerCanvasProps) {
     p.onPatch({ xPct: clamp(d.xPct + dx, 0, 1), yPct: clamp(d.yPct + dy, 0, 1) });
   }
   function endMove(e: React.PointerEvent) {
-    if (move.current) {
+    if (move.current || slide.current) {
       move.current = null;
+      slide.current = null;
       (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
     }
   }
   function onWheel(e: React.WheelEvent) {
     if (p.showPreview) return;
     const factor = e.deltaY > 0 ? 0.95 : 1.05;
+    if (surface) {
+      p.onPatch({
+        surface: { ...surface, scale: clamp(surface.scale * factor, 0.25, 4) },
+      });
+      return;
+    }
     p.onPatch({
       coverage: clamp(p.placement.coverage * factor, MIN_COVERAGE, p.maxCoverage ?? DEFAULT_MAX_COVERAGE),
     });

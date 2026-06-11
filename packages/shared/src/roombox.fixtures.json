@@ -1,0 +1,75 @@
+{
+  "comment": "Hand-authored surfaceToWorld cases shared by roombox.test.ts (TS) and apps/render-worker/scripts/test_roombox_parity.py (Python port in apps/render-worker/blender/roombox.py). Update all implementations together.",
+  "cases": [
+    {
+      "box": { "xMin": -2, "xMax": 2, "yBack": 5, "yFront": -1, "height": 2.74 },
+      "surface": "ceiling",
+      "u": 0.25,
+      "v": 0.5,
+      "world": { "x": -1, "y": 2, "z": 2.74 }
+    },
+    {
+      "box": { "xMin": -2, "xMax": 2, "yBack": 5, "yFront": -1, "height": 2.74 },
+      "surface": "floor",
+      "u": 1,
+      "v": 0,
+      "world": { "x": 2, "y": -1, "z": 0 }
+    },
+    {
+      "box": { "xMin": -2, "xMax": 2, "yBack": 5, "yFront": -1, "height": 2.74 },
+      "surface": "wall-back",
+      "u": 0.5,
+      "v": 0.5,
+      "world": { "x": 0, "y": 5, "z": 1.37 }
+    },
+    {
+      "box": { "xMin": -2, "xMax": 2, "yBack": 5, "yFront": -1, "height": 2.74 },
+      "surface": "wall-left",
+      "u": 0.5,
+      "v": 1,
+      "world": { "x": -2, "y": 2, "z": 2.74 }
+    },
+    {
+      "box": { "xMin": -2, "xMax": 2, "yBack": 5, "yFront": -1, "height": 2.74 },
+      "surface": "wall-right",
+      "u": 0,
+      "v": 0.25,
+      "world": { "x": 2, "y": -1, "z": 0.685 }
+    },
+    {
+      "box": { "xMin": -1.5, "xMax": 3.5, "yBack": 4, "yFront": 0.5, "height": 3 },
+      "surface": "ceiling",
+      "u": 0,
+      "v": 1,
+      "world": { "x": -1.5, "y": 4, "z": 3 }
+    },
+    {
+      "box": { "xMin": -1.5, "xMax": 3.5, "yBack": 4, "yFront": 0.5, "height": 3 },
+      "surface": "wall-back",
+      "u": 0.8,
+      "v": 0.1,
+      "world": { "x": 2.5, "y": 4, "z": 0.3 }
+    },
+    {
+      "box": { "xMin": -1.5, "xMax": 3.5, "yBack": 4, "yFront": 0.5, "height": 3 },
+      "surface": "wall-left",
+      "u": 1,
+      "v": 0.5,
+      "world": { "x": -1.5, "y": 4, "z": 1.5 }
+    },
+    {
+      "box": { "xMin": -1.5, "xMax": 3.5, "yBack": 4, "yFront": 0.5, "height": 3 },
+      "surface": "floor",
+      "u": 0.5,
+      "v": 0.5,
+      "world": { "x": 1, "y": 2.25, "z": 0 }
+    },
+    {
+      "box": { "xMin": -1.5, "xMax": 3.5, "yBack": 4, "yFront": 0.5, "height": 3 },
+      "surface": "wall-right",
+      "u": 0.2,
+      "v": 0.9,
+      "world": { "x": 3.5, "y": 1.2, "z": 2.7 }
+    }
+  ]
+}

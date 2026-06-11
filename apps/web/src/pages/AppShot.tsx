@@ -1,9 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-  AppShotPlacement,
-  GeminiAspectRatio,
-  GeminiImageSize,
-  RenderQuality,
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  raycastSurface,
+  solvedFromGeometry,
+  surfaceForMount,
+  surfaceImagePoint,
+  type AppShotPlacement,
+  type GeminiAspectRatio,
+  type GeminiImageSize,
+  type RenderQuality,
+  type RoomGeometry,
 } from "@wac/shared";
 import { isAllowedImageType, uploadImage } from "../lib/uploads.js";
 import { generateScene } from "../lib/scenes.js";
@@ -21,12 +26,13 @@ import { usePrewarmWorker } from "../lib/usePrewarm.js";
 import { formatDimensions } from "../lib/products.js";
 import { MOUNT_LABELS } from "../lib/fixtureKind.js";
 import {
+  clamp,
   EditPanel,
   QualityPicker,
   type ViewerMode,
 } from "../components/appshotEditor.js";
 import { FixtureThumb } from "../components/fixtureThumb.js";
-import { RoomCalibrator } from "../components/RoomCalibrator.js";
+import { RoomBoxCalibrator } from "../components/RoomBoxCalibrator.js";
 
 /**
  * 3D App-Shot Studio.
@@ -362,6 +368,55 @@ export function AppShot() {
       fixtures.find((f) => f.options.some((o) => o.fixtureKey === key)) ?? null,
     [fixtures],
   );
+
+  // Projection view of the scene's room box (corner-drag room match), shared by
+  // the matched 3D preview and the surface→screen syncing below.
+  const roomSolved = useMemo(
+    () =>
+      placement?.roomGeometry ? solvedFromGeometry(placement.roomGeometry) : null,
+    [placement?.roomGeometry],
+  );
+
+  /** Attach (or keep) a fixture's mount surface under `geometry`: the surface
+   * kind comes from the catalog mount, and (u,v) is seeded by raycasting the
+   * fixture's current screen spot onto that surface — so calibrating the room
+   * doesn't visibly teleport an already-placed fixture. Also re-syncs the
+   * legacy xPct/yPct to where the surface anchor projects. */
+  const withSurface = useCallback(
+    (f: PlacedFixture, geometry: RoomGeometry): PlacedFixture => {
+      const solved = solvedFromGeometry(geometry);
+      if (!solved) {
+        return { ...f, placement: { ...f.placement, roomGeometry: geometry } };
+      }
+      let surface = f.placement.surface;
+      if (!surface) {
+        const kind = surfaceForMount(groupForKey(f.sku)?.mount);
+        const hit = raycastSurface(
+          solved,
+          { x: f.placement.xPct, y: f.placement.yPct },
+          kind,
+        );
+        surface = {
+          kind,
+          u: clamp(hit?.u ?? 0.5, 0, 1),
+          v: clamp(hit?.v ?? 0.5, 0, 1),
+          scale: 1,
+          lightYawDeg: 0,
+        };
+      }
+      const img = surfaceImagePoint(solved, surface);
+      return {
+        ...f,
+        placement: {
+          ...f.placement,
+          roomGeometry: geometry,
+          surface,
+          ...(img ? { xPct: clamp(img.x, 0, 1), yPct: clamp(img.y, 0, 1) } : null),
+        },
+      };
+    },
+    [groupForKey],
+  );
   // `sku` holds the PICKER's fixtureKey (a scene option); find its fixture group.
   const fixture = groupForKey(sku);
   const selectedGroup = groupForKey(selected?.sku);
@@ -637,16 +692,20 @@ export function AppShot() {
   function addFixture(fixtureKey: string) {
     const group = groupForKey(fixtureKey);
     const id = crypto.randomUUID();
-    setPlaced((list) => [
-      ...list,
-      {
+    setPlaced((list) => {
+      // Room geometry is scene-level — a new fixture joins the existing room
+      // match (and gets a mount surface) when one is active.
+      const geometry = list[0]?.placement.roomGeometry;
+      let fx: PlacedFixture = {
         id,
         sku: fixtureKey,
         placement: defaultPlacementFor(group?.mount),
         cutout: null,
         glb: null,
-      },
-    ]);
+      };
+      if (geometry) fx = withSurface(fx, geometry);
+      return [...list, fx];
+    });
     setSelectedId(id);
     setAddingFixture(false);
     setShowPreview(false);
@@ -692,9 +751,20 @@ export function AppShot() {
     if (!selected) return;
     const id = selected.id;
     setPlaced((list) =>
-      list.map((f) =>
-        f.id === id ? { ...f, placement: { ...f.placement, ...patch } } : f,
-      ),
+      list.map((f) => {
+        if (f.id !== id) return f;
+        let next = { ...f.placement, ...patch };
+        // A surface move re-anchors the legacy screen position so the cutout
+        // overlay, the move badge, and no-box render fallbacks stay aligned.
+        if (patch.surface && next.roomGeometry) {
+          const solved = solvedFromGeometry(next.roomGeometry);
+          const img = solved && surfaceImagePoint(solved, patch.surface);
+          if (img) {
+            next = { ...next, xPct: clamp(img.x, 0, 1), yPct: clamp(img.y, 0, 1) };
+          }
+        }
+        return { ...f, placement: next };
+      }),
     );
     setShowPreview(false);
   }
@@ -903,6 +973,7 @@ export function AppShot() {
           queued={queued}
           queuedJobId={queuedJobId}
           mountLabel={selectedGroup ? MOUNT_LABELS[selectedGroup.mount] : ""}
+          roomBox={roomSolved}
           onPatch={patchPlacement}
           onPatchPose={patchPose}
           onRePlaceAi={() => void rePlaceSelected()}
@@ -941,25 +1012,41 @@ export function AppShot() {
             />
           }
         />
-        <details className="card" style={{ marginTop: 12 }}>
+        <details className="card" style={{ marginTop: 12 }} open={!placement!.roomGeometry && placed.length > 1}>
           <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-            Cam Solve: room match{placement!.roomGeometry ? " ✓" : ""}
+            Room match: draw the room{placement!.roomGeometry ? " ✓" : ""}
+            {!placement!.roomGeometry && placed.length > 1 && (
+              <span className="muted" style={{ fontWeight: 400 }}>
+                {" "}
+                — recommended for multi-fixture shots (realistic combined lighting)
+              </span>
+            )}
           </summary>
           <div className="muted" style={{ fontSize: 12, margin: "8px 0" }}>
-            Trace a few of the room's edges so the render matches the photo's perspective and casts the
-            fixture's real light &amp; shadow onto the actual ceiling, walls and floor — so it stops looking
-            like it floats. Leave blank to use the classic backdrop.
+            Fit the box to the room so the render matches the photo's camera, hangs
+            fixtures at true size on real walls/ceiling, and casts their combined
+            light &amp; shadow onto the actual surfaces. Leave off to use the
+            classic backdrop.
           </div>
-          <RoomCalibrator
+          <RoomBoxCalibrator
             sceneUrl={sceneUrl!}
             value={placement!.roomGeometry}
             onChange={(geometry) => {
-              // Room geometry is scene-level: every fixture carries the same one.
+              // Room geometry is scene-level: every fixture carries the same one
+              // (and gains/loses its mount-surface attachment with it).
               setPlaced((list) =>
-                list.map((f) => ({
-                  ...f,
-                  placement: { ...f.placement, roomGeometry: geometry },
-                })),
+                list.map((f) =>
+                  geometry
+                    ? withSurface(f, geometry)
+                    : {
+                        ...f,
+                        placement: {
+                          ...f.placement,
+                          roomGeometry: undefined,
+                          surface: undefined,
+                        },
+                      },
+                ),
               );
               setShowPreview(false);
             }}

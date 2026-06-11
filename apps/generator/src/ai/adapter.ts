@@ -13,7 +13,7 @@
  * - segment:   return object segmentation masks for background removal (Gemini).
  */
 
-import type { RoomGeometry } from "@wac/shared";
+import type { AppShotSurface, RoomGeometry } from "@wac/shared";
 import { makeBflAdapter } from "./bfl.js";
 import { makeGeminiAdapter } from "./gemini.js";
 import { makeModelRenderAdapter } from "./modelRender.js";
@@ -276,6 +276,8 @@ export interface CompositeFixtureRequest {
   brightness?: number;
   lightOutput?: number;
   warm?: number;
+  /** Mount-surface attachment inside a solved room box (true-scale placement). */
+  surface?: AppShotSurface;
 }
 
 /**
@@ -315,6 +317,8 @@ export interface CompositeRenderRequest {
   /** Light-output slider (0..200, 25 = neutral): real light thrown into the room. */
   lightOutput?: number;
   warm?: number;
+  /** Mount-surface attachment inside a solved room box (true-scale placement). */
+  surface?: AppShotSurface;
   samples?: number;
   highQuality?: boolean;
   /** Final export emits the layered PSD; preview is png-only. */

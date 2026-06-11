@@ -14,7 +14,12 @@
 
 import sharp from "sharp";
 import { writePsd } from "ag-psd";
-import type { RenderQuality, RenderStyle, RoomGeometry } from "@wac/shared";
+import type {
+  AppShotSurface,
+  RenderQuality,
+  RenderStyle,
+  RoomGeometry,
+} from "@wac/shared";
 import type {
   CompositeResult,
   ImageGenAdapters,
@@ -94,6 +99,9 @@ export interface Placement {
    * lights the real ceiling/wall/floor instead of the orbit camera + billboard.
    * Scene-level + constant — the AI critic never adjusts it. */
   roomGeometry?: RoomGeometry;
+  /** Mount-surface attachment inside a solved room BOX (corner-drag room match):
+   * the fixture sits at (u,v) on `kind` at true scale. Per-fixture. */
+  surface?: AppShotSurface;
 }
 
 export interface RoomRef {
@@ -150,6 +158,7 @@ function startingPlacement(meta: FixtureMeta, over?: Partial<Placement>): Placem
     warm: over?.warm ?? 0.45,
     pose: over?.pose ?? meta.pose,
     roomGeometry: over?.roomGeometry,
+    surface: over?.surface,
   };
 }
 
@@ -322,18 +331,20 @@ async function renderShotImage(
       "3D app-shot requires a configured render-worker (set RENDER_WORKER_URL)",
     );
   }
-  // roomGeometry is scene-level (Cam Solve) — every fixture carries the same
-  // one. It is SINGLE-FIXTURE ONLY: its oriented planes are Cycles shadow
-  // catchers whose ratio-based compositing is not idempotent, so re-rendering
-  // the chained plate through them once per fixture compounds into a washed-out
-  // veil (observed: a 3-fixture final blown out with near-zero fixture light).
-  // Multi-fixture shots fall back to the legacy camera-facing catcher, which is
-  // plain emission+diffuse and stable under chaining.
+  // roomGeometry is scene-level — every fixture carries the same one.
+  //  - With a solved BOX (corner-drag room match) the worker renders ALL
+  //    fixtures in ONE Blender scene with the photo's camera: light sums
+  //    physically in a single linear render, so any fixture count is fine.
+  //  - A legacy axes-only geometry (line tracing) is SINGLE-FIXTURE ONLY: its
+  //    oriented planes are Cycles shadow catchers whose ratio-based compositing
+  //    is not idempotent, so re-rendering the chained plate through them once
+  //    per fixture compounds into a washed-out veil.
+  const sceneGeometry = entries[0]!.placement.roomGeometry;
   const roomGeometry =
-    entries.length === 1 ? entries[0]!.placement.roomGeometry : undefined;
-  if (entries.length > 1 && entries[0]!.placement.roomGeometry) {
+    entries.length === 1 || sceneGeometry?.box ? sceneGeometry : undefined;
+  if (entries.length > 1 && sceneGeometry && !sceneGeometry.box) {
     console.warn(
-      "[appshot3d] multi-fixture shot: dropping Cam Solve room-match (single-fixture only)",
+      "[appshot3d] multi-fixture shot: dropping line-traced room-match (single-fixture only; draw the room box instead)",
     );
   }
   const shared = {
@@ -366,6 +377,7 @@ async function renderShotImage(
       brightness: placement.brightness,
       lightOutput: placement.lightOutput,
       warm: placement.warm,
+      surface: placement.surface,
     });
   }
   return compositor.composite({
@@ -384,6 +396,7 @@ async function renderShotImage(
       brightness: placement.brightness,
       lightOutput: placement.lightOutput,
       warm: placement.warm,
+      surface: placement.surface,
     })),
   });
 }

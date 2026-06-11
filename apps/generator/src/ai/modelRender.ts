@@ -228,6 +228,7 @@ export function makeModelRenderAdapter(
             brightness: req.brightness,
             lightOutput: req.lightOutput,
             warm: req.warm,
+            surface: req.surface,
             samples: req.samples,
             highQuality: req.highQuality,
             layers: req.layers,

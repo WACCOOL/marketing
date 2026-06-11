@@ -1,0 +1,56 @@
+{
+  "_comment": "POST body for /composite exercising the ROOM-BOX single-scene path: two fixtures in one Blender render with the photo's solved camera. Camera basis below is a level one-point camera (looking straight down +Y); box extents are meters (floor z=0, camera at plan origin). Replace the URLs and SKUs.",
+  "fixtures": [
+    {
+      "modelUrl": "https://REPLACE-with-public-url/fixture-a.blend",
+      "sku": "REPLACE-SKU-A",
+      "iesUrl": "https://REPLACE-with-public-url/fixture-a-ies.zip",
+      "mount": "wall",
+      "surface": { "kind": "wall-back", "u": 0.3, "v": 0.62, "scale": 1, "lightYawDeg": 0 },
+      "brightness": 50,
+      "lightOutput": 50,
+      "warm": 0.45
+    },
+    {
+      "modelUrl": "https://REPLACE-with-public-url/fixture-a.blend",
+      "sku": "REPLACE-SKU-A",
+      "iesUrl": "https://REPLACE-with-public-url/fixture-a-ies.zip",
+      "mount": "wall",
+      "surface": { "kind": "wall-back", "u": 0.7, "v": 0.62, "scale": 1, "lightYawDeg": 0 },
+      "brightness": 50,
+      "lightOutput": 50,
+      "warm": 0.45
+    }
+  ],
+  "roomUrl": "https://REPLACE-with-public-url/reference-room.png",
+  "roomGeometry": {
+    "imageAspect": 1.5,
+    "box": {
+      "corners": {
+        "backTopLeft": { "x": 0.24, "y": 0.18 },
+        "backTopRight": { "x": 0.76, "y": 0.18 },
+        "backBottomLeft": { "x": 0.24, "y": 0.72 },
+        "backBottomRight": { "x": 0.76, "y": 0.72 },
+        "frontBottomLeft": { "x": -0.08, "y": 1.06 },
+        "frontBottomRight": { "x": 1.08, "y": 1.06 }
+      },
+      "ceilingHeightM": 2.74,
+      "assumedFovDeg": 55,
+      "solved": {
+        "mode": "one-point",
+        "fovDeg": 55,
+        "cameraHeightM": 1.4,
+        "box": { "xMin": -2.1, "xMax": 2.1, "yBack": 4.4, "yFront": 0.5, "height": 2.74 }
+      }
+    },
+    "camera": {
+      "fovDeg": 55,
+      "right": { "x": 1, "y": 0, "z": 0 },
+      "up": { "x": 0, "y": 0, "z": 1 },
+      "forward": { "x": 0, "y": 1, "z": 0 },
+      "worldUp": { "x": 0, "y": 0, "z": 1 }
+    }
+  },
+  "preview": true,
+  "previewMaxPx": 1100
+}

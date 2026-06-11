@@ -311,10 +311,25 @@ interface Vec3 {
  */
 interface RoomGeometryPayload {
   imageAspect: number;
-  axes: Array<{
+  /** Legacy line-tracing input (optional since the room-box flow replaced it). */
+  axes?: Array<{
     axis: "horizontalA" | "horizontalB" | "vertical";
     lines: Array<{ a: { x: number; y: number }; b: { x: number; y: number } }>;
   }>;
+  /** Room-box calibration (corner drag): the solved metric box. When present,
+   * runComposite renders ALL fixtures in ONE Blender scene built from these
+   * extents (floor z=0, camera at plan origin) instead of chaining. */
+  box?: {
+    corners?: Record<string, { x: number; y: number }>;
+    ceilingHeightM?: number;
+    assumedFovDeg?: number;
+    solved: {
+      mode: "one-point" | "two-point";
+      fovDeg: number;
+      cameraHeightM: number;
+      box: { xMin: number; xMax: number; yBack: number; yFront: number; height: number };
+    };
+  };
   camera: {
     fovDeg: number;
     right: Vec3;
@@ -322,6 +337,15 @@ interface RoomGeometryPayload {
     forward: Vec3;
     worldUp: Vec3;
   };
+}
+
+/** Mount-surface attachment inside a solved room box (true-scale placement). */
+interface SurfacePayload {
+  kind: "ceiling" | "wall-back" | "wall-left" | "wall-right" | "floor";
+  u: number;
+  v: number;
+  scale: number;
+  lightYawDeg: number;
 }
 
 /** One fixture in a (multi-fixture) composite — its model, photometry and placement. */
@@ -349,6 +373,8 @@ interface CompositeFixture {
   lightOutput?: number;
   /** Warmth of the fixture light (0..1). */
   warm?: number;
+  /** Mount-surface attachment inside a solved room box (true-scale placement). */
+  surface?: SurfacePayload;
 }
 
 interface CompositeRequest extends CompositeFixture {
@@ -573,7 +599,84 @@ async function runComposite(body: CompositeRequest): Promise<CompositeArtifacts>
 
     let plate = roomPath;
     const rendered: Array<{ sku?: string; out: string; fixture: string; base?: string }> = [];
-    for (let i = 0; i < fixtures.length; i++) {
+
+    // Room-box render: ONE Blender scene with the photo's solved camera, the
+    // metric room geometry, and ALL fixtures — light from every fixture sums
+    // physically in a single linear render (no chaining, no accumulated wash).
+    const roomBox = body.roomGeometry?.box?.solved ? body.roomGeometry : undefined;
+    if (roomBox) {
+      const resolved = await Promise.all(
+        fixtures.map(async (f, i) => {
+          let modelPath = f.modelPath;
+          if (!modelPath && f.modelUrl) modelPath = await fetchOnce(f.modelUrl, "model", i);
+          if (!modelPath || !existsSync(modelPath)) {
+            throw new Error(`model not found: ${modelPath ?? f.modelUrl}`);
+          }
+          let iesPath = f.iesPath;
+          if (!iesPath && f.iesUrl) iesPath = await fetchOnce(f.iesUrl, "ies", i);
+          return { ...f, modelPath, iesPath };
+        }),
+      );
+      const outPath = path.join(dir, "shot.png");
+      const jobPath = path.join(dir, "job.json");
+      const job = {
+        roomPath,
+        roomGeometry: roomBox,
+        fixtures: resolved.map((f) => ({
+          modelPath: f.modelPath,
+          sku: f.sku,
+          iesPath: f.iesPath,
+          mount: f.mount,
+          surface: f.surface,
+          xPct: f.xPct ?? 0.5,
+          yPct: f.yPct ?? 0.5,
+          coverage: f.coverage ?? 0.34,
+          brightness: f.brightness ?? 50,
+          lightOutput: f.lightOutput ?? 50,
+          warm: f.warm ?? 0.45,
+        })),
+        samples: body.samples,
+        highQuality: body.highQuality,
+        layers,
+        preview,
+        previewMaxPx: body.previewMaxPx,
+        supersample: body.supersample,
+        fixtureScale,
+        composeBeauty,
+      };
+      await writeFile(jobPath, JSON.stringify(job));
+      await runBlender(COMPOSITE_SCRIPT, resolved[0]!.modelPath!, jobPath, outPath);
+
+      if (layers) {
+        const wallPath = `${outPath.slice(0, -4)}_wall.png`;
+        if (!existsSync(wallPath)) {
+          throw new Error("Blender did not produce the room-box layer passes");
+        }
+        for (let i = 0; i < resolved.length; i++) {
+          const fixturePath = `${outPath.slice(0, -4)}_fixture${i}.png`;
+          const basePath = `${outPath.slice(0, -4)}_fixture${i}base.png`;
+          if (!existsSync(fixturePath)) {
+            throw new Error(`Blender did not produce the fixture ${i} cutout pass`);
+          }
+          rendered.push({
+            sku: resolved[i]!.sku,
+            out: outPath,
+            fixture: fixturePath,
+            base: existsSync(basePath) ? basePath : undefined,
+          });
+        }
+        plate = wallPath;
+      } else {
+        if (!existsSync(outPath)) {
+          throw new Error("Blender finished but produced no composite image");
+        }
+        plate = outPath;
+      }
+    }
+
+    // Legacy chain (no room box): one Blender render per fixture, each against
+    // the plate that already carries the previous fixtures.
+    for (let i = 0; !roomBox && i < fixtures.length; i++) {
       const f = fixtures[i]!;
       let modelPath = f.modelPath;
       if (!modelPath && f.modelUrl) modelPath = await fetchOnce(f.modelUrl, "model", i);
