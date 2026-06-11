@@ -157,6 +157,25 @@ function backfillFixture(f: PlacedFixture): PlacedFixture {
   return { ...f, placement: { ...DEFAULT_PLACEMENT, ...f.placement } };
 }
 
+/**
+ * Convert a brightness/lightOutput value from the OLD linear scale (25 =
+ * neutral, the team exported at ~1) to the new curve (50 = the old "1" look,
+ * squared response). Equating the intensities gives v_new = 50·√v_old — e.g.
+ * old 1 → 50, old 4 → 100. Without this, migrated/restored layouts carry old
+ * values like 1 that the new curve renders as ~zero (fixture looks OFF).
+ */
+function migrateLightValue(v: number): number {
+  return Math.max(0, Math.min(100, Math.round(50 * Math.sqrt(Math.max(0, v)))));
+}
+
+function migrateLegacyPlacement(p: AppShotPlacement): AppShotPlacement {
+  return {
+    ...p,
+    brightness: migrateLightValue(p.brightness),
+    lightOutput: migrateLightValue(p.lightOutput),
+  };
+}
+
 function loadPersisted(): Persisted | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -175,7 +194,8 @@ function loadPersisted(): Persisted | null {
             backfillFixture({
               id: crypto.randomUUID(),
               sku: v3.sku,
-              placement: v3.placement,
+              // v3 light values are on the old linear scale — convert.
+              placement: migrateLegacyPlacement(v3.placement),
               cutout: v3.cutout ?? null,
               glb: v3.glb ?? null,
             }),
@@ -224,11 +244,21 @@ export function AppShot() {
           }
         | undefined;
       if (!shot?.sceneUrl) return;
-      // New jobs carry fixtures[]; old single-fixture jobs carry sku+placement.
+      // New jobs carry fixtures[]; old single-fixture jobs carry sku+placement
+      // with light values on the OLD linear scale — convert those.
       const list = shot.fixtures?.length
         ? shot.fixtures
         : shot.sku
-          ? [{ sku: shot.sku, placement: shot.placement ?? DEFAULT_PLACEMENT }]
+          ? [
+              {
+                sku: shot.sku,
+                // DEFAULT_PLACEMENT is already on the new scale — only convert
+                // a placement the old job actually carried.
+                placement: shot.placement
+                  ? migrateLegacyPlacement(shot.placement)
+                  : DEFAULT_PLACEMENT,
+              },
+            ]
           : [];
       if (!list.length) return;
       const fixtures: PlacedFixture[] = list.map((f) =>
