@@ -183,3 +183,31 @@ Required repo secret:
 ## Database
 
 Supabase migrations live in [`supabase/migrations/`](./supabase/migrations). Apply them via the Supabase dashboard SQL editor or the Supabase CLI.
+
+## Auth email (magic link / sign-in code)
+
+Email sign-in needs two pieces of Supabase dashboard config (none of it lives in
+this repo):
+
+1. **Custom SMTP** — _Project Settings → Authentication → SMTP Settings_. Without
+   it Supabase uses its built-in dev mailer, capped at ~2 emails/hour for the
+   whole project ("email rate limit exceeded" for everyone). We use
+   [Resend](https://resend.com): verify a sending domain there (two DNS records
+   in Cloudflare), then paste Resend's SMTP host/port/credentials and a sender
+   like `signin@<domain>`. Afterwards raise _Authentication → Rate Limits →
+   emails per hour_ to something sane (e.g. 60).
+2. **A `{{ .Token }}` code in the Magic Link template** — _Authentication →
+   Emails → Magic Link_. WAC's inbound mail runs through Cisco Secure Email
+   (IronPort), whose URL Defense pre-opens links and consumes the one-time
+   magic-link token — clicking the real link then fails. The sign-in page
+   therefore asks for the **6-digit code** (`{{ .Token }}`), which only gets
+   consumed when typed into the app. Keep `{{ .ConfirmationURL }}` in the
+   template too if you want the link for non-corporate inboxes, e.g.:
+
+   ```html
+   <p>Your WAC Marketing sign-in code: <strong>{{ .Token }}</strong></p>
+   <p>Or open this link on this device: {{ .ConfirmationURL }}</p>
+   ```
+
+Also keep the production origin listed under _Authentication → URL
+Configuration → Redirect URLs_ (used by both Google OAuth and the magic link).
