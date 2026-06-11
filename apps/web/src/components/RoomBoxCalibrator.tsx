@@ -47,6 +47,13 @@ const DRAGGED_EDGES: [RoomBoxCornerId, RoomBoxCornerId, string][] = [
 
 const M_PER_FT = 0.3048;
 
+// The photo is shown SMALLER than the drawing canvas, with margin all around,
+// so corners that live past the frame edges (the front floor corners usually
+// do) stay visible and draggable. Fractions of the canvas width:
+const IMG_W = 0.66; // photo width
+const PAD_X = (1 - IMG_W) / 2; // left/right margin
+const PAD_Y = 0.1; // top/bottom margin (in canvas-width units)
+
 export function RoomBoxCalibrator(p: Props) {
   const [corners, setCorners] = useState<RoomBoxCorners>(
     () => p.value?.box?.corners ?? defaultRoomBoxCorners(),
@@ -119,14 +126,25 @@ export function RoomBoxCalibrator(p: Props) {
     });
   }
 
+  // Canvas height in canvas-width units (photo height + the two margins), and
+  // the photo<->canvas coordinate mappings. All drawing happens in CANVAS
+  // space; corner state stays in photo-normalized space (the solver's input).
+  const canvasH = IMG_W / aspect + 2 * PAD_Y;
+  const toCanvas = (pt: Pt): Pt => ({
+    x: PAD_X + IMG_W * pt.x,
+    y: (PAD_Y + (IMG_W / aspect) * pt.y) / canvasH,
+  });
+
   function pointerToNorm(e: React.PointerEvent): Pt | null {
     const rect = boxRef.current?.getBoundingClientRect();
     if (!rect || rect.width === 0 || rect.height === 0) return null;
-    // Handles may drag past the frame (front floor corners usually live below
-    // it) — clamp to the schema's -0.5..1.5 instead of the visible 0..1.
+    const xo = (e.clientX - rect.left) / rect.width;
+    const yo = (e.clientY - rect.top) / rect.height;
+    // Canvas coords -> photo-normalized; clamp to the schema's -0.5..1.5 (the
+    // margin plus pointer capture lets corners go past the frame).
     return {
-      x: Math.min(1.5, Math.max(-0.5, (e.clientX - rect.left) / rect.width)),
-      y: Math.min(1.5, Math.max(-0.5, (e.clientY - rect.top) / rect.height)),
+      x: Math.min(1.5, Math.max(-0.5, (xo - PAD_X) / IMG_W)),
+      y: Math.min(1.5, Math.max(-0.5, (yo * canvasH - PAD_Y) / (IMG_W / aspect))),
     };
   }
 
@@ -155,20 +173,24 @@ export function RoomBoxCalibrator(p: Props) {
     commit(next);
   }
 
-  const line = (a: Pt, b: Pt, stroke: string, dashed = false, key?: string) => (
-    <line
-      key={key}
-      x1={a.x * 100}
-      y1={a.y * 100}
-      x2={b.x * 100}
-      y2={b.y * 100}
-      stroke={stroke}
-      strokeWidth={dashed ? 0.45 : 0.6}
-      strokeDasharray={dashed ? "1.6 1.6" : undefined}
-      opacity={dashed ? 0.7 : 0.95}
-      vectorEffect="non-scaling-stroke"
-    />
-  );
+  const line = (a: Pt, b: Pt, stroke: string, dashed = false, key?: string) => {
+    const ca = toCanvas(a);
+    const cb = toCanvas(b);
+    return (
+      <line
+        key={key}
+        x1={ca.x * 100}
+        y1={ca.y * 100}
+        x2={cb.x * 100}
+        y2={cb.y * 100}
+        stroke={stroke}
+        strokeWidth={dashed ? 0.45 : 0.6}
+        strokeDasharray={dashed ? "1.6 1.6" : undefined}
+        opacity={dashed ? 0.7 : 0.95}
+        vectorEffect="non-scaling-stroke"
+      />
+    );
+  };
 
   const cameraFt = solved.ok ? solved.cameraHeightM / M_PER_FT : 0;
 
@@ -186,10 +208,14 @@ export function RoomBoxCalibrator(p: Props) {
         style={{
           position: "relative",
           width: "100%",
+          // The photo sits inset in a larger drawing canvas (see IMG_W/PAD_*),
+          // so off-frame corners stay visible and grabbable.
+          aspectRatio: `1 / ${canvasH}`,
+          background: "var(--panel)",
+          border: "1px dashed var(--border, rgba(128,128,128,0.35))",
+          borderRadius: "var(--radius)",
           userSelect: "none",
           touchAction: "none",
-          // Breathing room so off-frame handles stay reachable.
-          padding: 0,
         }}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -198,7 +224,13 @@ export function RoomBoxCalibrator(p: Props) {
         <img
           src={p.sceneUrl}
           alt="room"
-          style={{ display: "block", width: "100%", borderRadius: "var(--radius)" }}
+          style={{
+            position: "absolute",
+            left: `${PAD_X * 100}%`,
+            top: `${(PAD_Y / canvasH) * 100}%`,
+            width: `${IMG_W * 100}%`,
+            borderRadius: "var(--radius)",
+          }}
           draggable={false}
           onLoad={(e) => {
             const img = e.currentTarget;
@@ -230,22 +262,25 @@ export function RoomBoxCalibrator(p: Props) {
               {line(derived.frontTopLeft, derived.frontTopRight, "#ff5d73", true, "d4")}
             </>
           )}
-          {HANDLES.map((h) => (
-            <circle
-              key={h.id}
-              cx={corners[h.id].x * 100}
-              cy={corners[h.id].y * 100}
-              r={1.4}
-              fill={solved.ok ? "var(--accent)" : "#ff5d73"}
-              stroke="#fff"
-              strokeWidth={0.35}
-              style={{ cursor: "grab" }}
-              vectorEffect="non-scaling-stroke"
-              onPointerDown={onPointerDown(h.id)}
-            >
-              <title>{h.label}</title>
-            </circle>
-          ))}
+          {HANDLES.map((h) => {
+            const c = toCanvas(corners[h.id]);
+            return (
+              <circle
+                key={h.id}
+                cx={c.x * 100}
+                cy={c.y * 100}
+                r={1.2}
+                fill={solved.ok ? "var(--accent)" : "#ff5d73"}
+                stroke="#fff"
+                strokeWidth={0.35}
+                style={{ cursor: "grab" }}
+                vectorEffect="non-scaling-stroke"
+                onPointerDown={onPointerDown(h.id)}
+              >
+                <title>{h.label}</title>
+              </circle>
+            );
+          })}
         </svg>
       </div>
 

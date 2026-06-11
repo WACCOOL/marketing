@@ -617,14 +617,16 @@ def duplicate_fixture_group(scene, objs):
     return new_objs
 
 
-def make_room_plate(scene, img, name, verts, emit, receive):
-    """One wall/floor/ceiling of the solved room box: the room photo Window-
-    (screen-)mapped onto a REAL plane, as Emission(photo*emit) + Diffuse(photo*
-    receive) — the same proven shader as the legacy camera billboard, but now on
-    geometry at the actual distance/orientation, so fixture light lands with
-    true falloff. Window mapping means the camera sees exactly the plate from
-    every plane (a sloppy box still reproduces the photo pixel-perfectly; only
-    the lighting distribution depends on the box accuracy)."""
+def make_room_plate(scene, img, name, verts, receive):
+    """One wall/floor/ceiling of the solved room box: a PURE-DIFFUSE plane with
+    the room photo Window- (screen-)mapped as its albedo. No emission — these
+    planes are not the background, they are the room's light-receiving
+    geometry. The worker divides a lit pass by an ambient-only pass and
+    multiplies the PHOTO by that ratio, so the photo (already properly exposed)
+    only ever gets RELATIVE highlights (fixture light) and RELATIVE shadows
+    (the fixture blocking the ambient) — adding light on top of the plate, the
+    old approach, could only ever brighten. The photo albedo makes bounce light
+    + the crystal's refraction carry the room's real colors."""
     mesh = bpy.data.meshes.new(name)
     mesh.from_pydata([tuple(p) for p in verts], [], [(0, 1, 2, 3)])
     mesh.update()
@@ -640,9 +642,6 @@ def make_room_plate(scene, img, name, verts, emit, receive):
     tex.image = img
     tex.extension = "EXTEND"
     nt.links.new(coord.outputs["Window"], tex.inputs["Vector"])
-    emis = nt.nodes.new("ShaderNodeEmission")
-    emis.inputs["Strength"].default_value = emit
-    nt.links.new(tex.outputs["Color"], emis.inputs["Color"])
     diff = nt.nodes.new("ShaderNodeBsdfDiffuse")
     mix = nt.nodes.new("ShaderNodeMixRGB")
     mix.blend_type = "MULTIPLY"
@@ -650,11 +649,8 @@ def make_room_plate(scene, img, name, verts, emit, receive):
     mix.inputs["Color2"].default_value = (receive, receive, receive, 1.0)
     nt.links.new(tex.outputs["Color"], mix.inputs["Color1"])
     nt.links.new(mix.outputs["Color"], diff.inputs["Color"])
-    add = nt.nodes.new("ShaderNodeAddShader")
-    nt.links.new(emis.outputs["Emission"], add.inputs[0])
-    nt.links.new(diff.outputs["BSDF"], add.inputs[1])
     out = nt.nodes.new("ShaderNodeOutputMaterial")
-    nt.links.new(add.outputs["Shader"], out.inputs["Surface"])
+    nt.links.new(diff.outputs["BSDF"], out.inputs["Surface"])
     plane.data.materials.append(mat)
     return plane
 
@@ -805,10 +801,17 @@ def run_room_box(scene, job, out_path):
         if obj.type == "LIGHT" and obj not in groups[0]["objs"]:
             obj.hide_render = True  # studio softboxes — the room lights the shot
     scene.timeline_markers.clear()
-    if scene.world and scene.world.use_nodes:
-        for n in scene.world.node_tree.nodes:
-            if n.type == "BACKGROUND":
-                n.inputs["Strength"].default_value = float(job.get("worldStrength", 0.15))
+    # Uniform WHITE ambient: the exposure baseline of the relight ratio (the
+    # photo "is" this light). Identical in the lit and base passes, so it
+    # cancels exactly — its strength only sets how strong fixture light reads
+    # RELATIVE to the room's existing exposure (lower = punchier highlights).
+    if scene.world is None:
+        scene.world = bpy.data.worlds.new("wac_world")
+    scene.world.use_nodes = True
+    for n in scene.world.node_tree.nodes:
+        if n.type == "BACKGROUND":
+            n.inputs["Color"].default_value = (1.0, 1.0, 1.0, 1.0)
+            n.inputs["Strength"].default_value = float(job.get("worldStrength", 1.0))
 
     # --- append fixtures 1..N-1 into this scene -------------------------------
     # Fixtures sharing a .blend (identical pendants; the worker dedupes the
@@ -851,28 +854,29 @@ def run_room_box(scene, job, out_path):
     # Window mapping makes the overlaps invisible (same screen pixel either way).
     yf = min(float(boxd["yFront"]), 0.0) - 2.0
     ov = 0.5
-    emit = float(job.get("roomStrength", 1.0))
-    recv = float(job.get("catcherReceive", 0.9))
+    recv = float(job.get("catcherReceive", 1.0))
     plates = [
         make_room_plate(scene, img, "wac_room_floor",
                         [(x0 - ov, yf, 0), (x1 + ov, yf, 0), (x1 + ov, yb + ov, 0), (x0 - ov, yb + ov, 0)],
-                        emit, recv),
+                        recv),
         make_room_plate(scene, img, "wac_room_ceiling",
                         [(x0 - ov, yf, hgt), (x1 + ov, yf, hgt), (x1 + ov, yb + ov, hgt), (x0 - ov, yb + ov, hgt)],
-                        emit, recv),
+                        recv),
         make_room_plate(scene, img, "wac_room_back",
                         [(x0 - ov, yb, -ov), (x1 + ov, yb, -ov), (x1 + ov, yb, hgt + ov), (x0 - ov, yb, hgt + ov)],
-                        emit, recv),
+                        recv),
         make_room_plate(scene, img, "wac_room_left",
                         [(x0, yf, -ov), (x0, yb + ov, -ov), (x0, yb + ov, hgt + ov), (x0, yf, hgt + ov)],
-                        emit, recv),
+                        recv),
         make_room_plate(scene, img, "wac_room_right",
                         [(x1, yf, -ov), (x1, yb + ov, -ov), (x1, yb + ov, hgt + ov), (x1, yf, hgt + ov)],
-                        emit, recv),
+                        recv),
     ]
-    # Far emission-only backdrop: guarantees full frame coverage even where the
-    # frustum peeks past the box (receive=0 so it never catches fixture light).
-    bg, _, _ = make_catcher(scene, cam, room_path, max(yb * 3.0, 8.0), aspect, emit, 0.0)
+    # Far emission-only backdrop: covers any frustum sliver past the box. It is
+    # identical in the lit and base passes, so it divides out to ratio=1 there
+    # (the photo passes through untouched).
+    bg, _, _ = make_catcher(scene, cam, room_path, max(yb * 3.0, 8.0), aspect,
+                            float(job.get("roomStrength", 1.0)), 0.0)
     plates.append(bg)
 
     # --- place each fixture + its light ----------------------------------------
@@ -946,11 +950,11 @@ def run_room_box(scene, job, out_path):
     hi_w = int(round(base_w * fixture_scale))
     hi_h = int(round(base_h * fixture_scale))
 
-    def render_to(p, w, h, transparent):
+    def render_to(p, w, h, transparent, samples_override=None):
         render_w, render_h = (int(round(w * ss)), int(round(h * ss))) if ss > 1.0 else (w, h)
         R.configure_render(scene, {
             "engine": "CYCLES",
-            "samples": samples,
+            "samples": samples if samples_override is None else samples_override,
             "highQuality": job.get("highQuality"),
             "width": render_w,
             "height": render_h,
@@ -978,28 +982,46 @@ def run_room_box(scene, job, out_path):
           f"samples={samples} fov={fov_deg:.1f} camH={cam_h:.2f} "
           f"box=({x0:.2f}..{x1:.2f}, yBack={yb:.2f}, H={hgt:.2f})")
 
-    if not (job.get("layers") and compose):
-        render_to(out_path, base_w, base_h, transparent=False)
+    # The room-box path NEVER renders a direct beauty: the worker relight-
+    # composites the photo with the lit/base wall ratio and overlays the
+    # fixture cutouts (preview and final alike).
+    base, ext = os.path.splitext(out_path)
 
-    if job.get("layers"):
-        base, ext = os.path.splitext(out_path)
-        # Wall pass @ room res: every fixture hidden from camera but still
-        # lighting/shadowing — the accumulated "Light + Shadow" PSD layer.
-        for g in groups:
-            for o in g["meshes"]:
-                o.visible_camera = False
-        render_to(base + "_wall" + ext, base_w, base_h, transparent=False)
-        # Per-fixture hi-res cutout + self-light-off base. Other fixtures stay
-        # camera-hidden but keep LIGHTING the scene (cross-illumination is
-        # physically right and free in the shared scene).
-        for i, g in enumerate(groups):
-            for j, g2 in enumerate(groups):
-                vis = j == i
-                for o in g2["meshes"]:
-                    o.visible_camera = vis
-            for c in plates:
-                c.visible_camera = False
-            render_to(base + f"_fixture{i}" + ext, hi_w, hi_h, transparent=True)
+    # Light passes for the relight ratio, both @ room res (they're smooth,
+    # low-frequency gradients, so previews get away with fewer samples):
+    #   _wall      planes lit by ambient + every fixture (fixtures camera-hidden
+    #              but still emitting light and casting shadows)
+    #   _wallbase  planes lit by the ambient ALONE (fixtures fully absent)
+    wall_samples = max(48, int(samples) // 3) if (preview and samples) else samples
+    for g in groups:
+        for o in g["meshes"]:
+            o.visible_camera = False
+    render_to(base + "_wall" + ext, base_w, base_h, False, wall_samples)
+    unhide = []
+    for g in groups:
+        for o in list(g["objs"]) + ([g["light"]] if g["light"] is not None else []):
+            if not o.hide_render:
+                unhide.append(o)
+                o.hide_render = True
+    render_to(base + "_wallbase" + ext, base_w, base_h, False, wall_samples)
+    for o in unhide:
+        o.hide_render = False
+    for g in groups:
+        for o in g["meshes"]:
+            o.visible_camera = True
+
+    # Per-fixture hi-res cutout (+ self-light-off base for the PSD glow layer on
+    # finals). Other fixtures stay camera-hidden but keep LIGHTING the scene —
+    # cross-illumination is physically right and free in the shared scene.
+    for i, g in enumerate(groups):
+        for j, g2 in enumerate(groups):
+            vis = j == i
+            for o in g2["meshes"]:
+                o.visible_camera = vis
+        for c in plates:
+            c.visible_camera = False
+        render_to(base + f"_fixture{i}" + ext, hi_w, hi_h, transparent=True)
+        if job.get("layers"):
             saved = suspend_fixture_selflight(g["objs"])
             if g["light"] is not None:
                 g["light"].hide_render = True
@@ -1007,12 +1029,13 @@ def run_room_box(scene, job, out_path):
             restore_fixture_selflight(saved)
             if g["light"] is not None:
                 g["light"].hide_render = False
-        for g in groups:
-            for o in g["meshes"]:
-                o.visible_camera = True
-        for c in plates:
-            c.visible_camera = True
-        print(f"[composite] room-box layers=on (wall + {len(groups)}x fixture/base written)")
+    for g in groups:
+        for o in g["meshes"]:
+            o.visible_camera = True
+    for c in plates:
+        c.visible_camera = True
+    print(f"[composite] room-box relight passes done (wall + wallbase + "
+          f"{len(groups)}x fixture{' + base' if job.get('layers') else ''})")
 
 
 def main():
