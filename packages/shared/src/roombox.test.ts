@@ -5,6 +5,7 @@ import {
   type RoomBoxExtents,
   type RoomSurfaceKind,
   defaultRoomBoxCorners,
+  ensureTopCorners,
   projectBoxCorners,
   raycastSurface,
   roomBoxWorldCorners,
@@ -62,10 +63,14 @@ function project(cam: Cam, p: V): Pt {
   return { x: u / cam.aspect + 0.5, y: v + 0.5 };
 }
 
-/** Project a ground-truth box's six handle corners through the camera. */
-function cornersFor(cam: Cam, box: RoomBoxExtents): RoomBoxCorners {
+/** Project a ground-truth box's handle corners through the camera. */
+function cornersFor(
+  cam: Cam,
+  box: RoomBoxExtents,
+  opts: { topHandles?: boolean } = {},
+): RoomBoxCorners {
   const { xMin, xMax, yBack, yFront, height: H } = box;
-  return {
+  const corners: RoomBoxCorners = {
     backTopLeft: project(cam, [xMin, yBack, H]),
     backTopRight: project(cam, [xMax, yBack, H]),
     backBottomLeft: project(cam, [xMin, yBack, 0]),
@@ -73,6 +78,11 @@ function cornersFor(cam: Cam, box: RoomBoxExtents): RoomBoxCorners {
     frontBottomLeft: project(cam, [xMin, yFront, 0]),
     frontBottomRight: project(cam, [xMax, yFront, 0]),
   };
+  if (opts.topHandles !== false) {
+    corners.frontTopLeft = project(cam, [xMin, yFront, H]);
+    corners.frontTopRight = project(cam, [xMax, yFront, H]);
+  }
+  return corners;
 }
 
 const fovOf = (cam: Cam): number => {
@@ -133,12 +143,53 @@ describe("solveRoomBox: two-point perspective round-trip", () => {
     const dragged = cornersFor(cam, box);
     for (const id of Object.keys(dragged) as (keyof RoomBoxCorners)[]) {
       expect(reproj[id]).not.toBeNull();
-      expect(reproj[id]!.x).toBeCloseTo(dragged[id].x, 3);
-      expect(reproj[id]!.y).toBeCloseTo(dragged[id].y, 3);
+      expect(reproj[id]!.x).toBeCloseTo(dragged[id]!.x, 3);
+      expect(reproj[id]!.y).toBeCloseTo(dragged[id]!.y, 3);
     }
-    // Derived front-top corners exist too (they complete the cube wireframe).
-    expect(reproj.frontTopLeft).not.toBeNull();
-    expect(reproj.frontTopRight).not.toBeNull();
+  });
+
+  it("solves a legacy six-corner box (no ceiling handles) identically", () => {
+    const legacy = solveRoomBox({
+      corners: cornersFor(cam, box, { topHandles: false }),
+      imageAspect: aspect,
+      ceilingHeightM: box.height,
+    });
+    expect(legacy.ok).toBe(true);
+    expect(legacy.cameraHeightM).toBeCloseTo(solved.cameraHeightM, 3);
+    expect(legacy.box.yBack).toBeCloseTo(solved.box.yBack, 3);
+    expect(legacy.box.xMin).toBeCloseTo(solved.box.xMin, 3);
+  });
+
+  it("backfills ceiling handles ON the true ceiling seams (clipped in-range)", () => {
+    const six = cornersFor(cam, box, { topHandles: false });
+    const eight = ensureTopCorners(six, {
+      imageAspect: aspect,
+      ceilingHeightM: box.height,
+    });
+    const truth = cornersFor(cam, box);
+    for (const side of ["frontTopLeft", "frontTopRight"] as const) {
+      const back = side === "frontTopLeft" ? six.backTopLeft : six.backTopRight;
+      const got = eight[side]!;
+      const want = truth[side]!;
+      // Collinear with the true seam (the solver consumes the DIRECTION)…
+      const cross =
+        (got.x - back.x) * (want.y - back.y) - (got.y - back.y) * (want.x - back.x);
+      expect(Math.abs(cross)).toBeLessThan(1e-6);
+      // …and inside the draggable range.
+      expect(got.x).toBeGreaterThanOrEqual(-0.5);
+      expect(got.x).toBeLessThanOrEqual(1.5);
+      expect(got.y).toBeGreaterThanOrEqual(-0.5);
+      expect(got.y).toBeLessThanOrEqual(1.5);
+    }
+    // Re-solving with the backfilled handles reproduces the same room.
+    const resolved = solveRoomBox({
+      corners: eight,
+      imageAspect: aspect,
+      ceilingHeightM: box.height,
+    });
+    expect(resolved.ok).toBe(true);
+    expect(resolved.cameraHeightM).toBeCloseTo(solved.cameraHeightM, 3);
+    expect(resolved.box.yBack).toBeCloseTo(solved.box.yBack, 3);
   });
 
   it("round-trips surface points: surfaceToWorld → worldToImage → raycastSurface", () => {

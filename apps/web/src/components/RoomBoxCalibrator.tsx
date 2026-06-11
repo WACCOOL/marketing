@@ -3,7 +3,7 @@ import {
   DEFAULT_ASSUMED_FOV_DEG,
   DEFAULT_CEILING_M,
   defaultRoomBoxCorners,
-  projectBoxCorners,
+  ensureTopCorners,
   solveRoomBox,
   type Pt,
   type RoomBoxCornerId,
@@ -33,6 +33,8 @@ const HANDLES: { id: RoomBoxCornerId; label: string }[] = [
   { id: "backBottomRight", label: "back wall — bottom right" },
   { id: "frontBottomLeft", label: "floor — front left" },
   { id: "frontBottomRight", label: "floor — front right" },
+  { id: "frontTopLeft", label: "ceiling — front left" },
+  { id: "frontTopRight", label: "ceiling — front right" },
 ];
 
 /** Box edges drawn from the DRAGGED corners (solid, axis-coloured). */
@@ -43,6 +45,11 @@ const DRAGGED_EDGES: [RoomBoxCornerId, RoomBoxCornerId, string][] = [
   ["backTopRight", "backBottomRight", "#ffc83d"],
   ["backBottomLeft", "frontBottomLeft", "#3cc6ff"], // floor seams (Y/depth)
   ["backBottomRight", "frontBottomRight", "#3cc6ff"],
+  ["backTopLeft", "frontTopLeft", "#3cc6ff"], // ceiling seams (Y/depth)
+  ["backTopRight", "frontTopRight", "#3cc6ff"],
+  ["frontTopLeft", "frontBottomLeft", "#ffc83d"], // front verticals (Z)
+  ["frontTopRight", "frontBottomRight", "#ffc83d"],
+  ["frontTopLeft", "frontTopRight", "#ff5d73"], // open front, top edge (X)
 ];
 
 const M_PER_FT = 0.3048;
@@ -55,9 +62,17 @@ const PAD_X = (1 - IMG_W) / 2; // left/right margin
 const PAD_Y = 0.1; // top/bottom margin (in canvas-width units)
 
 export function RoomBoxCalibrator(p: Props) {
-  const [corners, setCorners] = useState<RoomBoxCorners>(
-    () => p.value?.box?.corners ?? defaultRoomBoxCorners(),
-  );
+  const [corners, setCorners] = useState<RoomBoxCorners>(() => {
+    const saved = p.value?.box?.corners;
+    if (!saved) return defaultRoomBoxCorners();
+    // Calibrations saved before the ceiling corners were draggable get them
+    // backfilled where the solve projected them (nothing visibly moves).
+    return ensureTopCorners(saved, {
+      imageAspect: p.value?.imageAspect ?? 16 / 9,
+      ceilingHeightM: p.value?.box?.ceilingHeightM ?? DEFAULT_CEILING_M,
+      assumedFovDeg: p.value?.box?.assumedFovDeg ?? DEFAULT_ASSUMED_FOV_DEG,
+    });
+  });
   const [ceilingFt, setCeilingFt] = useState<number>(() => {
     const m = p.value?.box?.ceilingHeightM ?? DEFAULT_CEILING_M;
     return Math.round((m / M_PER_FT) * 4) / 4;
@@ -79,15 +94,6 @@ export function RoomBoxCalibrator(p: Props) {
       }),
     [corners, aspect, ceilingFt, fovDeg],
   );
-
-  // The derived (not draggable) front-top corners that complete the cube.
-  const derived = useMemo(() => {
-    if (!solved.ok) return null;
-    const proj = projectBoxCorners(solved);
-    return proj.frontTopLeft && proj.frontTopRight
-      ? { frontTopLeft: proj.frontTopLeft, frontTopRight: proj.frontTopRight }
-      : null;
-  }, [solved]);
 
   /** Push the current state up — only ever a SOLVED box (or an explicit clear),
    * so a mid-drag invalid box never wipes a previously good room match. */
@@ -197,10 +203,11 @@ export function RoomBoxCalibrator(p: Props) {
   return (
     <div className="col" style={{ gap: 10 }}>
       <div className="muted" style={{ fontSize: 12 }}>
-        Drag the six dots so the box hugs the room: the red/yellow quad onto the
-        <strong> back wall</strong> (its corners on the real wall corners) and the
-        two blue dots along the <strong>floor edges</strong> toward you. Corners
-        can go past the photo's edges.
+        Drag the dots so the box hugs the room: the inner quad onto the
+        <strong> back wall</strong> (corners on the real wall corners), the lower
+        dots along the <strong>floor edges</strong> toward you, and the upper dots
+        along the <strong>ceiling edges</strong>. Corners can go past the photo's
+        edges.
       </div>
 
       <div
@@ -250,20 +257,15 @@ export function RoomBoxCalibrator(p: Props) {
             overflow: "visible",
           }}
         >
-          {DRAGGED_EDGES.map(([a, b, color], i) =>
-            line(corners[a], corners[b], color, false, `e${i}`),
-          )}
-          {derived && (
-            <>
-              {line(corners.frontBottomLeft, derived.frontTopLeft, "#ffc83d", true, "d0")}
-              {line(corners.frontBottomRight, derived.frontTopRight, "#ffc83d", true, "d1")}
-              {line(corners.backTopLeft, derived.frontTopLeft, "#3cc6ff", true, "d2")}
-              {line(corners.backTopRight, derived.frontTopRight, "#3cc6ff", true, "d3")}
-              {line(derived.frontTopLeft, derived.frontTopRight, "#ff5d73", true, "d4")}
-            </>
-          )}
+          {DRAGGED_EDGES.map(([a, b, color], i) => {
+            const pa = corners[a];
+            const pb = corners[b];
+            return pa && pb ? line(pa, pb, color, false, `e${i}`) : null;
+          })}
           {HANDLES.map((h) => {
-            const c = toCanvas(corners[h.id]);
+            const pt = corners[h.id];
+            if (!pt) return null;
+            const c = toCanvas(pt);
             return (
               <circle
                 key={h.id}
