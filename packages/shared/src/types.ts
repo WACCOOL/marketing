@@ -384,12 +384,52 @@ const RoomAxisLinesSchema = z.object({
   lines: z.array(RoomSegSchema).min(1),
 });
 const Vec3Schema = z.object({ x: z.number(), y: z.number(), z: z.number() });
+
+/**
+ * Room-box calibration (the corner-drag successor to line tracing — see
+ * @wac/shared roombox). The six dragged corners are kept for re-editing; the
+ * solved camera height + box extents (meters, floor z=0, camera at plan
+ * origin) are what the render consumes to build the real room geometry.
+ */
+const RoomBoxCornersSchema = z.object({
+  backTopLeft: RoomPointSchema,
+  backTopRight: RoomPointSchema,
+  backBottomLeft: RoomPointSchema,
+  backBottomRight: RoomPointSchema,
+  frontBottomLeft: RoomPointSchema,
+  frontBottomRight: RoomPointSchema,
+});
+const RoomBoxExtentsSchema = z.object({
+  xMin: z.number(),
+  xMax: z.number(),
+  yBack: z.number(),
+  yFront: z.number(),
+  height: z.number().positive(),
+});
+export const RoomBoxSchema = z.object({
+  corners: RoomBoxCornersSchema,
+  /** Metric anchor: real ceiling height in meters (9 ft default in the UI). */
+  ceilingHeightM: z.number().positive().max(10).default(2.74),
+  /** One-point-perspective fallback lens (deg); see solveRoomBox. */
+  assumedFovDeg: z.number().min(10).max(130).optional(),
+  solved: z.object({
+    mode: z.enum(["one-point", "two-point"]),
+    fovDeg: z.number().positive(),
+    cameraHeightM: z.number().positive(),
+    box: RoomBoxExtentsSchema,
+  }),
+});
+export type RoomBox = z.infer<typeof RoomBoxSchema>;
+
 export const RoomGeometrySchema = z.object({
   /** Room photo width / height. */
   imageAspect: z.number().positive(),
-  /** The user-drawn edge bundles, kept so the calibration can be re-edited. */
-  axes: z.array(RoomAxisLinesSchema).min(2),
-  /** Solved camera (computed client-side via solveRoomCalibration). World frame
+  /** Legacy line-tracing input, kept so old saved calibrations still parse. */
+  axes: z.array(RoomAxisLinesSchema).min(2).optional(),
+  /** Room-box calibration (corner drag). When present the render can build the
+   * REAL room (all five surfaces, metric) instead of a single mount plane. */
+  box: RoomBoxSchema.optional(),
+  /** Solved camera (solveRoomBox / legacy solveRoomCalibration). World frame
    * is Z-up; the basis vectors are the camera axes in WORLD coords. */
   camera: z.object({
     /** FOV along the larger image dimension, degrees (Blender camera.angle). */
@@ -415,6 +455,29 @@ export type RoomGeometry = z.infer<typeof RoomGeometrySchema>;
  * `roomGeometry` is the optional Cam Solve room-match (above); when present the
  * render matches the photo's camera and lights the real ceiling/wall/floor.
  */
+/**
+ * Where a fixture attaches once a room box is solved: a mount surface plus a
+ * normalized (u,v) slide position along it. `scale` multiplies the fixture's
+ * TRUE physical size (1 = real size in the metric room); `lightYawDeg` spins an
+ * asymmetric fixture/IES about vertical. Legacy placements (no room box) have
+ * no `surface` and keep using xPct/yPct/coverage.
+ */
+export const RoomSurfaceKindSchema = z.enum([
+  "ceiling",
+  "wall-back",
+  "wall-left",
+  "wall-right",
+  "floor",
+]);
+export const AppShotSurfaceSchema = z.object({
+  kind: RoomSurfaceKindSchema,
+  u: z.number().min(0).max(1).default(0.5),
+  v: z.number().min(0).max(1).default(0.5),
+  scale: z.number().min(0.05).max(10).default(1),
+  lightYawDeg: z.number().min(-180).max(180).default(0),
+});
+export type AppShotSurface = z.infer<typeof AppShotSurfaceSchema>;
+
 export const AppShotPlacementSchema = z.object({
   xPct: z.number().min(0).max(1).default(0.5),
   yPct: z.number().min(0).max(1).default(0.4),
@@ -424,6 +487,10 @@ export const AppShotPlacementSchema = z.object({
   warm: z.number().min(0).max(1).default(0.45),
   pose: AppImageModelPoseSchema.default({}),
   roomGeometry: RoomGeometrySchema.optional(),
+  /** Surface attachment, present when placed inside a solved room box. The
+   * legacy xPct/yPct/coverage stay populated (recomputed from the surface) so
+   * clean styles and no-box fallbacks keep working. */
+  surface: AppShotSurfaceSchema.optional(),
 });
 export type AppShotPlacement = z.infer<typeof AppShotPlacementSchema>;
 

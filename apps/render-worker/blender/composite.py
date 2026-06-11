@@ -29,6 +29,7 @@ from mathutils import Vector, Matrix
 
 sys.path.append(os.path.dirname(__file__))
 import render as R  # reuse fixture isolation + camera + gpu helpers
+import roombox as RB  # room-box surface math (port of @wac/shared roombox.ts)
 
 
 def parse_args():
@@ -519,9 +520,509 @@ def setup_matched_room(scene, fixture_objs, fixture_meshes, center, radius,
     return cam, placed_center, [bg, catcher]
 
 
+# ---------------------------------------------------------------------------
+# Room-box single-scene render (roomGeometry.box + fixtures[]).
+#
+# The corner-drag room match gives a METRIC room: solved camera height, wall
+# positions and ceiling height in meters (floor z=0, camera at plan origin). So
+# instead of chaining one render per fixture against an accumulating plate (the
+# legacy multi-fixture path, whose re-emission stacked light into a wash), we
+# build the actual room ONCE — five photo-mapped planes — append every
+# fixture's .blend into the one scene, and render with the photo's camera. The
+# fixtures' light then sums physically in a single linear render, falls off
+# over real distances, and every IES points the way the real fixture does.
+# ---------------------------------------------------------------------------
+
+# Fixture yaw (about world Z) that turns its authored front toward the room for
+# each mount wall: studio blends are authored facing -Y (the legacy orbit camera
+# at azimuth 0 sits on -Y), which already faces a back-wall viewer.
+SURFACE_BASE_YAW = {
+    "ceiling": 0.0,
+    "floor": 0.0,
+    "wall-back": 0.0,
+    "wall-left": math.pi / 2.0,
+    "wall-right": -math.pi / 2.0,
+}
+
+
+def append_fixture(scene, blend_path, sku):
+    """Append a fixture collection from another .blend into THIS scene (the
+    multi-fixture room-box path; the first fixture is the opened file itself).
+    Loads the library's collections, picks the fixture with the same heuristics
+    as render.pick_fixture_collection, links ONLY that one. Name collisions
+    auto-suffix (.001), so per-fixture material/lamp boosts stay independent."""
+    with bpy.data.libraries.load(blend_path, link=False) as (data_from, data_to):
+        data_to.collections = list(data_from.collections)
+    cols = [c for c in data_to.collections if c is not None]
+    if not cols:
+        raise SystemExit(f"composite.py: no collections in {blend_path}")
+    # Top-level = not a child of any other loaded collection (mirrors picking
+    # from scene.collection.children in the single-fixture path).
+    child_names = set()
+    for c in cols:
+        for ch in c.children_recursive:
+            child_names.add(ch.name)
+    tops = [c for c in cols if c.name not in child_names] or cols
+    chosen = None
+    if sku:
+        t = R.normalize(sku)
+        for c in tops:
+            cn = R.normalize(c.name)
+            if (cn == t or cn.startswith(t) or t.startswith(cn)) and R.mesh_objects_in(c):
+                chosen = c
+                break
+    if chosen is None:
+        cands = [c for c in tops if not R.looks_like_rig(c) and R.mesh_objects_in(c)]
+        cands.sort(key=lambda c: len(R.mesh_objects_in(c)), reverse=True)
+        chosen = cands[0] if cands else next(
+            (c for c in tops if R.mesh_objects_in(c)), tops[0]
+        )
+    scene.collection.children.link(chosen)
+    print(f"[composite] appended fixture collection '{chosen.name}' from {os.path.basename(blend_path)}")
+    return set(chosen.all_objects)
+
+
+def duplicate_fixture_group(scene, objs):
+    """A second instance of an already-loaded fixture (two identical pendants
+    share one downloaded .blend — and Blender refuses libraries.load on the
+    currently-open file anyway). Object-level copies SHARE the heavy mesh data;
+    lights and materials are copied (as per-object overrides) because the
+    per-fixture slider boosts mutate them."""
+    mapping = {}
+    mat_map = {}
+    new_objs = set()
+    for o in objs:
+        c = o.copy()
+        if o.type == "LIGHT":
+            c.data = o.data.copy()  # energy/color are set per fixture
+        mapping[o] = c
+        scene.collection.objects.link(c)
+        new_objs.add(c)
+    for o, c in mapping.items():
+        if o.parent in mapping:
+            c.parent = mapping[o.parent]
+            c.matrix_parent_inverse = o.matrix_parent_inverse.copy()
+    for o, c in mapping.items():
+        if o.type != "MESH":
+            continue
+        for slot in c.material_slots:
+            m = slot.material
+            if m is None:
+                continue
+            if m not in mat_map:
+                mat_map[m] = m.copy()
+            slot.link = "OBJECT"  # override on the object; shared mesh data untouched
+            slot.material = mat_map[m]
+    print(f"[composite] duplicated fixture group ({len(new_objs)} objects, shared mesh data)")
+    return new_objs
+
+
+def make_room_plate(scene, img, name, verts, emit, receive):
+    """One wall/floor/ceiling of the solved room box: the room photo Window-
+    (screen-)mapped onto a REAL plane, as Emission(photo*emit) + Diffuse(photo*
+    receive) — the same proven shader as the legacy camera billboard, but now on
+    geometry at the actual distance/orientation, so fixture light lands with
+    true falloff. Window mapping means the camera sees exactly the plate from
+    every plane (a sloppy box still reproduces the photo pixel-perfectly; only
+    the lighting distribution depends on the box accuracy)."""
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata([tuple(p) for p in verts], [], [(0, 1, 2, 3)])
+    mesh.update()
+    plane = bpy.data.objects.new(name, mesh)
+    scene.collection.objects.link(plane)
+
+    mat = bpy.data.materials.new(name + "_mat")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    nt.nodes.clear()
+    coord = nt.nodes.new("ShaderNodeTexCoord")
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = img
+    tex.extension = "EXTEND"
+    nt.links.new(coord.outputs["Window"], tex.inputs["Vector"])
+    emis = nt.nodes.new("ShaderNodeEmission")
+    emis.inputs["Strength"].default_value = emit
+    nt.links.new(tex.outputs["Color"], emis.inputs["Color"])
+    diff = nt.nodes.new("ShaderNodeBsdfDiffuse")
+    mix = nt.nodes.new("ShaderNodeMixRGB")
+    mix.blend_type = "MULTIPLY"
+    mix.inputs["Fac"].default_value = 1.0
+    mix.inputs["Color2"].default_value = (receive, receive, receive, 1.0)
+    nt.links.new(tex.outputs["Color"], mix.inputs["Color1"])
+    nt.links.new(mix.outputs["Color"], diff.inputs["Color"])
+    add = nt.nodes.new("ShaderNodeAddShader")
+    nt.links.new(emis.outputs["Emission"], add.inputs[0])
+    nt.links.new(diff.outputs["BSDF"], add.inputs[1])
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(add.outputs["Shader"], out.inputs["Surface"])
+    plane.data.materials.append(mat)
+    return plane
+
+
+def bbox_min_max(meshes):
+    """World-space AABB (mins, maxs) of a set of mesh objects."""
+    mins = Vector((math.inf, math.inf, math.inf))
+    maxs = Vector((-math.inf, -math.inf, -math.inf))
+    for o in meshes:
+        for corner in o.bound_box:
+            w = o.matrix_world @ Vector(corner)
+            mins.x, mins.y, mins.z = min(mins.x, w.x), min(mins.y, w.y), min(mins.z, w.z)
+            maxs.x, maxs.y, maxs.z = max(maxs.x, w.x), max(maxs.y, w.y), max(maxs.z, w.z)
+    if mins.x == math.inf:
+        return Vector((0, 0, 0)), Vector((0, 0, 0))
+    return mins, maxs
+
+
+def place_fixture_group(scene, objs, meshes, spec, boxd, basis, focal, aspect, cam_h):
+    """Scale / spin / position one fixture onto its mount surface, true-to-scale
+    (the .blend is authored in meters and the room box is metric). Transforms go
+    through an Empty pivot at the fixture's bbox center so arbitrary hierarchies
+    move as one. Returns (pivot, kind, yaw_radians)."""
+    surface = spec.get("surface") or {}
+    kind = surface.get("kind") or RB.surface_for_mount(spec.get("mount"))
+    s = float(surface.get("scale", 1.0))
+    yaw = math.radians(float(surface.get("lightYawDeg", 0.0))) + SURFACE_BASE_YAW.get(kind, 0.0)
+
+    u, v = surface.get("u"), surface.get("v")
+    if u is None or v is None:
+        # Legacy placement (no surface): project the xPct/yPct screen position
+        # through the solved camera onto the mount surface.
+        hit = RB.raycast_surface(
+            basis, focal, aspect, cam_h, boxd,
+            float(spec.get("xPct", 0.5)), float(spec.get("yPct", 0.5)), kind,
+        )
+        u, v = hit if hit else (0.5, 0.5)
+        u, v = min(1.0, max(0.0, u)), min(1.0, max(0.0, v))
+    target = Vector(RB.surface_to_world(boxd, kind, float(u), float(v)))
+
+    mins, maxs = bbox_min_max(meshes)
+    center = (mins + maxs) * 0.5
+    hx = (maxs.x - mins.x) * 0.5 * s
+    hy = (maxs.y - mins.y) * 0.5 * s
+    hz = (maxs.z - mins.z) * 0.5 * s
+    # Half extents in world x/y after the yaw spin.
+    c_, s_ = abs(math.cos(yaw)), abs(math.sin(yaw))
+    rhx = c_ * hx + s_ * hy
+    rhy = s_ * hx + c_ * hy
+    # Anchor the mount face of the bbox to the surface point.
+    off = Vector((0.0, 0.0, 0.0))
+    if kind == "ceiling":
+        off.z = -hz
+    elif kind == "floor":
+        off.z = hz
+    elif kind == "wall-back":
+        off.y = -rhy  # room is toward -Y from the back wall
+    elif kind == "wall-left":
+        off.x = rhx
+    elif kind == "wall-right":
+        off.x = -rhx
+
+    pivot = bpy.data.objects.new("wac_fixture_pivot", None)
+    scene.collection.objects.link(pivot)
+    pivot.location = center
+    bpy.context.view_layer.update()
+    inv = pivot.matrix_world.inverted()
+    for o in objs:
+        if o.parent is None or o.parent not in objs:
+            o.parent = pivot
+            o.matrix_parent_inverse = inv.copy()
+    pivot.scale = (s, s, s)
+    pivot.rotation_euler = (0.0, 0.0, yaw)
+    pivot.location = target + off
+    bpy.context.view_layer.update()
+    print(f"[composite] room-box fixture sku={spec.get('sku')} surf={kind} "
+          f"u={float(u):.3f} v={float(v):.3f} scale={s:.2f} yaw={math.degrees(yaw):.0f} "
+          f"at=({(target + off).x:.2f},{(target + off).y:.2f},{(target + off).z:.2f})")
+    return pivot, kind, yaw
+
+
+def suspend_fixture_selflight(fixture_objs):
+    """Like kill_fixture_selflight, but reversible: zero the fixture's own lamps
+    + emissive shaders and return what to restore — needed because the room-box
+    path renders per-fixture base passes in ONE scene, where the OTHER fixtures'
+    light must stay on for each pass."""
+    saved = []
+    for obj in fixture_objs:
+        if obj.type == "LIGHT":
+            saved.append((obj.data, "energy", obj.data.energy))
+            obj.data.energy = 0.0
+    mats = set()
+    for obj in fixture_objs:
+        if obj.type != "MESH":
+            continue
+        for slot in obj.material_slots:
+            if slot.material and slot.material.use_nodes:
+                mats.add(slot.material)
+    for m in mats:
+        for n in m.node_tree.nodes:
+            if n.type == "EMISSION":
+                try:
+                    sock = n.inputs["Strength"]
+                    saved.append((sock, "default_value", sock.default_value))
+                    sock.default_value = 0.0
+                except Exception:
+                    pass
+            elif n.type == "BSDF_PRINCIPLED":
+                try:
+                    sock = n.inputs["Emission Strength"]
+                    if sock.default_value > 0:
+                        saved.append((sock, "default_value", sock.default_value))
+                        sock.default_value = 0.0
+                except Exception:
+                    pass
+    return saved
+
+
+def restore_fixture_selflight(saved):
+    for ref, attr, val in saved:
+        try:
+            setattr(ref, attr, val)
+        except Exception:
+            pass
+
+
+def run_room_box(scene, job, out_path):
+    """The room-box single-scene composite (see the section comment above)."""
+    specs = job["fixtures"]
+    geom = job["roomGeometry"]
+    solved = geom["box"]["solved"]
+    boxd = solved["box"]
+    cam_h = float(solved["cameraHeightM"])
+    basis = geom["camera"]
+
+    # --- fixture 0 = the opened .blend; isolate it from its studio rig --------
+    fixture = R.pick_fixture_collection(scene, specs[0].get("sku"))
+    if fixture is None:
+        raise SystemExit("composite.py: could not locate a fixture collection")
+    groups = [{
+        "objs": set(fixture.all_objects),
+        "meshes": set(R.mesh_objects_in(fixture)),
+        "spec": specs[0],
+    }]
+    for obj in scene.objects:
+        if obj.type == "MESH" and obj not in groups[0]["meshes"]:
+            obj.hide_render = True  # studio backdrop/floor — replaced by the room
+        if obj.type == "LIGHT" and obj not in groups[0]["objs"]:
+            obj.hide_render = True  # studio softboxes — the room lights the shot
+    scene.timeline_markers.clear()
+    if scene.world and scene.world.use_nodes:
+        for n in scene.world.node_tree.nodes:
+            if n.type == "BACKGROUND":
+                n.inputs["Strength"].default_value = float(job.get("worldStrength", 0.15))
+
+    # --- append fixtures 1..N-1 into this scene -------------------------------
+    # Fixtures sharing a .blend (identical pendants; the worker dedupes the
+    # download) are duplicated from the loaded group instead of re-appended.
+    by_path = {os.path.realpath(bpy.data.filepath): groups[0]["objs"]}
+    for spec in specs[1:]:
+        model_path = spec.get("modelPath")
+        if not model_path or not os.path.exists(model_path):
+            raise SystemExit(f"composite.py: fixture model not found: {model_path}")
+        real = os.path.realpath(model_path)
+        source = by_path.get(real)
+        if source is not None:
+            objs = duplicate_fixture_group(scene, source)
+        else:
+            objs = append_fixture(scene, model_path, spec.get("sku"))
+            by_path[real] = objs
+        groups.append({
+            "objs": objs,
+            "meshes": {o for o in objs if o.type == "MESH"},
+            "spec": spec,
+        })
+
+    # --- room image / matched camera / room geometry --------------------------
+    room_path = job.get("roomPath")
+    if not room_path or not os.path.exists(room_path):
+        raise SystemExit(f"composite.py: roomPath not found: {room_path}")
+    probe = bpy.data.images.load(room_path)
+    rw, rh = probe.size[0], probe.size[1]
+    aspect = rw / rh
+
+    fov_deg = float(basis["fovDeg"])
+    cam, _, _, _ = build_matched_camera(scene, basis, fov_deg, Vector((0.0, 0.0, cam_h)))
+    bpy.context.view_layer.update()
+
+    img = bpy.data.images.load(room_path)
+    x0, x1 = float(boxd["xMin"]), float(boxd["xMax"])
+    yb, hgt = float(boxd["yBack"]), float(boxd["height"])
+    # Extend the open (camera) side behind the lens so the floor/ceiling/walls
+    # always cover the frustum bottom/top; oversize all seams a little. The
+    # Window mapping makes the overlaps invisible (same screen pixel either way).
+    yf = min(float(boxd["yFront"]), 0.0) - 2.0
+    ov = 0.5
+    emit = float(job.get("roomStrength", 1.0))
+    recv = float(job.get("catcherReceive", 0.9))
+    plates = [
+        make_room_plate(scene, img, "wac_room_floor",
+                        [(x0 - ov, yf, 0), (x1 + ov, yf, 0), (x1 + ov, yb + ov, 0), (x0 - ov, yb + ov, 0)],
+                        emit, recv),
+        make_room_plate(scene, img, "wac_room_ceiling",
+                        [(x0 - ov, yf, hgt), (x1 + ov, yf, hgt), (x1 + ov, yb + ov, hgt), (x0 - ov, yb + ov, hgt)],
+                        emit, recv),
+        make_room_plate(scene, img, "wac_room_back",
+                        [(x0 - ov, yb, -ov), (x1 + ov, yb, -ov), (x1 + ov, yb, hgt + ov), (x0 - ov, yb, hgt + ov)],
+                        emit, recv),
+        make_room_plate(scene, img, "wac_room_left",
+                        [(x0, yf, -ov), (x0, yb + ov, -ov), (x0, yb + ov, hgt + ov), (x0, yf, hgt + ov)],
+                        emit, recv),
+        make_room_plate(scene, img, "wac_room_right",
+                        [(x1, yf, -ov), (x1, yb + ov, -ov), (x1, yb + ov, hgt + ov), (x1, yf, hgt + ov)],
+                        emit, recv),
+    ]
+    # Far emission-only backdrop: guarantees full frame coverage even where the
+    # frustum peeks past the box (receive=0 so it never catches fixture light).
+    bg, _, _ = make_catcher(scene, cam, room_path, max(yb * 3.0, 8.0), aspect, emit, 0.0)
+    plates.append(bg)
+
+    # --- place each fixture + its light ----------------------------------------
+    focal = RB.focal_from_fov(fov_deg, aspect)
+    gamma = float(job.get("lightGamma", SLIDER_GAMMA))
+    neutral_frac = float(job.get("lightNeutralFrac", SLIDER_NEUTRAL_FRAC))
+    lamp_cap = float(job.get("lampCap", LAMP_CAP))
+    emit_cap = float(job.get("emitCap", EMIT_CAP))
+    for g in groups:
+        spec = g["spec"]
+        _, kind, yaw = place_fixture_group(
+            scene, g["objs"], g["meshes"], spec, boxd, basis, focal, aspect, cam_h,
+        )
+        warm = float(spec.get("warm", 0.45))
+        glow = slider_frac(float(spec.get("brightness", 50.0)), neutral_frac, gamma)
+        lamp_boost = slider_frac(float(spec.get("lightOutput", 50.0)), neutral_frac, gamma)
+        boost_fixture_glow(g["objs"], glow, emit_cap)
+
+        center, _ = R.world_bounding_box(g["meshes"])
+        ies_obj = None
+        ies_used = False
+        ies_path = spec.get("iesPath")
+        if ies_path and os.path.exists(ies_path):
+            ies_path = resolve_ies_file(ies_path)
+        if ies_path and os.path.exists(ies_path):
+            try:
+                # Real surfaces all around: aim the IES nadir straight DOWN like
+                # the real fixture (its lobes light ceiling/walls/floor naturally)
+                # and spin it with the fixture.
+                loc = light_centroid(g["objs"], center)
+                power = lamp_boost * float(job.get("iesRefWatts", IES_REF_WATTS))
+                ies_obj = add_ies_light(scene, loc, ies_path, power, (0.0, 0.0, yaw), warm)
+                boost_fixture_lamps(g["objs"], glow, warm, lamp_cap)
+                ies_used = True
+                print(f"[composite] room-box IES sku={spec.get('sku')} power={power:.2f}W glow x{glow:.3f}")
+            except Exception as e:
+                print(f"[composite] IES setup failed ({e}); falling back to lamps")
+        if not ies_used:
+            boost_fixture_lamps(g["objs"], lamp_boost, warm, lamp_cap)
+            watts = lamp_boost * float(job.get("fallbackWatts", 250.0))
+            ies_obj = add_fallback_light(scene, light_centroid(g["objs"], center), watts, warm)
+            print(f"[composite] room-box fill sku={spec.get('sku')} watts={watts:.1f} lamp x{lamp_boost:.3f}")
+        g["light"] = ies_obj
+
+    # --- render ---------------------------------------------------------------
+    scene.render.film_transparent = False
+    scene.render.engine = "CYCLES"
+    scene.render.image_settings.file_format = "PNG"
+    scene.render.image_settings.color_mode = "RGBA"
+    try:
+        # Many lights + glass in one scene: clamp indirect bounces to tame
+        # fireflies without visibly dimming the wall wash.
+        scene.cycles.sample_clamp_indirect = float(job.get("clampIndirect", 10.0))
+    except Exception:
+        pass
+
+    preview = bool(job.get("preview"))
+    base_w, base_h = rw, rh
+    samples = job.get("samples")
+    if preview:
+        maxpx = int(job.get("previewMaxPx", 1100))
+        sc = min(1.0, maxpx / float(max(rw, rh)))
+        base_w = max(1, int(round(rw * sc)))
+        base_h = max(1, int(round(rh * sc)))
+        if samples is None:
+            samples = 150
+
+    ss = float(job.get("supersample", 1.0))
+    fixture_scale = max(1.0, float(job.get("fixtureScale", 1.0)))
+    compose = bool(job.get("composeBeauty"))
+    hi_w = int(round(base_w * fixture_scale))
+    hi_h = int(round(base_h * fixture_scale))
+
+    def render_to(p, w, h, transparent):
+        render_w, render_h = (int(round(w * ss)), int(round(h * ss))) if ss > 1.0 else (w, h)
+        R.configure_render(scene, {
+            "engine": "CYCLES",
+            "samples": samples,
+            "highQuality": job.get("highQuality"),
+            "width": render_w,
+            "height": render_h,
+            # Baked sRGB room photo on the plates — pin Standard/sRGB so the
+            # plate renders back as itself (see the legacy path's note).
+            "viewTransform": job.get("viewTransform", "Standard"),
+            "displayDevice": job.get("displayDevice", "sRGB"),
+        })
+        scene.render.film_transparent = transparent
+        scene.render.filepath = p
+        bpy.ops.render.render(write_still=True)
+        if ss > 1.0:
+            try:
+                im = bpy.data.images.load(p)
+                im.scale(w, h)
+                im.file_format = "PNG"
+                im.save(filepath=p)
+                bpy.data.images.remove(im)
+            except Exception as e:
+                print(f"[composite] supersample downscale failed: {e}")
+        print(f"[composite] wrote {p} ({w}x{h})")
+
+    print(f"[composite] ROOM-BOX scene: {len(groups)} fixture(s) room={rw}x{rh} "
+          f"base={base_w}x{base_h} hi={hi_w}x{hi_h} preview={preview} compose={compose} "
+          f"samples={samples} fov={fov_deg:.1f} camH={cam_h:.2f} "
+          f"box=({x0:.2f}..{x1:.2f}, yBack={yb:.2f}, H={hgt:.2f})")
+
+    if not (job.get("layers") and compose):
+        render_to(out_path, base_w, base_h, transparent=False)
+
+    if job.get("layers"):
+        base, ext = os.path.splitext(out_path)
+        # Wall pass @ room res: every fixture hidden from camera but still
+        # lighting/shadowing — the accumulated "Light + Shadow" PSD layer.
+        for g in groups:
+            for o in g["meshes"]:
+                o.visible_camera = False
+        render_to(base + "_wall" + ext, base_w, base_h, transparent=False)
+        # Per-fixture hi-res cutout + self-light-off base. Other fixtures stay
+        # camera-hidden but keep LIGHTING the scene (cross-illumination is
+        # physically right and free in the shared scene).
+        for i, g in enumerate(groups):
+            for j, g2 in enumerate(groups):
+                vis = j == i
+                for o in g2["meshes"]:
+                    o.visible_camera = vis
+            for c in plates:
+                c.visible_camera = False
+            render_to(base + f"_fixture{i}" + ext, hi_w, hi_h, transparent=True)
+            saved = suspend_fixture_selflight(g["objs"])
+            if g["light"] is not None:
+                g["light"].hide_render = True
+            render_to(base + f"_fixture{i}base" + ext, hi_w, hi_h, transparent=True)
+            restore_fixture_selflight(saved)
+            if g["light"] is not None:
+                g["light"].hide_render = False
+        for g in groups:
+            for o in g["meshes"]:
+                o.visible_camera = True
+        for c in plates:
+            c.visible_camera = True
+        print(f"[composite] room-box layers=on (wall + {len(groups)}x fixture/base written)")
+
+
 def main():
     job, out_path = parse_args()
     scene = bpy.context.scene
+
+    if job.get("fixtures") and (job.get("roomGeometry") or {}).get("box"):
+        # Corner-drag room match: ONE scene, ALL fixtures, the photo's camera.
+        run_room_box(scene, job, out_path)
+        return
 
     # --- isolate fixture (keep its internal LED lamps for the glow) ---
     fixture = R.pick_fixture_collection(scene, job.get("sku"))
@@ -617,7 +1118,11 @@ def main():
             for o in fixture_meshes
             for corner in (o.matrix_world @ Vector(c) for c in o.bound_box)
         )
-        wall_distance = back_depth + radius * 0.2
+        # Keep the billboard at least half a meter past the fixture: with it
+        # only centimeters behind (radius*0.2 of a small sconce), inverse-square
+        # turned even low light-output sliders into a blown hot spot on the
+        # "wall" ("too bright at 12" report).
+        wall_distance = back_depth + max(radius * 0.2, 0.5)
         print(f"[composite] cam_to_center={(cam.location-placed_center).length:.3f} "
               f"back_depth={back_depth:.3f} wall_distance={wall_distance:.3f}")
         catcher, _, _ = make_catcher(scene, cam, room_path, wall_distance, aspect,

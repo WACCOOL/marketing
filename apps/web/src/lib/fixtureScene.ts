@@ -2,6 +2,11 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import {
+  surfaceToWorld,
+  type AppShotSurface,
+  type RoomBoxView,
+} from "@wac/shared";
 
 /**
  * Live placement preview that reproduces the Blender render's geometry EXACTLY.
@@ -235,6 +240,8 @@ export interface FixtureInstanceUpdate {
   coverage: number;
   xPct: number;
   yPct: number;
+  /** Surface attachment — used (with MultiSceneUpdate.room) by matched mode. */
+  surface?: AppShotSurface;
 }
 
 export interface MultiSceneUpdate {
@@ -244,7 +251,28 @@ export interface MultiSceneUpdate {
   selectedId: string | null;
   /** Room aspect (width / height) — the render is framed at this aspect. */
   aspect: number;
+  /** Solved room box (Cam Solve corner drag). When present the scene switches
+   * to MATCHED mode: the camera is the photo's solved camera and each fixture
+   * sits on its mount surface at true physical scale — WYSIWYG with the
+   * single-scene Blender render. */
+  room?: RoomBoxView | null;
 }
+
+/** Blender Z-up world vector → three Y-up (the GLB export mapping). */
+function b2t(v: { x: number; y: number; z: number }): THREE.Vector3 {
+  return new THREE.Vector3(v.x, v.z, -v.y);
+}
+
+/** Fixture yaw (about world up) that turns its authored front toward the room
+ * for each mount wall. Authored front faces Blender -Y (the legacy orbit camera
+ * at azimuth 0 sits on -Y), which already faces a back-wall viewer. */
+const SURFACE_BASE_YAW_DEG: Record<AppShotSurface["kind"], number> = {
+  ceiling: 0,
+  floor: 0,
+  "wall-back": 0,
+  "wall-left": 90,
+  "wall-right": -90,
+};
 
 /**
  * Multi-fixture live preview with ONE shared, fixed camera.
@@ -270,7 +298,14 @@ export class MultiFixtureScene {
   private camera: THREE.PerspectiveCamera;
   private entries = new Map<
     string,
-    { group: THREE.Group; model: THREE.Object3D; radius: number; token: number }
+    {
+      group: THREE.Group;
+      model: THREE.Object3D;
+      radius: number;
+      /** AABB size in three space (x=width, y=height(Blender Z), z=depth(Blender Y)). */
+      size: THREE.Vector3;
+      token: number;
+    }
   >();
   private envTexture: THREE.Texture | null = null;
   private loadToken = 0;
@@ -335,6 +370,7 @@ export class MultiFixtureScene {
       group,
       model,
       radius: Math.max(size.length() / 2, 1e-4),
+      size,
       token,
     });
     if (this.last) this.update(this.last);
@@ -361,6 +397,10 @@ export class MultiFixtureScene {
   update(u: MultiSceneUpdate) {
     this.last = u;
     if (this.width <= 0 || this.height <= 0) return;
+    if (u.room) {
+      this.updateMatched(u, u.room);
+      return;
+    }
 
     const aspect = Math.max(u.aspect, 0.01);
     const shared =
@@ -404,6 +444,7 @@ export class MultiFixtureScene {
     for (const inst of u.instances) {
       const entry = this.entries.get(inst.id);
       if (!entry) continue;
+      entry.group.visible = true; // matched mode may have hidden it
 
       // Inverse-orbit rotation: the fixture appears exactly as its own orbit
       // camera would see it. Built the same way FixtureScene aims its camera
@@ -448,6 +489,89 @@ export class MultiFixtureScene {
     this.camera.far = D0 * 8 + maxReach * 12;
     this.camera.updateProjectionMatrix();
     this.camera.updateMatrixWorld(true);
+
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * MATCHED mode: the photo's solved camera + fixtures on their mount surfaces
+   * at true physical scale (the GLB is authored in meters; the room box is
+   * metric via the ceiling-height anchor). Mirrors the Blender room-box path —
+   * what you see is what the single-scene render frames.
+   */
+  private updateMatched(u: MultiSceneUpdate, room: RoomBoxView) {
+    const aspect = Math.max(u.aspect, 0.01);
+
+    // Camera: position (0, 0, cameraHeight) and the solved basis, both mapped
+    // Blender Z-up → three Y-up. three cameras look down local -Z with +Y up,
+    // so the rotation basis columns are [right, up, -forward].
+    const rightT = b2t(room.cameraBasis.right);
+    const upT = b2t(room.cameraBasis.up);
+    const backT = b2t(room.cameraBasis.forward).multiplyScalar(-1);
+    this.camera.position.set(0, room.cameraHeightM, 0);
+    this.camera.setRotationFromMatrix(
+      new THREE.Matrix4().makeBasis(rightT, upT, backT),
+    );
+
+    // focal (image-height units) → vertical FOV: vfov = 2·atan(0.5 / f).
+    this.camera.fov = Math.atan(0.5 / room.focal) * 2 * RAD2DEG;
+    this.camera.aspect = aspect;
+
+    const { box } = room;
+    const diag = Math.hypot(box.xMax - box.xMin, box.yBack - box.yFront, box.height);
+    this.camera.near = 0.02;
+    this.camera.far = Math.max(20, diag * 6);
+    this.camera.updateProjectionMatrix();
+    this.camera.updateMatrixWorld(true);
+
+    for (const inst of u.instances) {
+      const entry = this.entries.get(inst.id);
+      if (!entry) continue;
+      const surf = inst.surface;
+      if (!surf) {
+        entry.group.visible = false; // legacy placement in a matched scene
+        continue;
+      }
+      entry.group.visible = true;
+      const s = surf.scale;
+      entry.group.scale.setScalar(s);
+
+      // Yaw about world up (three +Y): face the room per mount wall + the
+      // user's spin. Blender Z-yaw maps 1:1 onto three Y-yaw.
+      const yawDeg = SURFACE_BASE_YAW_DEG[surf.kind] + (surf.lightYawDeg ?? 0);
+      entry.group.quaternion.setFromAxisAngle(
+        new THREE.Vector3(0, 1, 0),
+        yawDeg * DEG2RAD,
+      );
+
+      // Anchor the mount face of the (centered) bbox to the surface point. For
+      // ±90° yawed wall fixtures the wall-normal extent is the authored DEPTH.
+      const pos = b2t(surfaceToWorld(box, surf.kind, surf.u, surf.v));
+      const sideways = Math.abs(Math.round(yawDeg / 90)) % 2 === 1;
+      const half = {
+        x: ((sideways ? entry.size.z : entry.size.x) / 2) * s,
+        y: (entry.size.y / 2) * s,
+        z: ((sideways ? entry.size.x : entry.size.z) / 2) * s,
+      };
+      switch (surf.kind) {
+        case "ceiling":
+          pos.y -= half.y;
+          break;
+        case "floor":
+          pos.y += half.y;
+          break;
+        case "wall-back":
+          pos.z += half.z; // Blender -Y (toward the camera) is three +Z
+          break;
+        case "wall-left":
+          pos.x += half.x;
+          break;
+        case "wall-right":
+          pos.x -= half.x;
+          break;
+      }
+      entry.group.position.copy(pos);
+    }
 
     this.renderer.render(this.scene, this.camera);
   }
