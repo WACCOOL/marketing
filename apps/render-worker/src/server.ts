@@ -399,6 +399,9 @@ interface CompositeRequest extends CompositeFixture {
   /** Final export: upscale the room so its long edge is at least this many px
    * (gives the fixture far more pixels). 0 disables. Default 4000. */
   finalLongEdge?: number;
+  /** Room-box relight: how hard the highlight/shadow redistribution reads
+   * (1 = physical ratio, <1 compresses toward the untouched photo). */
+  relightStrength?: number;
 }
 
 /** Download a remote asset (room/ies) to a local temp file for Blender. */
@@ -445,6 +448,82 @@ async function glowImageData(
     out[i + 3] = f.data[i + 3] ?? 0;
   }
   return { width: f.width, height: f.height, data: out };
+}
+
+// sRGB <-> linear for the relight math: the wall passes are Standard/sRGB
+// encodings of linear scene light, and light ratios are only meaningful in
+// LINEAR space.
+const SRGB_TO_LINEAR = new Float32Array(256);
+for (let i = 0; i < 256; i++) {
+  const c = i / 255;
+  SRGB_TO_LINEAR[i] = c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+function linearToSrgb(v: number): number {
+  const c = v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+  return Math.max(0, Math.min(255, Math.round(c * 255)));
+}
+
+/**
+ * Relight the room photo by the fixtures' effect: out = photo × (lit / base)
+ * per channel in linear light, where `lit` is the room geometry under ambient
+ * + fixture light and `base` is the same geometry under the ambient alone.
+ * The ratio is >1 where fixtures throw light (highlights, tinted by warmth)
+ * and <1 where they BLOCK the ambient (real shadows).
+ *
+ * The raw ratio carries a global lift — every lamp adds SOME light everywhere
+ * — but the photo is already properly exposed, so a global lift just reads as
+ * over-brightening (the original "too bright" report). Normalizing by the
+ * scene-median ratio turns the relight into pure REDISTRIBUTION: the median
+ * pixel stays exactly the photo, light pools rise above it, and everywhere
+ * the fixtures don't reach falls gently below it — like a camera re-exposing
+ * for the now-lit room. Turning lightOutput up then adds CONTRAST (brighter
+ * pools, deeper falloff), not exposure.
+ */
+async function relightPlate(
+  photoPath: string,
+  litPath: string,
+  basePath: string,
+  outPath: string,
+  // How hard the redistribution reads: 1 = the physical ratio, <1 compresses
+  // highlights AND shadows toward the untouched photo. Job-overridable for
+  // live calibration sweeps (`relightStrength`).
+  strength = 1,
+): Promise<void> {
+  const meta = await sharp(litPath).metadata();
+  const w = meta.width ?? 0;
+  const h = meta.height ?? 0;
+  if (!w || !h) throw new Error("relight: unreadable wall pass");
+  const [photo, lit, ambient] = await Promise.all([
+    sharp(photoPath).resize(w, h, { fit: "fill" }).removeAlpha().raw().toBuffer(),
+    sharp(litPath).removeAlpha().raw().toBuffer(),
+    sharp(basePath).removeAlpha().raw().toBuffer(),
+  ]);
+  // Pass 1: per-pixel linear gain, capped so a speck of near-black base can't
+  // blow a pixel out. The normalizer is the median GREEN-channel gain (a cheap
+  // luma stand-in; RGB stride is 3).
+  const ratio = new Float32Array(photo.length);
+  for (let i = 0; i < ratio.length; i++) {
+    const l = SRGB_TO_LINEAR[lit[i]!]!;
+    const b = Math.max(SRGB_TO_LINEAR[ambient[i]!]!, 1e-4);
+    ratio[i] = Math.min(l / b, 6);
+  }
+  const greens: number[] = [];
+  for (let i = 1; i < ratio.length; i += 3) greens.push(ratio[i]!);
+  greens.sort((a, b) => a - b);
+  const median = Math.min(Math.max(greens[greens.length >> 1] ?? 1, 0.2), 6);
+  // Pass 2: photo × normalized gain.
+  const out = Buffer.alloc(photo.length);
+  for (let i = 0; i < out.length; i++) {
+    const norm = Math.min(Math.max(ratio[i]! / median, 0.1), 6);
+    const r = 1 + (norm - 1) * strength;
+    out[i] = linearToSrgb(SRGB_TO_LINEAR[photo[i]!]! * Math.max(r, 0.05));
+  }
+  console.log(
+    `[render-worker] relight: median gain ${median.toFixed(3)} normalized out (strength ${strength})`,
+  );
+  await sharp(out, { raw: { width: w, height: h, channels: 3 } })
+    .png()
+    .toFile(outPath);
 }
 
 /** One rendered fixture's PSD inputs: the hi-res cutout (+ optional unlit base). */
@@ -647,30 +726,43 @@ async function runComposite(body: CompositeRequest): Promise<CompositeArtifacts>
       await writeFile(jobPath, JSON.stringify(job));
       await runBlender(COMPOSITE_SCRIPT, resolved[0]!.modelPath!, jobPath, outPath);
 
-      if (layers) {
-        const wallPath = `${outPath.slice(0, -4)}_wall.png`;
-        if (!existsSync(wallPath)) {
-          throw new Error("Blender did not produce the room-box layer passes");
+      // Relight the photo with the fixtures' light ratio (see relightPlate) —
+      // the room-box path never renders a direct beauty.
+      const wallLit = `${outPath.slice(0, -4)}_wall.png`;
+      const wallBase = `${outPath.slice(0, -4)}_wallbase.png`;
+      if (!existsSync(wallLit) || !existsSync(wallBase)) {
+        throw new Error("Blender did not produce the room-box relight passes");
+      }
+      const relitPlate = path.join(dir, "plate.png");
+      await relightPlate(
+        roomPath, wallLit, wallBase, relitPlate,
+        body.relightStrength ?? 1,
+      );
+
+      const cutouts: typeof rendered = [];
+      for (let i = 0; i < resolved.length; i++) {
+        const fixturePath = `${outPath.slice(0, -4)}_fixture${i}.png`;
+        const basePath = `${outPath.slice(0, -4)}_fixture${i}base.png`;
+        if (!existsSync(fixturePath)) {
+          throw new Error(`Blender did not produce the fixture ${i} cutout pass`);
         }
-        for (let i = 0; i < resolved.length; i++) {
-          const fixturePath = `${outPath.slice(0, -4)}_fixture${i}.png`;
-          const basePath = `${outPath.slice(0, -4)}_fixture${i}base.png`;
-          if (!existsSync(fixturePath)) {
-            throw new Error(`Blender did not produce the fixture ${i} cutout pass`);
-          }
-          rendered.push({
-            sku: resolved[i]!.sku,
-            out: outPath,
-            fixture: fixturePath,
-            base: existsSync(basePath) ? basePath : undefined,
-          });
-        }
-        plate = wallPath;
-      } else {
-        if (!existsSync(outPath)) {
-          throw new Error("Blender finished but produced no composite image");
-        }
+        cutouts.push({
+          sku: resolved[i]!.sku,
+          out: outPath,
+          fixture: fixturePath,
+          base: existsSync(basePath) ? basePath : undefined,
+        });
+      }
+      if (preview) {
+        // Preview beauty = cutouts straight over the relit plate (same res).
+        await sharp(relitPlate)
+          .composite(cutouts.map((r) => ({ input: r.fixture })))
+          .png()
+          .toFile(outPath);
         plate = outPath;
+      } else {
+        rendered.push(...cutouts);
+        plate = relitPlate;
       }
     }
 
