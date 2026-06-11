@@ -488,6 +488,12 @@ export const AppShotPlacementSchema = z.object({
   coverage: z.number().min(0.01).max(3).default(0.34),
   brightness: z.number().min(0).max(200).default(50),
   lightOutput: z.number().min(0).max(200).default(50),
+  /** Room-box relight: how strongly the LIGHT-SPOTS map reads on the photo
+   * (0 = off, 50 = the physical ratio, 100 ≈ 2.3×). Scene-level — the render
+   * uses the first fixture's value. */
+  highlights: z.number().min(0).max(200).default(50),
+  /** Room-box relight: how strongly the SHADOWS map reads (same scale). */
+  shadows: z.number().min(0).max(200).default(50),
   warm: z.number().min(0).max(1).default(0.45),
   pose: AppImageModelPoseSchema.default({}),
   roomGeometry: RoomGeometrySchema.optional(),

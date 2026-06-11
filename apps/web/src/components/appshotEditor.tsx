@@ -571,6 +571,28 @@ export function EditPanel(p: EditProps) {
                 onChange={(v) => p.onPatch({ lightOutput: v })}
                 fmt={(v) => `${Math.round(v)}`}
               />
+              {surface && (
+                <>
+                  <Slider
+                    label="Highlights"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={p.placement.highlights ?? 50}
+                    onChange={(v) => p.onPatch({ highlights: v })}
+                    fmt={(v) => `${Math.round(v)}`}
+                  />
+                  <Slider
+                    label="Shadows"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={p.placement.shadows ?? 50}
+                    onChange={(v) => p.onPatch({ shadows: v })}
+                    fmt={(v) => `${Math.round(v)}`}
+                  />
+                </>
+              )}
               <Slider
                 label="Warmth"
                 min={0}

@@ -93,6 +93,9 @@ export interface Placement {
   brightness: number;
   /** Light output: real light thrown into the room (IES power / own lamps). */
   lightOutput: number;
+  /** Room-box relight: light-spots / shadows map strengths (scene-level). */
+  highlights?: number;
+  shadows?: number;
   warm: number;
   pose: ModelRenderPose;
   /** Cam Solve room-match: when set, the render matches the photo's camera and
@@ -155,6 +158,8 @@ function startingPlacement(meta: FixtureMeta, over?: Partial<Placement>): Placem
     coverage: over?.coverage ?? meta.coverage,
     brightness: over?.brightness ?? 50,
     lightOutput: over?.lightOutput ?? 50,
+    highlights: over?.highlights ?? 50,
+    shadows: over?.shadows ?? 50,
     warm: over?.warm ?? 0.45,
     pose: over?.pose ?? meta.pose,
     roomGeometry: over?.roomGeometry,
@@ -376,6 +381,8 @@ async function renderShotImage(
       yPct: placement.yPct,
       brightness: placement.brightness,
       lightOutput: placement.lightOutput,
+      highlights: placement.highlights,
+      shadows: placement.shadows,
       warm: placement.warm,
       surface: placement.surface,
     });
@@ -395,6 +402,8 @@ async function renderShotImage(
       yPct: placement.yPct,
       brightness: placement.brightness,
       lightOutput: placement.lightOutput,
+      highlights: placement.highlights,
+      shadows: placement.shadows,
       warm: placement.warm,
       surface: placement.surface,
     })),

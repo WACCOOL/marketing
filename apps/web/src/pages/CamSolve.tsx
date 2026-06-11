@@ -71,6 +71,8 @@ const DEFAULT_PLACEMENT: AppShotPlacement = {
   coverage: 1,
   brightness: 25,
   lightOutput: 25,
+  highlights: 50,
+  shadows: 50,
   warm: 0.45,
   pose: { azimuthDeg: 0, elevationDeg: 0, rollDeg: 0, fovDeg: 36, distanceFactor: 1, marginFactor: 1.25 },
 };

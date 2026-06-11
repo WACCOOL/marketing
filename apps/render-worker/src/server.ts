@@ -373,6 +373,11 @@ interface CompositeFixture {
   lightOutput?: number;
   /** Warmth of the fixture light (0..1). */
   warm?: number;
+  /** Room-box relight sliders (0..200, 50 = the physical ratio): how strongly
+   * the light-spots / shadows maps read on the photo. Scene-level — taken
+   * from the FIRST fixture, like roomGeometry. */
+  highlights?: number;
+  shadows?: number;
   /** Mount-surface attachment inside a solved room box (true-scale placement). */
   surface?: SurfacePayload;
 }
@@ -464,30 +469,29 @@ function linearToSrgb(v: number): number {
 }
 
 /**
- * Relight the room photo by the fixtures' effect: out = photo × (lit / base)
- * per channel in linear light, where `lit` is the room geometry under ambient
- * + fixture light and `base` is the same geometry under the ambient alone.
- * The ratio is >1 where fixtures throw light (highlights, tinted by warmth)
- * and <1 where they BLOCK the ambient (real shadows).
+ * Relight the room photo by the fixtures' effect, as TWO separately dialable
+ * components (Davis's Photoshop model — a subtle lighten layer + a subtle
+ * multiply layer):
  *
- * The raw ratio carries a global lift — every lamp adds SOME light everywhere
- * — but the photo is already properly exposed, so a global lift just reads as
- * over-brightening (the original "too bright" report). Normalizing by the
- * scene-median ratio turns the relight into pure REDISTRIBUTION: the median
- * pixel stays exactly the photo, light pools rise above it, and everywhere
- * the fixtures don't reach falls gently below it — like a camera re-exposing
- * for the now-lit room. Turning lightOutput up then adds CONTRAST (brighter
- * pools, deeper falloff), not exposure.
+ *   gain = lit / base   (linear, per channel; both passes share the room's
+ *                        base light, so untouched areas divide to exactly 1)
+ *   H = max(gain, 1)    the LIGHT-SPOTS map (where fixtures throw light)
+ *   S = min(gain, 1)    the SHADOWS map (where fixtures block base light)
+ *   out = photo × H^highlights × S^shadows
+ *
+ * `highlights` / `shadows` are exponents from the editor sliders (1 = the
+ * physical ratio, 0 = off, >1 amplified). Writes the final plate to `outPath`
+ * and, when `shadowsOutPath` is given, a shadows-only plate (photo × S^σ) so
+ * the PSD can carry "Shadows" and "Light + Shadow" as separate layers.
  */
 async function relightPlate(
   photoPath: string,
   litPath: string,
   basePath: string,
   outPath: string,
-  // How hard the redistribution reads: 1 = the physical ratio, <1 compresses
-  // highlights AND shadows toward the untouched photo (gamma on the gain).
-  // Job-overridable for live calibration sweeps (`relightStrength`).
-  strength = 0.8,
+  highlights = 1,
+  shadows = 1,
+  shadowsOutPath?: string,
 ): Promise<void> {
   const meta = await sharp(litPath).metadata();
   const w = meta.width ?? 0;
@@ -496,45 +500,44 @@ async function relightPlate(
   // The gain map is low-frequency by nature (light gradients), but it is the
   // QUOTIENT of two renders — Cycles noise and denoiser splotches in the dark
   // base amplify into speckle/banding. A gentle blur of both passes before
-  // dividing kills that (the manual Photoshop remedy was exactly blur +
-  // soft-light at reduced opacity); real shadow/highlight edges this soft
-  // survive fine.
+  // dividing kills that; real shadow/highlight edges this soft survive fine.
   const blurSigma = Math.max(1.2, w / 500);
   const [photo, lit, ambient] = await Promise.all([
     sharp(photoPath).resize(w, h, { fit: "fill" }).removeAlpha().raw().toBuffer(),
     sharp(litPath).blur(blurSigma).removeAlpha().raw().toBuffer(),
     sharp(basePath).blur(blurSigma).removeAlpha().raw().toBuffer(),
   ]);
-  // Pass 1: per-pixel linear gain, capped so a speck of near-black base can't
-  // blow a pixel out. The normalizer is the median GREEN-channel gain (a cheap
-  // luma stand-in; RGB stride is 3).
-  const ratio = new Float32Array(photo.length);
-  for (let i = 0; i < ratio.length; i++) {
+  const out = Buffer.alloc(photo.length);
+  const shadowOut = shadowsOutPath ? Buffer.alloc(photo.length) : null;
+  let maxGain = 0;
+  let minGain = Infinity;
+  for (let i = 0; i < out.length; i++) {
     const l = SRGB_TO_LINEAR[lit[i]!]!;
     const b = Math.max(SRGB_TO_LINEAR[ambient[i]!]!, 5e-4);
-    ratio[i] = Math.min(l / b, 4);
-  }
-  const greens: number[] = [];
-  for (let i = 1; i < ratio.length; i += 3) greens.push(ratio[i]!);
-  greens.sort((a, b) => a - b);
-  const median = Math.min(Math.max(greens[greens.length >> 1] ?? 1, 0.2), 4);
-  // Pass 2: photo × normalized gain. The strength is a POWER curve (gamma on
-  // the gain), which compresses highlights and shadows symmetrically in log
-  // space — the "soft light at reduced opacity" feel, without flattening the
-  // gain's center.
-  const out = Buffer.alloc(photo.length);
-  for (let i = 0; i < out.length; i++) {
-    const norm = Math.min(Math.max(ratio[i]! / median, 0.15), 4);
-    const r = Math.pow(norm, strength);
-    out[i] = linearToSrgb(SRGB_TO_LINEAR[photo[i]!]! * r);
+    const raw = Math.max(l / b, 0.1);
+    // Soft knee on the highlight side — a hard cap clips pool edges into flat
+    // blown patches (the "harsh" look). Saturates smoothly toward 4.
+    const kneed = raw > 1 ? 1 + (raw - 1) / (1 + (raw - 1) / 3) : raw;
+    const hGain = Math.pow(Math.max(kneed, 1), highlights);
+    const sGain = Math.pow(Math.min(kneed, 1), shadows);
+    if (kneed > maxGain) maxGain = kneed;
+    if (kneed < minGain) minGain = kneed;
+    const p = SRGB_TO_LINEAR[photo[i]!]!;
+    out[i] = linearToSrgb(p * hGain * sGain);
+    if (shadowOut) shadowOut[i] = linearToSrgb(p * sGain);
   }
   console.log(
-    `[render-worker] relight: median gain ${median.toFixed(3)} normalized out ` +
-      `(strength ${strength}, blur ${blurSigma.toFixed(1)})`,
+    `[render-worker] relight: gain ${minGain.toFixed(2)}..${maxGain.toFixed(2)} ` +
+      `(highlights ${highlights.toFixed(2)}, shadows ${shadows.toFixed(2)}, blur ${blurSigma.toFixed(1)})`,
   );
   await sharp(out, { raw: { width: w, height: h, channels: 3 } })
     .png()
     .toFile(outPath);
+  if (shadowOut && shadowsOutPath) {
+    await sharp(shadowOut, { raw: { width: w, height: h, channels: 3 } })
+      .png()
+      .toFile(shadowsOutPath);
+  }
 }
 
 /** One rendered fixture's PSD inputs: the hi-res cutout (+ optional unlit base). */
@@ -560,6 +563,9 @@ async function assemblePsd(
   wall: string,
   room: string,
   fixtures: FixtureLayerFiles[],
+  /** Room-box relight: a shadows-only plate, layered under "Light + Shadow"
+   * so the team can dial shadows and light spots separately in Photoshop. */
+  shadowsPlate?: string,
 ): Promise<Buffer> {
   const meta = await sharp(beauty).metadata();
   const width = meta.width ?? 1024;
@@ -572,8 +578,14 @@ async function assemblePsd(
 
   const children: Parameters<typeof writePsd>[0]["children"] = [
     { name: "Background", imageData: bg },
-    { name: "Light + Shadow", imageData: wallLayer },
   ];
+  if (shadowsPlate && existsSync(shadowsPlate)) {
+    children.push({
+      name: "Shadows",
+      imageData: await toImageData(shadowsPlate, width, height),
+    });
+  }
+  children.push({ name: "Light + Shadow", imageData: wallLayer });
 
   for (const f of fixtures) {
     // When the self-light-off pass exists, split the fixture into an unlit base +
@@ -688,6 +700,7 @@ async function runComposite(body: CompositeRequest): Promise<CompositeArtifacts>
     };
 
     let plate = roomPath;
+    let shadowsPlate: string | undefined;
     const rendered: Array<{ sku?: string; out: string; fixture: string; base?: string }> = [];
 
     // Room-box render: ONE Blender scene with the photo's solved camera, the
@@ -745,9 +758,18 @@ async function runComposite(body: CompositeRequest): Promise<CompositeArtifacts>
         throw new Error("Blender did not produce the room-box relight passes");
       }
       const relitPlate = path.join(dir, "plate.png");
+      // The Highlights/Shadows sliders are scene-level (the relight is one
+      // combined map for all fixtures) — they ride on the first fixture, like
+      // roomGeometry. Slider 50 = the physical ratio; 0 = off; 100 ≈ 2.3×.
+      // `relightStrength` remains a global calibration multiplier on both.
+      const sliderExp = (v: number | undefined) => Math.pow((v ?? 50) / 50, 1.2);
+      const calib = body.relightStrength ?? 1;
+      shadowsPlate = path.join(dir, "plate-shadows.png");
       await relightPlate(
         roomPath, wallLit, wallBase, relitPlate,
-        body.relightStrength ?? 0.8,
+        sliderExp(fixtures[0]?.highlights) * calib,
+        sliderExp(fixtures[0]?.shadows) * calib,
+        preview ? undefined : shadowsPlate,
       );
 
       const cutouts: typeof rendered = [];
@@ -887,7 +909,7 @@ async function runComposite(body: CompositeRequest): Promise<CompositeArtifacts>
         fixture: r.fixture,
         base: r.base,
       }));
-      psd = await assemblePsd(beautyPath, plate, roomPath, layerFiles);
+      psd = await assemblePsd(beautyPath, plate, roomPath, layerFiles, shadowsPlate);
     }
     return { png, avif, psd };
   } finally {
