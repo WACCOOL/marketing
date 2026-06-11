@@ -8,7 +8,11 @@ import {
 } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { deriveFixtureKind, type FixtureMount } from "@wac/shared";
+import {
+  deriveFixtureKind,
+  skuLookupCandidates,
+  type FixtureMount,
+} from "@wac/shared";
 import { bakeThumbnails, type BakeFixture } from "./thumbBaker.js";
 
 /**
@@ -313,16 +317,27 @@ async function loadBakeFixtures(
     : rows;
 
   // Derive missing mounts from the products catalog, like the API resolver.
+  // Fixture stems are variant SKUs with finish/variant suffixes the catalog's
+  // base rows often lack, so look up every skuLookupCandidates truncation and
+  // pick the most specific catalog hit per fixture.
   const needKind = filtered.filter((r) => !r.mount);
-  const kinds = await loadProductKinds(
-    sb,
-    [...new Set(needKind.map((r) => r.sku.toLowerCase()))],
-  );
+  const kinds = await loadProductKinds(sb, [
+    ...new Set(
+      needKind.flatMap((r) => skuLookupCandidates(r.sku)),
+    ),
+  ]);
+  const mountFor = (sku: string): FixtureMount | undefined => {
+    for (const candidate of skuLookupCandidates(sku)) {
+      const hit = kinds.get(candidate);
+      if (hit) return hit.mount;
+    }
+    return undefined;
+  };
 
   return filtered.map((r) => {
     const mount =
       (r.mount as FixtureMount | null) ??
-      kinds.get(r.sku.toLowerCase())?.mount ??
+      mountFor(r.sku) ??
       deriveFixtureKind(null, null).mount;
     return { fixtureKey: r.fixture_key, mount };
   });

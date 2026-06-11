@@ -104,3 +104,25 @@ export const COVERAGE_DEFAULTS: Record<FixtureMount, number> = {
 export function normalizeFixtureKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9_-]/g, "");
 }
+
+/**
+ * Catalog-lookup candidates for a fixture SKU, most specific first.
+ *
+ * Studio .blend stems are VARIANT-level SKUs with dash-joined suffix tokens the
+ * catalog's base product rows often don't carry (finish codes like `-ab`/`-bk`,
+ * variant codes like `-wv`): `bl248606-wv-ab` → also try `bl248606-wv`, then
+ * `bl248606`. Without this, an exact-SKU miss silently falls through to
+ * deriveFixtureKind's "ceiling" default — which is how a wall sconce ends up
+ * rendered (and room-matched) as a ceiling fixture.
+ */
+export function skuLookupCandidates(sku: string): string[] {
+  const out: string[] = [];
+  let cur = sku.trim().toLowerCase();
+  while (cur.length >= 4 && !out.includes(cur)) {
+    out.push(cur);
+    const cut = cur.lastIndexOf("-");
+    if (cut <= 0) break;
+    cur = cur.slice(0, cut);
+  }
+  return out.length ? out : [sku.trim().toLowerCase()];
+}
