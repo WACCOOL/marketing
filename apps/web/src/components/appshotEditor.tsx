@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { AppShotPlacement, RenderQuality, RenderStyle } from "@wac/shared";
-import { FixtureScene } from "../lib/fixtureScene.js";
+import { FixtureScene, MultiFixtureScene } from "../lib/fixtureScene.js";
+import { FixtureThumb } from "./fixtureThumb.js";
 
 /**
  * Render-quality tiers surfaced in both studios. The tier bundles Cycles
@@ -70,6 +71,9 @@ export type ViewerMode = "viewer" | "overlay";
 /** Default upper bound for the fixture-size slider (overridable per studio). */
 const DEFAULT_MAX_COVERAGE = 0.9;
 
+/** Lower bound for the fixture-size slider/scroll (1% of the frame). */
+export const MIN_COVERAGE = 0.01;
+
 /** Wrap a degree value into [-180, 180] (orbit can drag past the slider range). */
 function wrapDeg(d: number): number {
   return ((((d + 180) % 360) + 360) % 360) - 180;
@@ -92,6 +96,18 @@ const CHECKERBOARD: React.CSSProperties = {
 };
 
 /* ------------------------------------------------------------------- edit -- */
+
+/** One placed fixture of a multi-fixture layout, as the editor needs it. */
+export interface EditorFixture {
+  id: string;
+  /** fixtureKey — used for the list thumbnail. */
+  sku: string;
+  /** Display name (catalog name, falls back to the SKU). */
+  label: string;
+  placement: AppShotPlacement;
+  cutout: { url: string; coverageRef: number } | null;
+  glbUrl: string | null;
+}
 
 export interface EditProps {
   sceneUrl: string;
@@ -136,6 +152,15 @@ export interface EditProps {
   /** Extra controls (e.g. Cam Solve's background + render style) rendered above
    * the sliders in the controls column. */
   renderControls?: React.ReactNode;
+  /** Multi-fixture layout (App Shot only; Cam Solve never passes these). List
+   * order = back-to-front z-order. Sliders/canvas interactions still target
+   * `placement` (the SELECTED fixture, passed as before). */
+  fixtures?: EditorFixture[];
+  selectedId?: string | null;
+  onSelectFixture?: (id: string) => void;
+  onRemoveFixture?: (id: string) => void;
+  /** Open the fixture picker to add another fixture to the layout. */
+  onAddFixture?: () => void;
 }
 
 const RENDER_STYLE_LABELS: Record<RenderStyle, string> = {
@@ -147,6 +172,9 @@ const RENDER_STYLE_LABELS: Record<RenderStyle, string> = {
 export function EditPanel(p: EditProps) {
   const viewer = p.viewerMode === "viewer";
   const maxCoverage = p.maxCoverage ?? DEFAULT_MAX_COVERAGE;
+  // Multi-fixture canvases kick in past one fixture; a single fixture keeps the
+  // exact single-fixture code paths (incl. Cam Solve, which never passes fixtures).
+  const multi = p.fixtures && p.fixtures.length > 1 ? p.fixtures : null;
   return (
     <div className="col" style={{ gap: 14 }}>
       {/* top bar: placement method + edit/test toggle + render actions */}
@@ -255,6 +283,84 @@ export function EditPanel(p: EditProps) {
       {/* two columns: controls on the left, the room/fixture canvas on the right */}
       <div className="appshot-edit">
         <div className="col appshot-controls" style={{ gap: 10 }}>
+          {p.fixtures && (
+            <div className="card col" style={{ gap: 8 }}>
+              <div className="slider-section-title">Fixtures</div>
+              {p.fixtures.map((f, i) => {
+                const selected =
+                  f.id === (p.selectedId ?? p.fixtures![0]!.id);
+                return (
+                  <div
+                    key={f.id}
+                    className="row"
+                    style={{ gap: 8, alignItems: "center" }}
+                  >
+                    <button
+                      type="button"
+                      className={"product-card" + (selected ? " selected" : "")}
+                      style={{
+                        flex: 1,
+                        display: "flex",
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 8,
+                        padding: 6,
+                        textAlign: "left",
+                      }}
+                      onClick={() => p.onSelectFixture?.(f.id)}
+                      title={
+                        p.fixtures!.length > 1
+                          ? "Select — the sliders and drag controls edit this fixture"
+                          : f.label
+                      }
+                    >
+                      <div style={{ width: 44, flexShrink: 0 }}>
+                        <FixtureThumb fixtureKey={f.sku} />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div
+                          className="product-name"
+                          style={{
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {i + 1} · {f.label}
+                        </div>
+                      </div>
+                    </button>
+                    {p.fixtures!.length > 1 && p.onRemoveFixture && (
+                      <button
+                        type="button"
+                        className="secondary slim"
+                        onClick={() => p.onRemoveFixture?.(f.id)}
+                        title="Remove this fixture from the layout"
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+              {p.onAddFixture && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={p.onAddFixture}
+                >
+                  + Add fixture
+                </button>
+              )}
+              {p.fixtures.length > 1 && (
+                <div className="muted" style={{ fontSize: 11 }}>
+                  Later fixtures render in front of earlier ones.
+                  {p.fixtures.length > 4 &&
+                    " Renders run one fixture at a time, so test/final time grows with each fixture — Standard quality is recommended for large layouts."}
+                </div>
+              )}
+            </div>
+          )}
           {p.renderControls && (
             <div className="card col" style={{ gap: 12 }}>{p.renderControls}</div>
           )}
@@ -263,7 +369,7 @@ export function EditPanel(p: EditProps) {
               <div className="slider-section-title">Size & position</div>
               <Slider
                 label="Fixture size"
-                min={0.08}
+                min={MIN_COVERAGE}
                 max={maxCoverage}
                 step={0.005}
                 value={p.placement.coverage}
@@ -289,8 +395,8 @@ export function EditPanel(p: EditProps) {
                 fmt={(v) => `${Math.round(v * 100)}%`}
               />
               <div className="row" style={{ gap: 8 }}>
-                <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 0.9, 0.08, maxCoverage) })}>– smaller</button>
-                <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 1.1, 0.08, maxCoverage) })}>+ larger</button>
+                <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 0.9, MIN_COVERAGE, maxCoverage) })}>– smaller</button>
+                <button className="secondary slim" onClick={() => p.onPatch({ coverage: clamp(p.placement.coverage * 1.1, MIN_COVERAGE, maxCoverage) })}>+ larger</button>
               </div>
             </div>
 
@@ -315,8 +421,8 @@ export function EditPanel(p: EditProps) {
               />
               <Slider
                 label="Tilt (f/b)"
-                min={-40}
-                max={70}
+                min={-180}
+                max={180}
                 step={1}
                 value={p.placement.pose.elevationDeg ?? 0}
                 onChange={(v) => p.onPatchPose({ elevationDeg: v })}
@@ -324,8 +430,8 @@ export function EditPanel(p: EditProps) {
               />
               <Slider
                 label="Tilt (l/r)"
-                min={-45}
-                max={45}
+                min={-180}
+                max={180}
                 step={1}
                 value={p.placement.pose.rollDeg ?? 0}
                 onChange={(v) => p.onPatchPose({ rollDeg: v })}
@@ -383,19 +489,36 @@ export function EditPanel(p: EditProps) {
 
         <div className="appshot-canvas-col">
           {viewer ? (
-            <ModelViewerCanvas
-              sceneUrl={p.sceneUrl}
-              placement={p.placement}
-              glbUrl={p.glbUrl}
-              glbBusy={p.glbBusy}
-              previewUrl={p.previewUrl}
-              showPreview={p.showPreview}
-              previewBusy={p.previewBusy}
-              onPatch={p.onPatch}
-              onPatchPose={p.onPatchPose}
-              transparentBg={p.transparentBg}
-              maxCoverage={maxCoverage}
-            />
+            multi ? (
+              <MultiViewerCanvas
+                sceneUrl={p.sceneUrl}
+                placement={p.placement}
+                fixtures={multi}
+                selectedId={p.selectedId ?? multi[0]!.id}
+                glbBusy={p.glbBusy}
+                previewUrl={p.previewUrl}
+                showPreview={p.showPreview}
+                previewBusy={p.previewBusy}
+                onPatch={p.onPatch}
+                onPatchPose={p.onPatchPose}
+                transparentBg={p.transparentBg}
+                maxCoverage={maxCoverage}
+              />
+            ) : (
+              <ModelViewerCanvas
+                sceneUrl={p.sceneUrl}
+                placement={p.placement}
+                glbUrl={p.glbUrl}
+                glbBusy={p.glbBusy}
+                previewUrl={p.previewUrl}
+                showPreview={p.showPreview}
+                previewBusy={p.previewBusy}
+                onPatch={p.onPatch}
+                onPatchPose={p.onPatchPose}
+                transparentBg={p.transparentBg}
+                maxCoverage={maxCoverage}
+              />
+            )
           ) : p.cutout ? (
             <ShotCanvas
               sceneUrl={p.sceneUrl}
@@ -408,6 +531,8 @@ export function EditPanel(p: EditProps) {
               onPatch={p.onPatch}
               transparentBg={p.transparentBg}
               maxCoverage={maxCoverage}
+              fixtures={multi ?? undefined}
+              selectedId={p.selectedId ?? undefined}
             />
           ) : (
             <div className="card" style={{ padding: 24, textAlign: "center" }}>
@@ -529,7 +654,7 @@ function ModelViewerCanvas(p: ViewerCanvasProps) {
     p.onPatchPose(
       {
         azimuthDeg: wrapDeg(o.az + dx * 0.4),
-        elevationDeg: clamp(o.el - dy * 0.4, -40, 70),
+        elevationDeg: clamp(o.el - dy * 0.4, -180, 180),
       },
       false,
     );
@@ -571,7 +696,7 @@ function ModelViewerCanvas(p: ViewerCanvasProps) {
     if (p.showPreview) return;
     const factor = e.deltaY > 0 ? 0.95 : 1.05;
     p.onPatch({
-      coverage: clamp(p.placement.coverage * factor, 0.08, p.maxCoverage ?? DEFAULT_MAX_COVERAGE),
+      coverage: clamp(p.placement.coverage * factor, MIN_COVERAGE, p.maxCoverage ?? DEFAULT_MAX_COVERAGE),
     });
   }
 
@@ -693,6 +818,287 @@ function ModelViewerCanvas(p: ViewerCanvasProps) {
   );
 }
 
+/* ------------------------------------------------- multi-fixture 3D canvas -- */
+
+interface MultiViewerCanvasProps {
+  sceneUrl: string;
+  /** The SELECTED fixture's placement — drag / wheel / move edit this one. */
+  placement: AppShotPlacement;
+  fixtures: EditorFixture[];
+  selectedId: string;
+  glbBusy: boolean;
+  previewUrl: string | null;
+  showPreview: boolean;
+  previewBusy: boolean;
+  onPatch: (patch: Partial<AppShotPlacement>) => void;
+  onPatchPose: (patch: Partial<AppShotPlacement["pose"]>, rerender?: boolean) => void;
+  transparentBg?: boolean;
+  maxCoverage?: number;
+}
+
+/**
+ * Real-time 3D placement for a multi-fixture layout: every fixture's GLB in one
+ * WebGL scene behind a single fixed camera (see MultiFixtureScene for the
+ * camera-conjugation math). Dragging orbits the SELECTED fixture's pose, the
+ * move badge drags its position, scroll resizes it — identical interactions to
+ * the single-fixture viewer, just scoped to the selection.
+ */
+function MultiViewerCanvas(p: MultiViewerCanvasProps) {
+  const roomRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sceneRef = useRef<MultiFixtureScene | null>(null);
+  const loadedUrls = useRef<Map<string, string>>(new Map());
+  const move = useRef<{ x: number; y: number; xPct: number; yPct: number } | null>(
+    null,
+  );
+  const orbit = useRef<{ x: number; y: number; az: number; el: number } | null>(
+    null,
+  );
+  const [roomAspect, setRoomAspect] = useState(16 / 9);
+
+  const pose = p.placement.pose;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = roomRef.current;
+    if (!canvas || !container) return;
+    const scene = new MultiFixtureScene(canvas);
+    sceneRef.current = scene;
+    loadedUrls.current = new Map();
+    const syncSize = () => {
+      const r = container.getBoundingClientRect();
+      scene.setSize(r.width, r.height);
+    };
+    const ro = new ResizeObserver(syncSize);
+    ro.observe(container);
+    syncSize();
+    return () => {
+      ro.disconnect();
+      scene.dispose();
+      sceneRef.current = null;
+    };
+  }, []);
+
+  // Load / swap / remove fixture GLBs as the layout changes.
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    const ids = new Set(p.fixtures.map((f) => f.id));
+    for (const id of [...loadedUrls.current.keys()]) {
+      if (!ids.has(id)) {
+        loadedUrls.current.delete(id);
+        scene.removeModel(id);
+      }
+    }
+    for (const f of p.fixtures) {
+      if (!f.glbUrl || loadedUrls.current.get(f.id) === f.glbUrl) continue;
+      loadedUrls.current.set(f.id, f.glbUrl);
+      scene.loadModel(f.id, f.glbUrl).catch(() => {
+        // a newer load supersedes this one, or the URL 404s — non-fatal
+        loadedUrls.current.delete(f.id);
+      });
+    }
+  }, [p.fixtures]);
+
+  // Push the live placements into the scene (cheap; renders one frame).
+  useEffect(() => {
+    const scene = sceneRef.current;
+    if (!scene) return;
+    scene.update({
+      instances: p.fixtures.map((f) => ({
+        id: f.id,
+        pose: f.placement.pose,
+        coverage: f.placement.coverage,
+        xPct: f.placement.xPct,
+        yPct: f.placement.yPct,
+      })),
+      selectedId: p.selectedId,
+      aspect: roomAspect,
+    });
+  }, [p.fixtures, p.selectedId, roomAspect]);
+
+  function onOrbitDown(e: React.PointerEvent) {
+    if (p.showPreview) return;
+    orbit.current = {
+      x: e.clientX,
+      y: e.clientY,
+      az: pose.azimuthDeg ?? 0,
+      el: pose.elevationDeg ?? 0,
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  }
+  function onOrbitMove(e: React.PointerEvent) {
+    const o = orbit.current;
+    if (!o) return;
+    const dx = e.clientX - o.x;
+    const dy = e.clientY - o.y;
+    p.onPatchPose(
+      {
+        azimuthDeg: wrapDeg(o.az + dx * 0.4),
+        elevationDeg: clamp(o.el - dy * 0.4, -180, 180),
+      },
+      false,
+    );
+  }
+  function endOrbit(e: React.PointerEvent) {
+    if (orbit.current) {
+      orbit.current = null;
+      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    }
+  }
+
+  function onMovePointerDown(e: React.PointerEvent) {
+    if (p.showPreview) return;
+    e.stopPropagation();
+    move.current = {
+      x: e.clientX,
+      y: e.clientY,
+      xPct: p.placement.xPct,
+      yPct: p.placement.yPct,
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  }
+  function onMovePointerMove(e: React.PointerEvent) {
+    const d = move.current;
+    const rect = roomRef.current?.getBoundingClientRect();
+    if (!d || !rect || rect.width === 0 || rect.height === 0) return;
+    e.stopPropagation();
+    const dx = (e.clientX - d.x) / rect.width;
+    const dy = (e.clientY - d.y) / rect.height;
+    p.onPatch({ xPct: clamp(d.xPct + dx, 0, 1), yPct: clamp(d.yPct + dy, 0, 1) });
+  }
+  function endMove(e: React.PointerEvent) {
+    if (move.current) {
+      move.current = null;
+      (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
+    }
+  }
+  function onWheel(e: React.WheelEvent) {
+    if (p.showPreview) return;
+    const factor = e.deltaY > 0 ? 0.95 : 1.05;
+    p.onPatch({
+      coverage: clamp(p.placement.coverage * factor, MIN_COVERAGE, p.maxCoverage ?? DEFAULT_MAX_COVERAGE),
+    });
+  }
+
+  return (
+    <div
+      style={{
+        position: "sticky",
+        top: 12,
+        zIndex: 5,
+        display: "flex",
+        justifyContent: "center",
+      }}
+    >
+      <div
+        ref={roomRef}
+        className="placement-canvas"
+        style={{
+          position: "relative",
+          width: "100%",
+          borderRadius: 0,
+          border: "none",
+          ...(p.transparentBg ? CHECKERBOARD : null),
+        }}
+        onWheel={onWheel}
+      >
+        <img
+          src={p.sceneUrl}
+          alt="room"
+          draggable={false}
+          onLoad={(e) => {
+            const im = e.currentTarget;
+            if (im.naturalWidth > 0 && im.naturalHeight > 0) {
+              setRoomAspect(im.naturalWidth / im.naturalHeight);
+            }
+          }}
+          style={{ width: "100%", height: "auto", display: "block" }}
+        />
+
+        {/* Full-frame WebGL overlay with every fixture (matches the render frame). */}
+        <canvas
+          ref={canvasRef}
+          onPointerDown={onOrbitDown}
+          onPointerMove={onOrbitMove}
+          onPointerUp={endOrbit}
+          onPointerCancel={endOrbit}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            display: p.showPreview ? "none" : "block",
+            cursor: orbit.current ? "grabbing" : "grab",
+            touchAction: "none",
+          }}
+        />
+
+        {!p.showPreview && (
+          <div
+            onPointerDown={onMovePointerDown}
+            onPointerMove={onMovePointerMove}
+            onPointerUp={endMove}
+            onPointerCancel={endMove}
+            title="Drag to move the selected fixture"
+            style={{
+              position: "absolute",
+              left: `${p.placement.xPct * 100}%`,
+              top: `${p.placement.yPct * 100}%`,
+              transform: "translate(-50%, -50%)",
+              cursor: "move",
+              background: "rgba(0,0,0,0.6)",
+              color: "#fff",
+              fontSize: 11,
+              lineHeight: 1,
+              padding: "4px 10px",
+              borderRadius: 999,
+              userSelect: "none",
+              whiteSpace: "nowrap",
+              touchAction: "none",
+            }}
+          >
+            ✥ move
+          </div>
+        )}
+
+        {p.showPreview && p.previewUrl && (
+          <img
+            src={p.previewUrl}
+            alt="test render"
+            draggable={false}
+            style={{
+              position: "absolute",
+              inset: 0,
+              width: "100%",
+              height: "100%",
+              objectFit: "fill",
+              pointerEvents: "none",
+            }}
+          />
+        )}
+
+        {(p.glbBusy || p.previewBusy) && (
+          <div
+            style={{
+              position: "absolute",
+              top: 10,
+              right: 10,
+              background: "rgba(0,0,0,0.65)",
+              color: "#fff",
+              padding: "4px 10px",
+              borderRadius: 6,
+              fontSize: 12,
+            }}
+          >
+            <span className="spinner" /> {p.previewBusy ? "rendering…" : "loading 3D…"}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* ----------------------------------------------------------------- canvas -- */
 
 interface CanvasProps {
@@ -706,6 +1112,21 @@ interface CanvasProps {
   onPatch: (patch: Partial<AppShotPlacement>) => void;
   transparentBg?: boolean;
   maxCoverage?: number;
+  /** Multi-fixture: every fixture's cutout is stacked in list (z) order; drag /
+   * wheel still edit `placement` (the selected fixture). */
+  fixtures?: EditorFixture[];
+  selectedId?: string;
+}
+
+/** CSS transform that places a cutout at its placement (scale + center shift). */
+function cutoutTransform(
+  placement: AppShotPlacement,
+  coverageRef: number,
+): string {
+  const scale = placement.coverage / (coverageRef || 0.5);
+  const tx = (placement.xPct - 0.5) * 100;
+  const ty = (placement.yPct - 0.5) * 100;
+  return `translate(${tx}%, ${ty}%) scale(${scale})`;
 }
 
 function ShotCanvas(p: CanvasProps) {
@@ -714,9 +1135,25 @@ function ShotCanvas(p: CanvasProps) {
     null,
   );
 
-  const scale = p.placement.coverage / (p.cutout.coverageRef || 0.5);
-  const tx = (p.placement.xPct - 0.5) * 100;
-  const ty = (p.placement.yPct - 0.5) * 100;
+  // Single-fixture (and Cam Solve) renders exactly one overlay; multi-fixture
+  // stacks every fixture that has a cutout, selected one outlined.
+  const overlays = p.fixtures
+    ? p.fixtures
+        .filter((f) => f.cutout)
+        .map((f) => ({
+          key: f.id,
+          url: f.cutout!.url,
+          transform: cutoutTransform(f.placement, f.cutout!.coverageRef),
+          selected: f.id === (p.selectedId ?? p.fixtures![0]!.id),
+        }))
+    : [
+        {
+          key: "single",
+          url: p.cutout.url,
+          transform: cutoutTransform(p.placement, p.cutout.coverageRef),
+          selected: false, // no selection ring when there's nothing to choose
+        },
+      ];
 
   function onPointerDown(e: React.PointerEvent) {
     if (p.showPreview) return;
@@ -753,7 +1190,7 @@ function ShotCanvas(p: CanvasProps) {
     e.preventDefault();
     const factor = e.deltaY > 0 ? 0.95 : 1.05;
     p.onPatch({
-      coverage: clamp(p.placement.coverage * factor, 0.08, p.maxCoverage ?? DEFAULT_MAX_COVERAGE),
+      coverage: clamp(p.placement.coverage * factor, MIN_COVERAGE, p.maxCoverage ?? DEFAULT_MAX_COVERAGE),
     });
   }
 
@@ -785,23 +1222,30 @@ function ShotCanvas(p: CanvasProps) {
       >
         <img src={p.sceneUrl} alt="room" draggable={false} style={{ maxHeight: "72vh", width: "auto" }} />
 
-        {!p.showPreview && (
-          <img
-            src={p.cutout.url}
-            alt="fixture"
-            draggable={false}
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              objectFit: "fill",
-              pointerEvents: "none",
-              transformOrigin: "50% 50%",
-              transform: `translate(${tx}%, ${ty}%) scale(${scale})`,
-            }}
-          />
-        )}
+        {!p.showPreview &&
+          overlays.map((o) => (
+            <img
+              key={o.key}
+              src={o.url}
+              alt="fixture"
+              draggable={false}
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                objectFit: "fill",
+                pointerEvents: "none",
+                transformOrigin: "50% 50%",
+                transform: o.transform,
+                // A soft halo marks the SELECTED fixture (the one the sliders
+                // and drag edit) without covering any of its pixels.
+                filter: o.selected
+                  ? "drop-shadow(0 0 6px var(--accent))"
+                  : undefined,
+              }}
+            />
+          ))}
 
         {p.showPreview && p.previewUrl && (
           <img

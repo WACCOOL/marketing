@@ -11,6 +11,7 @@ import {
 import {
   AppImageParamsSchema,
   APPIMAGE_PARAMS_VERSIONS,
+  normalizeShotFixtures,
   type AppImageParams,
 } from "@wac/shared";
 import {
@@ -33,12 +34,14 @@ import {
   exportFixtureGlb,
   finalRender,
   planPlacement,
+  previewShotChain,
   renderCutout,
   resolveFixture,
   setFixtureResolver,
   type AutoPlaceInput,
   type FinalRenderInput,
   type Placement as ShotPlacement,
+  type ShotFixturePlacement,
 } from "./appshot3d.js";
 import { makeFixtureResolver } from "./fixtureResolver.js";
 import { introspectPptTemplate, runPptGenerator } from "./ppt.js";
@@ -502,11 +505,15 @@ async function runShot3d(
   if (!shot) {
     throw new Error("shot3d mode requires a shot payload");
   }
+  // Old jobs carry sku + placement; new ones carry fixtures[] (normalized here).
+  const fixtures = normalizeShotFixtures(shot).map((f) => ({
+    sku: f.sku,
+    placement: f.placement as ShotPlacement,
+  }));
   const art = await finalRender(
     {
-      sku: shot.sku,
+      fixtures,
       roomUrl: shot.sceneUrl,
-      placement: shot.placement as ShotPlacement,
       samples: shot.samples,
       // The quality tier (below) sets caustics; only honor an explicit override.
       highQuality: shot.highQuality,
@@ -535,9 +542,12 @@ async function runShot3d(
       mode: "shot3d",
       generatedBy: "blender:in-scene-composite",
       productAccurate: true,
-      sku: shot.sku,
+      // Keep the scalar mirrors (first fixture) so existing metadata readers
+      // don't break; `fixtures` carries the full multi-fixture layout.
+      sku: shot.sku ?? fixtures[0]?.sku,
       sceneUrl: shot.sceneUrl,
-      placement: shot.placement,
+      placement: shot.placement ?? fixtures[0]?.placement,
+      fixtures,
       formats: files.map((f) => f.format),
     },
   };
@@ -1441,21 +1451,46 @@ function main(): void {
       // correct it (hidden loop of fast preview renders). Returns the approved
       // preview + the placement params the UI binds its sliders to.
       if (req.method === "POST" && url.pathname === "/compose-3d") {
-        let body: AutoPlaceInput | null;
+        let body:
+          | (AutoPlaceInput & { fixtures?: ShotFixturePlacement[] })
+          | null;
         try {
           const raw = await readJsonBody(req);
-          body = raw && typeof raw === "object" ? (raw as AutoPlaceInput) : null;
+          body = raw && typeof raw === "object" ? (raw as typeof body) : null;
         } catch {
           res.writeHead(400, { "content-type": "application/json" });
           res.end(JSON.stringify({ error: "invalid JSON body" }));
           return;
         }
-        if (!body || typeof body.sku !== "string") {
+        if (!body || (typeof body.sku !== "string" && !body.fixtures?.length)) {
           res.writeHead(400, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: "compose-3d needs a sku" }));
+          res.end(JSON.stringify({ error: "compose-3d needs a sku or fixtures" }));
           return;
         }
         try {
+          // Multi-fixture preview: render the EXACT placements as a chain (this
+          // path always comes from the slider loop, never the AI critic).
+          if (body.fixtures?.length) {
+            const result = await previewShotChain(
+              {
+                fixtures: body.fixtures,
+                roomUrl: body.roomUrl,
+                roomPath: body.roomPath,
+                renderStyle: body.renderStyle,
+                renderQuality: body.renderQuality,
+              },
+              adapters,
+            );
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(
+              JSON.stringify({
+                ok: true,
+                previewPng: result.previewPng.toString("base64"),
+                placement: body.fixtures[0]?.placement,
+              }),
+            );
+            return;
+          }
           const result = await autoPlace(body, adapters);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(
@@ -1493,9 +1528,17 @@ function main(): void {
           res.end(JSON.stringify({ error: "invalid JSON body" }));
           return;
         }
-        if (!body || typeof body.sku !== "string" || !body.placement) {
+        if (
+          !body ||
+          (!body.fixtures?.length &&
+            (typeof body.sku !== "string" || !body.placement))
+        ) {
           res.writeHead(400, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: "render-3d needs a sku and placement" }));
+          res.end(
+            JSON.stringify({
+              error: "render-3d needs fixtures or a sku and placement",
+            }),
+          );
           return;
         }
         try {

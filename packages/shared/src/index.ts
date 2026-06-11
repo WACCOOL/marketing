@@ -1,4 +1,5 @@
 export * from "./types.js";
+export * from "./appshot.js";
 export * from "./utm.js";
 export * from "./social.js";
 export * from "./bulk.js";

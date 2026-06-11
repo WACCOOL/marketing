@@ -148,10 +148,21 @@ export async function composeShot(req: {
   });
 }
 
-export async function previewShot(req: {
+/** One placed fixture in a multi-fixture preview/finalize payload. */
+export interface ShotFixturePayload {
+  /** Stable client id (selection/cutout caching); round-trips through jobs. */
+  id?: string;
   sku: string;
-  sceneUrl: string;
   placement: AppShotPlacement;
+}
+
+export async function previewShot(req: {
+  /** Legacy single-fixture shape (Cam Solve still uses it). */
+  sku?: string;
+  placement?: AppShotPlacement;
+  /** Multi-fixture shape: rendered back-to-front in list order. */
+  fixtures?: ShotFixturePayload[];
+  sceneUrl: string;
   /** Cam Solve render style (clean / cleanShadow / studio). */
   renderStyle?: RenderStyle;
   /** Quality tier (samples + caustics + resolution). */
@@ -215,9 +226,12 @@ export async function glbShot(req: { sku: string }): Promise<{ url: string }> {
 }
 
 export async function finalizeShot(req: {
-  sku: string;
+  /** Legacy single-fixture shape (Cam Solve still uses it). */
+  sku?: string;
+  placement?: AppShotPlacement;
+  /** Multi-fixture shape: rendered back-to-front in list order. */
+  fixtures?: ShotFixturePayload[];
   sceneUrl: string;
-  placement: AppShotPlacement;
   name?: string;
   /** Cam Solve render style (clean / cleanShadow / studio). */
   renderStyle?: RenderStyle;

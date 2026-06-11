@@ -129,13 +129,63 @@ def make_catcher(scene, cam, room_path, distance, aspect, emit, receive):
 # (tuned for a dark studio + distant camera). Dropped straight into a normally-lit
 # AI room those blow out to pure white with a halo even when scaled to a few
 # percent. So we CLAMP the authored emission to a sane ceiling first, then scale
-# that by the slider. `frac` is brightness/25 (1.0 == neutral).
+# that by the slider curve (see slider_frac).
 EMIT_CAP = 8.0
 
+# The fixture's own LIGHT lamps are authored at studio-HDR energies too (hundreds
+# of watts for a dark studio). Same treatment: clamp the authored energy to a sane
+# ceiling, then scale by the slider curve. Job-overridable as `lampCap`.
+LAMP_CAP = 50.0
 
-def boost_fixture_glow(fixture_objs, frac):
+# Brightness / lightOutput slider -> intensity fraction (1.0 == authored level).
+# Sliders are 0..100 with 50 as the calibrated reference look. Squared response so
+# the bottom half of the range covers the dim region the team actually exports in;
+# NEUTRAL_FRAC anchors slider 50 to the old slider value of 1 (the setting the
+# team exported at, now that the authored-lamp blowout is capped). Both constants
+# are job-overridable (`lightGamma`, `lightNeutralFrac`) for calibration sweeps
+# against a live worker without redeploying the image.
+SLIDER_NEUTRAL = 50.0
+SLIDER_GAMMA = 2.0
+SLIDER_NEUTRAL_FRAC = 0.04
+
+# Watts the IES light emits per 1.0 of intensity fraction (the old linear scale
+# was `power = lightOutput` == 25 W at its neutral, i.e. 25 W per unit frac).
+IES_REF_WATTS = 25.0
+
+
+def slider_frac(value, neutral_frac=SLIDER_NEUTRAL_FRAC, gamma=SLIDER_GAMMA):
+    """Map a 0..100 light slider to an intensity fraction of the authored level."""
+    return neutral_frac * (max(0.0, value) / SLIDER_NEUTRAL) ** gamma
+
+
+WARM_TARGET = (1.0, 0.82, 0.6)  # ~3000K amber
+
+
+def _luma(c):
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+
+
+def warm_color(base, warm):
+    """Tint `base` toward WARM_TARGET, rescaled so the result keeps the base
+    color's Rec.709 luma. The naive lerp brightened any light authored dimmer
+    than the target (raising warmth visibly brightened the room); pinning luma
+    makes warmth shift hue ONLY. Components may exceed 1.0 — fine for Blender
+    light colors (color x energy is linear)."""
+    w = max(0.0, min(1.0, warm))
+    base = tuple(base[:3])
+    if w <= 0.0:
+        return base
+    c = tuple(b * (1.0 - w) + t * w for b, t in zip(base, WARM_TARGET))
+    lum = _luma(c)
+    if lum <= 1e-6:
+        return c
+    s = _luma(base) / lum
+    return tuple(ch * s for ch in c)
+
+
+def boost_fixture_glow(fixture_objs, frac, cap=EMIT_CAP):
     """Set the fixture's emissive shaders — the visible glow of its bulbs /
-    diffusers — to `min(authored, EMIT_CAP) * frac`. Clamping tames the studio
+    diffusers — to `min(authored, cap) * frac`. Clamping tames the studio
     HDR emission so low slider values read as a soft glow instead of a blown
     white blob. This is the user-facing "fixture brightness" control and is
     independent of how much light the fixture throws into the room."""
@@ -153,36 +203,32 @@ def boost_fixture_glow(fixture_objs, frac):
                 try:
                     s = n.inputs["Strength"]
                     if s.default_value > 0:
-                        s.default_value = min(s.default_value, EMIT_CAP) * frac
+                        s.default_value = min(s.default_value, cap) * frac
                 except Exception:
                     pass
             elif n.type == "BSDF_PRINCIPLED":
                 try:
                     es = n.inputs["Emission Strength"]
                     if es.default_value > 0:
-                        es.default_value = min(es.default_value, EMIT_CAP) * frac
+                        es.default_value = min(es.default_value, cap) * frac
                 except Exception:
                     pass
 
 
-def boost_fixture_lamps(fixture_objs, lamp_boost, warm):
-    """Scale (and warm) the fixture's own LIGHT lamps — the real light it throws
-    into the room. This is the "light output" control, and is the spill source for
-    decorative fixtures that ship without IES photometry. `warm` (0..1) tints
-    toward a warm white."""
-    warm_col = (1.0, 0.82, 0.6)
+def boost_fixture_lamps(fixture_objs, frac, warm, cap=LAMP_CAP):
+    """Set (and warm) the fixture's own LIGHT lamps to `min(authored, cap) *
+    frac` — cap-and-set like boost_fixture_glow, because authored studio energies
+    are HDR-hot and a multiply alone leaves low slider values blinding. With IES
+    photometry the lamps are the visible LED glow (frac follows the brightness
+    slider); without it they double as the room-spill source (frac follows the
+    light-output slider). `warm` (0..1) tints toward a warm white."""
+    frac = max(0.0, frac)
     for obj in fixture_objs:
         if obj.type != "LIGHT":
             continue
-        if abs(lamp_boost - 1.0) >= 1e-3:
-            obj.data.energy *= lamp_boost
+        obj.data.energy = min(obj.data.energy, cap) * frac
         if warm > 0:
-            c = obj.data.color
-            obj.data.color = (
-                c[0] * (1 - warm) + warm_col[0] * warm,
-                c[1] * (1 - warm) + warm_col[1] * warm,
-                c[2] * (1 - warm) + warm_col[2] * warm,
-            )
+            obj.data.color = warm_color(tuple(obj.data.color), warm)
 
 
 def add_fallback_light(scene, location, watts, warm, soft=0.35):
@@ -194,12 +240,7 @@ def add_fallback_light(scene, location, watts, warm, soft=0.35):
     data = bpy.data.lights.new("wac_fill", type="POINT")
     data.energy = max(0.0, watts)
     data.shadow_soft_size = soft  # soft-edged shadow, not a hard pinpoint
-    warm_col = (1.0, 0.82, 0.6)
-    data.color = (
-        1 * (1 - warm) + warm_col[0] * warm,
-        1 * (1 - warm) + warm_col[1] * warm,
-        1 * (1 - warm) + warm_col[2] * warm,
-    )
+    data.color = warm_color((1.0, 1.0, 1.0), warm)
     obj = bpy.data.objects.new("wac_fill", data)
     scene.collection.objects.link(obj)
     obj.location = location
@@ -252,13 +293,7 @@ def add_ies_light(scene, location, ies_path, power, rotation_euler, warm):
     mult.inputs[1].default_value = power
     nt.links.new(ies.outputs["Fac"], mult.inputs[0])
     emis = nt.nodes.new("ShaderNodeEmission")
-    warm_col = (1.0, 0.82, 0.6)
-    emis.inputs["Color"].default_value = (
-        1 * (1 - warm) + warm_col[0] * warm,
-        1 * (1 - warm) + warm_col[1] * warm,
-        1 * (1 - warm) + warm_col[2] * warm,
-        1.0,
-    )
+    emis.inputs["Color"].default_value = (*warm_color((1.0, 1.0, 1.0), warm), 1.0)
     nt.links.new(mult.outputs["Value"], emis.inputs["Strength"])
     out = nt.nodes.new("ShaderNodeOutputLight")
     nt.links.new(emis.outputs["Emission"], out.inputs["Surface"])
@@ -410,7 +445,7 @@ def setup_matched_room(scene, fixture_objs, fixture_meshes, center, radius,
     forward = _vec(basis["forward"]).normalized()
 
     # Distance so the fixture's bounding sphere fills `coverage` of the frame.
-    distance = (radius / max(math.sin(half_fov), 1e-3)) / max(coverage, 0.05)
+    distance = (radius / max(math.sin(half_fov), 1e-3)) / max(coverage, 0.01)
     cam_pos = center - forward * distance
     cam, right, up, fwd = build_matched_camera(scene, basis, fov_deg, cam_pos)
     bpy.context.view_layer.update()
@@ -524,7 +559,7 @@ def main():
         # Coverage is the size control, so ALWAYS derive marginFactor from it
         # (force, not setdefault — the placement's pose may carry a stale
         # marginFactor that would otherwise pin the size and freeze the slider).
-        pose["marginFactor"] = 1.0 / max(coverage, 0.05)
+        pose["marginFactor"] = 1.0 / max(coverage, 0.01)
         cam = R.place_camera(scene, center, radius, pose)
         # place_camera sets cam.location/rotation, but matrix_world is only
         # recomputed on a depsgraph update. Without this, cam.matrix_world (and
@@ -572,17 +607,20 @@ def main():
                                      float(job.get("catcherReceive", 0.9)))
         catchers = [catcher]
 
-    # Two INDEPENDENT user controls, both 0..200 sliders with 25 == neutral:
-    #   brightness  -> how bright the fixture's OWN diffusers/bulbs glow
+    # Two INDEPENDENT user controls, both 0..100 sliders with 50 == the
+    # calibrated reference look (see slider_frac for the curve):
+    #   brightness  -> how bright the fixture's OWN diffusers/bulbs/lamps glow
     #   lightOutput -> how much real light it throws into the room
     warm = float(job.get("warm", 0.4))
-    fixture_brightness = float(job.get("brightness", 25.0))
-    light_output = float(job.get("lightOutput", 25.0))
-    # Both controls scale linearly around 25 == neutral (frac 1.0). Emission is
-    # clamped+scaled inside boost_fixture_glow; lamps/IES/fill scale by lamp_boost.
-    glow = max(0.0, fixture_brightness / 25.0)
-    lamp_boost = max(0.0, light_output / 25.0)
-    boost_fixture_glow(fixture_objs, glow)
+    fixture_brightness = float(job.get("brightness", 50.0))
+    light_output = float(job.get("lightOutput", 50.0))
+    gamma = float(job.get("lightGamma", SLIDER_GAMMA))
+    neutral_frac = float(job.get("lightNeutralFrac", SLIDER_NEUTRAL_FRAC))
+    lamp_cap = float(job.get("lampCap", LAMP_CAP))
+    emit_cap = float(job.get("emitCap", EMIT_CAP))
+    glow = slider_frac(fixture_brightness, neutral_frac, gamma)
+    lamp_boost = slider_frac(light_output, neutral_frac, gamma)
+    boost_fixture_glow(fixture_objs, glow, emit_cap)
 
     ies_obj = None
     ies_used = False
@@ -608,12 +646,15 @@ def main():
                 # camera so the side/forward lobes wash the (camera-facing) backdrop.
                 rot_euler = (math.pi / 2.0, 0.0, 0.0)
             # The IES file carries the true distribution; `lightOutput` scales its
-            # power. The fixture's own lamps stay at their authored level.
-            power = float(job.get("iesPower", light_output))
+            # power. The fixture's own lamps are the visible LED glow here, so
+            # they follow the BRIGHTNESS slider (cap-and-set — leaving them at
+            # the authored studio-HDR energy blew the whole shot out no matter
+            # how low the sliders went).
+            power = float(job.get("iesPower", lamp_boost * IES_REF_WATTS))
             ies_obj = add_ies_light(scene, ies_loc, ies_path, power, rot_euler, warm)
-            boost_fixture_lamps(fixture_objs, 1.0, warm)
+            boost_fixture_lamps(fixture_objs, glow, warm, lamp_cap)
             ies_used = True
-            print(f"[composite] IES spill power={power}; glow x{glow:.2f}")
+            print(f"[composite] IES spill power={power:.2f}W; glow x{glow:.3f}")
         except Exception as e:
             print(f"[composite] IES setup failed ({e}); falling back to lamps")
             ies_obj = None
@@ -623,12 +664,12 @@ def main():
         # often without real lamp objects (emissive bulb meshes inside shades). So
         # scale whatever lamps DO exist, and always add a synthetic point light at
         # the fixture so `lightOutput` reliably throws light into the room and casts
-        # a soft shadow. `fallbackWatts` is the watts at the neutral (25) setting.
-        boost_fixture_lamps(fixture_objs, lamp_boost, warm)
+        # a soft shadow. `fallbackWatts` is the watts at frac 1.0 (authored level).
+        boost_fixture_lamps(fixture_objs, lamp_boost, warm, lamp_cap)
         fill_loc = light_centroid(fixture_objs, placed_center)
-        watts = (light_output / 25.0) * float(job.get("fallbackWatts", 250.0))
+        watts = lamp_boost * float(job.get("fallbackWatts", 250.0))
         add_fallback_light(scene, fill_loc, watts, warm)
-        print(f"[composite] no/failed IES; fill={watts:.0f}W; lamp x{lamp_boost:.2f}; glow x{glow:.2f}")
+        print(f"[composite] no/failed IES; fill={watts:.1f}W; lamp x{lamp_boost:.3f}; glow x{glow:.3f}")
 
     scene.render.film_transparent = False  # the room IS the background now
     scene.render.engine = "CYCLES"

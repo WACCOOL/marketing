@@ -145,8 +145,8 @@ function startingPlacement(meta: FixtureMeta, over?: Partial<Placement>): Placem
     xPct: over?.xPct ?? 0.5,
     yPct: over?.yPct ?? defaultYPct(meta.mount),
     coverage: over?.coverage ?? meta.coverage,
-    brightness: over?.brightness ?? 25,
-    lightOutput: over?.lightOutput ?? 25,
+    brightness: over?.brightness ?? 50,
+    lightOutput: over?.lightOutput ?? 50,
     warm: over?.warm ?? 0.45,
     pose: over?.pose ?? meta.pose,
     roomGeometry: over?.roomGeometry,
@@ -257,19 +257,25 @@ export function qualityProfile(
   }
 }
 
+/** One fixture of a shot, resolved and placed. Rendered back-to-front in list order. */
+export interface ShotFixtureEntry {
+  meta: FixtureMeta;
+  placement: Placement;
+}
+
 /**
- * Render a single placement onto its background, choosing the pipeline by render
- * style. `studio` uses the in-Blender catcher composite (real light spill +
- * contact shadow on the backdrop); `clean`/`cleanShadow` use the flat layered
+ * Render the placed fixture(s) onto their background, choosing the pipeline by
+ * render style. `studio` uses the in-Blender catcher composite (real light spill
+ * + contact shadow on the backdrop); `clean`/`cleanShadow` use the flat layered
  * cutout (fixture only, alpha preserved), with `cleanShadow` adding a soft drop
- * shadow. Shared by the preview (autoPlace) and final (finalRender) paths.
+ * shadow. Shared by the preview (autoPlace/previewShotChain) and final
+ * (finalRender) paths.
  *
  * The quality tier resolves to concrete samples/caustics/resolution here; any
  * explicit override on `opts` wins so callers can still force a specific value.
  */
 async function renderShotImage(
-  meta: FixtureMeta,
-  placement: Placement,
+  entries: ShotFixtureEntry[],
   opts: {
     preview: boolean;
     layers?: boolean;
@@ -284,6 +290,9 @@ async function renderShotImage(
   },
   adapters: ImageGenAdapters,
 ): Promise<CompositeResult> {
+  if (!entries.length) {
+    throw new Error("shot render needs at least one fixture");
+  }
   const style = opts.renderStyle ?? "studio";
   const profile = qualityProfile(opts.renderQuality, opts.preview);
   const samples = opts.samples ?? profile.samples;
@@ -291,8 +300,7 @@ async function renderShotImage(
   const finalLongEdge = opts.finalLongEdge ?? profile.finalLongEdge;
   if (style === "clean" || style === "cleanShadow") {
     return layeredShot(
-      meta,
-      placement,
+      entries,
       {
         roomUrl: opts.roomUrl,
         roomPath: opts.roomPath,
@@ -314,29 +322,56 @@ async function renderShotImage(
       "3D app-shot requires a configured render-worker (set RENDER_WORKER_URL)",
     );
   }
-  return compositor.composite({
+  const shared = {
     preview: opts.preview,
     layers: opts.layers,
-    modelPath: meta.modelPath,
-    modelUrl: meta.modelUrl,
-    sku: meta.sku,
-    iesPath: meta.iesPath,
-    iesUrl: meta.iesUrl,
-    mount: meta.mount,
-    roomGeometry: placement.roomGeometry,
     roomUrl: opts.roomUrl,
     roomPath: opts.roomPath,
-    pose: placement.pose,
-    coverage: placement.coverage,
-    xPct: placement.xPct,
-    yPct: placement.yPct,
-    brightness: placement.brightness,
-    lightOutput: placement.lightOutput,
-    warm: placement.warm,
+    // roomGeometry is scene-level (Cam Solve) — every fixture carries the same one.
+    roomGeometry: entries[0]!.placement.roomGeometry,
     samples,
     highQuality,
     supersample: opts.supersample,
     finalLongEdge,
+  };
+  if (entries.length === 1) {
+    // Keep the legacy single-fixture wire shape so an older render-worker keeps
+    // working for everything that exists today during a rollout.
+    const { meta, placement } = entries[0]!;
+    return compositor.composite({
+      ...shared,
+      modelPath: meta.modelPath,
+      modelUrl: meta.modelUrl,
+      sku: meta.sku,
+      iesPath: meta.iesPath,
+      iesUrl: meta.iesUrl,
+      mount: meta.mount,
+      pose: placement.pose,
+      coverage: placement.coverage,
+      xPct: placement.xPct,
+      yPct: placement.yPct,
+      brightness: placement.brightness,
+      lightOutput: placement.lightOutput,
+      warm: placement.warm,
+    });
+  }
+  return compositor.composite({
+    ...shared,
+    fixtures: entries.map(({ meta, placement }) => ({
+      modelPath: meta.modelPath,
+      modelUrl: meta.modelUrl,
+      sku: meta.sku,
+      iesPath: meta.iesPath,
+      iesUrl: meta.iesUrl,
+      mount: meta.mount,
+      pose: placement.pose,
+      coverage: placement.coverage,
+      xPct: placement.xPct,
+      yPct: placement.yPct,
+      brightness: placement.brightness,
+      lightOutput: placement.lightOutput,
+      warm: placement.warm,
+    })),
   });
 }
 
@@ -383,8 +418,7 @@ export async function autoPlace(
     // into the backdrop (IES spill / lamp glow, contact shadow). clean styles:
     // flat layered cutout (alpha preserved), optionally with a soft drop shadow.
     const r = await renderShotImage(
-      meta,
-      placement,
+      [{ meta, placement }],
       {
         preview: true,
         renderStyle: style,
@@ -431,6 +465,50 @@ export async function autoPlace(
     approved,
     notes,
   };
+}
+
+/** A placed fixture by SKU — the wire shape of multi-fixture preview/final inputs. */
+export interface ShotFixturePlacement {
+  sku: string;
+  placement: Placement;
+}
+
+export interface PreviewShotInput extends RoomRef {
+  fixtures: ShotFixturePlacement[];
+  renderStyle?: RenderStyle;
+  renderQuality?: RenderQuality;
+}
+
+/**
+ * One preview render of EXACT multi-fixture placements (no AI critic — the
+ * slider loop's placements are never second-guessed). The worker chains one
+ * render per fixture, back-to-front in list order.
+ */
+export async function previewShotChain(
+  input: PreviewShotInput,
+  adapters: ImageGenAdapters,
+): Promise<{ previewPng: Buffer }> {
+  if (!input.roomUrl && !input.roomPath) {
+    throw new Error("preview requires a roomUrl or roomPath");
+  }
+  const entries: ShotFixtureEntry[] = await Promise.all(
+    input.fixtures.map(async (f) => ({
+      meta: await resolveFixture(f.sku),
+      placement: f.placement,
+    })),
+  );
+  const r = await renderShotImage(
+    entries,
+    {
+      preview: true,
+      renderStyle: input.renderStyle,
+      renderQuality: input.renderQuality,
+      roomUrl: input.roomUrl,
+      roomPath: input.roomPath,
+    },
+    adapters,
+  );
+  return { previewPng: r.png };
 }
 
 export interface CutoutInput {
@@ -655,13 +733,14 @@ async function buildShadow(
 }
 
 /**
- * Render the fixture straight-on and composite it onto the room as a positioned
- * 2D layer (the WYSIWYG path that matches the 3D viewer). Returns PNG always,
- * plus AVIF + a positioned layered PSD (Background / Fixture) on final exports.
+ * Render each fixture straight-on and composite them onto the room as positioned
+ * 2D layers (the WYSIWYG path that matches the 3D viewer), back-to-front in list
+ * order. Returns PNG always, plus AVIF + a positioned layered PSD on final
+ * exports (a single fixture keeps the historical Background / Shadow / Fixture
+ * layer names).
  */
 export async function layeredShot(
-  meta: FixtureMeta,
-  placement: Placement,
+  entries: ShotFixtureEntry[],
   input: LayeredShotInput,
   adapters: ImageGenAdapters,
 ): Promise<CompositeResult> {
@@ -676,80 +755,88 @@ export async function layeredShot(
   const RW = rmeta.width ?? 1024;
   const RH = rmeta.height ?? 576;
 
-  // Render the fixture straight-on (camera at the fixture center). marginFactor is
-  // small so the fixture nearly fills the render frame for maximum resolution; the
-  // trim below removes the slack and the 2D scale sets the on-screen size.
-  const renderPx = input.renderPx ?? (input.preview ? 900 : 1600);
-  // A little slack so extreme tilts never clip the fixture; trim removes it.
-  const pose: ModelRenderPose = { ...placement.pose, marginFactor: 1.15 };
-  const rendered = await renderer.render({
-    modelPath: meta.modelPath,
-    modelUrl: meta.modelUrl,
-    sku: meta.sku,
-    pose,
-    width: renderPx,
-    height: renderPx,
-    samples: input.samples,
-    highQuality: input.highQuality,
-    lightsOn: true,
-    // A final at the High/Max tiers (caustics on, hi-res, many samples) can take
-    // well over an hour on a crystal fixture on a CPU box; previews stay fast and
-    // bounded. The preview cap must clear a COLD Modal container (boot + OptiX
-    // kernel compile + 300MB .blend load before pixels) and Modal's 150s
-    // single-request cap, so it sits at several minutes. The final cap sits above
-    // the worker's Blender hard-cap so the worker's clean timeout surfaces.
-    timeoutMs: input.preview ? 300_000 : RENDER_FINAL_TIMEOUT_MS,
-  });
+  const placed: Array<{ fixtureLayer: Buffer; shadowLayer: Buffer | null }> = [];
+  for (const { meta, placement } of entries) {
+    // Render the fixture straight-on (camera at the fixture center). marginFactor
+    // is small so the fixture nearly fills the render frame for maximum
+    // resolution; the trim below removes the slack and the 2D scale sets the
+    // on-screen size.
+    const renderPx = input.renderPx ?? (input.preview ? 900 : 1600);
+    // A little slack so extreme tilts never clip the fixture; trim removes it.
+    const pose: ModelRenderPose = { ...placement.pose, marginFactor: 1.15 };
+    const rendered = await renderer.render({
+      modelPath: meta.modelPath,
+      modelUrl: meta.modelUrl,
+      sku: meta.sku,
+      pose,
+      width: renderPx,
+      height: renderPx,
+      samples: input.samples,
+      highQuality: input.highQuality,
+      lightsOn: true,
+      // A final at the High/Max tiers (caustics on, hi-res, many samples) can take
+      // well over an hour on a crystal fixture on a CPU box; previews stay fast and
+      // bounded. The preview cap must clear a COLD Modal container (boot + OptiX
+      // kernel compile + 300MB .blend load before pixels) and Modal's 150s
+      // single-request cap, so it sits at several minutes. The final cap sits above
+      // the worker's Blender hard-cap so the worker's clean timeout surfaces.
+      timeoutMs: input.preview ? 300_000 : RENDER_FINAL_TIMEOUT_MS,
+    });
 
-  // Tight-trim transparent margins so the fixture's own bbox drives sizing.
-  let trimmed = await sharp(rendered).trim().png().toBuffer();
-  let tmeta = await sharp(trimmed).metadata();
-  let tw = tmeta.width ?? renderPx;
-  let th = tmeta.height ?? renderPx;
+    // Tight-trim transparent margins so the fixture's own bbox drives sizing.
+    let trimmed = await sharp(rendered).trim().png().toBuffer();
+    const tmeta = await sharp(trimmed).metadata();
+    const tw = tmeta.width ?? renderPx;
+    const th = tmeta.height ?? renderPx;
 
-  // The fixture's light slider scales its glow/exposure on the cutout (the old
-  // path drove IES power; here it's a brightness multiplier on the rendered
-  // fixture, 25 = neutral).
-  const brightness = Math.min(2, Math.max(0.5, placement.brightness / 25));
-  if (Math.abs(brightness - 1) > 0.01) {
-    trimmed = await sharp(trimmed).modulate({ brightness }).png().toBuffer();
+    // The fixture's light slider scales its glow/exposure on the cutout (the old
+    // path drove IES power; here it's a brightness multiplier on the rendered
+    // fixture). 50 = neutral with a squared response, matching composite.py's
+    // slider curve so clean styles track the studio style.
+    const brightness = Math.min(2, Math.max(0.5, (placement.brightness / 50) ** 2));
+    if (Math.abs(brightness - 1) > 0.01) {
+      trimmed = await sharp(trimmed).modulate({ brightness }).png().toBuffer();
+    }
+
+    // Contain-fit into a square box of side = coverage * room height (matches the
+    // model-viewer element box), then center at (xPct, yPct).
+    const boxSide = Math.max(8, placement.coverage * RH * FRAME_MARGIN);
+    const scale = Math.min(boxSide / tw, boxSide / th);
+    const fw = Math.max(2, Math.round(tw * scale));
+    const fh = Math.max(2, Math.round(th * scale));
+    const scaled = await sharp(trimmed).resize(fw, fh, { fit: "fill" }).png().toBuffer();
+    const left = placement.xPct * RW - fw / 2;
+    const top = placement.yPct * RH - fh / 2;
+
+    const fixtureLayer = await fixtureLayerOnCanvas(scaled, fw, fh, left, top, RW, RH);
+
+    // Optional soft drop shadow, laid down UNDER the fixture (its own full-canvas
+    // layer so it can be a separate PSD layer and stays alpha-preserving).
+    let shadowLayer: Buffer | null = null;
+    if (input.dropShadow) {
+      const sh = await buildShadow(scaled, fh);
+      const sm = await sharp(sh.buf).metadata();
+      shadowLayer = await fixtureLayerOnCanvas(
+        sh.buf,
+        sm.width ?? fw,
+        sm.height ?? fh,
+        left - sh.pad + sh.offX,
+        top - sh.pad + sh.offY,
+        RW,
+        RH,
+      );
+    }
+    placed.push({ fixtureLayer, shadowLayer });
   }
 
-  // Contain-fit into a square box of side = coverage * room height (matches the
-  // model-viewer element box), then center at (xPct, yPct).
-  const boxSide = Math.max(8, placement.coverage * RH * FRAME_MARGIN);
-  const scale = Math.min(boxSide / tw, boxSide / th);
-  const fw = Math.max(2, Math.round(tw * scale));
-  const fh = Math.max(2, Math.round(th * scale));
-  const scaled = await sharp(trimmed).resize(fw, fh, { fit: "fill" }).png().toBuffer();
-  const left = placement.xPct * RW - fw / 2;
-  const top = placement.yPct * RH - fh / 2;
-
-  const fixtureLayer = await fixtureLayerOnCanvas(scaled, fw, fh, left, top, RW, RH);
-
-  // Optional soft drop shadow, laid down UNDER the fixture (its own full-canvas
-  // layer so it can be a separate PSD layer and stays alpha-preserving).
-  let shadowLayer: Buffer | null = null;
-  if (input.dropShadow) {
-    const sh = await buildShadow(scaled, fh);
-    const sm = await sharp(sh.buf).metadata();
-    shadowLayer = await fixtureLayerOnCanvas(
-      sh.buf,
-      sm.width ?? fw,
-      sm.height ?? fh,
-      left - sh.pad + sh.offX,
-      top - sh.pad + sh.offY,
-      RW,
-      RH,
-    );
-  }
-
-  const overlays = shadowLayer
-    ? [
-        { input: shadowLayer, left: 0, top: 0 },
-        { input: fixtureLayer, left: 0, top: 0 },
-      ]
-    : [{ input: fixtureLayer, left: 0, top: 0 }];
+  const overlays = placed.flatMap((p) =>
+    p.shadowLayer
+      ? [
+          { input: p.shadowLayer, left: 0, top: 0 },
+          { input: p.fixtureLayer, left: 0, top: 0 },
+        ]
+      : [{ input: p.fixtureLayer, left: 0, top: 0 }],
+  );
   const beauty = await sharp(room).composite(overlays).png().toBuffer();
 
   if (input.preview || !(input.layers ?? true)) {
@@ -757,18 +844,28 @@ export async function layeredShot(
   }
 
   const avif = await sharp(beauty).avif({ quality: 60, effort: 4 }).toBuffer();
-  const [bg, fixtureData, merged] = await Promise.all([
+  const [bg, merged] = await Promise.all([
     toImageData(room, RW, RH),
-    toImageData(fixtureLayer, RW, RH),
     toImageData(beauty, RW, RH),
   ]);
   const children: Parameters<typeof writePsd>[0]["children"] = [
     { name: "Background", imageData: bg },
   ];
-  if (shadowLayer) {
-    children.push({ name: "Shadow", imageData: await toImageData(shadowLayer, RW, RH) });
+  for (let i = 0; i < placed.length; i++) {
+    const p = placed[i]!;
+    const sku = entries[i]!.meta.sku;
+    const suffix = placed.length === 1 ? "" : ` ${i + 1} — ${sku}`;
+    if (p.shadowLayer) {
+      children.push({
+        name: `Shadow${suffix}`,
+        imageData: await toImageData(p.shadowLayer, RW, RH),
+      });
+    }
+    children.push({
+      name: `Fixture${suffix}`,
+      imageData: await toImageData(p.fixtureLayer, RW, RH),
+    });
   }
-  children.push({ name: "Fixture", imageData: fixtureData });
   const psd = Buffer.from(
     writePsd({ width: RW, height: RH, imageData: merged, children }),
   );
@@ -798,8 +895,11 @@ export async function exportFixtureGlb(
 }
 
 export interface FinalRenderInput extends RoomRef {
-  sku: string;
-  placement: Placement;
+  /** Legacy single-fixture shape. */
+  sku?: string;
+  placement?: Placement;
+  /** Multi-fixture shape: rendered back-to-front in list order. */
+  fixtures?: ShotFixturePlacement[];
   samples?: number;
   highQuality?: boolean;
   /** Render at this multiple of target then downscale (crisp fixture AA). */
@@ -821,17 +921,29 @@ export async function finalRender(
   input: FinalRenderInput,
   adapters: ImageGenAdapters,
 ): Promise<CompositeResult> {
-  const meta = await resolveFixture(input.sku);
+  const list: ShotFixturePlacement[] = input.fixtures?.length
+    ? input.fixtures
+    : input.sku && input.placement
+      ? [{ sku: input.sku, placement: input.placement }]
+      : [];
+  if (!list.length) {
+    throw new Error("final render needs fixtures[] or a sku + placement");
+  }
   if (!input.roomUrl && !input.roomPath) {
     throw new Error("final render requires a roomUrl or roomPath");
   }
+  const entries: ShotFixtureEntry[] = await Promise.all(
+    list.map(async (f) => ({
+      meta: await resolveFixture(f.sku),
+      placement: f.placement,
+    })),
+  );
   // The studio style runs the in-Blender catcher composite so the fixture emits
   // real light (IES spill / lamp glow + contact shadow) and reads as part of the
   // scene; the clean styles run the flat layered cutout and preserve alpha (the
   // lever for a crisp fixture there is finalLongEdge inside the composite path).
   return renderShotImage(
-    meta,
-    input.placement,
+    entries,
     {
       preview: false,
       layers: true,

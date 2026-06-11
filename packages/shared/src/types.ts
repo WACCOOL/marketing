@@ -418,14 +418,43 @@ export type RoomGeometry = z.infer<typeof RoomGeometrySchema>;
 export const AppShotPlacementSchema = z.object({
   xPct: z.number().min(0).max(1).default(0.5),
   yPct: z.number().min(0).max(1).default(0.4),
-  coverage: z.number().min(0.05).max(3).default(0.34),
-  brightness: z.number().min(0).max(200).default(25),
-  lightOutput: z.number().min(0).max(200).default(25),
+  coverage: z.number().min(0.01).max(3).default(0.34),
+  brightness: z.number().min(0).max(200).default(50),
+  lightOutput: z.number().min(0).max(200).default(50),
   warm: z.number().min(0).max(1).default(0.45),
   pose: AppImageModelPoseSchema.default({}),
   roomGeometry: RoomGeometrySchema.optional(),
 });
 export type AppShotPlacement = z.infer<typeof AppShotPlacementSchema>;
+
+/**
+ * One placed fixture in a (multi-fixture) app shot. `id` is the client's stable
+ * handle for selection/cutout caching; it round-trips through job params so a
+ * restored layout keeps its identities.
+ */
+export const AppShotFixtureSchema = z.object({
+  id: z.string().trim().min(1).optional(),
+  sku: z.string().trim().min(1),
+  placement: AppShotPlacementSchema,
+});
+export type AppShotFixture = z.infer<typeof AppShotFixtureSchema>;
+
+/**
+ * Multi-fixture shots send `fixtures`; the legacy single-fixture shape sends
+ * `sku` + `placement`. Exactly one of the two forms must be present (readers
+ * normalize via `normalizeShotFixtures`).
+ */
+const requireShotFixtures = (
+  v: { sku?: string; placement?: unknown; fixtures?: unknown[] },
+  ctx: z.RefinementCtx,
+) => {
+  if (!v.fixtures?.length && !(v.sku && v.placement)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "shot needs either fixtures[] or sku + placement",
+    });
+  }
+};
 
 /**
  * How the fixture is rendered onto its background (Cam Solve). `studio` is the
@@ -454,19 +483,23 @@ export type RenderQuality = z.infer<typeof RenderQualitySchema>;
  * It rides the normal async generation job pipeline so a final app-shot becomes
  * a library asset (PNG + AVIF + layered PSD) like any other generation.
  */
-export const AppShotInputSchema = z.object({
-  /** SKU resolved to a .blend (+ optional IES) by the generator's fixture map. */
-  sku: z.string().trim().min(1),
-  /** The room plate (uploaded or AI-generated) the fixture is composited into. */
-  sceneUrl: z.string().url(),
-  placement: AppShotPlacementSchema,
-  samples: z.number().int().positive().max(2048).optional(),
-  highQuality: z.boolean().optional(),
-  /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
-  renderStyle: RenderStyleSchema.optional(),
-  /** Quality tier (samples + caustics + resolution). Defaults to standard. */
-  renderQuality: RenderQualitySchema.optional(),
-});
+export const AppShotInputSchema = z
+  .object({
+    /** Legacy single-fixture shape: SKU resolved to a .blend by the generator. */
+    sku: z.string().trim().min(1).optional(),
+    /** The room plate (uploaded or AI-generated) the fixture is composited into. */
+    sceneUrl: z.string().url(),
+    placement: AppShotPlacementSchema.optional(),
+    /** Multi-fixture shape: rendered back-to-front in list order. */
+    fixtures: z.array(AppShotFixtureSchema).min(1).optional(),
+    samples: z.number().int().positive().max(2048).optional(),
+    highQuality: z.boolean().optional(),
+    /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
+    renderStyle: RenderStyleSchema.optional(),
+    /** Quality tier (samples + caustics + resolution). Defaults to standard. */
+    renderQuality: RenderQualitySchema.optional(),
+  })
+  .superRefine(requireShotFixtures);
 export type AppShotInput = z.infer<typeof AppShotInputSchema>;
 
 /**
@@ -489,34 +522,42 @@ export type AppShotComposeRequest = z.infer<typeof AppShotComposeRequestSchema>;
  * placement once with NO AI critic (so slider changes are never overridden). Used
  * for the responsive live-preview loop while the user tweaks sliders.
  */
-export const AppShotPreviewRequestSchema = z.object({
-  sku: z.string().trim().min(1),
-  sceneUrl: z.string().url(),
-  placement: AppShotPlacementSchema,
-  /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
-  renderStyle: RenderStyleSchema.optional(),
-  /** Quality tier (samples + caustics + resolution). Defaults to standard. */
-  renderQuality: RenderQualitySchema.optional(),
-});
+export const AppShotPreviewRequestSchema = z
+  .object({
+    sku: z.string().trim().min(1).optional(),
+    sceneUrl: z.string().url(),
+    placement: AppShotPlacementSchema.optional(),
+    /** Multi-fixture shape: rendered back-to-front in list order. */
+    fixtures: z.array(AppShotFixtureSchema).min(1).optional(),
+    /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
+    renderStyle: RenderStyleSchema.optional(),
+    /** Quality tier (samples + caustics + resolution). Defaults to standard. */
+    renderQuality: RenderQualitySchema.optional(),
+  })
+  .superRefine(requireShotFixtures);
 export type AppShotPreviewRequest = z.infer<typeof AppShotPreviewRequestSchema>;
 
 /**
  * Finalize request (API). Enqueues a `shot3d` generation job that produces the
  * full-quality layered export and saves it as a library asset.
  */
-export const AppShotFinalizeRequestSchema = z.object({
-  sku: z.string().trim().min(1),
-  sceneUrl: z.string().url(),
-  placement: AppShotPlacementSchema,
-  /** Optional asset name; defaults to the SKU. */
-  name: z.string().trim().min(1).max(200).optional(),
-  /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
-  renderStyle: RenderStyleSchema.optional(),
-  /** Quality tier (samples + caustics + resolution). Defaults to standard. */
-  renderQuality: RenderQualitySchema.optional(),
-  /** Which editor produced the render — drives the "Edit" restore link. */
-  editor: z.enum(["appshot", "camsolve"]).optional(),
-});
+export const AppShotFinalizeRequestSchema = z
+  .object({
+    sku: z.string().trim().min(1).optional(),
+    sceneUrl: z.string().url(),
+    placement: AppShotPlacementSchema.optional(),
+    /** Multi-fixture shape: rendered back-to-front in list order. */
+    fixtures: z.array(AppShotFixtureSchema).min(1).optional(),
+    /** Optional asset name; defaults to the SKU(s). */
+    name: z.string().trim().min(1).max(200).optional(),
+    /** Cam Solve render style (clean / cleanShadow / studio). Defaults to studio. */
+    renderStyle: RenderStyleSchema.optional(),
+    /** Quality tier (samples + caustics + resolution). Defaults to standard. */
+    renderQuality: RenderQualitySchema.optional(),
+    /** Which editor produced the render — drives the "Edit" restore link. */
+    editor: z.enum(["appshot", "camsolve"]).optional(),
+  })
+  .superRefine(requireShotFixtures);
 export type AppShotFinalizeRequest = z.infer<
   typeof AppShotFinalizeRequestSchema
 >;

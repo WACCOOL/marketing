@@ -244,7 +244,13 @@ def world_bounding_box(objs):
 def place_camera(scene, center, radius, pose):
     """Create + aim an orbit camera around the fixture from the given pose."""
     az = math.radians(pose.get("azimuthDeg", 0.0))
-    el = math.radians(pose.get("elevationDeg", 0.0))
+    # At exactly +/-90 the view is parallel to the up hint and to_track_quat's
+    # roll is arbitrary (and can disagree with the web viewer's lookAt) — nudge
+    # just off the pole. Mirrors fixtureScene.update.
+    el_deg = float(pose.get("elevationDeg", 0.0))
+    if abs(abs(el_deg) - 90.0) < 0.05:
+        el_deg = math.copysign(90.0 - 0.05, el_deg)
+    el = math.radians(el_deg)
     roll = math.radians(pose.get("rollDeg", 0.0))
     fov_deg = pose.get("fovDeg", 35.0)
     margin = pose.get("marginFactor", 1.25)

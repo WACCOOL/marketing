@@ -259,6 +259,25 @@ export interface ModelRenderAdapter {
   exportGlb(req: ExportGlbRequest): Promise<Buffer>;
 }
 
+/** One fixture in a multi-fixture composite (model + photometry + placement). */
+export interface CompositeFixtureRequest {
+  modelUrl?: string;
+  modelPath?: string;
+  sku?: string;
+  iesUrl?: string;
+  iesPath?: string;
+  iesRotation?: [number, number, number];
+  mount?: "ceiling" | "wall" | "floor" | "recessed";
+  pose?: ModelRenderPose;
+  cameraName?: string;
+  coverage?: number;
+  xPct?: number;
+  yPct?: number;
+  brightness?: number;
+  lightOutput?: number;
+  warm?: number;
+}
+
 /**
  * Render a 3D fixture composited INTO a room plate (the in-Blender app-shot
  * pipeline): the fixture refracts/lights the real room and the result IS the
@@ -269,6 +288,9 @@ export interface CompositeRenderRequest {
   modelUrl?: string;
   modelPath?: string;
   sku?: string;
+  /** Multi-fixture form: the worker chains one render per fixture, back-to-front
+   * in list order. When set, the single-fixture fields above are ignored. */
+  fixtures?: CompositeFixtureRequest[];
   /** The room plate to composite into (URL the worker fetches, or local path). */
   roomUrl?: string;
   roomPath?: string;

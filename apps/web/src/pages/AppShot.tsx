@@ -40,7 +40,9 @@ import { RoomCalibrator } from "../components/RoomCalibrator.js";
  * navigating away never loses progress.
  */
 
-const STORAGE_KEY = "wac.appshot.v3";
+const STORAGE_KEY = "wac.appshot.v4";
+/** Pre-multi-fixture snapshot — migrated to v4 on load, then superseded. */
+const LEGACY_STORAGE_KEY = "wac.appshot.v3";
 
 const ASPECT_RATIOS: { value: GeminiAspectRatio; label: string }[] = [
   { value: "16:9", label: "16:9 — wide room" },
@@ -59,8 +61,8 @@ const DEFAULT_PLACEMENT: AppShotPlacement = {
   xPct: 0.5,
   yPct: 0.34,
   coverage: 0.34,
-  brightness: 25,
-  lightOutput: 25,
+  brightness: 50,
+  lightOutput: 50,
   warm: 0.45,
   pose: { azimuthDeg: 0, elevationDeg: -18, rollDeg: 0, fovDeg: 36, distanceFactor: 1, marginFactor: 1.25 },
 };
@@ -76,8 +78,8 @@ function defaultPlacementFor(mount: string | undefined): AppShotPlacement {
       xPct: 0.5,
       yPct: 0.44,
       coverage: 0.26,
-      brightness: 25,
-      lightOutput: 25,
+      brightness: 50,
+      lightOutput: 50,
       warm: 0.45,
       pose: { azimuthDeg: -8, elevationDeg: 2, rollDeg: 0, fovDeg: 30, distanceFactor: 1, marginFactor: 1.25 },
     };
@@ -87,8 +89,8 @@ function defaultPlacementFor(mount: string | undefined): AppShotPlacement {
       xPct: 0.5,
       yPct: 0.6,
       coverage: 0.4,
-      brightness: 25,
-      lightOutput: 25,
+      brightness: 50,
+      lightOutput: 50,
       warm: 0.45,
       pose: { azimuthDeg: 0, elevationDeg: -5, rollDeg: 0, fovDeg: 35, distanceFactor: 1, marginFactor: 1.25 },
     };
@@ -107,7 +109,30 @@ interface Glb {
   url: string;
 }
 
+/** One fixture placed in the layout. List order = back-to-front render order. */
+interface PlacedFixture {
+  /** Stable client id — selection, cutout queueing, and job round-trips. */
+  id: string;
+  /** fixtureKey (a scene option of a catalog fixture). */
+  sku: string;
+  placement: AppShotPlacement;
+  cutout: Cutout | null;
+  glb: Glb | null;
+}
+
 interface Persisted {
+  v: 4;
+  sceneUrl: string | null;
+  fixtures: PlacedFixture[];
+  selectedId: string | null;
+  viewerMode: ViewerMode | null;
+  previewUrl: string | null;
+  finalAssetId: string | null;
+  renderQuality: RenderQuality;
+}
+
+/** The single-fixture (v3) snapshot shape, migrated on load. */
+interface PersistedV3 {
   sku: string | null;
   sceneUrl: string | null;
   placement: AppShotPlacement | null;
@@ -126,10 +151,46 @@ function formatErr(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Backfill fields added since the snapshot was written (e.g. lightOutput) so
+ * newer sliders never bind to `undefined`. */
+function backfillFixture(f: PlacedFixture): PlacedFixture {
+  return { ...f, placement: { ...DEFAULT_PLACEMENT, ...f.placement } };
+}
+
 function loadPersisted(): Persisted | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Persisted) : null;
+    if (raw) {
+      const p = JSON.parse(raw) as Persisted;
+      return { ...p, fixtures: (p.fixtures ?? []).map(backfillFixture) };
+    }
+    // Migrate a pre-multi-fixture snapshot: the single fixture becomes a
+    // one-element layout.
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!legacy) return null;
+    const v3 = JSON.parse(legacy) as PersistedV3;
+    const fixtures: PlacedFixture[] =
+      v3.sku && v3.placement
+        ? [
+            backfillFixture({
+              id: crypto.randomUUID(),
+              sku: v3.sku,
+              placement: v3.placement,
+              cutout: v3.cutout ?? null,
+              glb: v3.glb ?? null,
+            }),
+          ]
+        : [];
+    return {
+      v: 4,
+      sceneUrl: v3.sceneUrl,
+      fixtures,
+      selectedId: fixtures[0]?.id ?? null,
+      viewerMode: v3.viewerMode,
+      previewUrl: v3.previewUrl,
+      finalAssetId: v3.finalAssetId,
+      renderQuality: v3.renderQuality ?? "standard",
+    };
   } catch {
     return null;
   }
@@ -154,16 +215,36 @@ export function AppShot() {
             sku?: string;
             sceneUrl?: string;
             placement?: AppShotPlacement;
+            fixtures?: Array<{
+              id?: string;
+              sku: string;
+              placement: AppShotPlacement;
+            }>;
             renderQuality?: RenderQuality;
           }
         | undefined;
-      if (!shot?.sku || !shot.sceneUrl) return;
+      if (!shot?.sceneUrl) return;
+      // New jobs carry fixtures[]; old single-fixture jobs carry sku+placement.
+      const list = shot.fixtures?.length
+        ? shot.fixtures
+        : shot.sku
+          ? [{ sku: shot.sku, placement: shot.placement ?? DEFAULT_PLACEMENT }]
+          : [];
+      if (!list.length) return;
+      const fixtures: PlacedFixture[] = list.map((f) =>
+        backfillFixture({
+          id: f.id ?? crypto.randomUUID(),
+          sku: f.sku,
+          placement: f.placement,
+          cutout: null,
+          glb: null,
+        }),
+      );
       const persisted: Persisted = {
-        sku: shot.sku,
+        v: 4,
         sceneUrl: shot.sceneUrl,
-        placement: shot.placement ?? null,
-        cutout: null,
-        glb: null,
+        fixtures,
+        selectedId: fixtures[0]?.id ?? null,
         viewerMode: "viewer",
         previewUrl: null,
         finalAssetId: null,
@@ -181,7 +262,11 @@ export function AppShot() {
   const [fixtureBrand, setFixtureBrand] = useState("");
   const [fixtureBrands, setFixtureBrands] = useState<string[]>([]);
   const [fixturesTotal, setFixturesTotal] = useState(0);
-  const [sku, setSku] = useState<string | null>(saved.current?.sku ?? null);
+  // The PICKER selection (setup phase + "Add fixture"); placed fixtures carry
+  // their own sku.
+  const [sku, setSku] = useState<string | null>(
+    saved.current?.fixtures[0]?.sku ?? null,
+  );
 
   const [sceneUrl, setSceneUrl] = useState<string | null>(
     saved.current?.sceneUrl ?? null,
@@ -192,15 +277,16 @@ export function AppShot() {
   const [imageSize, setImageSize] = useState<GeminiImageSize>("2K");
   const [sceneBusy, setSceneBusy] = useState(false);
 
-  const [placement, setPlacement] = useState<AppShotPlacement | null>(
-    // Backfill any fields added since the persisted state was written (e.g.
-    // lightOutput) so newer sliders never bind to `undefined`.
-    saved.current?.placement
-      ? { ...DEFAULT_PLACEMENT, ...saved.current.placement }
-      : null,
+  // The layout: placed fixtures (list order = back-to-front) + selection.
+  const [placed, setPlaced] = useState<PlacedFixture[]>(
+    saved.current?.fixtures ?? [],
   );
-  const [cutout, setCutout] = useState<Cutout | null>(saved.current?.cutout ?? null);
-  const [glb, setGlb] = useState<Glb | null>(saved.current?.glb ?? null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    saved.current?.selectedId ?? null,
+  );
+  // "Add fixture" picker overlay (edit phase only) + its pending pick.
+  const [addingFixture, setAddingFixture] = useState(false);
+  const [addKey, setAddKey] = useState<string | null>(null);
   const [glbBusy, setGlbBusy] = useState(false);
   const [viewerMode, setViewerMode] = useState<ViewerMode>(
     saved.current?.viewerMode ?? "viewer",
@@ -229,18 +315,31 @@ export function AppShot() {
 
   const poseTimer = useRef<number | null>(null);
   // Serialize cutout renders: at most ONE Blender render in flight at a time, and
-  // coalesce rapid changes to the latest. Concurrent GPU renders are what froze
-  // the machine, so this guard is load-bearing, not just an optimization.
+  // coalesce rapid changes to the latest per fixture. Concurrent GPU renders are
+  // what froze the machine, so this guard is load-bearing, not an optimization.
   const cutoutBusyRef = useRef(false);
-  const pendingCutout = useRef<AppShotPlacement | null>(null);
+  const pendingCutout = useRef(
+    new Map<string, { sku: string; placement: AppShotPlacement }>(),
+  );
 
-  // `sku` holds the selected fixtureKey (a scene option); find its fixture group.
-  const fixture =
-    fixtures.find((f) => f.options.some((o) => o.fixtureKey === sku)) ?? null;
-  // The viewer path needs a loaded GLB; the overlay (fallback) needs a cutout.
-  const placementReady =
-    viewerMode === "viewer" ? Boolean(glb && glb.sku === sku) : Boolean(cutout);
-  const editing = Boolean(placement && sceneUrl && placementReady);
+  // The selected placed fixture (auto-selects the only/first one).
+  const selected = placed.find((f) => f.id === selectedId) ?? placed[0] ?? null;
+  const placement = selected?.placement ?? null;
+
+  /** The catalog group a fixtureKey belongs to (name / mount / scene options). */
+  const groupForKey = useCallback(
+    (key: string | null | undefined) =>
+      fixtures.find((f) => f.options.some((o) => o.fixtureKey === key)) ?? null,
+    [fixtures],
+  );
+  // `sku` holds the PICKER's fixtureKey (a scene option); find its fixture group.
+  const fixture = groupForKey(sku);
+  const selectedGroup = groupForKey(selected?.sku);
+  // Editing once the first fixture has EITHER canvas asset (GLB or cutout); the
+  // mode-specific asset self-heals, with the canvas showing a spinner meanwhile.
+  const editing = Boolean(
+    sceneUrl && placed.length > 0 && (placed[0]!.glb || placed[0]!.cutout),
+  );
 
   // Browse the fixtures registry, debounced on the search box. Auto-select the
   // first result only when nothing is picked yet (don't fight the user's choice
@@ -270,11 +369,10 @@ export function AppShot() {
   // Persist the whole studio so navigating away never loses progress.
   useEffect(() => {
     const snap: Persisted = {
-      sku,
+      v: 4,
       sceneUrl,
-      placement,
-      cutout,
-      glb,
+      fixtures: placed,
+      selectedId,
       viewerMode,
       previewUrl,
       finalAssetId,
@@ -282,10 +380,11 @@ export function AppShot() {
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(snap));
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
     } catch {
       // storage full / unavailable — non-fatal
     }
-  }, [sku, sceneUrl, placement, cutout, glb, viewerMode, previewUrl, finalAssetId, renderQuality]);
+  }, [sceneUrl, placed, selectedId, viewerMode, previewUrl, finalAssetId, renderQuality]);
 
   useEffect(() => {
     return () => {
@@ -337,8 +436,10 @@ export function AppShot() {
 
   function resetForNewScene(url: string) {
     setSceneUrl(url);
-    setPlacement(null);
-    setCutout(null);
+    setPlaced([]);
+    setSelectedId(null);
+    setAddingFixture(false);
+    pendingCutout.current.clear();
     setPreviewUrl(null);
     setShowPreview(false);
     setFinalAssetId(null);
@@ -368,42 +469,58 @@ export function AppShot() {
   }
 
   // --- cutout (one Blender render per pose; drag/scale are client-side) -------
-  // Always records the latest requested placement; if a render is already in
-  // flight, it just updates the pending target and returns, so we never spawn a
-  // second concurrent Blender process. When the current render finishes it picks
-  // up the newest pending target.
+  // Always records the latest requested placement PER FIXTURE; if a render is
+  // already in flight, it just updates the pending target and returns, so we
+  // never spawn a second concurrent Blender process. When the current render
+  // finishes it drains the newest pending targets one at a time.
   const refreshCutout = useCallback(
-    async (place: AppShotPlacement) => {
-      if (!sku) return;
-      pendingCutout.current = place;
+    async (id: string, fixtureSku: string, place: AppShotPlacement) => {
+      pendingCutout.current.set(id, { sku: fixtureSku, placement: place });
       if (cutoutBusyRef.current) return;
       cutoutBusyRef.current = true;
       setCutoutBusy(true);
       try {
-        while (pendingCutout.current) {
-          const target = pendingCutout.current;
-          pendingCutout.current = null;
+        while (pendingCutout.current.size > 0) {
+          const next = pendingCutout.current.entries().next().value;
+          if (!next) break;
+          const [targetId, target] = next;
+          pendingCutout.current.delete(targetId);
           const { width, height } = await sceneRenderSize();
           const r = await cutoutShot({
-            sku,
-            pose: target.pose,
-            coverageRef: target.coverage,
+            sku: target.sku,
+            pose: target.placement.pose,
+            coverageRef: target.placement.coverage,
             width,
             height,
           });
-          setCutout({ url: r.cutoutUrl, coverageRef: r.coverageRef });
+          setPlaced((list) =>
+            list.map((f) =>
+              f.id === targetId
+                ? { ...f, cutout: { url: r.cutoutUrl, coverageRef: r.coverageRef } }
+                : f,
+            ),
+          );
         }
       } catch (e) {
         setError(formatErr(e));
-        pendingCutout.current = null;
+        pendingCutout.current.clear();
       } finally {
         cutoutBusyRef.current = false;
         setCutoutBusy(false);
       }
     },
     // sceneUrl is read inside sceneRenderSize; refresh when it changes
-    [sku, sceneUrl],
+    [sceneUrl],
   );
+
+  // Overlay mode: every placed fixture needs a cutout (missing right after an
+  // add / restore / mode switch). The per-fixture pending map dedupes requests.
+  useEffect(() => {
+    if (viewerMode !== "overlay") return;
+    for (const f of placed) {
+      if (!f.cutout) void refreshCutout(f.id, f.sku, f.placement);
+    }
+  }, [viewerMode, placed, refreshCutout]);
 
   // --- GLB (one export per SKU; cached in R2 then reused) ---------------------
   // A persisted glb URL (from localStorage) can point at an R2 object that no
@@ -412,49 +529,43 @@ export function AppShot() {
   // anything else, re-ask the server (POST /glb HEADs R2 and is cheap on a hit,
   // re-exporting only when the object is genuinely gone).
   const glbVerified = useRef<Set<string>>(new Set());
+  // Guards the self-heal effect against re-firing forever on a failing export.
+  const glbTried = useRef<Set<string>>(new Set());
   const ensureGlb = useCallback(
-    async (targetSku: string): Promise<string> => {
-      if (
-        glb &&
-        glb.sku === targetSku &&
-        glb.url.startsWith("/") &&
-        glbVerified.current.has(targetSku)
-      ) {
-        return glb.url;
-      }
+    async (id: string, targetSku: string): Promise<string> => {
       setGlbBusy(true);
       try {
         const { url } = await glbShot({ sku: targetSku });
         glbVerified.current.add(targetSku);
-        setGlb({ sku: targetSku, url });
+        glbTried.current.delete(id);
+        setPlaced((list) =>
+          list.map((f) => (f.id === id ? { ...f, glb: { sku: targetSku, url } } : f)),
+        );
         return url;
       } finally {
         setGlbBusy(false);
       }
     },
-    [glb],
+    [],
   );
 
-  // Self-heal the viewer: whenever we're in 3D-viewer mode with a placement but
-  // no valid (fresh, same-origin) GLB, export/load it. Covers page reloads and
-  // mode switches where runPlace didn't fetch it, and repairs a stale URL.
-  // glbTried guards against re-firing forever if the export keeps failing.
-  const glbTried = useRef<string | null>(null);
+  /** A fixture's GLB is trusted only when same-origin AND verified this session. */
+  const glbValid = useCallback(
+    (f: PlacedFixture) =>
+      Boolean(f.glb && f.glb.url.startsWith("/") && glbVerified.current.has(f.sku)),
+    [],
+  );
+
+  // Self-heal the viewer: whenever we're in 3D-viewer mode and any placed
+  // fixture lacks a valid (fresh, same-origin) GLB, export/load it — one at a
+  // time (glbBusy gates; each completion re-runs the effect for the next).
   useEffect(() => {
-    if (viewerMode !== "viewer" || !sku || !placement || glbBusy) return;
-    if (
-      glb &&
-      glb.sku === sku &&
-      glb.url.startsWith("/") &&
-      glbVerified.current.has(sku)
-    ) {
-      glbTried.current = null;
-      return;
-    }
-    if (glbTried.current === sku) return;
-    glbTried.current = sku;
-    void ensureGlb(sku).catch((e) => setError(formatErr(e)));
-  }, [viewerMode, sku, placement, glb, glbBusy, ensureGlb]);
+    if (viewerMode !== "viewer" || glbBusy) return;
+    const missing = placed.find((f) => !glbValid(f) && !glbTried.current.has(f.id));
+    if (!missing) return;
+    glbTried.current.add(missing.id);
+    void ensureGlb(missing.id, missing.sku).catch((e) => setError(formatErr(e)));
+  }, [viewerMode, placed, glbBusy, ensureGlb, glbValid]);
 
   // --- place (AI vision) + first asset (GLB for viewer, cutout for overlay) ---
   async function runPlace(useAi: boolean) {
@@ -468,11 +579,13 @@ export function AppShot() {
         const r = await placeShot({ sku, sceneUrl });
         next = { ...next, ...r.placement };
       }
-      setPlacement(next);
+      const id = crypto.randomUUID();
+      setPlaced([{ id, sku, placement: next, cutout: null, glb: null }]);
+      setSelectedId(id);
       if (viewerMode === "viewer") {
-        await ensureGlb(sku);
+        await ensureGlb(id, sku);
       } else {
-        await refreshCutout(next);
+        await refreshCutout(id, sku, next);
       }
     } catch (e) {
       setError(formatErr(e));
@@ -481,53 +594,127 @@ export function AppShot() {
     }
   }
 
-  // Switch placement method mid-edit, loading whatever the new mode needs.
-  async function switchViewerMode(mode: ViewerMode) {
+  // Switch placement method mid-edit; the self-heal effects load whatever the
+  // new mode is missing (GLBs for the viewer, cutouts for the overlay).
+  function switchViewerMode(mode: ViewerMode) {
     if (mode === viewerMode) return;
     setViewerMode(mode);
     setShowPreview(false);
-    if (!sku || !placement) return;
     setError(null);
+  }
+
+  // --- layout edits: add / remove / select fixtures ---------------------------
+  function addFixture(fixtureKey: string) {
+    const group = groupForKey(fixtureKey);
+    const id = crypto.randomUUID();
+    setPlaced((list) => [
+      ...list,
+      {
+        id,
+        sku: fixtureKey,
+        placement: defaultPlacementFor(group?.mount),
+        cutout: null,
+        glb: null,
+      },
+    ]);
+    setSelectedId(id);
+    setAddingFixture(false);
+    setShowPreview(false);
+    // The GLB / cutout self-heal effects fetch the new fixture's assets.
+  }
+
+  function removeFixture(id: string) {
+    setPlaced((list) => {
+      const next = list.filter((f) => f.id !== id);
+      if (selectedId === id) setSelectedId(next[next.length - 1]?.id ?? null);
+      return next;
+    });
+    pendingCutout.current.delete(id);
+    setShowPreview(false);
+  }
+
+  // Re-run the AI placement for the SELECTED fixture only.
+  async function rePlaceSelected() {
+    if (!selected || !sceneUrl) return;
+    const { id, sku: fixtureSku } = selected;
+    setError(null);
+    setPlacing(true);
+    setShowPreview(false);
     try {
-      if (mode === "viewer") {
-        await ensureGlb(sku);
-      } else if (!cutout) {
-        await refreshCutout(placement);
+      const r = await placeShot({ sku: fixtureSku, sceneUrl });
+      const next = { ...selected.placement, ...r.placement };
+      setPlaced((list) =>
+        list.map((f) => (f.id === id ? { ...f, placement: next } : f)),
+      );
+      if (viewerMode === "overlay") {
+        await refreshCutout(id, fixtureSku, next);
       }
     } catch (e) {
       setError(formatErr(e));
+    } finally {
+      setPlacing(false);
     }
   }
 
   // --- placement edits (instant; pose re-renders the cutout, debounced) ------
+  // Both patch the SELECTED fixture.
   function patchPlacement(patch: Partial<AppShotPlacement>) {
-    setPlacement((p) => (p ? { ...p, ...patch } : p));
+    if (!selected) return;
+    const id = selected.id;
+    setPlaced((list) =>
+      list.map((f) =>
+        f.id === id ? { ...f, placement: { ...f.placement, ...patch } } : f,
+      ),
+    );
     setShowPreview(false);
   }
 
   function patchPose(patch: Partial<AppShotPlacement["pose"]>, rerender = true) {
-    setPlacement((p) => {
-      if (!p) return p;
-      const next = { ...p, pose: { ...p.pose, ...patch } };
-      // Only the overlay (fallback) path re-renders a Blender cutout per angle.
-      // The viewer path updates the live WebGL model from the pose prop — no
-      // server round-trip — so angle changes are instant there.
-      if (rerender && viewerMode === "overlay") {
-        if (poseTimer.current) window.clearTimeout(poseTimer.current);
-        poseTimer.current = window.setTimeout(() => void refreshCutout(next), 400);
-      }
-      return next;
-    });
+    if (!selected) return;
+    const { id, sku: fixtureSku } = selected;
+    setPlaced((list) =>
+      list.map((f) => {
+        if (f.id !== id) return f;
+        const next = { ...f.placement, pose: { ...f.placement.pose, ...patch } };
+        // Only the overlay (fallback) path re-renders a Blender cutout per angle.
+        // The viewer path updates the live WebGL model from the pose prop — no
+        // server round-trip — so angle changes are instant there.
+        if (rerender && viewerMode === "overlay") {
+          if (poseTimer.current) window.clearTimeout(poseTimer.current);
+          poseTimer.current = window.setTimeout(
+            () => void refreshCutout(id, fixtureSku, next),
+            400,
+          );
+        }
+        return { ...f, placement: next };
+      }),
+    );
     setShowPreview(false);
+  }
+
+  /** Wire payload: legacy scalar shape for one fixture (older backends keep
+   * working during a rollout), the fixtures array past one. */
+  function shotPayload() {
+    if (placed.length === 1) {
+      const f = placed[0]!;
+      return { sku: f.sku, placement: f.placement };
+    }
+    return {
+      fixtures: placed.map((f) => ({
+        id: f.id,
+        sku: f.sku,
+        placement: f.placement,
+      })),
+    };
   }
 
   // --- test render (in-Blender, true light/shadow/glass) ---------------------
   async function runTestRender() {
-    if (!sku || !sceneUrl || !placement) return;
+    if (!sceneUrl || placed.length === 0) return;
     setError(null);
     setPreviewBusy(true);
     try {
-      const r = await previewShot({ sku, sceneUrl, placement, renderQuality });
+      const r = await previewShot({ ...shotPayload(), sceneUrl, renderQuality });
       setPreviewUrl(r.previewUrl);
       setShowPreview(true);
     } catch (e) {
@@ -543,7 +730,7 @@ export function AppShot() {
   // long poll, we enqueue and point them at the Asset Library, where the job
   // shows as "Rendering" and the finished asset drops in when it completes.
   async function runFinalize() {
-    if (!sku || !sceneUrl || !placement) return;
+    if (!sceneUrl || placed.length === 0) return;
     setError(null);
     setQueued(false);
     setQueuedJobId(null);
@@ -551,11 +738,11 @@ export function AppShot() {
     setFinalStatus(null);
     setFinalizing(true);
     try {
+      const skus = [...new Set(placed.map((f) => f.sku))];
       const { jobId } = await finalizeShot({
-        sku,
+        ...shotPayload(),
         sceneUrl,
-        placement,
-        name: `${sku} app shot`,
+        name: `${skus.join(" + ")} app shot`,
         renderQuality,
         editor: "appshot",
       });
@@ -575,7 +762,7 @@ export function AppShot() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${sku ?? "app-shot"}.${format}`;
+      a.download = `${placed[0]?.sku ?? "app-shot"}.${format}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -586,7 +773,6 @@ export function AppShot() {
   }
 
   function startOver() {
-    pendingCutout.current = null;
     resetForNewScene("");
     setSceneUrl(null);
   }
@@ -642,14 +828,40 @@ export function AppShot() {
         />
       ) : (
         <>
+        {addingFixture && (
+          <div className="card col" style={{ gap: 12 }}>
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ margin: 0 }}>Add fixture</h3>
+              <button className="secondary" onClick={() => setAddingFixture(false)}>
+                Cancel
+              </button>
+            </div>
+            <FixturePickerCard
+              fixtures={fixtures}
+              fixturesErr={fixturesErr}
+              fixtureQuery={fixtureQuery}
+              setFixtureQuery={setFixtureQuery}
+              fixtureBrand={fixtureBrand}
+              setFixtureBrand={setFixtureBrand}
+              fixtureBrands={fixtureBrands}
+              fixturesTotal={fixturesTotal}
+              selectedKey={addKey}
+              onSelectKey={setAddKey}
+              group={groupForKey(addKey)}
+            />
+            <button disabled={!addKey} onClick={() => addKey && addFixture(addKey)}>
+              Add to layout
+            </button>
+          </div>
+        )}
         <EditPanel
           sceneUrl={sceneUrl!}
           placement={placement!}
           viewerMode={viewerMode}
-          onSwitchMode={(m) => void switchViewerMode(m)}
-          glbUrl={glb?.url ?? null}
+          onSwitchMode={switchViewerMode}
+          glbUrl={selected?.glb?.url ?? null}
           glbBusy={glbBusy}
-          cutout={cutout}
+          cutout={selected?.cutout ?? null}
           cutoutBusy={cutoutBusy}
           previewUrl={previewUrl}
           showPreview={showPreview}
@@ -660,13 +872,34 @@ export function AppShot() {
           finalAssetId={finalAssetId}
           queued={queued}
           queuedJobId={queuedJobId}
-          mountLabel={fixture ? MOUNT_LABELS[fixture.mount] : ""}
+          mountLabel={selectedGroup ? MOUNT_LABELS[selectedGroup.mount] : ""}
           onPatch={patchPlacement}
           onPatchPose={patchPose}
-          onRePlaceAi={() => void runPlace(true)}
+          onRePlaceAi={() => void rePlaceSelected()}
           onTestRender={runTestRender}
           onFinalize={runFinalize}
           onDownload={download}
+          fixtures={placed.map((f) => {
+            const g = groupForKey(f.sku);
+            return {
+              id: f.id,
+              sku: f.sku,
+              label: g?.name ?? g?.sku ?? f.sku,
+              placement: f.placement,
+              cutout: f.cutout,
+              glbUrl: f.glb?.url ?? null,
+            };
+          })}
+          selectedId={selected?.id ?? null}
+          onSelectFixture={(id) => {
+            setSelectedId(id);
+            setShowPreview(false);
+          }}
+          onRemoveFixture={removeFixture}
+          onAddFixture={() => {
+            setAddKey(null);
+            setAddingFixture(true);
+          }}
           renderControls={
             <QualityPicker
               quality={renderQuality}
@@ -691,7 +924,13 @@ export function AppShot() {
             sceneUrl={sceneUrl!}
             value={placement!.roomGeometry}
             onChange={(geometry) => {
-              patchPlacement({ roomGeometry: geometry });
+              // Room geometry is scene-level: every fixture carries the same one.
+              setPlaced((list) =>
+                list.map((f) => ({
+                  ...f,
+                  placement: { ...f.placement, roomGeometry: geometry },
+                })),
+              );
               setShowPreview(false);
             }}
           />
@@ -738,143 +977,25 @@ function SetupPanel(p: SetupProps) {
   const canPlace = Boolean(p.sku && p.sceneUrl) && !p.placing;
   return (
     <div className="grid-2" style={{ gap: 16, alignItems: "start" }}>
-      <div className="card col" style={{ gap: 12 }}>
-        <div>
-          <h3 style={{ margin: 0 }}>1 · Fixture</h3>
-          <div className="muted">Search the fixture library by name, brand, or SKU.</div>
-        </div>
-        <div className="row" style={{ gap: 8 }}>
-          <input
-            type="search"
-            placeholder="Search name, brand, or SKU…"
-            value={p.fixtureQuery}
-            onChange={(e) => p.setFixtureQuery(e.target.value)}
-            style={{ flex: 1 }}
-          />
-          {p.fixtureBrands.length > 0 && (
-            <select
-              value={p.fixtureBrand}
-              onChange={(e) => p.setFixtureBrand(e.target.value)}
-              style={{ maxWidth: 170 }}
-            >
-              <option value="">All brands</option>
-              {p.fixtureBrands.map((b) => (
-                <option key={b} value={b}>
-                  {b}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-        {/* The grid itself must NOT be the scroll container — WebKit mis-sizes
-            grid items inside an overflow:auto grid. Scroll a plain wrapper. */}
-        <div style={{ maxHeight: 440, overflowY: "auto", paddingRight: 4 }}>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))",
-              gap: 10,
-            }}
-          >
-            {p.fixtures.map((f) => {
-              const selected = f.options.some((o) => o.fixtureKey === p.sku);
-              return (
-                <button
-                  key={f.sku}
-                  type="button"
-                  className={"product-card" + (selected ? " selected" : "")}
-                  onClick={() => p.setSku(f.options[0]!.fixtureKey)}
-                  title={f.name ?? f.sku}
-                >
-                  <FixtureThumb
-                    fixtureKey={f.options[0]!.fixtureKey}
-                    imageUrl={f.thumbnailUrl}
-                  />
-                  <div className="product-meta">
-                    <div className="product-name" title={f.name ?? f.sku}>
-                      {f.name ?? f.sku}
-                    </div>
-                    {f.brand ? (
-                      <div className="muted product-brand">{f.brand}</div>
-                    ) : null}
-                    <div className="muted product-sku">{f.sku}</div>
-                    <div className="muted product-dims">
-                      {formatDimensions(f.dimensions ?? {})}
-                    </div>
-                    {(f.finish || f.options.length > 1) && (
-                      <div
-                        className="row"
-                        style={{ gap: 4, flexWrap: "wrap", marginTop: 2 }}
-                      >
-                        {f.finish ? (
-                          <span className="tag" style={{ fontWeight: 600 }}>
-                            {f.finish}
-                          </span>
-                        ) : null}
-                        {f.options.length > 1 ? (
-                          <span className="tag">{f.options.length} scenes</span>
-                        ) : null}
-                      </div>
-                    )}
-                  </div>
-                </button>
-              );
-            })}
-            {p.fixtures.length === 0 && !p.fixturesErr && (
-              <span className="muted">
-                {p.fixtureQuery.trim() || p.fixtureBrand ? (
-                  "No fixtures match that search."
-                ) : (
-                  <>
-                    <span className="spinner" /> loading fixtures…
-                  </>
-                )}
-              </span>
-            )}
+      <FixturePickerCard
+        header={
+          <div>
+            <h3 style={{ margin: 0 }}>1 · Fixture</h3>
+            <div className="muted">Search the fixture library by name, brand, or SKU.</div>
           </div>
-        </div>
-        {p.fixturesTotal > p.fixtures.length && (
-          <div className="muted" style={{ fontSize: 12 }}>
-            Showing {p.fixtures.length} of {p.fixturesTotal} — refine your search.
-          </div>
-        )}
-        {p.fixture && p.fixture.options.length > 1 && (
-          <div className="col" style={{ gap: 6 }}>
-            <div className="muted" style={{ fontSize: 12 }}>
-              Scene — pick by form
-            </div>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))",
-                gap: 10,
-              }}
-            >
-              {p.fixture.options.map((o) => (
-                <button
-                  key={o.fixtureKey}
-                  type="button"
-                  className={"product-card" + (p.sku === o.fixtureKey ? " selected" : "")}
-                  onClick={() => p.setSku(o.fixtureKey)}
-                >
-                  <FixtureThumb fixtureKey={o.fixtureKey} />
-                  <div className="product-meta">
-                    <div className="product-name">{o.label}</div>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        {p.fixture && (
-          <div className="muted" style={{ fontSize: 12 }}>
-            Mount: {MOUNT_LABELS[p.fixture.mount]}
-            {p.fixture.dimensions
-              ? ` · ${formatDimensions(p.fixture.dimensions)}`
-              : ""}
-          </div>
-        )}
-      </div>
+        }
+        fixtures={p.fixtures}
+        fixturesErr={p.fixturesErr}
+        fixtureQuery={p.fixtureQuery}
+        setFixtureQuery={p.setFixtureQuery}
+        fixtureBrand={p.fixtureBrand}
+        setFixtureBrand={p.setFixtureBrand}
+        fixtureBrands={p.fixtureBrands}
+        fixturesTotal={p.fixturesTotal}
+        selectedKey={p.sku}
+        onSelectKey={p.setSku}
+        group={p.fixture}
+      />
 
       <div className="card col" style={{ gap: 12 }}>
         <div>
@@ -1016,6 +1137,166 @@ function SetupPanel(p: SetupProps) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ----------------------------------------------------------------- picker -- */
+
+interface FixturePickerProps {
+  /** Optional heading block (the setup panel's "1 · Fixture" header). */
+  header?: React.ReactNode;
+  fixtures: ShotFixture[];
+  fixturesErr: string | null;
+  fixtureQuery: string;
+  setFixtureQuery: (s: string) => void;
+  fixtureBrand: string;
+  setFixtureBrand: (s: string) => void;
+  fixtureBrands: string[];
+  fixturesTotal: number;
+  selectedKey: string | null;
+  onSelectKey: (fixtureKey: string) => void;
+  /** Catalog group of `selectedKey` (scene options + mount line). */
+  group: ShotFixture | null;
+}
+
+/** Searchable fixture grid — used by the setup panel and the edit-phase
+ * "Add fixture" flow (both bind it to the same catalog browse state). */
+function FixturePickerCard(p: FixturePickerProps) {
+  return (
+    <div className="card col" style={{ gap: 12 }}>
+      {p.header}
+      <div className="row" style={{ gap: 8 }}>
+        <input
+          type="search"
+          placeholder="Search name, brand, or SKU…"
+          value={p.fixtureQuery}
+          onChange={(e) => p.setFixtureQuery(e.target.value)}
+          style={{ flex: 1 }}
+        />
+        {p.fixtureBrands.length > 0 && (
+          <select
+            value={p.fixtureBrand}
+            onChange={(e) => p.setFixtureBrand(e.target.value)}
+            style={{ maxWidth: 170 }}
+          >
+            <option value="">All brands</option>
+            {p.fixtureBrands.map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+      {/* The grid itself must NOT be the scroll container — WebKit mis-sizes
+          grid items inside an overflow:auto grid. Scroll a plain wrapper. */}
+      <div style={{ maxHeight: 440, overflowY: "auto", paddingRight: 4 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))",
+            gap: 10,
+          }}
+        >
+          {p.fixtures.map((f) => {
+            const selected = f.options.some((o) => o.fixtureKey === p.selectedKey);
+            return (
+              <button
+                key={f.sku}
+                type="button"
+                className={"product-card" + (selected ? " selected" : "")}
+                onClick={() => p.onSelectKey(f.options[0]!.fixtureKey)}
+                title={f.name ?? f.sku}
+              >
+                <FixtureThumb
+                  fixtureKey={f.options[0]!.fixtureKey}
+                  imageUrl={f.thumbnailUrl}
+                />
+                <div className="product-meta">
+                  <div className="product-name" title={f.name ?? f.sku}>
+                    {f.name ?? f.sku}
+                  </div>
+                  {f.brand ? (
+                    <div className="muted product-brand">{f.brand}</div>
+                  ) : null}
+                  <div className="muted product-sku">{f.sku}</div>
+                  <div className="muted product-dims">
+                    {formatDimensions(f.dimensions ?? {})}
+                  </div>
+                  {(f.finish || f.options.length > 1) && (
+                    <div
+                      className="row"
+                      style={{ gap: 4, flexWrap: "wrap", marginTop: 2 }}
+                    >
+                      {f.finish ? (
+                        <span className="tag" style={{ fontWeight: 600 }}>
+                          {f.finish}
+                        </span>
+                      ) : null}
+                      {f.options.length > 1 ? (
+                        <span className="tag">{f.options.length} scenes</span>
+                      ) : null}
+                    </div>
+                  )}
+                </div>
+              </button>
+            );
+          })}
+          {p.fixtures.length === 0 && !p.fixturesErr && (
+            <span className="muted">
+              {p.fixtureQuery.trim() || p.fixtureBrand ? (
+                "No fixtures match that search."
+              ) : (
+                <>
+                  <span className="spinner" /> loading fixtures…
+                </>
+              )}
+            </span>
+          )}
+        </div>
+      </div>
+      {p.fixturesTotal > p.fixtures.length && (
+        <div className="muted" style={{ fontSize: 12 }}>
+          Showing {p.fixtures.length} of {p.fixturesTotal} — refine your search.
+        </div>
+      )}
+      {p.group && p.group.options.length > 1 && (
+        <div className="col" style={{ gap: 6 }}>
+          <div className="muted" style={{ fontSize: 12 }}>
+            Scene — pick by form
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(110px, 1fr))",
+              gap: 10,
+            }}
+          >
+            {p.group.options.map((o) => (
+              <button
+                key={o.fixtureKey}
+                type="button"
+                className={"product-card" + (p.selectedKey === o.fixtureKey ? " selected" : "")}
+                onClick={() => p.onSelectKey(o.fixtureKey)}
+              >
+                <FixtureThumb fixtureKey={o.fixtureKey} />
+                <div className="product-meta">
+                  <div className="product-name">{o.label}</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {p.group && (
+        <div className="muted" style={{ fontSize: 12 }}>
+          Mount: {MOUNT_LABELS[p.group.mount]}
+          {p.group.dimensions
+            ? ` · ${formatDimensions(p.group.dimensions)}`
+            : ""}
+        </div>
+      )}
     </div>
   );
 }
