@@ -123,7 +123,7 @@ export const SOURCES: Record<string, SourceDescriptor> = {
     maxBytes: 10 * MB,
     reconciliation: "snapshot",
     parserKey: "territory",
-    stagingTables: ["rep_codes"],
+    stagingTables: ["rep_codes", "rep_code_zips"],
     hubspot: {
       object: "rep_codes_custom_object",
       note: "Rep Codes custom object (+ a reporting dataset handled HubSpot-side later).",
