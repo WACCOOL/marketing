@@ -1,0 +1,44 @@
+name: Territory Sync
+
+# The Territory workbook's master sheet is ~80 MB of formula-bloated XML and
+# needs ~200 MB to parse — over the API Worker's 128 MB limit. So the Worker
+# only lands the file in R2; this CI job (real RAM) parses it into rep_codes /
+# rep_code_zips. It is idempotent and only parses a territory file once
+# (unless re-run with force), so a frequent cron is cheap.
+on:
+  schedule:
+    - cron: "17 */6 * * *" # every 6 hours
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Re-parse even if the latest territory file was already parsed"
+        type: boolean
+        default: false
+
+concurrency:
+  group: territory-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build territory-sync
+        run: pnpm --filter @wac/territory-sync build
+      - name: Run territory sync
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: wac-marketing-assets
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: pnpm --filter @wac/territory-sync sync ${{ inputs.force && '-- --force' || '' }}
