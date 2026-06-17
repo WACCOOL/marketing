@@ -117,6 +117,47 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.19)
 
+  apps/open-orders-sync:
+    dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.700.0
+        version: 3.1061.0
+      '@supabase/supabase-js':
+        specifier: ^2.46.2
+        version: 2.107.0
+      xlsx:
+        specifier: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+        version: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.19.19
+      '@wac/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+
+  apps/products-sync:
+    dependencies:
+      '@supabase/supabase-js':
+        specifier: ^2.46.2
+        version: 2.107.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.19.19
+      esbuild:
+        specifier: ^0.28.0
+        version: 0.28.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+
   apps/redirect:
     devDependencies:
       '@cloudflare/workers-types':
