@@ -9,6 +9,7 @@ import {
   unpivotTerritoryRow,
   type RepAggregate,
 } from "@wac/shared";
+import { syncRepCodesToHubspot, type RepForPush } from "./hubspot.js";
 
 /**
  * Territory sync — out-of-band parser for the Territory workbook.
@@ -155,8 +156,26 @@ async function main(): Promise<void> {
     if (zipRows.length === 0 && repCodes.length === 0) {
       throw new Error("parse produced no rows; refusing to prune");
     }
+
+    // HubSpot push payload — zips come from the in-memory aggregate.
+    const hubspotToken = process.env.HUBSPOT_TOKEN;
+    const reps: RepForPush[] = repCodes.map((r) => ({
+      repCode: r.repCode,
+      district: r.district,
+      rsmTsm: r.rsmTsm,
+      salesDistrictCode: r.salesDistrictCode,
+      isr: r.isr,
+      amtRepCode: r.amtRepCode,
+      zips: [...(aggregates.get(r.repCode)?.zips ?? [])],
+    }));
+
     if (dryRun) {
-      console.log("[territory-sync] --dry-run: skipping all writes.");
+      console.log("[territory-sync] --dry-run: skipping staging writes.");
+      if (hubspotToken) {
+        await syncRepCodesToHubspot({ token: hubspotToken, reps, dryRun: true });
+      } else {
+        console.log("[territory-sync] HUBSPOT_TOKEN unset; skipping HubSpot push");
+      }
       return;
     }
 
@@ -200,6 +219,23 @@ async function main(): Promise<void> {
       .neq("ingestion_id", ingestion.id);
     if (pr) throw new Error(`rep_codes prune failed: ${pr.message}`);
 
+    // Push to HubSpot — non-fatal to the staging result (which is already done).
+    let hubspotNote: string | null = null;
+    if (hubspotToken) {
+      try {
+        const res = await syncRepCodesToHubspot({ token: hubspotToken, reps, dryRun: false });
+        hubspotNote =
+          `pushed ${res.pushed}; unmatched region=${res.unmatched.region.length} ` +
+          `isr=${res.unmatched.isr.length} rsm=${res.unmatched.rsm.length}`;
+      } catch (he) {
+        hubspotNote = `HubSpot push FAILED: ${he instanceof Error ? he.message : String(he)}`;
+        console.error(`[territory-sync] ${hubspotNote}`);
+        process.exitCode = 1;
+      }
+    } else {
+      console.log("[territory-sync] HUBSPOT_TOKEN unset; skipping HubSpot push");
+    }
+
     await sb
       .from("data_ingestions")
       .update({
@@ -213,6 +249,7 @@ async function main(): Promise<void> {
           repCodes: repCodes.length,
           mappingRows: mappingRows.length,
           mappingDuplicates: duplicates,
+          hubspot: hubspotNote,
         },
         finished_at: iso(),
         updated_at: iso(),

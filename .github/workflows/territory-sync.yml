@@ -41,4 +41,7 @@ jobs:
           R2_BUCKET: wac-marketing-assets
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          # Optional: when set, the job also upserts rep codes into the HubSpot
+          # Rep Code custom object (zips + mapping). Skipped if unset.
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
         run: pnpm --filter @wac/territory-sync sync ${{ inputs.force && '-- --force' || '' }}
