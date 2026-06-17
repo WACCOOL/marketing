@@ -27,11 +27,13 @@ export function parsePricing(
   variant: string,
 ): ParseResult<PricingRow> {
   const want = variant.trim().toLowerCase();
-  const valid: PricingRow[] = [];
   const errors: ParseError[] = [];
   let mismatched = 0;
-  const seen = new Set<string>();
-  let duplicates = 0;
+  let superseded = 0;
+  // One row per SKU. A SKU can legitimately appear twice (an old price + a newer
+  // one, sometimes hidden behind a trailing non-breaking space that asString
+  // trims away). Keep the row with the later `valid_from` — the current price.
+  const bySku = new Map<string, PricingRow>();
 
   rows.forEach((raw, i) => {
     const rowIndex = i + 2; // 1-based + header row
@@ -54,14 +56,7 @@ export function parsePricing(
       return;
     }
 
-    if (seen.has(sku)) {
-      duplicates++;
-      errors.push({ rowIndex, messages: [`duplicate SKU '${sku}' in file`] });
-      return;
-    }
-    seen.add(sku);
-
-    valid.push({
+    const candidate: PricingRow = {
       variant: want,
       sku,
       price,
@@ -69,9 +64,22 @@ export function parsePricing(
       validFrom: asIsoDate(field(raw, "Valid From")),
       validTo: asIsoDate(field(raw, "Valid to")),
       salesOrg: asString(field(raw, "Sales org.")) || null,
-    });
+    };
+
+    const existing = bySku.get(sku);
+    if (!existing) {
+      bySku.set(sku, candidate);
+      return;
+    }
+    // Duplicate SKU: keep the later valid_from (ISO yyyy-mm-dd sorts correctly;
+    // null sorts oldest). Ties keep the last-seen row.
+    superseded++;
+    if ((candidate.validFrom ?? "") >= (existing.validFrom ?? "")) {
+      bySku.set(sku, candidate);
+    }
   });
 
+  const valid = [...bySku.values()];
   return {
     valid,
     errors,
@@ -79,7 +87,7 @@ export function parsePricing(
       totalRows: rows.length,
       valid: valid.length,
       mismatchedType: mismatched,
-      duplicates,
+      superseded,
     },
   };
 }
