@@ -127,33 +127,34 @@ export interface GraphMessage {
 }
 
 /**
- * List messages in a mailbox with attachments newer than `sinceIso`, ordered
- * oldest-first. Sender/subject are filtered client-side (Graph $filter on
- * from/subject is brittle); `receivedDateTime gt` + matching `$orderby` is the
- * one combo Graph reliably supports.
+ * Find recent messages from a sender that carry an attachment, newer than
+ * `sinceIso`, returned oldest-first.
+ *
+ * Graph rejects a server-side `from/emailAddress/address eq` filter
+ * ("InefficientFilter"), and a plain date-ordered page misses the target in a
+ * busy mailbox. KQL `$search="from:…"` is the one reliable selector — but it
+ * can't combine with `$filter`/`$orderby`, so attachment / subject / date-cursor
+ * are applied client-side over the (≤25) search hits.
  */
-export async function listMessagesWithAttachments(
+export async function searchSenderMessages(
   token: string,
   mailbox: string,
-  opts: { sinceIso: string; sender?: string; subjectContains?: string },
+  opts: { sender: string; subjectContains?: string; sinceIso?: string },
 ): Promise<GraphMessage[]> {
-  const q = new URLSearchParams({
-    $filter: `hasAttachments eq true and receivedDateTime gt ${opts.sinceIso}`,
-    $orderby: "receivedDateTime asc",
-    $top: "25",
-    $select: "id,subject,receivedDateTime,from,hasAttachments",
-  });
+  const q = new URLSearchParams();
+  q.set("$search", `"from:${opts.sender}"`);
+  q.set("$top", "25");
+  q.set("$select", "id,subject,receivedDateTime,from,hasAttachments");
   const data = await graphJson<{ value: GraphMessage[] }>(
     token,
     `/users/${encodeURIComponent(mailbox)}/messages?${q.toString()}`,
   );
-  const sender = opts.sender?.toLowerCase();
   const subject = opts.subjectContains?.toLowerCase();
-  return data.value.filter((m) => {
-    if (sender && m.from?.emailAddress?.address?.toLowerCase() !== sender) return false;
-    if (subject && !(m.subject ?? "").toLowerCase().includes(subject)) return false;
-    return true;
-  });
+  return data.value
+    .filter((m) => m.hasAttachments)
+    .filter((m) => !subject || (m.subject ?? "").toLowerCase().includes(subject))
+    .filter((m) => !opts.sinceIso || m.receivedDateTime > opts.sinceIso!)
+    .sort((a, b) => a.receivedDateTime.localeCompare(b.receivedDateTime));
 }
 
 interface GraphFileAttachment {

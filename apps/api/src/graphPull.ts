@@ -8,7 +8,7 @@ import {
   getMatchingAttachment,
   getSharedItem,
   graphConfigured,
-  listMessagesWithAttachments,
+  searchSenderMessages,
   XLSX_CONTENT_TYPE,
 } from "./graph.js";
 
@@ -103,11 +103,15 @@ async function pullOpenOrders(env: Env, token: string): Promise<void> {
   const last = await getLatestIngestionMarker(sb, "open-orders");
   const sinceIso = last ?? isoDaysAgo(SOURCES.openOrders.firstRunLookbackDays);
 
-  const messages = await listMessagesWithAttachments(token, mailbox, {
-    sinceIso,
+  const matched = await searchSenderMessages(token, mailbox, {
     sender: SOURCES.openOrders.sender,
     subjectContains: SOURCES.openOrders.subjectContains,
+    sinceIso,
   });
+  // First run (no cursor): ingest only the latest snapshot, not the whole
+  // lookback window — Open Orders is a full daily snapshot, so older ones are
+  // stale. After that, the cursor advances and each new email is picked up.
+  const messages = last ? matched : matched.slice(-1);
   if (messages.length === 0) {
     console.log("[graph] open-orders: no new messages");
     return;
