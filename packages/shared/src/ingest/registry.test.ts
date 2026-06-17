@@ -41,7 +41,8 @@ describe("ingest source registry", () => {
     const pricing = getSource("pricing")!;
     expect(pricing.authMode).toBe("manual");
     expect(pricing.variants).toHaveLength(4);
-    expect(getVariant(pricing, "price-book-1")?.label).toBe("Price Book 1");
+    expect(pricing.variants?.map((v) => v.key)).toEqual(["c1", "d1", "d6", "d7"]);
+    expect(getVariant(pricing, "d6")?.label).toBe("D6");
     expect(getVariant(pricing, "bogus")).toBeUndefined();
 
     expect(getSource("open-orders")?.variants).toBeUndefined();

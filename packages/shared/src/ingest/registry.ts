@@ -146,13 +146,13 @@ export const SOURCES: Record<string, SourceDescriptor> = {
     stagingTables: ["pricing"],
     hubspot: { object: "products", note: "Products price-book properties." },
     ingestable: true,
-    // Placeholder variant labels — confirm the four real price-book names in the
-    // Pricing phase (Phase 2). The `key` is the stored `pricing.variant` value.
+    // The four WAC price books. `key` is the stored `pricing.variant` value;
+    // `label` is what shows in the admin upload GUI and on ingestion records.
     variants: [
-      { key: "price-book-1", label: "Price Book 1" },
-      { key: "price-book-2", label: "Price Book 2" },
-      { key: "price-book-3", label: "Price Book 3" },
-      { key: "price-book-4", label: "Price Book 4" },
+      { key: "c1", label: "C1" },
+      { key: "d1", label: "D1" },
+      { key: "d6", label: "D6" },
+      { key: "d7", label: "D7" },
     ],
   },
 
