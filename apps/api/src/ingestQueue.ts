@@ -1,19 +1,16 @@
 import type { Env } from "./env.js";
 import { serviceSupabase } from "./supabase.js";
-import {
-  updateIngestionStatus,
-  type IngestMessage,
-  type IngestionPatch,
-} from "./ingest.js";
+import { updateIngestionStatus, type IngestMessage } from "./ingest.js";
+import { processIngestion } from "./ingestProcess.js";
 
 /**
- * wac-ingest queue consumer (Phase 1 — pass-through).
+ * wac-ingest queue consumer.
  *
  * Branched out of the shared queue() export in index.ts on
- * batch.queue === "wac-ingest". For each message it confirms the raw file is in
- * R2 and marks the ingestion `succeeded`; per-source PARSING (Excel -> staging
- * tables) is wired in here phase by phase. The failure-finalizer shape mirrors
- * the generation consumer: terminal on the last attempt (-> DLQ via
+ * batch.queue === "wac-ingest". Marks the ingestion `processing`, hands it to
+ * processIngestion() (parse -> staging tables, or pass-through for sources
+ * without a parser yet), then records the result. The failure-finalizer shape
+ * mirrors the generation consumer: terminal on the last attempt (-> DLQ via
  * max_retries), retry otherwise.
  */
 
@@ -34,20 +31,8 @@ export async function handleIngestBatch(
         attempts: message.attempts,
       });
 
-      // Confirm the stored original is present (the consumer re-reads it from R2,
-      // never from the message). HEAD avoids pulling the bytes for the no-op pass.
-      const head = await env.ASSETS_BUCKET.head(msg.r2Key);
-      if (!head) {
-        throw new Error(`R2 object missing: ${msg.r2Key}`);
-      }
-
-      // Phase 1: no parser yet — record the received file as succeeded. Later
-      // phases replace this block with: fetch bytes -> parse -> upsert staging ->
-      // reconcile, then patch the same row_count/inserted/updated/closed counts.
-      const result: IngestionPatch = {
-        status: "succeeded",
-        finished_at: new Date().toISOString(),
-      };
+      // Parse + stage (or pass-through for sources without a parser yet).
+      const result = await processIngestion(env, sb, msg);
       await updateIngestionStatus(sb, msg.ingestionId, result);
 
       message.ack();
