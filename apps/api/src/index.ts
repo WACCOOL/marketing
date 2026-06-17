@@ -26,6 +26,7 @@ import { serviceSupabase } from "./supabase.js";
 import { updateJobStatus, type GenerationMessage } from "./generation.js";
 import { handleIngestBatch } from "./ingestQueue.js";
 import type { IngestMessage } from "./ingest.js";
+import { runGraphPull } from "./graphPull.js";
 import { GenerationContainer } from "./container.js";
 
 const app = new Hono<AppBindings>();
@@ -80,11 +81,22 @@ app.route("/api/ingest", ingestRoutes);
 app.all("*", async (c) => c.env.ASSETS.fetch(c.req.raw));
 
 /**
- * Daily Sales Layer product cache refresh (cron configured in wrangler.jsonc).
- * Errors are logged but never thrown out of the handler so a Sales Layer blip
- * doesn't fail the scheduled invocation.
+ * Cron entrypoint (schedules in wrangler.jsonc). Two schedules:
+ *   - daily 07:00 UTC — Sales Layer product cache refresh
+ *   - every 30 minutes — marketing-data Graph pull (Territory + Open Orders)
+ * Each branch is best-effort and logs rather than throwing so one blip doesn't
+ * fail the invocation.
  */
-async function scheduled(_event: ScheduledController, env: Env): Promise<void> {
+async function scheduled(event: ScheduledController, env: Env): Promise<void> {
+  if (event.cron === "0 7 * * *") {
+    await runProductSync(env);
+  }
+  if (event.cron === "*/30 * * * *") {
+    await runGraphPull(env);
+  }
+}
+
+async function runProductSync(env: Env): Promise<void> {
   const secret = env.SALES_LAYER_SECRET_KEY || env.SALES_LAYER_API_KEY;
   if (!env.SALES_LAYER_CONNECTOR_ID || !secret) {
     console.warn("[cron] Sales Layer credentials unset; skipping product sync");

@@ -89,6 +89,17 @@ export interface Env {
   // routes. When unset, only authenticated GUI uploads work (the manual path).
   INGEST_API_TOKEN?: string;
 
+  // Microsoft Graph app-only (client-credentials) creds for the scheduled
+  // ingestion pullers (graphPull.ts): pull the Territory file from SharePoint
+  // and the Open Orders attachment from a mailbox. Requires admin-consented
+  // Application permissions (Sites.Read.All, Mail.Read). When unset, the Graph
+  // pull is skipped.
+  MS_TENANT_ID?: string;
+  MS_CLIENT_ID?: string;
+  MS_CLIENT_SECRET?: string;
+  // The mailbox (UPN/address) the daily SAP Open Orders email lands in.
+  OPEN_ORDERS_MAILBOX?: string;
+
   // Origin used when building public URLs (uploads / generated scenes / shot
   // previews) that the render-worker and generator fetch back over HTTP. Defaults
   // to the request origin. LOCAL DEV: wrangler stamps the configured custom-domain
