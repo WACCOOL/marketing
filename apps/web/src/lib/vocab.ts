@@ -2,8 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "./api.js";
 import type { HubspotCampaign } from "@wac/shared";
 
+export type VocabType = "source" | "medium" | "content";
+
 interface VocabResp {
   vocab: { source: string[]; medium: string[]; content: string[] };
+  /** source value -> the medium values offered for it. Absent/empty => all mediums. */
+  sourceMediums: Record<string, string[]>;
 }
 interface CampaignsResp {
   campaigns: HubspotCampaign[];
@@ -15,6 +19,7 @@ export function useVocab() {
     medium: [],
     content: [],
   });
+  const [sourceMediums, setSourceMediums] = useState<Record<string, string[]>>({});
   const [campaigns, setCampaigns] = useState<HubspotCampaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -28,6 +33,7 @@ export function useVocab() {
         api<CampaignsResp>("/api/vocab/campaigns"),
       ]);
       setVocab(v.vocab);
+      setSourceMediums(v.sourceMediums ?? {});
       setCampaigns(c.campaigns);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -40,12 +46,29 @@ export function useVocab() {
     void refresh();
   }, [refresh]);
 
-  return { vocab, campaigns, loading, err, refresh };
+  return { vocab, sourceMediums, campaigns, loading, err, refresh };
+}
+
+/** Add a vocab value. `content` is open to everyone; source/medium are admin-only. */
+export async function addVocabValue(type: VocabType, value: string) {
+  await api("/api/vocab", {
+    method: "POST",
+    body: JSON.stringify({ type, value }),
+  });
 }
 
 export async function addContentValue(value: string) {
-  await api("/api/vocab", {
+  await addVocabValue("content", value);
+}
+
+/** Toggle whether `medium` is offered for `source` (admin only). */
+export async function setSourceMedium(
+  source: string,
+  medium: string,
+  enabled: boolean,
+) {
+  await api("/api/vocab/source-medium", {
     method: "POST",
-    body: JSON.stringify({ type: "content", value }),
+    body: JSON.stringify({ source, medium, enabled }),
   });
 }

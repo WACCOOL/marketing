@@ -1,15 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  SocialChannels,
   UtmFieldsSchema,
   auditTaggedUrl,
   buildTaggedUrl,
   encodeCampaignValue,
   type HubspotCampaign,
 } from "@wac/shared";
-
-const SOCIAL_SET = new Set<string>(SocialChannels);
-const SOCIAL_MEDIA = new Set(["social", "organic_social", "paid_social"]);
 import { addContentValue, useVocab } from "../lib/vocab.js";
 import { QrPreview } from "../components/QrPreview.js";
 import { api } from "../lib/api.js";
@@ -21,18 +17,58 @@ interface SingleQrResp {
   taggedUrl: string;
 }
 
-export function Builder() {
-  const { vocab, campaigns, refresh, loading: vocabLoading, err: vocabErr } = useVocab();
+// The builder form survives navigating away and back (and a reload) within the
+// session, so a half-built UTM isn't lost by visiting another tab. Cleared on a
+// successful save (the UTM is "complete") or via the Reset button.
+const DRAFT_KEY = "wac-utm-builder-draft";
+const DEFAULT_DESTINATION = "https://waclighting.com/";
 
-  const [name, setName] = useState("");
-  const [destination, setDestination] = useState("https://waclighting.com/");
-  const [project, setProject] = useState("");
-  const [vanitySlug, setVanitySlug] = useState("");
-  const [campaign, setCampaign] = useState<HubspotCampaign | null>(null);
-  const [source, setSource] = useState("");
-  const [medium, setMedium] = useState("");
-  const [content, setContent] = useState("");
-  const [newContent, setNewContent] = useState("");
+interface BuilderDraft {
+  name: string;
+  destination: string;
+  project: string;
+  vanitySlug: string;
+  campaign: HubspotCampaign | null;
+  source: string;
+  medium: string;
+  content: string;
+  newContent: string;
+}
+
+function loadDraft(): Partial<BuilderDraft> {
+  try {
+    const raw = sessionStorage.getItem(DRAFT_KEY);
+    return raw ? (JSON.parse(raw) as Partial<BuilderDraft>) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function Builder() {
+  const {
+    vocab,
+    sourceMediums,
+    campaigns,
+    refresh,
+    loading: vocabLoading,
+    err: vocabErr,
+  } = useVocab();
+
+  const initial = useMemo(loadDraft, []);
+
+  const [name, setName] = useState(initial.name ?? "");
+  const [destination, setDestination] = useState(
+    initial.destination ?? DEFAULT_DESTINATION,
+  );
+  const [project, setProject] = useState(initial.project ?? "");
+  const [vanitySlug, setVanitySlug] = useState(initial.vanitySlug ?? "");
+  const [campaign, setCampaign] = useState<HubspotCampaign | null>(
+    initial.campaign ?? null,
+  );
+  const [source, setSource] = useState(initial.source ?? "");
+  const [medium, setMedium] = useState(initial.medium ?? "");
+  const [content, setContent] = useState(initial.content ?? "");
+  const [newContent, setNewContent] = useState(initial.newContent ?? "");
   const [precomputed, setPrecomputed] = useState<{
     svg: string;
     pngBase64: string;
@@ -41,6 +77,41 @@ export function Builder() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SingleQrResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  // Persist the draft on every field change so it's there when the user returns.
+  useEffect(() => {
+    const draft: BuilderDraft = {
+      name,
+      destination,
+      project,
+      vanitySlug,
+      campaign,
+      source,
+      medium,
+      content,
+      newContent,
+    };
+    try {
+      sessionStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+    } catch {
+      /* sessionStorage unavailable — drafts just won't persist */
+    }
+  }, [name, destination, project, vanitySlug, campaign, source, medium, content, newContent]);
+
+  // The mediums offered for the chosen source. A source with no explicit mapping
+  // is unconstrained, so it gets the full vocab; with no source picked yet there
+  // are no medium options at all (the field stays disabled).
+  const allowedMediums = useMemo(() => {
+    if (!source) return [];
+    const mapped = sourceMediums[source];
+    return mapped && mapped.length > 0 ? mapped : vocab.medium;
+  }, [source, sourceMediums, vocab.medium]);
+
+  // A typed custom-content value takes precedence over the dropdown and is used
+  // directly for the UTM without being added to the content list.
+  const customContent = newContent.trim();
+  const usingCustomContent = customContent.length > 0;
+  const effectiveContent = usingCustomContent ? customContent : content;
 
   const { taggedUrl, fieldsErr } = useMemo(() => {
     if (!campaign || !source || !medium) {
@@ -51,7 +122,7 @@ export function Builder() {
         source,
         medium,
         campaign: encodeCampaignValue(campaign),
-        content: content || undefined,
+        content: effectiveContent || undefined,
       });
       const url = buildTaggedUrl(destination, fields);
       return { taggedUrl: url, fieldsErr: null };
@@ -61,18 +132,52 @@ export function Builder() {
         fieldsErr: e instanceof Error ? e.message : String(e),
       };
     }
-  }, [destination, source, medium, campaign, content]);
+  }, [destination, source, medium, campaign, effectiveContent]);
 
   const auditWarnings = useMemo(
     () => (taggedUrl ? auditTaggedUrl(taggedUrl) : []),
     [taggedUrl],
   );
 
-  async function onAddContent() {
-    if (!newContent) return;
+  function onSourceChange(next: string) {
+    setSource(next);
+    // Keep medium consistent with the new source: drop it if it's no longer
+    // offered, and auto-pick when there's exactly one valid option.
+    const mapped = sourceMediums[next];
+    const allowed = mapped && mapped.length > 0 ? mapped : vocab.medium;
+    if (allowed.length === 1) {
+      setMedium(allowed[0]!);
+    } else if (medium && !allowed.includes(medium)) {
+      setMedium("");
+    }
+  }
+
+  function onReset() {
+    setName("");
+    setDestination(DEFAULT_DESTINATION);
+    setProject("");
+    setVanitySlug("");
+    setCampaign(null);
+    setSource("");
+    setMedium("");
+    setContent("");
+    setNewContent("");
+    setPrecomputed(null);
+    setResult(null);
+    setErr(null);
     try {
-      await addContentValue(newContent);
-      setContent(newContent);
+      sessionStorage.removeItem(DRAFT_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function onAddContent() {
+    const value = customContent.toLowerCase();
+    if (!value) return;
+    try {
+      await addContentValue(value);
+      setContent(value);
       setNewContent("");
       await refresh();
     } catch (e) {
@@ -95,7 +200,7 @@ export function Builder() {
             source,
             medium,
             campaign: encodeCampaignValue(campaign),
-            content: content || undefined,
+            content: effectiveContent || undefined,
           },
           vanitySlug: vanitySlug || undefined,
           project: project || undefined,
@@ -103,6 +208,12 @@ export function Builder() {
         }),
       });
       setResult(res);
+      // The UTM is complete — drop the saved draft so a later visit starts clean.
+      try {
+        sessionStorage.removeItem(DRAFT_KEY);
+      } catch {
+        /* ignore */
+      }
     } catch (e) {
       setErr(formatErr(e));
     } finally {
@@ -114,13 +225,18 @@ export function Builder() {
 
   return (
     <div className="col" style={{ gap: 20 }}>
-      <div>
-        <h2>UTM Builder</h2>
-        <div className="muted">
-          Build one tagged URL + editable short link + QR. The QR encodes the
-          short link, so you can change the destination later without
-          reprinting.
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h2>UTM Builder</h2>
+          <div className="muted">
+            Build one tagged URL + editable short link + QR. The QR encodes the
+            short link, so you can change the destination later without
+            reprinting.
+          </div>
         </div>
+        <button className="secondary" onClick={onReset} title="Clear all fields">
+          Reset
+        </button>
       </div>
 
       {vocabErr && <div className="alert error">Vocab load failed: {vocabErr}</div>}
@@ -176,17 +292,7 @@ export function Builder() {
             <label>Source</label>
             <select
               value={source}
-              onChange={(e) => {
-                const next = e.target.value;
-                setSource(next);
-                // When the source is a social channel, auto-set medium to
-                // "social" — unless the user has already picked some flavour
-                // of social (organic_social / paid_social), in which case we
-                // don't stomp their choice.
-                if (SOCIAL_SET.has(next) && !SOCIAL_MEDIA.has(medium)) {
-                  setMedium("social");
-                }
-              }}
+              onChange={(e) => onSourceChange(e.target.value)}
             >
               <option value="">— pick —</option>
               {vocab.source.map((s) => (
@@ -198,30 +304,49 @@ export function Builder() {
           </div>
           <div>
             <label>Medium</label>
-            <select value={medium} onChange={(e) => setMedium(e.target.value)}>
-              <option value="">— pick —</option>
-              {vocab.medium.map((m) => (
+            <select
+              value={medium}
+              onChange={(e) => setMedium(e.target.value)}
+              disabled={!source}
+            >
+              <option value="">{source ? "— pick —" : "— pick a source first —"}</option>
+              {allowedMediums.map((m) => (
                 <option key={m} value={m}>
                   {m}
                 </option>
               ))}
             </select>
+            {source && allowedMediums.length === 0 && (
+              <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                No mediums configured yet.
+              </div>
+            )}
           </div>
         </div>
         <div className="grid-2">
           <div>
             <label>Content</label>
-            <select value={content} onChange={(e) => setContent(e.target.value)}>
-              <option value="">— none —</option>
-              {vocab.content.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
+            <select
+              value={usingCustomContent ? "__custom__" : content}
+              onChange={(e) => setContent(e.target.value)}
+              disabled={usingCustomContent}
+            >
+              {usingCustomContent ? (
+                <option value="__custom__">custom</option>
+              ) : (
+                <>
+                  <option value="">— none —</option>
+                  {vocab.content.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </>
+              )}
             </select>
           </div>
           <div>
-            <label>…or add a new content value</label>
+            <label>…or use / add a content value</label>
             <div className="row">
               <input
                 value={newContent}
@@ -231,11 +356,19 @@ export function Builder() {
               <button
                 className="secondary"
                 onClick={onAddContent}
-                disabled={!newContent || vocabLoading}
+                disabled={!customContent || vocabLoading}
+                title="Optional — save this value to the reusable content list"
+                style={{ whiteSpace: "nowrap" }}
               >
-                Add
+                Add to Content List
               </button>
             </div>
+            {usingCustomContent && (
+              <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                Using <code>{customContent.toLowerCase()}</code> for this UTM.
+                Adding to the list is optional.
+              </div>
+            )}
           </div>
         </div>
         <div className="grid-2">

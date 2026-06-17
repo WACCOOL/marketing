@@ -152,11 +152,13 @@ export function buildTaggedUrl(
 
   // URL.searchParams handles ? vs & joining, encoding, and ordering for us, so
   // the historical "?&utm_source" and "...2026utm_content=aia" bugs are
-  // impossible by construction.
+  // impossible by construction. Values are lower-cased so the same tag never
+  // splits analytics across casing variants (AIA vs aia); the destination's
+  // path/query are left untouched.
   for (const field of PARAM_ORDER) {
     const value = parsed.data[field];
     if (value === undefined || value === "") continue;
-    url.searchParams.append(FIELD_TO_PARAM[field], value);
+    url.searchParams.append(FIELD_TO_PARAM[field], value.toLowerCase());
   }
 
   if (!preserveHash) url.hash = "";

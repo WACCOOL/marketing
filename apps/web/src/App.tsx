@@ -11,6 +11,7 @@ import { Library } from "./pages/Library.js";
 import { FinalImages } from "./pages/FinalImages.js";
 import { RenderQueue } from "./pages/RenderQueue.js";
 import { UtmQr } from "./pages/UtmQr.js";
+import { VocabAdmin } from "./pages/VocabAdmin.js";
 import { Products } from "./pages/Products.js";
 import { AppImage } from "./pages/AppImage.js";
 import {
@@ -94,6 +95,12 @@ function Shell() {
           <Route path="/social" element={<Social />} />
           <Route path="/bulk" element={<Bulk />} />
           <Route path="/utm-qr" element={<UtmQr />} />
+          <Route
+            path="/utm-vocab"
+            element={
+              user.role === "admin" ? <VocabAdmin /> : <Navigate to="/builder" replace />
+            }
+          />
           <Route path="/short-links" element={<Navigate to="/utm-qr" replace />} />
           <Route path="/products" element={<Products />} />
           <Route
