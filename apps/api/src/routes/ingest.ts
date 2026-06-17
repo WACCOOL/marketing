@@ -104,10 +104,12 @@ ingestRoutes.post("/:source", requireIngestAuth, async (c) => {
   const user = c.get("user");
   const isTokenCaller = user.id === INGEST_TOKEN_USER_ID;
 
-  // Per-source authorization. Pricing is a manual, ADMIN-ONLY GUI upload — the
-  // shared token (synthetic internal user) is intentionally rejected there.
+  // Per-source authorization. Manual sources (pricing) are ADMIN-ONLY for human
+  // users via the GUI, but the trusted server-to-server ingest token (Power
+  // Automate / one-time bootstrap loads) is also accepted. Automated sources
+  // accept the token or any active internal/admin user.
   if (source.authMode === "manual") {
-    if (user.role !== "admin") {
+    if (!isTokenCaller && user.role !== "admin") {
       return c.json({ error: "admin access required" }, 403);
     }
   } else if (!isInternalOrAdmin(user)) {
