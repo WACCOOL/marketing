@@ -5,6 +5,7 @@ import {
   Box,
   ChevronLeft,
   Database,
+  DollarSign,
   FileText,
   Files,
   FileUp,
@@ -101,6 +102,7 @@ const NAV: NavEntry[] = [
     icon: Database,
     children: [
       { to: "/data/ingestions", label: "Data Ingestions", icon: Inbox },
+      { to: "/data/pricing", label: "Pricing Upload", icon: DollarSign },
     ],
   },
 ];
@@ -164,12 +166,16 @@ export function Sidebar() {
       });
     }
     if (user?.role !== "admin") {
-      // Template management is admin-only.
-      entries = entries.map((e) =>
-        isParent(e) && e.label === "PPT Generator"
-          ? { ...e, children: e.children.filter((c) => c.to !== "/ppt/templates") }
-          : e,
-      );
+      // Template management and Pricing upload are admin-only.
+      entries = entries.map((e) => {
+        if (isParent(e) && e.label === "PPT Generator") {
+          return { ...e, children: e.children.filter((c) => c.to !== "/ppt/templates") };
+        }
+        if (isParent(e) && e.label === "Data") {
+          return { ...e, children: e.children.filter((c) => c.to !== "/data/pricing") };
+        }
+        return e;
+      });
     }
     if (user?.role === "admin") entries = [...entries, ...ADMIN_ENTRIES];
     return entries;
