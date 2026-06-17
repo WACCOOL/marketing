@@ -93,6 +93,16 @@ export async function syncRepCodesToHubspot(opts: {
   );
   const regionByLabel = new Map(reg.options.map((o) => [o.label, o.value]));
 
+  // HubSpot splits the MF showroom regions into "<base> Fan" / "<base> Luminere".
+  // Our District values carry no Fan/Luminere suffix, so: a district naming
+  // "Fan" maps to the Fan variant; anything else maps to the Luminere variant.
+  function resolveRegion(district: string): string | undefined {
+    const exact = regionByLabel.get(district);
+    if (exact) return exact;
+    const variant = /fan/i.test(district) ? "Fan" : "Luminere";
+    return regionByLabel.get(`${district} ${variant}`);
+  }
+
   const unmatched = {
     region: new Set<string>(),
     isr: new Set<string>(),
@@ -105,7 +115,7 @@ export async function syncRepCodesToHubspot(opts: {
     if (r.salesDistrictCode) properties.sales_district_code = r.salesDistrictCode;
     if (r.amtRepCode) properties.amt_rep_code = r.amtRepCode;
     if (r.district) {
-      const v = regionByLabel.get(r.district);
+      const v = resolveRegion(r.district);
       if (v) properties.region = v;
       else unmatched.region.add(r.district);
     }
