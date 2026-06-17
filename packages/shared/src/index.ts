@@ -11,3 +11,6 @@ export * from "./productinfo.js";
 export * from "./seo.js";
 export * from "./ppt.js";
 export * from "./ingest/registry.js";
+export * from "./ingest/types.js";
+export * from "./ingest/headers.js";
+export * from "./ingest/pricing.js";
