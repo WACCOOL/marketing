@@ -23,6 +23,7 @@ import { DeckBuilder } from "./pages/ppt/DeckBuilder.js";
 import { MyDecks } from "./pages/ppt/MyDecks.js";
 import { PptRenderedImages } from "./pages/ppt/RenderedImages.js";
 import { PptTemplates } from "./pages/ppt/Templates.js";
+import { DataIngestions } from "./pages/ingest/DataIngestions.js";
 
 // Lazy-loaded: the 3D App-Shot + Cam Solve studios pull in <model-viewer>
 // (three.js), which is heavy. Code-split them so they only load when opened.
@@ -148,6 +149,22 @@ function Shell() {
             path="/admin"
             element={
               user.role === "admin" ? <Admin /> : <Navigate to="/builder" replace />
+            }
+          />
+          {/* Marketing data ingestion: internal/admin only (reps redirected;
+              the API enforces access regardless). */}
+          <Route
+            path="/data"
+            element={<Navigate to="/data/ingestions" replace />}
+          />
+          <Route
+            path="/data/ingestions"
+            element={
+              user.role === "rep" ? (
+                <Navigate to="/builder" replace />
+              ) : (
+                <DataIngestions />
+              )
             }
           />
           <Route path="/app-image" element={<AppImage />} />

@@ -83,9 +83,17 @@
   // consumer (queue() export in src/index.ts) invokes the container.
   // Create with: npx wrangler queues create wac-generation
   //          and: npx wrangler queues create wac-generation-dlq
+  //
+  // Marketing data ingestion (Phase 1). The ingest endpoint enqueues onto
+  // INGEST_QUEUE; the same queue() export branches on batch.queue === "wac-ingest"
+  // and hands off to handleIngestBatch (src/ingestQueue.ts). Separate queue so
+  // its retry/DLQ policy is independent of generation.
+  // Create with: npx wrangler queues create wac-ingest
+  //          and: npx wrangler queues create wac-ingest-dlq
   "queues": {
     "producers": [
-      { "binding": "GENERATION_QUEUE", "queue": "wac-generation" }
+      { "binding": "GENERATION_QUEUE", "queue": "wac-generation" },
+      { "binding": "INGEST_QUEUE", "queue": "wac-ingest" }
     ],
     "consumers": [
       {
@@ -93,6 +101,12 @@
         "max_batch_size": 1,
         "max_retries": 3,
         "dead_letter_queue": "wac-generation-dlq"
+      },
+      {
+        "queue": "wac-ingest",
+        "max_batch_size": 1,
+        "max_retries": 3,
+        "dead_letter_queue": "wac-ingest-dlq"
       }
     ]
   },

@@ -1,5 +1,6 @@
 import type { GenerationMessage } from "./generation.js";
 import type { GenerationContainer } from "./container.js";
+import type { IngestMessage } from "./ingest.js";
 
 export interface Env {
   SUPABASE_URL: string;
@@ -46,6 +47,11 @@ export interface Env {
   GENERATION_QUEUE: Queue<GenerationMessage>;
   // Container-enabled Durable Object namespace (see container.ts).
   GENERATION_CONTAINER: DurableObjectNamespace<GenerationContainer>;
+
+  // Marketing data ingestion (Phase 1). The ingest endpoint enqueues onto this
+  // producer; the consumer is the wac-ingest config in wrangler.jsonc, handled
+  // by the queue() export in index.ts (branches to ingestQueue.ts).
+  INGEST_QUEUE: Queue<IngestMessage>;
   // R2 S3-API credentials forwarded into the generation Container so it can
   // write generated assets directly. These never live in the image — they are
   // injected via the container's envVars at start (see container.ts).
@@ -76,6 +82,12 @@ export interface Env {
   // baking picker thumbnails. When unset, the admin path is closed and only real
   // user sessions are accepted.
   ADMIN_API_TOKEN?: string;
+
+  // Shared secret for the marketing data ingest endpoint (POST /api/ingest/:source).
+  // Power Automate flows present it as a Bearer token to push files in. DEDICATED
+  // (separate from ADMIN_API_TOKEN) so a leaked ingest token can't reach admin
+  // routes. When unset, only authenticated GUI uploads work (the manual path).
+  INGEST_API_TOKEN?: string;
 
   // Origin used when building public URLs (uploads / generated scenes / shot
   // previews) that the render-worker and generator fetch back over HTTP. Defaults
