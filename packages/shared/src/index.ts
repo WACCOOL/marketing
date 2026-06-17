@@ -14,3 +14,4 @@ export * from "./ingest/registry.js";
 export * from "./ingest/types.js";
 export * from "./ingest/headers.js";
 export * from "./ingest/pricing.js";
+export * from "./ingest/territory.js";
