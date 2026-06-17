@@ -58,3 +58,12 @@ RENDER_WORKER_URL=
 # (e.g. `openssl rand -hex 32`). DEDICATED — keep distinct from ADMIN_API_TOKEN.
 # In production set it as a Worker secret: `wrangler secret put INGEST_API_TOKEN`.
 INGEST_API_TOKEN=
+# Microsoft Graph app-only creds for the scheduled ingestion pullers (Territory
+# SharePoint file + Open Orders mailbox attachment). From an Entra app
+# registration with admin-consented Application permissions Sites.Read.All +
+# Mail.Read. In prod set as Worker secrets (`wrangler secret put MS_CLIENT_SECRET`).
+MS_TENANT_ID=
+MS_CLIENT_ID=
+MS_CLIENT_SECRET=
+# Mailbox (address/UPN) the daily SAP Open Orders email lands in.
+OPEN_ORDERS_MAILBOX=

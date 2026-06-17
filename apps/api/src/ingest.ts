@@ -51,6 +51,8 @@ export interface IngestionRow {
   errors_json: unknown;
   stats_json: unknown;
   error: string | null;
+  /** Upstream change marker for cron-pulled sources (driveItem eTag / mail cursor). */
+  source_marker: string | null;
   attempts: number;
   created_at: string;
   updated_at: string;
@@ -59,7 +61,7 @@ export interface IngestionRow {
 }
 
 const INGESTION_COLUMNS =
-  "id, source, variant, status, r2_key, original_name, content_type, byte_size, delivered_by, row_count, inserted_count, updated_count, closed_count, error_count, errors_json, stats_json, error, attempts, created_at, updated_at, started_at, finished_at";
+  "id, source, variant, status, r2_key, original_name, content_type, byte_size, delivered_by, row_count, inserted_count, updated_count, closed_count, error_count, errors_json, stats_json, error, source_marker, attempts, created_at, updated_at, started_at, finished_at";
 
 /** Patch shape for the consumer / reprocess paths (service role). */
 export type IngestionPatch = Partial<
@@ -129,6 +131,8 @@ export async function createIngestion(
     ext: string;
     bytes: ArrayBuffer;
     deliveredBy: string;
+    /** Upstream change marker (cron-pulled sources) so reruns can dedupe. */
+    sourceMarker?: string;
   },
 ): Promise<{ ok: true; row: IngestionRow } | { ok: false; error: string }> {
   const id = crypto.randomUUID();
@@ -152,6 +156,7 @@ export async function createIngestion(
       content_type: args.contentType,
       byte_size: args.bytes.byteLength,
       delivered_by: args.deliveredBy,
+      source_marker: args.sourceMarker ?? null,
     })
     .select(INGESTION_COLUMNS)
     .single();
@@ -197,6 +202,28 @@ export async function getIngestion(
     .maybeSingle();
   if (error) throw new Error(`data_ingestions lookup failed: ${error.message}`);
   return (data as IngestionRow | null) ?? null;
+}
+
+/**
+ * The most-recent ingestion's `source_marker` for a source — the cron pullers'
+ * cursor. Territory compares it to the current driveItem eTag (skip if equal);
+ * Open Orders uses it as the `receivedDateTime gt` lower bound. Any-status (not
+ * just succeeded) so a stored file isn't pulled twice even if parsing failed.
+ */
+export async function getLatestIngestionMarker(
+  serviceSb: SupabaseClient,
+  source: string,
+): Promise<string | null> {
+  const { data, error } = await serviceSb
+    .from("data_ingestions")
+    .select("source_marker")
+    .eq("source", source)
+    .not("source_marker", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`data_ingestions marker lookup failed: ${error.message}`);
+  return (data as { source_marker: string | null } | null)?.source_marker ?? null;
 }
 
 export async function listIngestions(

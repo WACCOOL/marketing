@@ -115,10 +115,11 @@
     "SHORT_LINK_HOST": "https://gowac.cc"
   },
 
-  // Daily Sales Layer product cache refresh (07:00 UTC). Handled by the
-  // scheduled() export in src/index.ts.
+  // Cron schedules, dispatched by the scheduled() export in src/index.ts:
+  //   "0 7 * * *"    daily Sales Layer product cache refresh (07:00 UTC)
+  //   "*/30 * * * *" marketing-data Graph pull (Territory + Open Orders)
   "triggers": {
-    "crons": ["0 7 * * *"]
+    "crons": ["0 7 * * *", "*/30 * * * *"]
   },
 
   "observability": {
