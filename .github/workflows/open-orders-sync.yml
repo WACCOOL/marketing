@@ -14,6 +14,10 @@ on:
         description: "Re-parse even if the latest open-orders file was already parsed"
         type: boolean
         default: false
+      dry_run_push:
+        description: "Preview the HubSpot push from the current staging (no writes)"
+        type: boolean
+        default: false
 
 concurrency:
   group: open-orders-sync
@@ -41,4 +45,12 @@ jobs:
           R2_BUCKET: wac-marketing-assets
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: pnpm --filter @wac/open-orders-sync sync ${{ inputs.force && '-- --force' || '' }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        # Default: parse the latest file into staging AND push to HubSpot.
+        # Dispatch with dry_run_push to preview the push from current staging.
+        run: |
+          if [ "${{ inputs.dry_run_push }}" = "true" ]; then
+            pnpm --filter @wac/open-orders-sync sync -- --push-only --dry-run
+          else
+            pnpm --filter @wac/open-orders-sync sync -- --push ${{ inputs.force && '--force' || '' }}
+          fi
