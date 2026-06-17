@@ -53,3 +53,8 @@ RENDER_WORKER_URL=
 # RENDER_FINAL_TIMEOUT_MS, which must stay above the worker's RENDER_TIMEOUT_MS.
 # Defaults to 4200000 (70m); raise for very slow Max renders on a CPU box.
 # SHOT3D_CONTAINER_TIMEOUT_MS=4200000
+# Marketing data ingestion (Phase 1) — shared secret Power Automate flows present
+# as a Bearer token to POST /api/ingest/:source. Generate a long random string
+# (e.g. `openssl rand -hex 32`). DEDICATED — keep distinct from ADMIN_API_TOKEN.
+# In production set it as a Worker secret: `wrangler secret put INGEST_API_TOKEN`.
+INGEST_API_TOKEN=

@@ -4,12 +4,14 @@ import {
   Aperture,
   Box,
   ChevronLeft,
+  Database,
   FileText,
   Files,
   FileUp,
   FolderOpen,
   ImageIcon,
   ImagePlay,
+  Inbox,
   LayoutTemplate,
   Link2,
   ListChecks,
@@ -94,6 +96,13 @@ const NAV: NavEntry[] = [
       { to: "/product-info/normalization", label: "Data Normalization", icon: Ruler },
     ],
   },
+  {
+    label: "Data",
+    icon: Database,
+    children: [
+      { to: "/data/ingestions", label: "Data Ingestions", icon: Inbox },
+    ],
+  },
 ];
 
 // Appended for admins only: the cross-tool Asset Library and the Admin page.
@@ -146,6 +155,8 @@ export function Sidebar() {
       // Reps keep the catalog but not the internal content workflows.
       entries = entries.flatMap((e) => {
         if (e.label === "PPT Generator") return [];
+        // Marketing data ingestion is an internal/admin ops workflow.
+        if (e.label === "Data") return [];
         if (e.label === "Product Info") {
           return [{ to: "/products", label: "Products", icon: Package } as NavLeaf];
         }

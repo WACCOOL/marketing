@@ -53,6 +53,37 @@ export const requireAuthOrAdmin = createMiddleware<AppBindings>(
   },
 );
 
+/** Synthetic user id for the shared-ingest-token (Power Automate) path. */
+export const INGEST_TOKEN_USER_ID = "ingest-token";
+
+/**
+ * Auth for the marketing data ingest endpoint. Accepts EITHER:
+ *   - the shared `INGEST_API_TOKEN` Worker secret (Power Automate pushes) →
+ *     authenticates as a synthetic active `internal` user, or
+ *   - a normal Supabase session (the manual GUI upload path).
+ * A DEDICATED token (separate from `ADMIN_API_TOKEN`) so a leaked ingest token
+ * can never reach admin/GLB routes. Per-source authorization (e.g. pricing is
+ * admin-only) is enforced in the route, not here.
+ */
+export const requireIngestAuth = createMiddleware<AppBindings>(
+  async (c, next) => {
+    const token = bearerToken(c);
+    const ingestToken = c.env.INGEST_API_TOKEN;
+    if (token && ingestToken && timingSafeEqual(token, ingestToken)) {
+      c.set("jwt", token);
+      c.set("user", {
+        id: INGEST_TOKEN_USER_ID,
+        email: "ingest@token",
+        role: "internal",
+        status: "active",
+      });
+      await next();
+      return;
+    }
+    return verifySession(c, next);
+  },
+);
+
 /** Pull the Bearer token from the Authorization header, if present. */
 function bearerToken(c: Context<AppBindings>): string | null {
   const match = (c.req.header("Authorization") ?? "").match(/^Bearer\s+(.+)$/i);

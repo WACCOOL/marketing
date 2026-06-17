@@ -20,9 +20,12 @@ import { appShotRoutes } from "./routes/appshot.js";
 import { adminRoutes } from "./routes/admin.js";
 import { productInfoRoutes } from "./routes/productinfo.js";
 import { pptRoutes } from "./routes/ppt.js";
+import { ingestRoutes } from "./routes/ingest.js";
 import { makeProductAdapter } from "./saleslayer.js";
 import { serviceSupabase } from "./supabase.js";
 import { updateJobStatus, type GenerationMessage } from "./generation.js";
+import { handleIngestBatch } from "./ingestQueue.js";
+import type { IngestMessage } from "./ingest.js";
 import { GenerationContainer } from "./container.js";
 
 const app = new Hono<AppBindings>();
@@ -70,6 +73,7 @@ app.route("/api/appshot", appShotRoutes);
 app.route("/api/admin", adminRoutes);
 app.route("/api/product-info", productInfoRoutes);
 app.route("/api/ppt", pptRoutes);
+app.route("/api/ingest", ingestRoutes);
 
 // Anything not handled by a /api/* route falls through to the SPA assets
 // (configured in wrangler.jsonc with not_found_handling: single-page-application).
@@ -124,10 +128,18 @@ const CONTAINER_TIMEOUT_MS = 150_000;
 const SHOT3D_CONTAINER_TIMEOUT_MS_DEFAULT = 4_200_000;
 
 async function queue(
-  batch: MessageBatch<GenerationMessage>,
+  batch: MessageBatch<GenerationMessage | IngestMessage>,
   env: Env,
 ): Promise<void> {
-  for (const message of batch.messages) {
+  // Marketing data ingestion runs on its own queue with independent retry/DLQ
+  // policy — dispatch by queue name so the generation path below is untouched.
+  if (batch.queue === "wac-ingest") {
+    await handleIngestBatch(batch as MessageBatch<IngestMessage>, env);
+    return;
+  }
+
+  const generationBatch = batch as MessageBatch<GenerationMessage>;
+  for (const message of generationBatch.messages) {
     const job = message.body;
     const isShot3d =
       (job.params as { mode?: string } | undefined)?.mode === "shot3d";
