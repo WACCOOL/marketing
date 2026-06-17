@@ -1,0 +1,44 @@
+name: Open Orders Sync
+
+# The daily SAP "Open Orders Master" arrives by email, gets landed in R2 by the
+# Graph cron (pass-through data_ingestions row), and this CI job (real RAM)
+# parses the latest one into the open_orders staging table. It is idempotent and
+# only parses an open-orders file once (unless re-run with force), so a frequent
+# cron is cheap — most runs are a no-op skip.
+on:
+  schedule:
+    - cron: "37 */2 * * *" # every 2 hours — catch the daily file soon after it lands
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Re-parse even if the latest open-orders file was already parsed"
+        type: boolean
+        default: false
+
+concurrency:
+  group: open-orders-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build open-orders-sync
+        run: pnpm --filter @wac/open-orders-sync build
+      - name: Run open-orders sync
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: wac-marketing-assets
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: pnpm --filter @wac/open-orders-sync sync ${{ inputs.force && '-- --force' || '' }}

@@ -1,0 +1,40 @@
+name: Products Sync
+
+# Pushes the WAC catalog (Sales Layer PIM, already in the products table) to the
+# HubSpot Products object — one product per Visible variant material, prices from
+# the pricing table. Idempotent upsert by hs_sku; runs out-of-band (real RAM) for
+# the ~tens of thousands of materials. Daily after the morning Sales Layer cron.
+on:
+  schedule:
+    - cron: "0 9 * * *" # daily 09:00 UTC (after the 07:00 Sales Layer product sync)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no writes; print a sample)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: products-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build products-sync
+        run: pnpm --filter @wac/products-sync build
+      - name: Run products sync
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        run: pnpm --filter @wac/products-sync sync ${{ inputs.dry_run && '-- --dry-run' || '' }}
