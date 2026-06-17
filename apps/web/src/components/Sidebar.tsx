@@ -28,6 +28,7 @@ import {
   Search,
   Share2,
   ShieldCheck,
+  SlidersHorizontal,
   Sun,
   Upload,
   type LucideIcon,
@@ -64,6 +65,7 @@ const NAV: NavEntry[] = [
       { to: "/social", label: "Social Fan-out", icon: Share2 },
       { to: "/bulk", label: "Bulk Import", icon: Upload },
       { to: "/utm-qr", label: "UTM & QR", icon: QrCode },
+      { to: "/utm-vocab", label: "Sources & Mediums", icon: SlidersHorizontal },
     ],
   },
   {
@@ -166,13 +168,17 @@ export function Sidebar() {
       });
     }
     if (user?.role !== "admin") {
-      // Template management and Pricing upload are admin-only.
+      // Template management, Pricing upload, and the Sources & Mediums vocab
+      // editor are admin-only.
       entries = entries.map((e) => {
         if (isParent(e) && e.label === "PPT Generator") {
           return { ...e, children: e.children.filter((c) => c.to !== "/ppt/templates") };
         }
         if (isParent(e) && e.label === "Data") {
           return { ...e, children: e.children.filter((c) => c.to !== "/data/pricing") };
+        }
+        if (isParent(e) && e.label === "UTM & QR") {
+          return { ...e, children: e.children.filter((c) => c.to !== "/utm-vocab") };
         }
         return e;
       });

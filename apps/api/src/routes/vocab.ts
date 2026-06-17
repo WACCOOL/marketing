@@ -26,34 +26,80 @@ vocabRoutes.get("/", requireAuth, async (c) => {
     const r = row as { type: string; value: string };
     if (r.type in grouped) grouped[r.type]!.push(r.value);
   }
-  return c.json({ vocab: grouped });
+
+  // source -> allowed mediums. A source with no rows is unconstrained (the
+  // builder then offers the full medium list).
+  const { data: mapRows, error: mapErr } = await sb
+    .from("utm_source_medium")
+    .select("source, medium")
+    .order("source");
+  if (mapErr) return c.json({ error: mapErr.message }, 500);
+  const sourceMediums: Record<string, string[]> = {};
+  for (const row of mapRows ?? []) {
+    const r = row as { source: string; medium: string };
+    (sourceMediums[r.source] ??= []).push(r.medium);
+  }
+
+  return c.json({ vocab: grouped, sourceMediums });
 });
 
-const AddContentSchema = z.object({
+const VOCAB_TOKEN = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((v) => !/\s|[?&=#]/.test(v), "no whitespace or URL control chars")
+  // utm values are always lower-cased (see buildTaggedUrl) — store them that way too.
+  .transform((v) => v.toLowerCase());
+
+const AddVocabSchema = z.object({
   type: UtmVocabTypeSchema,
-  value: z
-    .string()
-    .trim()
-    .min(1)
-    .refine((v) => !/\s|[?&=#]/.test(v), "no whitespace or URL control chars"),
+  value: VOCAB_TOKEN,
 });
 
 vocabRoutes.post("/", requireAuth, async (c) => {
-  const parsed = AddContentSchema.safeParse(await c.req.json().catch(() => null));
+  const parsed = AddVocabSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
     return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
   }
-  // Only `content` is user-extendable per the PRD.
-  if (parsed.data.type !== "content") {
-    return c.json({ error: "only content vocab is user-extendable" }, 403);
+  // `content` is user-extendable for everyone; `source`/`medium` are admin-only
+  // (RLS enforces the same, this just returns a clean error first).
+  if (parsed.data.type !== "content" && c.get("user").role !== "admin") {
+    return c.json({ error: "only admins can add source/medium vocab" }, 403);
   }
   const sb = userSupabase(c.env, c.get("jwt"));
   const { error } = await sb
     .from("utm_vocab")
     .upsert(
-      { type: "content", value: parsed.data.value },
+      { type: parsed.data.type, value: parsed.data.value },
       { onConflict: "type,value", ignoreDuplicates: true },
     );
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ ok: true });
+});
+
+const SourceMediumSchema = z.object({
+  source: VOCAB_TOKEN,
+  medium: VOCAB_TOKEN,
+  /** true => allow this medium for this source; false => remove the mapping. */
+  enabled: z.boolean(),
+});
+
+// Toggle one (source, medium) pair in the mapping. Admin only.
+vocabRoutes.post("/source-medium", requireAuth, async (c) => {
+  if (c.get("user").role !== "admin") {
+    return c.json({ error: "admin only" }, 403);
+  }
+  const parsed = SourceMediumSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { source, medium, enabled } = parsed.data;
+  const { error } = enabled
+    ? await sb
+        .from("utm_source_medium")
+        .upsert({ source, medium }, { onConflict: "source,medium", ignoreDuplicates: true })
+    : await sb.from("utm_source_medium").delete().eq("source", source).eq("medium", medium);
   if (error) return c.json({ error: error.message }, 500);
   return c.json({ ok: true });
 });

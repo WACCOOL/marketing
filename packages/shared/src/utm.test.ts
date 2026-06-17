@@ -92,6 +92,22 @@ describe("buildTaggedUrl", () => {
     expect(res.ok).toBe(true);
   });
 
+  it("lower-cases every utm value but leaves the destination path/query alone", () => {
+    const url = buildTaggedUrl("https://waclighting.com/Products/ABC?Ref=Keep", {
+      source: "Email",
+      medium: "Paid_Media",
+      campaign: validCampaign,
+      content: "AIA",
+    });
+    const parsed = new URL(url);
+    expect(parsed.searchParams.get("utm_source")).toBe("email");
+    expect(parsed.searchParams.get("utm_medium")).toBe("paid_media");
+    expect(parsed.searchParams.get("utm_content")).toBe("aia");
+    // Destination casing is preserved — only utm_* values are normalized.
+    expect(parsed.pathname).toBe("/Products/ABC");
+    expect(parsed.searchParams.get("Ref")).toBe("Keep");
+  });
+
   it("encodes values that contain non-ASCII characters", () => {
     const url = buildTaggedUrl("https://example.com/", {
       source: "caf\u00e9",
