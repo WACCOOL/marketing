@@ -24,6 +24,7 @@ import { MyDecks } from "./pages/ppt/MyDecks.js";
 import { PptRenderedImages } from "./pages/ppt/RenderedImages.js";
 import { PptTemplates } from "./pages/ppt/Templates.js";
 import { DataIngestions } from "./pages/ingest/DataIngestions.js";
+import { PricingUpload } from "./pages/ingest/PricingUpload.js";
 
 // Lazy-loaded: the 3D App-Shot + Cam Solve studios pull in <model-viewer>
 // (three.js), which is heavy. Code-split them so they only load when opened.
@@ -164,6 +165,17 @@ function Shell() {
                 <Navigate to="/builder" replace />
               ) : (
                 <DataIngestions />
+              )
+            }
+          />
+          {/* Pricing upload is admin-only (reps/internal redirected; API enforces). */}
+          <Route
+            path="/data/pricing"
+            element={
+              user.role === "admin" ? (
+                <PricingUpload />
+              ) : (
+                <Navigate to="/builder" replace />
               )
             }
           />

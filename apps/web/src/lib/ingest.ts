@@ -72,3 +72,37 @@ export async function getIngestion(id: string): Promise<IngestionResponse> {
 export async function reprocessIngestion(id: string): Promise<IngestionResponse> {
   return api<IngestionResponse>(`/api/ingest/${id}/reprocess`, { method: "POST" });
 }
+
+const XLSX_CONTENT_TYPE =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+/** Upload a pricing workbook for a price-book variant (admin-only endpoint). */
+export async function uploadPricingFile(
+  variant: string,
+  file: File,
+): Promise<{ ingestionId: string; r2Key: string; status: IngestionStatus }> {
+  const qs = `?variant=${encodeURIComponent(variant)}&filename=${encodeURIComponent(file.name)}`;
+  return api(`/api/ingest/pricing${qs}`, {
+    method: "POST",
+    body: file,
+    // Send the raw bytes — set the content-type so api() doesn't default to JSON.
+    headers: { "content-type": file.type || XLSX_CONTENT_TYPE },
+  });
+}
+
+const TERMINAL_STATUSES: IngestionStatus[] = ["succeeded", "failed", "skipped"];
+
+/** Poll an ingestion until it reaches a terminal status (or the timeout). */
+export async function pollIngestion(
+  id: string,
+  opts: { intervalMs?: number; timeoutMs?: number } = {},
+): Promise<IngestionResponse> {
+  const intervalMs = opts.intervalMs ?? 1500;
+  const deadline = Date.now() + (opts.timeoutMs ?? 30_000);
+  for (;;) {
+    const row = await getIngestion(id);
+    if (TERMINAL_STATUSES.includes(row.status)) return row;
+    if (Date.now() + intervalMs >= deadline) return row;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
