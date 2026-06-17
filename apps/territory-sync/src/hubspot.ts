@@ -49,8 +49,11 @@ export async function syncRepCodesToHubspot(opts: {
     return res.json() as Promise<T>;
   }
 
-  // Owner name -> id (paginated).
-  const owners = new Map<string, string>();
+  // Owner resolution: exact "first last", with a surname + first-initial
+  // fallback for nickname/legal-name mismatches (Eddie->Edward, Joey->Joseph),
+  // applied only when the surname is unambiguous.
+  const ownerByName = new Map<string, string>();
+  const ownerBySurname = new Map<string, { id: string; firstInitial: string }[]>();
   let after: string | undefined;
   do {
     const data = await hget<{
@@ -58,11 +61,31 @@ export async function syncRepCodesToHubspot(opts: {
       paging?: { next?: { after?: string } };
     }>(`/crm/v3/owners?limit=100${after ? `&after=${after}` : ""}`);
     for (const o of data.results) {
-      const name = `${o.firstName ?? ""} ${o.lastName ?? ""}`.trim().toLowerCase();
-      if (name) owners.set(name, o.id);
+      const first = (o.firstName ?? "").trim().toLowerCase();
+      const last = (o.lastName ?? "").trim().toLowerCase();
+      const full = `${first} ${last}`.trim();
+      if (full) ownerByName.set(full, o.id);
+      if (last) {
+        const arr = ownerBySurname.get(last) ?? [];
+        arr.push({ id: o.id, firstInitial: first[0] ?? "" });
+        ownerBySurname.set(last, arr);
+      }
     }
     after = data.paging?.next?.after;
   } while (after);
+
+  function resolveOwner(name: string): string | undefined {
+    const lower = name.trim().toLowerCase();
+    const exact = ownerByName.get(lower);
+    if (exact) return exact;
+    const parts = lower.split(/\s+/);
+    const last = parts[parts.length - 1] ?? "";
+    const firstInitial = parts[0]?.[0] ?? "";
+    const cands = (ownerBySurname.get(last) ?? []).filter(
+      (c) => c.firstInitial === firstInitial,
+    );
+    return cands.length === 1 ? cands[0]!.id : undefined;
+  }
 
   // region option label -> internal value.
   const reg = await hget<{ options: { label: string; value: string }[] }>(
@@ -87,12 +110,12 @@ export async function syncRepCodesToHubspot(opts: {
       else unmatched.region.add(r.district);
     }
     if (r.isr) {
-      const id = owners.get(r.isr.toLowerCase());
+      const id = resolveOwner(r.isr);
       if (id) properties.hubspot_owner_id = id;
       else unmatched.isr.add(r.isr);
     }
     if (r.rsmTsm) {
-      const id = owners.get(r.rsmTsm.toLowerCase());
+      const id = resolveOwner(r.rsmTsm);
       if (id) properties.territory__regional_manager = id;
       else unmatched.rsm.add(r.rsmTsm);
     }
