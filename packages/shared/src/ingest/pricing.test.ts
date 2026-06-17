@@ -55,9 +55,28 @@ describe("parsePricing", () => {
     expect(res.stats.mismatchedType).toBe(1);
   });
 
-  it("drops duplicate SKUs within a file", () => {
-    const res = parsePricing([row("DUP", 1), row("DUP", 2)], "c1");
+  it("keeps the latest valid_from price when a SKU appears twice", () => {
+    // Mirrors the real D1 case: an older 2023 price and a newer 2025 price.
+    const older = row("DISPLAY-LOTOS-FWT", 49.95, "c1", {
+      "Valid From": new Date(Date.UTC(2023, 0, 1)),
+    });
+    const newer = row("DISPLAY-LOTOS-FWT", 58.95, "c1", {
+      "Valid From": new Date(Date.UTC(2025, 4, 19)),
+    });
+    const res = parsePricing([older, newer], "c1"); // file order: old then new
     expect(res.valid).toHaveLength(1);
-    expect(res.stats.duplicates).toBe(1);
+    expect(res.valid[0]?.price).toBe(58.95);
+    expect(res.valid[0]?.validFrom).toBe("2025-05-19");
+    expect(res.stats.superseded).toBe(1);
+    expect(res.errors).toEqual([]); // a price update is not an error
+  });
+
+  it("treats a trailing non-breaking space as the same SKU", () => {
+    const a = row("ABC ", 10, "c1", { "Valid From": new Date(Date.UTC(2020, 0, 1)) });
+    const b = row("ABC", 20, "c1", { "Valid From": new Date(Date.UTC(2024, 0, 1)) });
+    const res = parsePricing([a, b], "c1");
+    expect(res.valid).toHaveLength(1);
+    expect(res.valid[0]?.sku).toBe("ABC");
+    expect(res.valid[0]?.price).toBe(20);
   });
 });
