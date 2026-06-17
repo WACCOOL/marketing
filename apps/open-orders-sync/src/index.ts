@@ -2,6 +2,7 @@ import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
 import { parseOpenOrders, type OpenOrderRow } from "@wac/shared";
+import { syncOpenOrdersToHubspot } from "./hubspot.js";
 
 /**
  * Open Orders sync — out-of-band parser for the daily SAP "Open Orders Master".
@@ -75,12 +76,21 @@ function toDbRow(r: OpenOrderRow, ingestionId: string) {
 async function main(): Promise<void> {
   const force = process.argv.includes("--force");
   const dryRun = process.argv.includes("--dry-run");
+  const push = process.argv.includes("--push");
+  const pushOnly = process.argv.includes("--push-only");
 
   const sb: SupabaseClient = createClient(
     env("SUPABASE_URL"),
     env("SUPABASE_SERVICE_ROLE_KEY"),
     { auth: { persistSession: false, autoRefreshToken: false } },
   );
+
+  // --push-only: skip parse/stage, push the current open_orders snapshot to
+  // HubSpot (with --dry-run = build + print samples, no writes).
+  if (pushOnly) {
+    await syncOpenOrdersToHubspot(sb, env("HUBSPOT_TOKEN"), { dryRun });
+    return;
+  }
 
   // Latest open-orders ingestion (Graph cron lands these; pass-through leaves
   // row_count null until we parse).
@@ -199,6 +209,11 @@ async function main(): Promise<void> {
     console.log(
       `[open-orders-sync] done: lines=${valid.length}, closed=${closed ?? 0}, errors=${errors.length}`,
     );
+
+    // Push the fresh snapshot to HubSpot Orders + Line Items when requested.
+    if (push) {
+      await syncOpenOrdersToHubspot(sb, env("HUBSPOT_TOKEN"), { dryRun: false });
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[open-orders-sync] FAILED: ${msg}`);
