@@ -50,6 +50,7 @@ const PIM_PROPS: { name: string; label: string; fieldType: "text" | "textarea" }
   { name: "dimensions", label: "Dimensions", fieldType: "text" },
   { name: "image_url", label: "Image URL", fieldType: "text" },
   { name: "ies_url", label: "IES File URL", fieldType: "text" },
+  { name: "product_url", label: "Product URL", fieldType: "text" },
 ];
 
 interface Variant {
@@ -189,6 +190,11 @@ function buildProps(p: Product, v: Variant, prices: PriceMap): Record<string, st
   set("dimensions", formatDims(v.dimensions_mm) ?? formatDims(p.dimensions_mm) ?? undefined);
   set("image_url", (v.image_urls && v.image_urls[0]) || s(p.primary_image_url));
   set("ies_url", s(v.ies_url) ?? s(p.ies_url));
+  // Product URL: the Sales Layer feed carries no product-page URL, so per spec
+  // fall back to the product image (a variant-specific page URL would take
+  // precedence here if the feed provided one). Use the variant image only if
+  // the product has no image of its own.
+  set("product_url", s(p.primary_image_url) || v.image_urls?.[0]);
   return out;
 }
 
