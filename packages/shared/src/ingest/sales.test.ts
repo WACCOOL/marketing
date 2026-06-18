@@ -1,37 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { parseSalesPivot } from "./sales.js";
+import { parseSalesPivot, sumThroughMonth } from "./sales.js";
 
-describe("parseSalesPivot", () => {
-  it("extracts per-account sales for a single-year pivot, skipping label rows", () => {
-    const grid: unknown[][] = [
-      ["Date", "All", null],
-      ["Row Labels", "2026", "Grand Total"],
-      ["0002000002", -41244.93, -41244.93],
-      ["Lighting Showroom", -41244.93, -41244.93], // customer group child
-      ["US", -41244.93, -41244.93], // country child
-      ["0002000005", 119.7, 119.7],
-      ["Grand Total", 98663963.61, 98663963.61],
-    ];
-    const { accounts, years } = parseSalesPivot(grid);
-    expect(years).toEqual(["2026"]);
+// Two-level header (Year over Month) with per-year Total + Grand Total columns,
+// mirroring the real "WAC Sales" pivot.
+const GRID: unknown[][] = [
+  ["Date", "All", null, null, null, null, null, null, null],
+  ["Sales", "Column Labels", null, null, null, null, null, null, null],
+  [null, "2025", null, null, "2025 Total", "2026", null, "2026 Total", "Grand Total"],
+  ["Row Labels", "1", "2", "3", null, "1", "2", null, null],
+  ["0001234567", 10, 20, 30, 60, 5, 7, 12, 72],
+  ["Lighting Showroom", 10, 20, 30, 60, 5, 7, 12, 72], // group child — skipped
+  ["Grand Total", 1000, 2000, 3000, 6000, 500, 700, 1200, 7200],
+];
+
+describe("parseSalesPivot (month-aware)", () => {
+  it("maps account sales by year + month, skipping Total and label rows", () => {
+    const { accounts, years, monthsByYear } = parseSalesPivot(GRID);
+    expect(years).toEqual(["2025", "2026"]);
+    expect(monthsByYear).toEqual({ "2025": [1, 2, 3], "2026": [1, 2] });
     expect(accounts).toEqual([
-      { account: "0002000002", byYear: { "2026": -41244.93 } },
-      { account: "0002000005", byYear: { "2026": 119.7 } },
+      { account: "0001234567", byYear: { "2025": { 1: 10, 2: 20, 3: 30 }, "2026": { 1: 5, 2: 7 } } },
     ]);
   });
 
-  it("captures every year column for a multi-year pivot", () => {
-    const grid: unknown[][] = [
-      ["Row Labels", "2025", "2026", "Grand Total"],
-      ["0001234567", 1000, 250, 1250],
-      ["2026", 5, 5, 10], // a 4-digit value is not an account (needs 6+ digits)
-      ["0009999999", "2,000", "1,234.50", "3,234.50"],
-    ];
-    const { accounts, years } = parseSalesPivot(grid);
-    expect(years).toEqual(["2025", "2026"]);
-    expect(accounts).toEqual([
-      { account: "0001234567", byYear: { "2025": 1000, "2026": 250 } },
-      { account: "0009999999", byYear: { "2025": 2000, "2026": 1234.5 } },
-    ]);
+  it("sums months through a cutoff for same-period comparison", () => {
+    const { accounts, monthsByYear } = parseSalesPivot(GRID);
+    const a = accounts[0]!;
+    const latest = Math.max(...monthsByYear["2026"]!); // 2
+    expect(sumThroughMonth(a.byYear["2026"], latest)).toBe(12); // 5 + 7
+    expect(sumThroughMonth(a.byYear["2025"], latest)).toBe(30); // 10 + 20 (same period)
+    expect(sumThroughMonth(a.byYear["2025"], 12)).toBe(60); // full prior year
   });
 });
