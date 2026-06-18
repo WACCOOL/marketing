@@ -188,7 +188,11 @@ function buildProps(p: Product, v: Variant, prices: PriceMap): Record<string, st
   set("beam_angle", s(v.beam_desc));
   set("ip_rating", s(v.ip_rating));
   set("dimensions", formatDims(v.dimensions_mm) ?? formatDims(p.dimensions_mm) ?? undefined);
-  set("image_url", (v.image_urls && v.image_urls[0]) || s(p.primary_image_url));
+  const image = (v.image_urls && v.image_urls[0]) || s(p.primary_image_url);
+  set("image_url", image);
+  // hs_images is HubSpot's standard product-image field — it drives the
+  // thumbnail shown in the UI (the custom image_url does not).
+  set("hs_images", image);
   set("ies_url", s(v.ies_url) ?? s(p.ies_url));
   // Product URL: the Sales Layer feed carries no product-page URL, so per spec
   // fall back to the product image (a variant-specific page URL would take
