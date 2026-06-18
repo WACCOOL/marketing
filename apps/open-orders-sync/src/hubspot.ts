@@ -150,10 +150,14 @@ export function buildOrderProperties(r: OpenOrderDbRow): Record<string, string |
   return properties;
 }
 
-/** Line Item property bag for one (SO, Material); null when no material. */
-export function buildLineProperties(r: OpenOrderDbRow): Record<string, string | number> | null {
-  if (!r.material) return null;
-  const properties: Record<string, string | number> = { so_material: `${r.so}-${r.material}`, name: r.material };
+/** Line Item property bag for one (SO, POSNR). The key is SO+POSNR — the true
+ * unique line key; SO+Material is NOT unique (a material can recur across an
+ * order's lines). */
+export function buildLineProperties(r: OpenOrderDbRow): Record<string, string | number> {
+  const properties: Record<string, string | number> = {
+    so_posnr: `${r.so}-${r.posnr}`,
+    name: r.material || `${r.so}-${r.posnr}`,
+  };
   for (const d of LINE_FIELDS) {
     const v = valueFor(r, d);
     if (v !== undefined) properties[d.prop] = v;
@@ -191,21 +195,21 @@ async function ensureSchema(token: string): Promise<{ repCodeTypeId: number | nu
   await ensureProps("orders", ORDER_FIELDS);
   await ensureProps("line_items", LINE_FIELDS);
 
-  // Line key: unique so_material on line items.
+  // Line key: unique so_posnr (SO + line position) on line items.
   const liProps = await hs<{ results: { name: string; hasUniqueValue?: boolean }[] }>(token, "/crm/v3/properties/line_items");
-  if (!liProps.results.some((p) => p.name === "so_material")) {
+  if (!liProps.results.some((p) => p.name === "so_posnr")) {
     await hs(token, "/crm/v3/properties/line_items", {
       method: "POST",
       body: JSON.stringify({
-        name: "so_material",
-        label: "SO + Material (key)",
+        name: "so_posnr",
+        label: "SO + Line (key)",
         type: "string",
         fieldType: "text",
         groupName: "open_orders",
         hasUniqueValue: true,
       }),
     });
-    console.log("[open-orders-sync] created line_items unique key so_material");
+    console.log("[open-orders-sync] created line_items unique key so_posnr");
   }
 
   // Order ↔ Rep Code association type (none exists yet).
@@ -340,15 +344,17 @@ export async function syncOpenOrdersToHubspot(
     return { idProperty: "sales_order_id", id: r.so, properties };
   });
 
-  // Build line upsert inputs (one per SO+Material).
-  const lineInputs = rows
-    .filter((r) => r.material)
-    .map((r) => ({
-      idProperty: "so_material",
-      id: `${r.so}-${r.material}`,
-      _so: r.so,
-      properties: buildLineProperties(r)!,
-    }));
+  // Build line upsert inputs (one per SO+POSNR), deduped by key so a batch never
+  // carries a duplicate id (staging is already unique on (so, posnr)).
+  const lineByKey = new Map<
+    string,
+    { idProperty: string; id: string; _so: string; properties: Record<string, string | number> }
+  >();
+  for (const r of rows) {
+    const key = `${r.so}-${r.posnr}`;
+    lineByKey.set(key, { idProperty: "so_posnr", id: key, _so: r.so, properties: buildLineProperties(r) });
+  }
+  const lineInputs = [...lineByKey.values()];
 
   if (opts.dryRun) {
     console.log(`[open-orders-sync] DRY RUN: ${orderInputs.length} orders, ${lineInputs.length} line items`);
