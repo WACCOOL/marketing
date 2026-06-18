@@ -140,7 +140,9 @@ function valueFor(row: OpenOrderDbRow, def: FieldDef): string | number | undefin
 
 /** Order property bag for one SO (sans owner, which is resolved at push time). */
 export function buildOrderProperties(r: OpenOrderDbRow): Record<string, string | number> {
-  const properties: Record<string, string | number> = { sales_order_id: r.so };
+  // hs_order_name = the SO; hs_total_price is added by the caller (it needs the
+  // order's full line set to sum).
+  const properties: Record<string, string | number> = { sales_order_id: r.so, hs_order_name: r.so };
   for (const d of ORDER_FIELDS) {
     const v = valueFor(r, d);
     if (v !== undefined) properties[d.prop] = v;
@@ -332,6 +334,13 @@ export async function syncOpenOrdersToHubspot(
   const orderBySo = new Map<string, OpenOrderDbRow>();
   for (const r of rows) orderBySo.set(r.so, r);
 
+  // Order total = sum of its line totals (SAP Line Net Value).
+  const totalBySo = new Map<string, number>();
+  for (const r of rows) {
+    const v = Number(r.line_net_value);
+    if (Number.isFinite(v)) totalBySo.set(r.so, (totalBySo.get(r.so) ?? 0) + v);
+  }
+
   // Resolve owners + association targets up front.
   const owners = opts.dryRun ? new Map<string, string>() : await ownerMap(token);
   const ownerFor = (name: string | null) => (name ? owners.get(name.trim().toLowerCase()) : undefined);
@@ -339,6 +348,8 @@ export async function syncOpenOrdersToHubspot(
   // Build order upsert inputs.
   const orderInputs = [...orderBySo.values()].map((r) => {
     const properties = buildOrderProperties(r);
+    const total = totalBySo.get(r.so);
+    if (total !== undefined) properties["hs_total_price"] = Math.round(total * 100) / 100;
     const oid = ownerFor(r.amt_rep);
     if (oid) properties["hubspot_owner_id"] = oid;
     return { idProperty: "sales_order_id", id: r.so, properties };
