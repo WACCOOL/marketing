@@ -26,7 +26,13 @@ export interface SalesParseResult {
   monthsByYear: Record<string, number[]>;
 }
 
-const ACCOUNT_RE = /^\d{6,}$/;
+// Account numbers: digit accounts ("0002008036") AND brand/region-prefixed ones
+// ("MF14921", "MX…", "HM00002"). A short letter prefix + 4+ digits, no spaces —
+// this excludes customer-group names (spaces) and country codes (few/no digits).
+// (A handful of purely-alphabetic special accounts like "THAI MING"/"UPS" are
+// indistinguishable from groups/countries without the pivot indent, which
+// SheetJS doesn't expose, so they're not matched — ~0.7% of sales.)
+const ACCOUNT_RE = /^[A-Za-z]{0,4}\d{4,}$/;
 const YEAR_RE = /^(19|20)\d{2}$/;
 const MONTH_RE = /^([1-9]|1[0-2])$/;
 
