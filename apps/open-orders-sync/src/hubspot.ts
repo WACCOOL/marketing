@@ -383,13 +383,18 @@ export async function syncOpenOrdersToHubspot(
   }
   await batchAssociate(token, "orders", "line_items", ORDER_TO_LINE_ITEM_TYPE, liToOrder);
 
-  // Order -> Company (by account number).
+  // Order -> Company (by account number). Companies store the SAP account
+  // inconsistently — some zero-padded ("0002011239"), some stripped
+  // ("2011239") — so resolve by BOTH forms.
+  const strip = (a: string) => a.replace(/^0+/, "") || a;
   const accounts = [...new Set([...orderBySo.values()].map((r) => r.customer_account).filter(Boolean) as string[])];
-  const companyByAccount = await resolveIds(token, "companies", "account_number_", accounts);
+  const candidates = [...new Set(accounts.flatMap((a) => [a, strip(a)]))];
+  const companyByAccount = await resolveIds(token, "companies", "account_number_", candidates);
+  const companyFor = (a: string) => companyByAccount.get(a) ?? companyByAccount.get(strip(a));
   const orderToCompany: { from: string; to: string }[] = [];
   for (const r of orderBySo.values()) {
     const oid = orderIdBySo.get(r.so);
-    const cid = r.customer_account ? companyByAccount.get(r.customer_account) : undefined;
+    const cid = r.customer_account ? companyFor(r.customer_account) : undefined;
     if (oid && cid) orderToCompany.push({ from: oid, to: cid });
   }
   await batchAssociate(token, "orders", "companies", ORDER_TO_COMPANY_TYPE, orderToCompany);
