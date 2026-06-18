@@ -296,12 +296,12 @@ async function batchUpsert(token: string, obj: Obj, inputs: { idProperty: string
   return idByKey;
 }
 
-async function batchAssociate(token: string, fromObj: string, toObj: string, typeId: number, pairs: { from: string; to: string }[]): Promise<void> {
+async function batchAssociate(token: string, fromObj: string, toObj: string, typeId: number, category: "HUBSPOT_DEFINED" | "USER_DEFINED", pairs: { from: string; to: string }[]): Promise<void> {
   for (let i = 0; i < pairs.length; i += BATCH) {
     const inputs = pairs.slice(i, i + BATCH).map((p) => ({
-      _from: { id: p.from },
+      from: { id: p.from },
       to: { id: p.to },
-      types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: typeId }],
+      types: [{ associationCategory: category, associationTypeId: typeId }],
     }));
     try {
       await hs(token, `/crm/v4/associations/${fromObj}/${toObj}/batch/create`, { method: "POST", body: JSON.stringify({ inputs }) });
@@ -381,7 +381,7 @@ export async function syncOpenOrdersToHubspot(
     const lid = lineIdByKey.get(li.id);
     if (oid && lid) liToOrder.push({ from: oid, to: lid });
   }
-  await batchAssociate(token, "orders", "line_items", ORDER_TO_LINE_ITEM_TYPE, liToOrder);
+  await batchAssociate(token, "orders", "line_items", ORDER_TO_LINE_ITEM_TYPE, "HUBSPOT_DEFINED", liToOrder);
 
   // Order -> Company (by account number). Companies store the SAP account
   // inconsistently — some zero-padded ("0002011239"), some stripped
@@ -397,7 +397,7 @@ export async function syncOpenOrdersToHubspot(
     const cid = r.customer_account ? companyFor(r.customer_account) : undefined;
     if (oid && cid) orderToCompany.push({ from: oid, to: cid });
   }
-  await batchAssociate(token, "orders", "companies", ORDER_TO_COMPANY_TYPE, orderToCompany);
+  await batchAssociate(token, "orders", "companies", ORDER_TO_COMPANY_TYPE, "HUBSPOT_DEFINED", orderToCompany);
   console.log(`[open-orders-sync] Order→Company: ${orderToCompany.length}/${orderBySo.size} matched by account number`);
 
   // Order -> Rep Code (by Sales Group).
@@ -410,7 +410,7 @@ export async function syncOpenOrdersToHubspot(
       const rid = r.sales_group ? repByCode.get(r.sales_group) : undefined;
       if (oid && rid) orderToRep.push({ from: oid, to: rid });
     }
-    await batchAssociate(token, "orders", REP_CODE_OBJECT, repCodeTypeId, orderToRep);
+    await batchAssociate(token, "orders", REP_CODE_OBJECT, repCodeTypeId, "USER_DEFINED", orderToRep);
     console.log(`[open-orders-sync] Order→RepCode: ${orderToRep.length}/${orderBySo.size} matched by Sales Group`);
   }
 
