@@ -21,6 +21,7 @@ import { adminRoutes } from "./routes/admin.js";
 import { productInfoRoutes } from "./routes/productinfo.js";
 import { pptRoutes } from "./routes/ppt.js";
 import { ingestRoutes } from "./routes/ingest.js";
+import { repCodeRoutes } from "./routes/repCodes.js";
 import { makeProductAdapter } from "./saleslayer.js";
 import { serviceSupabase } from "./supabase.js";
 import { updateJobStatus, type GenerationMessage } from "./generation.js";
@@ -75,6 +76,7 @@ app.route("/api/admin", adminRoutes);
 app.route("/api/product-info", productInfoRoutes);
 app.route("/api/ppt", pptRoutes);
 app.route("/api/ingest", ingestRoutes);
+app.route("/api/rep-codes", repCodeRoutes);
 
 // Anything not handled by a /api/* route falls through to the SPA assets
 // (configured in wrangler.jsonc with not_found_handling: single-page-application).

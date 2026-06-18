@@ -100,6 +100,11 @@ export interface Env {
   // The mailbox (UPN/address) the daily SAP Open Orders email lands in.
   OPEN_ORDERS_MAILBOX?: string;
 
+  // Shared token for the public zip -> rep-codes lookup (GET/POST
+  // /api/rep-codes/by-zip), called by HubSpot workflows. When unset the
+  // endpoint is closed.
+  REP_LOOKUP_TOKEN?: string;
+
   // Origin used when building public URLs (uploads / generated scenes / shot
   // previews) that the render-worker and generator fetch back over HTTP. Defaults
   // to the request origin. LOCAL DEV: wrangler stamps the configured custom-domain
