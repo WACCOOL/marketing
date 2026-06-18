@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { parseSalesPivot, type SalesParseResult } from "@wac/shared";
+import { parseSalesPivot, sumThroughMonth, type SalesParseResult } from "@wac/shared";
 
 /**
  * Sales sync — push YTD sales ($) per customer account onto HubSpot Companies.
@@ -33,9 +33,10 @@ const BRANDS: Brand[] = [
   { key: "WAC", url: process.env.SALES_WAC_URL },
   { key: "Schonbek", url: process.env.SALES_SCHONBEK_URL },
 ];
-const PROP_YTD = "ytd_sales";
-const PROP_PREV = "previous_year_sales";
-const PROP_DELTA = "ytd_sales_delta";
+const PROP_YTD = "ytd_sales"; // current year, through the latest month with data
+const PROP_PREV = "previous_year_sales"; // full prior year
+const PROP_PRIOR_YTD = "prior_ytd_sales"; // prior year, SAME period (through that month)
+const PROP_YOY = "ytd_sales_yoy_pct"; // (YTD − prior YTD) / prior YTD × 100
 
 function env(name: string): string {
   const v = process.env[name];
@@ -77,7 +78,7 @@ async function downloadSharedFile(token: string, url: string): Promise<Uint8Arra
 function parseWorkbook(bytes: Uint8Array): SalesParseResult {
   const wb = XLSX.read(bytes, { type: "array", dense: true });
   const sheet = wb.Sheets[wb.SheetNames[0]!];
-  if (!sheet) return { accounts: [], years: [] };
+  if (!sheet) return { accounts: [], years: [], monthsByYear: {} };
   const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false });
   return parseSalesPivot(grid);
 }
@@ -108,6 +109,7 @@ async function ensureProperties(token: string, defs: { name: string; label: stri
 
 const strip = (a: string) => a.replace(/^0+/, "") || a;
 const round2 = (n: number) => Math.round(n * 100) / 100;
+const round1 = (n: number) => Math.round(n * 10) / 10;
 
 /** Resolve account numbers (padded + stripped) to company ids. */
 async function resolveCompanies(token: string, accounts: string[]): Promise<Map<string, string>> {
@@ -160,30 +162,34 @@ async function main(): Promise<void> {
   const gtoken = await graphToken();
   for (const b of brands) {
     const bytes = await downloadSharedFile(gtoken, b.url!);
-    const { accounts, years } = parseWorkbook(bytes);
+    const { accounts, years, monthsByYear } = parseWorkbook(bytes);
     const cur = years[years.length - 1];
     const prev = cur ? String(Number(cur) - 1) : undefined;
-    const hasPrev = !!prev && years.includes(prev);
+    const latestMonth = cur ? Math.max(0, ...(monthsByYear[cur] ?? [])) : 0;
+    const hasPrev = !!prev && years.includes(prev) && latestMonth > 0;
     console.log(
-      `[sales-sync] ${b.key}: ${bytes.length} bytes, ${accounts.length} accounts, years [${years.join(", ")}]` +
-        (hasPrev ? "" : " — no prior year column, YTD only"),
+      `[sales-sync] ${b.key}: ${bytes.length} bytes, ${accounts.length} accounts, current ${cur ?? "?"} through M${latestMonth}, years [${years.join(", ")}]` +
+        (hasPrev ? "" : " — no prior year, YTD only"),
     );
-    if (accounts.length === 0 || !cur) {
-      console.warn(`[sales-sync] ${b.key}: no account/year data — the file may not have its pivot saved; skipping.`);
+    if (accounts.length === 0 || !cur || latestMonth === 0) {
+      console.warn(`[sales-sync] ${b.key}: no account/month data — the file may not have its pivot saved; skipping.`);
       continue;
     }
 
-    // YTD = current year, Previous Year = full prior year, Delta = YTD − prior.
+    // YTD = current year through latest month; Prior YTD = prior year SAME
+    // period; Previous Year = full prior year; YoY % = (YTD − Prior YTD)/Prior.
     const metricsByAccount = new Map<string, Record<string, number>>();
     for (const a of accounts) {
       const props: Record<string, number> = {};
-      const ytd = a.byYear[cur];
+      const ytd = sumThroughMonth(a.byYear[cur], latestMonth);
       if (ytd != null) props[PROP_YTD] = round2(ytd);
       if (hasPrev) {
-        const pry = a.byYear[prev!];
-        if (pry != null) {
-          props[PROP_PREV] = round2(pry);
-          if (ytd != null) props[PROP_DELTA] = round2(ytd - pry);
+        const priorYtd = sumThroughMonth(a.byYear[prev!], latestMonth);
+        const priorFull = sumThroughMonth(a.byYear[prev!], 12);
+        if (priorFull != null) props[PROP_PREV] = round2(priorFull);
+        if (priorYtd != null) {
+          props[PROP_PRIOR_YTD] = round2(priorYtd);
+          if (ytd != null && priorYtd !== 0) props[PROP_YOY] = round1(((ytd - priorYtd) / priorYtd) * 100);
         }
       }
       if (Object.keys(props).length) metricsByAccount.set(a.account, props);
@@ -198,7 +204,8 @@ async function main(): Promise<void> {
     if (hasPrev) {
       defs.push(
         { name: PROP_PREV, label: "Previous Year Sales" },
-        { name: PROP_DELTA, label: "YTD Sales Delta" },
+        { name: PROP_PRIOR_YTD, label: "Prior YTD Sales" },
+        { name: PROP_YOY, label: "YTD Sales YoY %" },
       );
     }
     await ensureProperties(token, defs);
