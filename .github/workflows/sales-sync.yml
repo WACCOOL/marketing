@@ -1,0 +1,44 @@
+name: Sales Sync
+
+# Pushes YTD sales ($) per customer account onto HubSpot Companies. Downloads
+# the WAC / Schonbek Sales pivot workbooks from OneDrive via Microsoft Graph
+# (sharing URL, app-only), reads the displayed pivot, and updates a per-brand
+# sales property on the matching Company (by account number). Daily, after the
+# workbooks' morning refresh.
+on:
+  schedule:
+    - cron: "0 13 * * *" # 13:00 UTC ≈ 9:00 AM ET
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (download + parse, print sample; no HubSpot writes)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: sales-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build sales-sync
+        run: pnpm --filter @wac/sales-sync build
+      - name: Run sales sync
+        env:
+          MS_TENANT_ID: ${{ secrets.MS_TENANT_ID }}
+          MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
+          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          SALES_WAC_URL: ${{ secrets.SALES_WAC_URL }}
+          SALES_SCHONBEK_URL: ${{ secrets.SALES_SCHONBEK_URL }}
+        run: pnpm --filter @wac/sales-sync sync ${{ inputs.dry_run && '-- --dry-run' || '' }}
