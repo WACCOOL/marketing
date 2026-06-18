@@ -1,4 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { resolvePdpUrls } from "./pdp.js";
 
 /**
  * Products sync — push the WAC product catalog (Sales Layer PIM, already in the
@@ -204,6 +205,9 @@ function buildProps(p: Product, v: Variant, prices: PriceMap): Record<string, st
 
 async function main(): Promise<void> {
   const dryRun = process.argv.includes("--dry-run");
+  // Populate the pdp_urls cache (scrape) and exit, without the HubSpot push —
+  // lets the heavy initial scrape run from a non-CI IP.
+  const resolveOnly = process.argv.includes("--resolve-only");
   const limArg = process.argv.indexOf("--limit");
   const limit = limArg >= 0 ? Number(process.argv[limArg + 1]) : Infinity;
 
@@ -236,6 +240,16 @@ async function main(): Promise<void> {
   if (Number.isFinite(limit)) products = products.slice(0, limit);
   console.log(`[products-sync] products: ${products.length}`);
 
+  // Resolve canonical product-page URLs (WIES method, Supabase-cached). Skipped
+  // on --dry-run to avoid scraping; product_url then keeps the image fallback.
+  const urlByProduct = dryRun
+    ? new Map<string, string>()
+    : await resolvePdpUrls(sb, products, () => new Date().toISOString());
+  if (resolveOnly) {
+    console.log("[products-sync] --resolve-only: pdp_urls cache populated; skipping HubSpot push.");
+    return;
+  }
+
   // Sales Layer's connector exports ONLY online/visible items — there is no
   // hidden/offline row in the feed (verified: the variant STATUS field is the
   // connector's A/M/D delta flag, and none of the 297 variant fields carry a
@@ -243,9 +257,14 @@ async function main(): Promise<void> {
   // finalized SKU and gets pushed. Dedup by sku (last wins).
   const bySku = new Map<string, { id: string; idProperty: "hs_sku"; properties: Record<string, string | number> }>();
   for (const p of products) {
+    const pdpUrl = urlByProduct.get(p.sku);
     for (const v of p.variants ?? []) {
       if (!v.sku) continue;
-      bySku.set(v.sku, { id: v.sku, idProperty: "hs_sku", properties: buildProps(p, v, prices) });
+      const properties = buildProps(p, v, prices);
+      // Canonical product-page URL wins; buildProps' image fallback stays when
+      // the brand isn't resolvable.
+      if (pdpUrl) properties.product_url = pdpUrl;
+      bySku.set(v.sku, { id: v.sku, idProperty: "hs_sku", properties });
     }
   }
   const inputs = [...bySku.values()];
