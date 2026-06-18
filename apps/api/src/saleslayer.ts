@@ -78,9 +78,6 @@ interface VariantRow {
   watts: string | null; // zpwrin
   lumens: string | null; // zlmt
   ip_rating: string | null; // ziprat
-  /** Content visibility status (Sales Layer variant STATUS field, e.g.
-   * "Visible"). The HubSpot Products push includes only Visible variants. */
-  status: string | null;
 }
 
 export interface ProductCacheRow {
@@ -276,7 +273,6 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             watts: cleanText(str(v.zpwrin)),
             lumens: cleanText(str(v.zlmt)),
             ip_rating: cleanText(str(v.ziprat)),
-            status: cleanText(str(v.STATUS)),
           };
           if (!variant.variant_id) continue;
           const list = variantsByProduct.get(productId) ?? [];

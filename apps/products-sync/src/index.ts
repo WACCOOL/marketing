@@ -19,7 +19,6 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
  */
 
 const HS = "https://api.hubapi.com";
-const VISIBLE = "visible";
 const PROPERTY_GROUP = "wac_pim";
 const UPSERT_BATCH = 100;
 
@@ -66,7 +65,6 @@ interface Variant {
   ip_rating: string | null;
   ies_url: string | null;
   image_urls: string[] | null;
-  status: string | null;
   dimensions_mm: { width?: number; height?: number; length?: number; diameter?: number } | null;
 }
 interface Product {
@@ -228,38 +226,21 @@ async function main(): Promise<void> {
   if (Number.isFinite(limit)) products = products.slice(0, limit);
   console.log(`[products-sync] products: ${products.length}`);
 
-  // Visible filter. Until the Sales Layer sync has been re-run to capture the
-  // variant STATUS field, no variant carries one — in that case treat ALL
-  // variants as visible (with a loud warning) rather than silently pushing 0.
-  const anyStatus = products.some((p) => (p.variants ?? []).some((v) => v.status));
-  if (!anyStatus) {
-    console.warn(
-      "[products-sync] WARNING: no variant carries a STATUS — the Sales Layer sync " +
-        "has not been re-run since STATUS capture was added. Treating ALL variants as " +
-        "visible. Re-run the product sync to enable the Visible-only filter.",
-    );
-  }
-  const isVisible = (v: Variant) =>
-    !anyStatus || (v.status ?? "").trim().toLowerCase() === VISIBLE;
-
-  // Expand to one record per visible variant material (dedup by sku, last wins).
+  // Sales Layer's connector exports ONLY online/visible items — there is no
+  // hidden/offline row in the feed (verified: the variant STATUS field is the
+  // connector's A/M/D delta flag, and none of the 297 variant fields carry a
+  // Visible/Hidden value). So every exported variant material is a visible,
+  // finalized SKU and gets pushed. Dedup by sku (last wins).
   const bySku = new Map<string, { id: string; idProperty: "hs_sku"; properties: Record<string, string | number> }>();
-  let skipped = 0;
   for (const p of products) {
     for (const v of p.variants ?? []) {
       if (!v.sku) continue;
-      if (!isVisible(v)) {
-        skipped++;
-        continue;
-      }
       bySku.set(v.sku, { id: v.sku, idProperty: "hs_sku", properties: buildProps(p, v, prices) });
     }
   }
   const inputs = [...bySku.values()];
   const withPrice = inputs.filter((i) => "c1" in i.properties || "d1" in i.properties).length;
-  console.log(
-    `[products-sync] ${inputs.length} visible variant materials (skipped ${skipped} non-visible); ${withPrice} have pricing`,
-  );
+  console.log(`[products-sync] ${inputs.length} variant materials; ${withPrice} have pricing`);
 
   if (dryRun) {
     console.log("[products-sync] --dry-run: not creating properties or upserting.");
