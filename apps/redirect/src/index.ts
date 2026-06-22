@@ -9,7 +9,7 @@ const KV_PREFIX = "slug:";
 /**
  * Short-link redirect Worker for `gowac.cc/:slug`.
  *
- * Hot path: KV lookup -> 301 immediately. Anything that touches Postgres
+ * Hot path: KV lookup -> 302 immediately. Anything that touches Postgres
  * (scan counters, KV-miss fallback lookup, warming the KV cache after a miss)
  * runs inside ctx.waitUntil() so scans never pay for analytics latency.
  *
@@ -48,7 +48,18 @@ export default {
     //    finish the Postgres write without blocking the redirect.
     ctx.waitUntil(recordScan(env, slug, req));
 
-    return Response.redirect(destination, 301);
+    // 302 + no-store, NOT 301: a short link's destination is editable, so the
+    // redirect must never be cached. Browsers cache 301s indefinitely and stop
+    // re-requesting the Worker, which would pin a client to a stale destination
+    // even after the owner edits it. 302 keeps every click re-resolving here,
+    // and Cache-Control: no-store prevents any intermediary from caching it.
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: destination,
+        "Cache-Control": "no-store",
+      },
+    });
   },
 } satisfies ExportedHandler<Env>;
 
