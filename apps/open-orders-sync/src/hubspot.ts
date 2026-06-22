@@ -279,6 +279,29 @@ async function resolveIds(token: string, obj: string, idProperty: string, values
   return map;
 }
 
+/** Resolve rep codes → their HubSpot id + channel in one read (channel goes on
+ * the order; id drives the Order↔RepCode association). */
+async function resolveRepInfo(token: string, repCodes: string[]): Promise<Map<string, { id: string; channel?: string }>> {
+  const map = new Map<string, { id: string; channel?: string }>();
+  for (let i = 0; i < repCodes.length; i += BATCH) {
+    const inputs = repCodes.slice(i, i + BATCH).map((v) => ({ id: v }));
+    try {
+      const res = await hs<{ results: { id: string; properties: Record<string, string> }[] }>(
+        token,
+        `/crm/v3/objects/${REP_CODE_OBJECT}/batch/read`,
+        { method: "POST", body: JSON.stringify({ idProperty: "rep_code", properties: ["rep_code", "channel"], inputs }) },
+      );
+      for (const r of res.results) {
+        const key = r.properties["rep_code"];
+        if (key) map.set(key, { id: r.id, channel: r.properties["channel"] || undefined });
+      }
+    } catch (e) {
+      if (!String(e).includes("207")) console.warn(`[open-orders-sync] rep code resolve batch failed: ${String(e).slice(0, 120)}`);
+    }
+  }
+  return map;
+}
+
 async function batchUpsert(token: string, obj: Obj, inputs: { idProperty: string; id: string; properties: Record<string, string | number> }[]): Promise<Map<string, string>> {
   const idByKey = new Map<string, string>(); // upsert key value -> HubSpot id
   for (let i = 0; i < inputs.length; i += BATCH) {
@@ -341,19 +364,30 @@ export async function syncOpenOrdersToHubspot(
     if (Number.isFinite(v)) totalBySo.set(r.so, (totalBySo.get(r.so) ?? 0) + v);
   }
 
-  // Resolve owners + association targets up front.
+  // Resolve owners + rep-code info (id + channel) up front. The order's channel
+  // is its rep code's (Sales Group) channel — copied straight from the Rep Code
+  // object, same option set on both. The rep id also drives the association.
   const owners = opts.dryRun ? new Map<string, string>() : await ownerMap(token);
   const ownerFor = (name: string | null) => (name ? owners.get(name.trim().toLowerCase()) : undefined);
+  const groups = [...new Set([...orderBySo.values()].map((r) => r.sales_group).filter(Boolean) as string[])];
+  const repInfo = await resolveRepInfo(token, groups);
 
   // Build order upsert inputs.
+  let channelSet = 0;
   const orderInputs = [...orderBySo.values()].map((r) => {
     const properties = buildOrderProperties(r);
     const total = totalBySo.get(r.so);
     if (total !== undefined) properties["hs_total_price"] = Math.round(total * 100) / 100;
     const oid = ownerFor(r.amt_rep);
     if (oid) properties["hubspot_owner_id"] = oid;
+    const channel = r.sales_group ? repInfo.get(r.sales_group)?.channel : undefined;
+    if (channel) {
+      properties["channel"] = channel;
+      channelSet++;
+    }
     return { idProperty: "sales_order_id", id: r.so, properties };
   });
+  console.log(`[open-orders-sync] channel set on ${channelSet}/${orderInputs.length} orders (from rep code)`);
 
   // Build line upsert inputs (one per SO+POSNR), deduped by key so a batch never
   // carries a duplicate id (staging is already unique on (so, posnr)).
@@ -411,14 +445,12 @@ export async function syncOpenOrdersToHubspot(
   await batchAssociate(token, "orders", "companies", ORDER_TO_COMPANY_TYPE, "HUBSPOT_DEFINED", orderToCompany);
   console.log(`[open-orders-sync] Order→Company: ${orderToCompany.length}/${orderBySo.size} matched by account number`);
 
-  // Order -> Rep Code (by Sales Group).
+  // Order -> Rep Code (by Sales Group; reuses repInfo resolved above).
   if (repCodeTypeId != null) {
-    const groups = [...new Set([...orderBySo.values()].map((r) => r.sales_group).filter(Boolean) as string[])];
-    const repByCode = await resolveIds(token, REP_CODE_OBJECT, "rep_code", groups);
     const orderToRep: { from: string; to: string }[] = [];
     for (const r of orderBySo.values()) {
       const oid = orderIdBySo.get(r.so);
-      const rid = r.sales_group ? repByCode.get(r.sales_group) : undefined;
+      const rid = r.sales_group ? repInfo.get(r.sales_group)?.id : undefined;
       if (oid && rid) orderToRep.push({ from: oid, to: rid });
     }
     await batchAssociate(token, "orders", REP_CODE_OBJECT, repCodeTypeId, "USER_DEFINED", orderToRep);
