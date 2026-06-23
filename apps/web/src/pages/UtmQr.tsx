@@ -708,6 +708,7 @@ export function UtmQr() {
                 <th>Medium</th>
                 <th>Content</th>
                 <th>Slug</th>
+                <th style={{ textAlign: "right" }}>Views</th>
                 <th />
               </tr>
               <tr className="filter-row">
@@ -784,6 +785,7 @@ export function UtmQr() {
                     }
                   />
                 </th>
+                <th />
                 <th />
               </tr>
             </thead>
@@ -1015,6 +1017,9 @@ export function UtmQr() {
                     <td>
                       <code style={{ fontSize: 12 }}>{r.slug}</code>
                     </td>
+                    <td style={{ textAlign: "right" }}>
+                      {r.scan_count.toLocaleString()}
+                    </td>
                     <td style={{ whiteSpace: "nowrap" }}>
                       {isEditing ? (
                         <div className="row" style={{ gap: 4 }}>
@@ -1049,7 +1054,7 @@ export function UtmQr() {
               })}
               {filteredRows.length === 0 && (
                 <tr>
-                  <td colSpan={12} className="muted" style={{ padding: 16 }}>
+                  <td colSpan={13} className="muted" style={{ padding: 16 }}>
                     {rows.length === 0
                       ? "No short links yet — generate one from the UTM Builder."
                       : "No rows match the current filters."}
