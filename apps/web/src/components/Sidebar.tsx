@@ -31,6 +31,7 @@ import {
   SlidersHorizontal,
   Sun,
   Upload,
+  Webhook,
   type LucideIcon,
 } from "lucide-react";
 import { useAuth } from "../lib/auth.js";
@@ -104,6 +105,7 @@ const NAV: NavEntry[] = [
     icon: Database,
     children: [
       { to: "/data/ingestions", label: "Data Ingestions", icon: Inbox },
+      { to: "/data/hubspot", label: "HubSpot Sync", icon: Webhook },
       { to: "/data/pricing", label: "Pricing Upload", icon: DollarSign },
     ],
   },

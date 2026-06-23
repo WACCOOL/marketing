@@ -84,6 +84,36 @@ export const requireIngestAuth = createMiddleware<AppBindings>(
   },
 );
 
+/** Synthetic user id for the SAP -> HubSpot sync capture token path. */
+export const SAP_SYNC_TOKEN_USER_ID = "sap-sync-token";
+
+/**
+ * Auth for the SAP -> HubSpot sync capture endpoints (POST /api/hubspot-sync/...).
+ * Accepts EITHER the shared `SAP_SYNC_TOKEN` Worker secret (the AWS Lambdas
+ * forwarding payloads) → a synthetic active `internal` user, OR a normal Supabase
+ * session (so the dashboard's authenticated admin can hit the same routes during
+ * testing). A DEDICATED token (separate from INGEST/ADMIN) so a leaked SAP token
+ * can never reach the file inbox or admin routes.
+ */
+export const requireSapSyncAuth = createMiddleware<AppBindings>(
+  async (c, next) => {
+    const token = bearerToken(c);
+    const syncToken = c.env.SAP_SYNC_TOKEN;
+    if (token && syncToken && timingSafeEqual(token, syncToken)) {
+      c.set("jwt", token);
+      c.set("user", {
+        id: SAP_SYNC_TOKEN_USER_ID,
+        email: "sap-sync@token",
+        role: "internal",
+        status: "active",
+      });
+      await next();
+      return;
+    }
+    return verifySession(c, next);
+  },
+);
+
 /** Pull the Bearer token from the Authorization header, if present. */
 function bearerToken(c: Context<AppBindings>): string | null {
   const match = (c.req.header("Authorization") ?? "").match(/^Bearer\s+(.+)$/i);

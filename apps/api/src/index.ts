@@ -21,6 +21,7 @@ import { adminRoutes } from "./routes/admin.js";
 import { productInfoRoutes } from "./routes/productinfo.js";
 import { pptRoutes } from "./routes/ppt.js";
 import { ingestRoutes } from "./routes/ingest.js";
+import { hubspotSyncRoutes } from "./routes/hubspotSync.js";
 import { repCodeRoutes } from "./routes/repCodes.js";
 import { makeProductAdapter } from "./saleslayer.js";
 import { serviceSupabase } from "./supabase.js";
@@ -28,6 +29,8 @@ import { updateJobStatus, type GenerationMessage } from "./generation.js";
 import { handleIngestBatch } from "./ingestQueue.js";
 import type { IngestMessage } from "./ingest.js";
 import { runGraphPull } from "./graphPull.js";
+import { runHubspotHeartbeat } from "./alerts.js";
+import { refreshHubspotOptions } from "./hubspotPush.js";
 import { GenerationContainer } from "./container.js";
 
 const app = new Hono<AppBindings>();
@@ -76,6 +79,7 @@ app.route("/api/admin", adminRoutes);
 app.route("/api/product-info", productInfoRoutes);
 app.route("/api/ppt", pptRoutes);
 app.route("/api/ingest", ingestRoutes);
+app.route("/api/hubspot-sync", hubspotSyncRoutes);
 app.route("/api/rep-codes", repCodeRoutes);
 
 // Anything not handled by a /api/* route falls through to the SPA assets
@@ -83,9 +87,11 @@ app.route("/api/rep-codes", repCodeRoutes);
 app.all("*", async (c) => c.env.ASSETS.fetch(c.req.raw));
 
 /**
- * Cron entrypoint (schedules in wrangler.jsonc). Two schedules:
+ * Cron entrypoint (schedules in wrangler.jsonc). Schedules:
  *   - daily 07:00 UTC — Sales Layer product cache refresh
  *   - every 30 minutes — marketing-data Graph pull (Territory + Open Orders)
+ *   - hourly — SAP -> HubSpot sync heartbeat (alert if the feed goes quiet)
+ *   - daily 05:00 UTC — refresh cached HubSpot dropdown options (self-heal)
  * Each branch is best-effort and logs rather than throwing so one blip doesn't
  * fail the invocation.
  */
@@ -95,6 +101,12 @@ async function scheduled(event: ScheduledController, env: Env): Promise<void> {
   }
   if (event.cron === "*/30 * * * *") {
     await runGraphPull(env);
+  }
+  if (event.cron === "0 * * * *") {
+    await runHubspotHeartbeat(env);
+  }
+  if (event.cron === "0 5 * * *") {
+    await refreshHubspotOptions(env, serviceSupabase(env));
   }
 }
 

@@ -26,6 +26,7 @@ import { PptRenderedImages } from "./pages/ppt/RenderedImages.js";
 import { PptTemplates } from "./pages/ppt/Templates.js";
 import { DataIngestions } from "./pages/ingest/DataIngestions.js";
 import { PricingUpload } from "./pages/ingest/PricingUpload.js";
+import { HubspotSync } from "./pages/data/HubspotSync.js";
 
 // Lazy-loaded: the 3D App-Shot + Cam Solve studios pull in <model-viewer>
 // (three.js), which is heavy. Code-split them so they only load when opened.
@@ -172,6 +173,17 @@ function Shell() {
                 <Navigate to="/builder" replace />
               ) : (
                 <DataIngestions />
+              )
+            }
+          />
+          {/* SAP -> HubSpot sync review dashboard: internal/admin only. */}
+          <Route
+            path="/data/hubspot"
+            element={
+              user.role === "rep" ? (
+                <Navigate to="/builder" replace />
+              ) : (
+                <HubspotSync />
               )
             }
           />

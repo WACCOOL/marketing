@@ -89,6 +89,18 @@ export interface Env {
   // routes. When unset, only authenticated GUI uploads work (the manual path).
   INGEST_API_TOKEN?: string;
 
+  // Shared secret for the SAP -> HubSpot sync capture endpoint
+  // (POST /api/hubspot-sync/...). The two AWS Lambdas present it as a Bearer
+  // token to forward each payload + push outcome. DEDICATED (separate from the
+  // ingest/admin tokens) so a leaked SAP token can't reach the file inbox or
+  // admin routes. When unset, the capture endpoint is closed.
+  SAP_SYNC_TOKEN?: string;
+
+  // Slack incoming-webhook URL for severe HubSpot-sync alerts (heartbeat
+  // no-data; Phase 2: DLQ / held-needs-decision / failure spikes). Best-effort —
+  // when unset, alerts are logged only.
+  ALERT_SLACK_WEBHOOK?: string;
+
   // Microsoft Graph app-only (client-credentials) creds for the scheduled
   // ingestion pullers (graphPull.ts): pull the Territory file from SharePoint
   // and the Open Orders attachment from a mailbox. Requires admin-consented
