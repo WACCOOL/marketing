@@ -17,7 +17,7 @@ interface FanoutResp {
 export function Social() {
   const { vocab, campaigns, refresh, loading: vocabLoading } = useVocab();
   const [name, setName] = useState("");
-  const [destination, setDestination] = useState("https://waclighting.com/");
+  const [destination, setDestination] = useState("https://wacgroup.com");
   const [campaign, setCampaign] = useState<HubspotCampaign | null>(null);
   const [medium, setMedium] = useState("social");
   const [content, setContent] = useState("");
