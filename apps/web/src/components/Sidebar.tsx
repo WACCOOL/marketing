@@ -227,7 +227,7 @@ export function Sidebar() {
   return (
     <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
       <div className="sidebar-header">
-        <span className="menu-title">Menu</span>
+        <span className="menu-title">WAC MKTG</span>
         <button
           type="button"
           className="icon-btn collapse-toggle"
