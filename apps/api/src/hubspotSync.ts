@@ -137,6 +137,37 @@ export async function sha256Hex(input: string): Promise<string> {
 }
 
 /**
+ * Parse a forwarded body into { payload, payloadText, idempotencyKey }. Accepts
+ * either the envelope { idempotencyKey, payload } (the Lambda) or a bare SAP
+ * payload (the key is then the SHA-256 of the stored bytes). Returns null on
+ * invalid JSON. Shared by the capture/push routes and the raw-backup replay so
+ * a re-pushed payload lands on the SAME idempotency key as the live one.
+ */
+export async function parseForwardedPayload(
+  raw: string,
+): Promise<{ payload: Record<string, unknown>; payloadText: string; idempotencyKey: string } | null> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const envlp = parsed as { idempotencyKey?: unknown; payload?: unknown };
+  if (envlp && typeof envlp === "object" && "payload" in envlp) {
+    const payload = (envlp.payload ?? {}) as Record<string, unknown>;
+    const payloadText = JSON.stringify(payload);
+    const idempotencyKey =
+      typeof envlp.idempotencyKey === "string" ? envlp.idempotencyKey : await sha256Hex(payloadText);
+    return { payload, payloadText, idempotencyKey };
+  }
+  return {
+    payload: parsed as Record<string, unknown>,
+    payloadText: raw,
+    idempotencyKey: await sha256Hex(raw),
+  };
+}
+
+/**
  * Capture a forwarded payload: upsert one row per distinct payload (deduped by
  * idempotency_key) and, ONLY on a genuine first insert, store the raw JSON in R2
  * and record any unmapped-field issues. Retries / identical re-sends bump
@@ -495,6 +526,109 @@ export async function replayRecords(
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return { total: ids.length, counts };
+}
+
+/**
+ * Isolated R2 prefix for the SAP Lambda's independent raw backup. The thin-proxy
+ * Lambdas write the raw payload here BEFORE forwarding to /push, so the copy
+ * survives even when the Worker route is unavailable (the 2026-06-23 incident:
+ * a stale `main` deploy wiped /push, and the only capture lived ON the Worker).
+ * Kept separate from the Worker's own `hubspot-sync/` capture prefix.
+ *   raw-sap/{object}/{yyyy}/{mm}/{dd}/{idempotencyKey}.json
+ */
+export const RAW_INBOX_PREFIX = "raw-sap";
+
+/** UTC day-partition prefixes spanning [from, to] (inclusive) — narrows R2 list scans. */
+function rawDayPrefixes(objectType: string, from: Date, to: Date): string[] {
+  const prefixes: string[] = [];
+  const cur = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
+  const end = Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate());
+  while (cur.getTime() <= end) {
+    prefixes.push(
+      `${RAW_INBOX_PREFIX}/${objectType}/${cur.getUTCFullYear()}/${pad2(cur.getUTCMonth() + 1)}/${pad2(cur.getUTCDate())}/`,
+    );
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return prefixes;
+}
+
+/**
+ * Replay the Lambda's raw R2 backup (`raw-sap/` inbox) over a time window through
+ * captureAndPush. The push is idempotent (HubSpot upsert, deduped by
+ * idempotency_key), so replaying a whole window is safe even for events that
+ * already succeeded — this is the recovery path for any gap where the Worker
+ * /push route was unavailable. Filters by R2 `uploaded` time; when a `from` is
+ * given the scan is narrowed to that window's UTC day-partitions.
+ */
+export async function replayRawRange(
+  env: Env,
+  serviceSb: SupabaseClient,
+  opts: { objectType?: HubspotObjectType; from?: Date; to?: Date; limit?: number },
+): Promise<{
+  scanned: number;
+  replayed: number;
+  skippedOutOfRange: number;
+  errors: number;
+  counts: Record<string, number>;
+}> {
+  const objects: HubspotObjectType[] = opts.objectType ? [opts.objectType] : ["deals", "companies"];
+  const limit = opts.limit ?? 500;
+  const counts: Record<string, number> = {};
+  let scanned = 0;
+  let replayed = 0;
+  let skippedOutOfRange = 0;
+  let errors = 0;
+  const bump = (k: string) => (counts[k] = (counts[k] ?? 0) + 1);
+
+  for (const obj of objects) {
+    const scanPrefixes = opts.from
+      ? rawDayPrefixes(obj, opts.from, opts.to ?? new Date())
+      : [`${RAW_INBOX_PREFIX}/${obj}/`];
+    for (const prefix of scanPrefixes) {
+      let cursor: string | undefined;
+      do {
+        const listed = await env.ASSETS_BUCKET.list({ prefix, cursor, limit: 1000 });
+        cursor = listed.truncated ? listed.cursor : undefined;
+        for (const o of listed.objects) {
+          if (opts.from && o.uploaded < opts.from) {
+            skippedOutOfRange++;
+            continue;
+          }
+          if (opts.to && o.uploaded > opts.to) {
+            skippedOutOfRange++;
+            continue;
+          }
+          if (replayed >= limit) {
+            return { scanned, replayed, skippedOutOfRange, errors, counts };
+          }
+          scanned++;
+          const body = await env.ASSETS_BUCKET.get(o.key);
+          const parsed = body ? await parseForwardedPayload(await body.text()) : null;
+          if (!parsed) {
+            errors++;
+            bump("error");
+            continue;
+          }
+          const res = await captureAndPush(env, serviceSb, {
+            objectType: obj,
+            idempotencyKey: parsed.idempotencyKey,
+            payloadText: parsed.payloadText,
+            payload: parsed.payload,
+            deliveredBy: "replay-raw",
+            source: "replay-raw",
+          });
+          if (res.ok) {
+            replayed++;
+            bump(res.status);
+          } else {
+            errors++;
+            bump("error");
+          }
+        }
+      } while (cursor);
+    }
+  }
+  return { scanned, replayed, skippedOutOfRange, errors, counts };
 }
 
 export async function getRecordByKey(
