@@ -122,13 +122,13 @@ export function Social() {
           <div>
             <label>Medium (shared)</label>
             <select value={medium} onChange={(e) => setMedium(e.target.value)}>
-              {["social", "organic_social", "paid_social"].map((m) => (
+              {["social", "paid_social"].map((m) => (
                 <option key={m} value={m}>
                   {m}
                 </option>
               ))}
               {vocab.medium
-                .filter((m) => !["social", "organic_social", "paid_social"].includes(m))
+                .filter((m) => !["social", "paid_social"].includes(m))
                 .map((m) => (
                   <option key={m} value={m}>
                     {m}

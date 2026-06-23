@@ -4,7 +4,7 @@ import { buildTaggedUrl, type UtmFields } from "./utm.js";
 export interface SocialFanoutInput {
   destination: string;
   campaign: string;
-  /** Shared utm_medium for all six channels — e.g. "social" | "organic_social" | "paid_social" */
+  /** Shared utm_medium for all six channels — e.g. "social" | "paid_social" */
   medium: string;
   /** Optional shared utm_content */
   content?: string;
