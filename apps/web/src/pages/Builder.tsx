@@ -21,7 +21,7 @@ interface SingleQrResp {
 // session, so a half-built UTM isn't lost by visiting another tab. Cleared on a
 // successful save (the UTM is "complete") or via the Reset button.
 const DRAFT_KEY = "wac-utm-builder-draft";
-const DEFAULT_DESTINATION = "https://waclighting.com/";
+const DEFAULT_DESTINATION = "https://wacgroup.com";
 
 interface BuilderDraft {
   name: string;
@@ -265,7 +265,7 @@ export function Builder() {
           <input
             value={destination}
             onChange={(e) => setDestination(e.target.value)}
-            placeholder="https://waclighting.com/..."
+            placeholder="https://wacgroup.com/..."
           />
         </div>
         <div className="grid-3">
