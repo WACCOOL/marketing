@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { SocialChannels, encodeCampaignValue, type HubspotCampaign } from "@wac/shared";
-import { useVocab } from "../lib/vocab.js";
+import { addContentValue, useVocab } from "../lib/vocab.js";
 import { api } from "../lib/api.js";
 
 interface FanoutResp {
@@ -15,12 +15,13 @@ interface FanoutResp {
 }
 
 export function Social() {
-  const { vocab, campaigns } = useVocab();
+  const { vocab, campaigns, refresh, loading: vocabLoading } = useVocab();
   const [name, setName] = useState("");
   const [destination, setDestination] = useState("https://waclighting.com/");
   const [campaign, setCampaign] = useState<HubspotCampaign | null>(null);
   const [medium, setMedium] = useState("social");
   const [content, setContent] = useState("");
+  const [newContent, setNewContent] = useState("");
   const [selected, setSelected] = useState<Record<string, boolean>>(
     Object.fromEntries(SocialChannels.map((c) => [c, true])),
   );
@@ -28,6 +29,25 @@ export function Social() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<FanoutResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
+  // A typed custom-content value takes precedence over the dropdown and is used
+  // directly for the UTM without being added to the content list.
+  const customContent = newContent.trim();
+  const usingCustomContent = customContent.length > 0;
+  const effectiveContent = usingCustomContent ? customContent : content;
+
+  async function onAddContent() {
+    const value = customContent.toLowerCase();
+    if (!value) return;
+    try {
+      await addContentValue(value);
+      setContent(value);
+      setNewContent("");
+      await refresh();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   async function onGenerate() {
     if (!campaign) return;
@@ -43,7 +63,7 @@ export function Social() {
           destination,
           campaign: encodeCampaignValue(campaign),
           medium,
-          content: content || undefined,
+          content: effectiveContent || undefined,
           channels,
         }),
       });
@@ -79,7 +99,7 @@ export function Social() {
             />
           </div>
         </div>
-        <div className="grid-3">
+        <div className="grid-2">
           <div>
             <label>Campaign</label>
             <select
@@ -116,16 +136,53 @@ export function Social() {
                 ))}
             </select>
           </div>
+        </div>
+        <div className="grid-2">
           <div>
             <label>Content (shared, optional)</label>
-            <select value={content} onChange={(e) => setContent(e.target.value)}>
-              <option value="">— none —</option>
-              {vocab.content.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
+            <select
+              value={usingCustomContent ? "__custom__" : content}
+              onChange={(e) => setContent(e.target.value)}
+              disabled={usingCustomContent}
+            >
+              {usingCustomContent ? (
+                <option value="__custom__">custom</option>
+              ) : (
+                <>
+                  <option value="">— none —</option>
+                  {vocab.content.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                </>
+              )}
             </select>
+          </div>
+          <div>
+            <label>…or use / add a content value</label>
+            <div className="row">
+              <input
+                value={newContent}
+                onChange={(e) => setNewContent(e.target.value)}
+                placeholder="e.g. new_landing"
+              />
+              <button
+                className="secondary"
+                onClick={onAddContent}
+                disabled={!customContent || vocabLoading}
+                title="Optional — save this value to the reusable content list"
+                style={{ whiteSpace: "nowrap" }}
+              >
+                Add to Content List
+              </button>
+            </div>
+            {usingCustomContent && (
+              <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+                Using <code>{customContent.toLowerCase()}</code> for this fan-out.
+                Adding to the list is optional.
+              </div>
+            )}
           </div>
         </div>
         <div>
