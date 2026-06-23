@@ -158,6 +158,9 @@ export function Social() {
                 </>
               )}
             </select>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              Typically a product, show, or publication.
+            </div>
           </div>
           <div>
             <label>…or use / add a content value</label>

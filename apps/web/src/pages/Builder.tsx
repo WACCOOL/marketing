@@ -20,7 +20,9 @@ interface SingleQrResp {
 // The builder form survives navigating away and back (and a reload) within the
 // session, so a half-built UTM isn't lost by visiting another tab. Cleared on a
 // successful save (the UTM is "complete") or via the Reset button.
-const DRAFT_KEY = "wac-utm-builder-draft";
+// Bump the version suffix to abandon stale drafts after changing a default (e.g.
+// the default destination) — otherwise a persisted draft pins the old value.
+const DRAFT_KEY = "wac-utm-builder-draft-v2";
 const DEFAULT_DESTINATION = "https://wacgroup.com";
 
 interface BuilderDraft {
@@ -344,6 +346,9 @@ export function Builder() {
                 </>
               )}
             </select>
+            <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>
+              Typically a product, show, or publication.
+            </div>
           </div>
           <div>
             <label>…or use / add a content value</label>
