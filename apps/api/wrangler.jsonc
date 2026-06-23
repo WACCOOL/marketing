@@ -118,8 +118,10 @@
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:
   //   "0 7 * * *"    daily Sales Layer product cache refresh (07:00 UTC)
   //   "*/30 * * * *" marketing-data Graph pull (Territory + Open Orders)
+  //   "0 * * * *"    hourly SAP -> HubSpot sync heartbeat (no-data alert)
+  //   "0 5 * * *"    daily refresh of cached HubSpot dropdown options (self-heal)
   "triggers": {
-    "crons": ["0 7 * * *", "*/30 * * * *"]
+    "crons": ["0 7 * * *", "*/30 * * * *", "0 * * * *", "0 5 * * *"]
   },
 
   "observability": {
