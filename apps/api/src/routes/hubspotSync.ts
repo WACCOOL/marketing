@@ -15,9 +15,10 @@ import {
   getSummary,
   listFieldIssues,
   listRecords,
+  parseForwardedPayload,
   patchResult,
+  replayRawRange,
   replayRecords,
-  sha256Hex,
   type FieldIssueRow,
   type HubspotSyncRecordRow,
 } from "../hubspotSync.js";
@@ -82,39 +83,6 @@ function toIssueResponse(row: FieldIssueRow & { dedup_key?: string | null }) {
   };
 }
 
-/**
- * Parse the request body into { payload, payloadText, idempotencyKey }. Accepts
- * either the envelope { idempotencyKey, payload } (the Lambda) or a bare payload
- * (manual testing — the key is computed from the stored bytes).
- */
-async function readPayload(
-  raw: string,
-): Promise<
-  | { ok: true; payload: Record<string, unknown>; payloadText: string; idempotencyKey: string }
-  | { ok: false }
-> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { ok: false };
-  }
-  const envlp = parsed as { idempotencyKey?: unknown; payload?: unknown };
-  if (envlp && typeof envlp === "object" && "payload" in envlp) {
-    const payload = (envlp.payload ?? {}) as Record<string, unknown>;
-    const payloadText = JSON.stringify(payload);
-    const idempotencyKey =
-      typeof envlp.idempotencyKey === "string" ? envlp.idempotencyKey : await sha256Hex(payloadText);
-    return { ok: true, payload, payloadText, idempotencyKey };
-  }
-  return {
-    ok: true,
-    payload: parsed as Record<string, unknown>,
-    payloadText: raw,
-    idempotencyKey: await sha256Hex(raw),
-  };
-}
-
 /** Capture a forwarded SAP payload (token path = the Lambda). No HubSpot push. */
 hubspotSyncRoutes.post("/capture/:object", requireSapSyncAuth, async (c) => {
   const objectType = c.req.param("object") as HubspotObjectType;
@@ -124,8 +92,8 @@ hubspotSyncRoutes.post("/capture/:object", requireSapSyncAuth, async (c) => {
 
   const raw = await c.req.text();
   if (!raw) return c.json({ error: "empty body" }, 400);
-  const parsed = await readPayload(raw);
-  if (!parsed.ok) return c.json({ error: "invalid JSON body" }, 400);
+  const parsed = await parseForwardedPayload(raw);
+  if (!parsed) return c.json({ error: "invalid JSON body" }, 400);
   const { payload, payloadText, idempotencyKey } = parsed;
 
   const user = c.get("user");
@@ -198,8 +166,8 @@ hubspotSyncRoutes.post("/push/:object", requireSapSyncAuth, async (c) => {
 
   const raw = await c.req.text();
   if (!raw) return c.json({ error: "empty body" }, 400);
-  const parsed = await readPayload(raw);
-  if (!parsed.ok) return c.json({ error: "invalid JSON body" }, 400);
+  const parsed = await parseForwardedPayload(raw);
+  if (!parsed) return c.json({ error: "invalid JSON body" }, 400);
   const { payload, payloadText, idempotencyKey } = parsed;
 
   const user = c.get("user");
@@ -232,6 +200,43 @@ hubspotSyncRoutes.post("/replay", requireSapSyncAuth, async (c) => {
     status: body.status ?? "partial",
     objectType: body.objectType,
     limit: body.limit,
+  });
+  return c.json(res);
+});
+
+/**
+ * Replay the Lambda's independent raw R2 backup (`raw-sap/` inbox) over a time
+ * window — the recovery path when the Worker /push route was unavailable. The
+ * push is idempotent (HubSpot upsert), so a window can be replayed blind: events
+ * that already landed dedupe, and only the gap is filled.
+ *   POST /api/hubspot-sync/replay-raw?object=deals&from=<ISO>&to=<ISO>&limit=500
+ */
+hubspotSyncRoutes.post("/replay-raw", requireSapSyncAuth, async (c) => {
+  const user = c.get("user");
+  if (user.id !== SAP_SYNC_TOKEN_USER_ID && !isInternalOrAdmin(user)) {
+    return c.json({ error: "internal access required" }, 403);
+  }
+  const objectQ = c.req.query("object");
+  if (objectQ && !OBJECT_TYPES.includes(objectQ as HubspotObjectType)) {
+    return c.json({ error: "unknown object type" }, 404);
+  }
+  const fromQ = c.req.query("from");
+  const toQ = c.req.query("to");
+  const from = fromQ ? new Date(fromQ) : undefined;
+  const to = toQ ? new Date(toQ) : undefined;
+  if (from && Number.isNaN(from.getTime())) return c.json({ error: "invalid `from` timestamp" }, 400);
+  if (to && Number.isNaN(to.getTime())) return c.json({ error: "invalid `to` timestamp" }, 400);
+  const limitQ = c.req.query("limit");
+  const limit = limitQ ? Number(limitQ) : undefined;
+  if (limit != null && (!Number.isFinite(limit) || limit <= 0)) {
+    return c.json({ error: "invalid `limit`" }, 400);
+  }
+
+  const res = await replayRawRange(c.env, serviceSupabase(c.env), {
+    objectType: objectQ as HubspotObjectType | undefined,
+    from,
+    to,
+    limit,
   });
   return c.json(res);
 });
