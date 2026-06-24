@@ -97,6 +97,11 @@ export const DEAL_FIELD_MAP: Record<string, string> = {
   completed_quote_follow_up_by_3: "completed_quote_follow_up_by_3",
   valid_to_date_is_greater_than_quote_creation_date___365__cloned_:
     "valid_to_date_is_greater_than_quote_creation_date___365__cloned_",
+
+  // Added 2026-06-24: SAP fields with no prior HubSpot property (now created).
+  // Present in the CSV export; the live real-time payload does not send these.
+  register: "register",
+  external_quote_note: "external_quote_note",
 };
 
 /** Line Item property map — SAP line field -> HubSpot Line Item property. */
@@ -320,6 +325,7 @@ export const DEAL_DATE_FIELDS: readonly string[] = [
 export const LINE_ITEM_DATE_FIELDS: readonly string[] = [
   "rejection_date",
   "quote_conversion_date",
+  "sales_order_date",
 ];
 
 /** An incoming key with no mapping/known purpose — surfaced in the dashboard. */
