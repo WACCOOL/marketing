@@ -1,6 +1,8 @@
 import {
   COMPANY_FIELD_MAP,
+  DEAL_DATE_FIELDS,
   DEAL_FIELD_MAP,
+  LINE_ITEM_DATE_FIELDS,
   LINE_ITEM_FIELD_MAP,
   extractInvalidPropertyItems,
   healProperties,
@@ -8,6 +10,7 @@ import {
   mapFields,
   smartMatchToAllowedOptions,
   toDecimalPercent,
+  toHubspotDate,
   toNumber,
   type FixAction,
 } from "@wac/shared";
@@ -745,6 +748,21 @@ async function findDealIdByQuoteNumber(
   return hit?.id ? String(hit.id) : null;
 }
 
+/**
+ * Convert SAP `MM/DD/YYYY` date strings to HubSpot's date format (midnight-UTC
+ * ms) for the given target properties; drop null/invalid (e.g. `00/00/0000`) so a
+ * bad value is never sent. These properties are date-typed with no options, so
+ * they must not pass through the enum heal (kept out of the options map).
+ */
+function coerceDates(bag: Record<string, unknown>, fields: readonly string[]): void {
+  for (const f of fields) {
+    if (bag[f] === undefined) continue;
+    const d = toHubspotDate(bag[f]);
+    if (d === null) delete bag[f];
+    else bag[f] = d;
+  }
+}
+
 async function upsertDeal(
   token: string,
   payload: Record<string, unknown>,
@@ -762,6 +780,7 @@ async function upsertDeal(
 
   const mapped = mapFields(payload, DEAL_FIELD_MAP);
   if (poc.email) mapped.requested_by = poc.email; // self-heal SAP's truncated/name value
+  coerceDates(mapped, DEAL_DATE_FIELDS); // MM/DD/YYYY -> HubSpot date (ms); drop 00/00/0000
   // Proactive: apply learned aliases + validate/auto-correct dropdowns before pushing.
   const n = normalizeWithLearning("deals", "deal", mapped, optionsByProp, aliasMap);
   for (const a of n.actions) fixActions.push(a);
@@ -847,6 +866,7 @@ async function upsertLineItems(
       if (mapped.hs_discount_percentage !== undefined) {
         mapped.hs_discount_percentage = toDecimalPercent(mapped.hs_discount_percentage);
       }
+      coerceDates(mapped, LINE_ITEM_DATE_FIELDS); // MM/DD/YYYY -> HubSpot date (ms)
       if (p.doc__currency) {
         mapped.currency = p.doc__currency;
         mapped.doc__currency = p.doc__currency;

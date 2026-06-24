@@ -7,8 +7,26 @@ import {
   detectUnmappedFields,
   sapChangedAtFor,
   toDecimalPercent,
+  toHubspotDate,
   toNumber,
 } from "./mapping.js";
+
+describe("toHubspotDate", () => {
+  it("converts MM/DD/YYYY to a midnight-UTC ms timestamp", () => {
+    expect(toHubspotDate("04/18/2024")).toBe(Date.UTC(2024, 3, 18));
+    expect(toHubspotDate("12/17/2024")).toBe(Date.UTC(2024, 11, 17));
+  });
+  it("returns null for SAP's 00/00/0000 null sentinel", () => {
+    expect(toHubspotDate("00/00/0000")).toBeNull();
+  });
+  it("returns null for empty/invalid/non-date input", () => {
+    expect(toHubspotDate("")).toBeNull();
+    expect(toHubspotDate(null)).toBeNull();
+    expect(toHubspotDate(undefined)).toBeNull();
+    expect(toHubspotDate("not a date")).toBeNull();
+    expect(toHubspotDate("13/01/2024")).toBeNull(); // month out of range
+  });
+});
 
 describe("field maps preserve real-world quirks", () => {
   it("maps both opportunity_type spellings to the same target", () => {
