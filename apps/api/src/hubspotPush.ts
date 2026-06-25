@@ -4,6 +4,7 @@ import {
   DEAL_FIELD_MAP,
   LINE_ITEM_DATE_FIELDS,
   LINE_ITEM_FIELD_MAP,
+  computeInsideSalesFields,
   extractInvalidPropertyItems,
   healProperties,
   isValidationError,
@@ -13,6 +14,7 @@ import {
   toHubspotDate,
   toNumber,
   type FixAction,
+  type InsideSalesResolvers,
 } from "@wac/shared";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Env } from "./env.js";
@@ -1080,6 +1082,166 @@ export async function pushDeal(
   }
 }
 
+/* --------------------------- inside-sales (ISR) ---------------------------- */
+
+const REP_OBJECT = "2-41537429";
+let repResolverCache: { maps: InsideSalesResolvers; at: number } | null = null;
+const REP_RESOLVER_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Build the AMT->owner and rep_code->owner maps from the synced `rep_codes` table
+ * (the parsed "Rep Code RSM ISR Mapping" sheet). ISR names resolve to HubSpot
+ * owner ids via the cached owner maps. amt->isr conflicts resolve to the majority.
+ * TTL-cached (the sheet changes ~every 6h). Fail-soft: returns empty maps on error.
+ */
+async function loadRepResolvers(
+  sb: SupabaseClient,
+  token: string,
+  signal: AbortSignal,
+): Promise<InsideSalesResolvers> {
+  if (repResolverCache && Date.now() - repResolverCache.at < REP_RESOLVER_TTL_MS) {
+    return repResolverCache.maps;
+  }
+  const amtToOwner = new Map<string, string>();
+  const repCodeToOwner = new Map<string, string>();
+  const { data, error } = await sb.from("rep_codes").select("rep_code, amt_rep_code, isr");
+  if (error) {
+    console.error(`[inside-sales] loadRepResolvers failed: ${error.message}`);
+    return { amtToOwner, repCodeToOwner };
+  }
+  const rows = (data ?? []) as { rep_code: string | null; amt_rep_code: string | null; isr: string | null }[];
+
+  // resolve each distinct ISR name to an owner id once
+  const ownerIdByName = new Map<string, string | null>();
+  const ownerFor = async (name: string): Promise<string | null> => {
+    const key = name.trim().toLowerCase();
+    if (ownerIdByName.has(key)) return ownerIdByName.get(key)!;
+    const o = await resolveOwnerByName(token, name, signal);
+    ownerIdByName.set(key, o?.id ?? null);
+    return o?.id ?? null;
+  };
+
+  const amtIsrCounts = new Map<string, Map<string, number>>();
+  for (const r of rows) {
+    const isr = r.isr != null ? String(r.isr).trim() : "";
+    if (!isr) continue;
+    const amt = r.amt_rep_code != null ? String(r.amt_rep_code).trim() : "";
+    if (amt) {
+      const counts = amtIsrCounts.get(amt) ?? new Map<string, number>();
+      counts.set(isr, (counts.get(isr) ?? 0) + 1);
+      amtIsrCounts.set(amt, counts);
+    }
+    const rc = r.rep_code != null ? String(r.rep_code).trim().toUpperCase() : "";
+    if (rc) {
+      const id = await ownerFor(isr);
+      if (id) repCodeToOwner.set(rc, id);
+    }
+  }
+  for (const [amt, counts] of amtIsrCounts) {
+    let best = "";
+    let bestN = -1;
+    for (const [isr, n] of counts) {
+      if (n > bestN) {
+        best = isr;
+        bestN = n;
+      }
+    }
+    if (counts.size > 1) {
+      console.warn(`[inside-sales] AMT ${amt} maps to ${counts.size} ISRs; using majority "${best}"`);
+    }
+    const id = await ownerFor(best);
+    if (id) amtToOwner.set(amt, id);
+  }
+
+  // Overlay the COMPLETE AMT→ISR roster (amt_isr_map, from the "AMT ISR Mapping"
+  // tab) — the primary source: it covers AMT codes with no field rep code (e.g.
+  // 441 = Christina Yin). Wins over the rep-sheet majority where both exist.
+  {
+    const { data: amtData, error: amtErr } = await sb
+      .from("amt_isr_map")
+      .select("amt_rep_code, inside_sales_person");
+    if (amtErr) {
+      console.error(`[inside-sales] amt_isr_map load failed: ${amtErr.message}`);
+    }
+    for (const r of (amtData ?? []) as { amt_rep_code: string | null; inside_sales_person: string | null }[]) {
+      const amt = r.amt_rep_code != null ? String(r.amt_rep_code).trim() : "";
+      const person = r.inside_sales_person != null ? String(r.inside_sales_person).trim() : "";
+      if (!amt || !person) continue;
+      const id = await ownerFor(person);
+      if (id) amtToOwner.set(amt, id);
+    }
+  }
+
+  // Augment rep_code -> owner from the Rep Code OBJECTS' current owners. Picks up
+  // rep codes missing from the sheet whose owner was derived from the agency
+  // company's AMT (set by territory-sync's reconcile / the account-join below), so
+  // no-AMT accounts serviced by those rep codes still resolve. Sheet wins (fill
+  // only). ~6 paginated reads, cached with the rest.
+  let objAfter: string | undefined;
+  for (let page = 0; page < 50; page++) {
+    const res = await hs(
+      token,
+      "GET",
+      `/crm/v3/objects/${REP_OBJECT}?limit=100&properties=rep_code,hubspot_owner_id${objAfter ? `&after=${objAfter}` : ""}`,
+      undefined,
+      signal,
+    );
+    if (!res.ok) break;
+    for (const r of res.data?.results ?? []) {
+      const rc = String(r.properties?.rep_code ?? "").trim().toUpperCase();
+      const oid = String(r.properties?.hubspot_owner_id ?? "");
+      if (rc && oid && !repCodeToOwner.has(rc)) repCodeToOwner.set(rc, oid);
+    }
+    objAfter = res.data?.paging?.next?.after;
+    if (!objAfter) break;
+  }
+
+  repResolverCache = { maps: { amtToOwner, repCodeToOwner }, at: Date.now() };
+  return repResolverCache.maps;
+}
+
+/** Account-number forms a HubSpot record may store (padded / stripped). */
+function accountForms(accountNumber: string): string[] {
+  const forms = new Set<string>();
+  const acct = accountNumber.trim();
+  if (!acct) return [];
+  forms.add(acct);
+  const stripped = acct.replace(/^0+/, "");
+  if (stripped) forms.add(stripped);
+  if (/^\d+$/.test(stripped)) forms.add(stripped.padStart(10, "0"));
+  return [...forms];
+}
+
+/**
+ * Rep Code object(s) whose `account` matches a company's account number — i.e. the
+ * company IS a rep. Returns id + current owner so the caller can skip no-op writes.
+ * Empty result = not a rep = no rep-code owner update (the gate).
+ */
+async function findRepCodesByAccount(
+  token: string,
+  accountNumber: string,
+  signal: AbortSignal,
+): Promise<{ id: string; ownerId: string }[]> {
+  const forms = accountForms(accountNumber);
+  if (!forms.length) return [];
+  const res = await hs(
+    token,
+    "POST",
+    `/crm/v3/objects/${REP_OBJECT}/search`,
+    {
+      filterGroups: [{ filters: [{ propertyName: REP_CODE_ACCOUNT_PROP, operator: "IN", values: forms }] }],
+      properties: [REP_CODE_ACCOUNT_PROP, "hubspot_owner_id"],
+      limit: 50,
+    },
+    signal,
+  );
+  if (!res.ok) return [];
+  return (res.data?.results ?? []).map((r: any) => ({
+    id: String(r.id),
+    ownerId: String(r.properties?.hubspot_owner_id ?? ""),
+  }));
+}
+
 /** Push a Companies payload: upsert by account_number_ with heal. */
 export async function pushCompany(
   env: Env,
@@ -1100,9 +1262,10 @@ export async function pushCompany(
   }
 
   const learn: LearnEntry[] = [];
-  const [aliasMap, optionsByProp] = await Promise.all([
+  const [aliasMap, optionsByProp, resolvers] = await Promise.all([
     loadAliases(sb, "companies"),
     loadOptions(sb, "companies"),
+    loadRepResolvers(sb, token, signal),
   ]);
 
   try {
@@ -1112,6 +1275,25 @@ export async function pushCompany(
     for (const a of n.actions) fixActions.push(a);
     for (const e of n.learn) learn.push(e);
     const properties = n.properties;
+
+    // Inside-sales (ISR): deterministic from the synced rep_codes sheet (replaces
+    // the stale HubSpot workflow chain). Injected AFTER normalize so the multi-value
+    // `inside_sales_managers` checkbox isn't mis-dropped as a single enum value;
+    // withHeal still recovers a genuinely invalid owner-id option at push time.
+    const isr = computeInsideSalesFields(
+      { amtRepCode: payload.inside_sales_rep, salesRepCode: payload.sales_rep_code },
+      resolvers,
+    );
+    Object.assign(properties, isr.properties);
+    for (const code of isr.unresolved) {
+      assocSkips.push({
+        objectType: "companies",
+        property: isr.path === "amt" ? "inside_sales_rep" : "sales_rep_code",
+        rawValue: code,
+        reason: `inside-sales: no HubSpot owner for ${isr.path === "amt" ? "AMT code" : "rep code"} "${code}"`,
+      });
+    }
+
     const res = await withHeal(token, signal, "company", fixActions, properties, (props) =>
       hs(token, "POST", PATHS.companyUpsert, {
         inputs: [{ idProperty: "account_number_", id: accountNumber, properties: props }],
@@ -1119,6 +1301,41 @@ export async function pushCompany(
     );
     const result = res.data?.results?.[0];
     if (!result?.id) throw new Error("HubSpot company upsert response missing id");
+
+    // Propagate the ISR to the Rep Code owner — ONLY when this company itself IS a
+    // rep (its account number matches a Rep Code's `account`). Regular customer
+    // companies match no Rep Code → no update. This is the gate.
+    const isrOwner = isr.path === "amt" ? isr.properties.inside_sales_rep_from_sap ?? "" : "";
+    if (isrOwner) {
+      try {
+        for (const rep of await findRepCodesByAccount(token, accountNumber, signal)) {
+          if (rep.ownerId === isrOwner) continue; // already correct — skip no-op write
+          const pr = await hs(
+            token,
+            "PATCH",
+            `/crm/v3/objects/${REP_OBJECT}/${rep.id}`,
+            { properties: { hubspot_owner_id: isrOwner } },
+            signal,
+          );
+          if (!pr.ok) {
+            assocSkips.push({
+              objectType: REP_OBJECT,
+              property: "hubspot_owner_id",
+              rawValue: isrOwner,
+              reason: `rep code ${rep.id} owner update failed (${pr.status})`,
+            });
+          }
+        }
+      } catch (e) {
+        assocSkips.push({
+          objectType: REP_OBJECT,
+          property: "hubspot_owner_id",
+          rawValue: isrOwner,
+          reason: `rep-code owner propagation error: ${e instanceof Error ? e.message : String(e)}`,
+        });
+      }
+    }
+
     return {
       result: { hs_record_id: String(result.id), account_number_: accountNumber, new: Boolean(result?.new) },
       error: null,

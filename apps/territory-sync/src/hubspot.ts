@@ -16,6 +16,56 @@ const OBJECT_TYPE = "2-41537429";
 const BASE = "https://api.hubapi.com";
 const BATCH = 100;
 
+export interface OwnerResolver {
+  /** Resolve a "First Last" name to a HubSpot owner id, or undefined. */
+  resolveOwner(name: string): string | undefined;
+}
+
+/**
+ * Build a name->owner-id resolver from all HubSpot owners: exact "first last",
+ * then a surname + first-initial fallback (nickname/legal-name mismatches like
+ * Eddie->Edward, Joey->Joseph) applied only when the surname is unambiguous.
+ */
+export async function buildOwnerResolver(token: string): Promise<OwnerResolver> {
+  const headers = { authorization: `Bearer ${token}`, accept: "application/json" };
+  const ownerByName = new Map<string, string>();
+  const ownerBySurname = new Map<string, { id: string; firstInitial: string }[]>();
+  let after: string | undefined;
+  do {
+    const res = await fetch(`${BASE}/crm/v3/owners?limit=100${after ? `&after=${after}` : ""}`, { headers });
+    if (!res.ok) throw new Error(`hubspot GET /crm/v3/owners -> ${res.status}: ${await res.text()}`);
+    const data = (await res.json()) as {
+      results: { id: string; firstName?: string; lastName?: string }[];
+      paging?: { next?: { after?: string } };
+    };
+    for (const o of data.results) {
+      const first = (o.firstName ?? "").trim().toLowerCase();
+      const last = (o.lastName ?? "").trim().toLowerCase();
+      const full = `${first} ${last}`.trim();
+      if (full) ownerByName.set(full, o.id);
+      if (last) {
+        const arr = ownerBySurname.get(last) ?? [];
+        arr.push({ id: o.id, firstInitial: first[0] ?? "" });
+        ownerBySurname.set(last, arr);
+      }
+    }
+    after = data.paging?.next?.after;
+  } while (after);
+
+  return {
+    resolveOwner(name: string): string | undefined {
+      const lower = name.trim().toLowerCase();
+      const exact = ownerByName.get(lower);
+      if (exact) return exact;
+      const parts = lower.split(/\s+/);
+      const last = parts[parts.length - 1] ?? "";
+      const firstInitial = parts[0]?.[0] ?? "";
+      const cands = (ownerBySurname.get(last) ?? []).filter((c) => c.firstInitial === firstInitial);
+      return cands.length === 1 ? cands[0]!.id : undefined;
+    },
+  };
+}
+
 export interface RepForPush {
   repCode: string;
   district: string | null;
@@ -49,43 +99,10 @@ export async function syncRepCodesToHubspot(opts: {
     return res.json() as Promise<T>;
   }
 
-  // Owner resolution: exact "first last", with a surname + first-initial
-  // fallback for nickname/legal-name mismatches (Eddie->Edward, Joey->Joseph),
-  // applied only when the surname is unambiguous.
-  const ownerByName = new Map<string, string>();
-  const ownerBySurname = new Map<string, { id: string; firstInitial: string }[]>();
-  let after: string | undefined;
-  do {
-    const data = await hget<{
-      results: { id: string; firstName?: string; lastName?: string }[];
-      paging?: { next?: { after?: string } };
-    }>(`/crm/v3/owners?limit=100${after ? `&after=${after}` : ""}`);
-    for (const o of data.results) {
-      const first = (o.firstName ?? "").trim().toLowerCase();
-      const last = (o.lastName ?? "").trim().toLowerCase();
-      const full = `${first} ${last}`.trim();
-      if (full) ownerByName.set(full, o.id);
-      if (last) {
-        const arr = ownerBySurname.get(last) ?? [];
-        arr.push({ id: o.id, firstInitial: first[0] ?? "" });
-        ownerBySurname.set(last, arr);
-      }
-    }
-    after = data.paging?.next?.after;
-  } while (after);
-
-  function resolveOwner(name: string): string | undefined {
-    const lower = name.trim().toLowerCase();
-    const exact = ownerByName.get(lower);
-    if (exact) return exact;
-    const parts = lower.split(/\s+/);
-    const last = parts[parts.length - 1] ?? "";
-    const firstInitial = parts[0]?.[0] ?? "";
-    const cands = (ownerBySurname.get(last) ?? []).filter(
-      (c) => c.firstInitial === firstInitial,
-    );
-    return cands.length === 1 ? cands[0]!.id : undefined;
-  }
+  // Owner resolution: exact "first last", surname + first-initial fallback
+  // (nickname/legal-name mismatches), unambiguous-only. Shared with the
+  // inside-sales reconciliation.
+  const { resolveOwner } = await buildOwnerResolver(token);
 
   // region option label -> internal value.
   const reg = await hget<{ options: { label: string; value: string }[] }>(

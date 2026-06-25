@@ -1,15 +1,24 @@
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
+import * as fs from "node:fs";
 import {
   addToAggregate,
   buildRepCodes,
+  parseAmtIsrMapping,
   parseRepCodeMapping,
   parseTerritoryHeader,
   unpivotTerritoryRow,
   type RepAggregate,
 } from "@wac/shared";
-import { syncRepCodesToHubspot, type RepForPush } from "./hubspot.js";
+import { buildOwnerResolver, syncRepCodesToHubspot, type RepForPush } from "./hubspot.js";
+import {
+  buildInsideSalesResolvers,
+  reconcileCompanyInsideSales,
+  reconcileRepCodeOwners,
+  type AmtIsrRow,
+  type RepIsrRow,
+} from "./insideSales.js";
 
 /**
  * Territory sync — out-of-band parser for the Territory workbook.
@@ -32,6 +41,7 @@ import { syncRepCodesToHubspot, type RepForPush } from "./hubspot.js";
 
 const MASTER_SHEET = "Territory Master Sheet";
 const MAPPING_SHEET = "Rep Code RSM ISR Mapping";
+const AMT_SHEET = "AMT ISR Mapping";
 const ZIP_CHUNK = 2000;
 const REP_CHUNK = 500;
 
@@ -48,15 +58,117 @@ interface LatestIngestion {
   row_count: number | null;
 }
 
+/**
+ * Inside-Sales reconciliation mode (Phase 3 one-time backfill / Phase 2 sweep):
+ * load the rep-code mapping from the `rep_codes` table (the source of truth,
+ * refreshed by the normal parse), build the AMT/rep-code -> owner resolvers, then
+ * reconcile every company's ISR fields + the Rep Code owners. Idempotent; run
+ * `--dry-run` first to see the change counts.
+ */
+/** Read an AMT→ISR CSV (cols: AMT Rep Code, Inside Sales Person, …) — validation escape hatch. */
+function readAmtCsv(path: string): AmtIsrRow[] {
+  const lines = fs.readFileSync(path, "utf8").split(/\r?\n/).filter((l) => l.trim());
+  const out: AmtIsrRow[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i]!.split(",");
+    const amt = (cols[0] ?? "").trim();
+    const person = (cols[1] ?? "").trim();
+    if (amt && person) out.push({ amtRepCode: amt, insideSalesPerson: person });
+  }
+  return out;
+}
+
+async function runInsideSalesReconcile(
+  sb: SupabaseClient,
+  dryRun: boolean,
+  limit?: number,
+  amtCsvPath?: string,
+): Promise<void> {
+  const token = process.env.HUBSPOT_TOKEN;
+  if (!token) {
+    console.log("[inside-sales] HUBSPOT_TOKEN unset; cannot reconcile.");
+    return;
+  }
+  const { data, error } = await sb.from("rep_codes").select("rep_code, amt_rep_code, isr");
+  if (error) throw new Error(`rep_codes load failed: ${error.message}`);
+  const rows: RepIsrRow[] = (data ?? []).map((r: any) => ({
+    repCode: r.rep_code,
+    amtRepCode: r.amt_rep_code,
+    isr: r.isr,
+  }));
+  if (!rows.length) {
+    console.log("[inside-sales] rep_codes table is empty; run the parse first. Aborting.");
+    return;
+  }
+
+  // AMT→ISR roster: from the local CSV override (validation) else the amt_isr_map table.
+  let amtRows: AmtIsrRow[] = [];
+  if (amtCsvPath) {
+    amtRows = readAmtCsv(amtCsvPath);
+    console.log(`[inside-sales] AMT roster from CSV ${amtCsvPath}: ${amtRows.length} rows`);
+  } else {
+    const { data: amtData, error: amtErr } = await sb
+      .from("amt_isr_map")
+      .select("amt_rep_code, inside_sales_person");
+    if (amtErr) {
+      console.warn(`[inside-sales] amt_isr_map load failed: ${amtErr.message} (rep-sheet AMTs only)`);
+    }
+    amtRows = (amtData ?? []).map((r: any) => ({
+      amtRepCode: r.amt_rep_code,
+      insideSalesPerson: r.inside_sales_person,
+    }));
+    console.log(`[inside-sales] AMT roster from amt_isr_map: ${amtRows.length} rows`);
+  }
+
+  const owner = await buildOwnerResolver(token);
+  const resolvers = buildInsideSalesResolvers(rows, amtRows, owner);
+  console.log(
+    `[inside-sales] resolvers built from sheet: ${resolvers.amtToOwner.size} AMT codes, ` +
+      `${resolvers.repCodeToOwner.size} rep codes${dryRun ? " (DRY RUN — no writes)" : ""}`,
+  );
+
+  // Rep-code owners FIRST — derives unmapped rep codes' ISR from the agency
+  // company's AMT and AUGMENTS resolvers.repCodeToOwner so the company pass below
+  // can resolve no-AMT accounts serviced by those rep codes.
+  const rep = await reconcileRepCodeOwners({ token, resolvers, dryRun });
+  console.log(
+    `[inside-sales] rep code owners: scanned=${rep.scanned} ${dryRun ? "would-update" : "updated"}=${rep.updated} ` +
+      `(augmented ${rep.augmented} from agency-company AMT) → resolver now has ${resolvers.repCodeToOwner.size} rep codes`,
+  );
+
+  const co = await reconcileCompanyInsideSales({ token, resolvers, dryRun, limit });
+  const affected = co.unresolved.reduce((s, u) => s + u.companies, 0);
+  console.log(
+    `[inside-sales] companies: scanned=${co.scanned} ${dryRun ? "would-update" : "updated"}=${co.updated} ` +
+      `unresolved=${co.unresolved.length} codes across ${affected} companies`,
+  );
+  if (co.unresolved.length) {
+    console.log("[inside-sales] unresolved codes (code×companies):");
+    console.log(`  ${co.unresolved.map((u) => `${u.code}×${u.companies}`).join("  ")}`);
+  }
+}
+
 async function main(): Promise<void> {
   const force = process.argv.includes("--force");
   const dryRun = process.argv.includes("--dry-run");
+  const reconcileInsideSales =
+    process.argv.includes("--backfill-companies") || process.argv.includes("--reconcile-inside-sales");
 
   const sb: SupabaseClient = createClient(
     env("SUPABASE_URL"),
     env("SUPABASE_SERVICE_ROLE_KEY"),
     { auth: { persistSession: false, autoRefreshToken: false } },
   );
+
+  // Standalone reconciliation mode — independent of the parse/upsert flow.
+  if (reconcileInsideSales) {
+    const limitArg = process.argv.find((a) => a.startsWith("--limit="));
+    const limit = limitArg ? Number(limitArg.split("=")[1]) || undefined : undefined;
+    const amtCsvArg = process.argv.find((a) => a.startsWith("--amt-csv="));
+    const amtCsv = amtCsvArg ? amtCsvArg.split("=").slice(1).join("=") : undefined;
+    await runInsideSalesReconcile(sb, dryRun, limit, amtCsv);
+    return;
+  }
 
   // Latest territory ingestion (Graph cron lands these; pass-through leaves
   // row_count null until we parse).
@@ -109,7 +221,7 @@ async function main(): Promise<void> {
     // Parse with SheetJS (real RAM) + the shared parser — exact cached values.
     const wb = XLSX.read(bytes, {
       type: "array",
-      sheets: [MASTER_SHEET, MAPPING_SHEET],
+      sheets: [MASTER_SHEET, MAPPING_SHEET, AMT_SHEET],
       dense: true,
     });
     const master = wb.Sheets[MASTER_SHEET];
@@ -149,9 +261,18 @@ async function main(): Promise<void> {
     const { mapping, duplicates } = parseRepCodeMapping(mappingRows);
     const repCodes = buildRepCodes(aggregates, mapping);
 
+    // "AMT ISR Mapping" tab — complete AMT Rep Code → Inside Sales Person roster.
+    const amtSheet = wb.Sheets[AMT_SHEET];
+    const amtRows = amtSheet
+      ? XLSX.utils.sheet_to_json<Record<string, unknown>>(amtSheet, { defval: null })
+      : [];
+    const { mapping: amtMapping, errors: amtErrors, duplicates: amtDups } = parseAmtIsrMapping(amtRows);
+    if (!amtSheet) console.warn(`[territory-sync] no "${AMT_SHEET}" tab found — AMT→ISR roster empty`);
+
     console.log(
       `[territory-sync] parsed: ${zipRows.length} zip rows, ${repCodes.length} rep codes ` +
-        `(mapping rows ${mappingRows.length}, dup ${duplicates})`,
+        `(mapping rows ${mappingRows.length}, dup ${duplicates}); ` +
+        `AMT ISR rows ${amtMapping.size} (dup ${amtDups}, errors ${amtErrors.length})`,
     );
     if (zipRows.length === 0 && repCodes.length === 0) {
       throw new Error("parse produced no rows; refusing to prune");
@@ -218,6 +339,30 @@ async function main(): Promise<void> {
       .delete({ count: "exact" })
       .neq("ingestion_id", ingestion.id);
     if (pr) throw new Error(`rep_codes prune failed: ${pr.message}`);
+
+    // Upsert amt_isr_map (the AMT→ISR roster). Guarded: only touch it when the tab
+    // produced rows, so a temporarily missing/empty tab never wipes the roster.
+    if (amtMapping.size > 0) {
+      const amtRowsDb = [...amtMapping.entries()].map(([amt, person]) => ({
+        amt_rep_code: amt,
+        inside_sales_person: person,
+        ingestion_id: ingestion.id,
+        updated_at: iso(),
+      }));
+      for (let i = 0; i < amtRowsDb.length; i += REP_CHUNK) {
+        const { error: e } = await sb
+          .from("amt_isr_map")
+          .upsert(amtRowsDb.slice(i, i + REP_CHUNK), { onConflict: "amt_rep_code" });
+        if (e) throw new Error(`amt_isr_map upsert failed: ${e.message}`);
+      }
+      const { error: pa } = await sb
+        .from("amt_isr_map")
+        .delete({ count: "exact" })
+        .neq("ingestion_id", ingestion.id);
+      if (pa) throw new Error(`amt_isr_map prune failed: ${pa.message}`);
+    } else {
+      console.warn("[territory-sync] AMT ISR roster empty — leaving amt_isr_map untouched");
+    }
 
     // Push to HubSpot — non-fatal to the staging result (which is already done).
     let hubspotNote: string | null = null;

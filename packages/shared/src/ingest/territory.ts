@@ -149,6 +149,41 @@ export function parseRepCodeMapping(rows: Record<string, unknown>[]): {
 }
 
 /**
+ * Parse the "AMT ISR Mapping" tab — the COMPLETE AMT Rep Code → Inside Sales
+ * Person roster. Unlike "Rep Code RSM ISR Mapping" (which only lists AMT codes
+ * tied to a field rep), this covers every AMT code SAP assigns to companies,
+ * including inside-sales people with no field rep code. Columns: "AMT Rep Code"
+ * and "Inside Sales Person" (also accepts "ISR"). Last row wins on duplicates.
+ */
+export function parseAmtIsrMapping(rows: Record<string, unknown>[]): {
+  mapping: Map<string, string>; // amt_rep_code -> inside sales person (full name)
+  errors: ParseError[];
+  duplicates: number;
+} {
+  const mapping = new Map<string, string>();
+  const errors: ParseError[] = [];
+  let duplicates = 0;
+
+  rows.forEach((raw, i) => {
+    const amt = asString(field(raw, "AMT Rep Code"));
+    const person = asString(field(raw, "Inside Sales Person")) || asString(field(raw, "ISR"));
+    if (!amt && !person) return; // blank trailing row
+    if (!amt) {
+      errors.push({ rowIndex: i + 2, messages: ["missing AMT Rep Code"] });
+      return;
+    }
+    if (!person) {
+      errors.push({ rowIndex: i + 2, messages: [`AMT ${amt}: missing Inside Sales Person`] });
+      return;
+    }
+    if (mapping.has(amt)) duplicates++;
+    mapping.set(amt, person);
+  });
+
+  return { mapping, errors, duplicates };
+}
+
+/**
  * Merge the matrix aggregates with the mapping into one row per rep code — the
  * UNION of both tabs (a rep code may have zips but no mapping, or vice versa).
  */
