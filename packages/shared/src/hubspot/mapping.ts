@@ -144,7 +144,12 @@ export const LINE_ITEM_FIELD_MAP: Record<string, string> = {
 export const COMPANY_FIELD_MAP: Record<string, string> = {
   account_number_: "account_number_",
   name: "sap_company_name",
-  domain: "domain",
+  // SAP "domain" carries a full web address with a path (e.g.
+  // "advanceelectriclighting.com/brand-wac-us-modern-fo"), which HubSpot's
+  // `domain` property rejects (it wants a bare host) → it was being dropped. Route
+  // it to HubSpot's free-text `website` property instead. Company upserts dedupe by
+  // `account_number_`, not domain, so nothing downstream relies on `domain`.
+  domain: "website",
   phone: "phone",
   fax_number: "fax_number",
   parent_customer: "parent_customer",

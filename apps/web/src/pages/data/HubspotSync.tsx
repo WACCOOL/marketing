@@ -4,6 +4,8 @@ import {
   isActiveSync,
   listSyncIssues,
   listSyncRecords,
+  refreshSyncOptions,
+  repushDroppedProperty,
   type FieldIssue,
   type HubspotSyncStatus,
   type RecordDetail,
@@ -284,6 +286,8 @@ function ErrorsTab() {
   const [category, setCategory] = useState("");
   const [action, setAction] = useState("");
   const [property, setProperty] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [actionMsg, setActionMsg] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -309,6 +313,48 @@ function ErrorsTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [objectType, category, action]);
 
+  async function onRefreshOptions() {
+    setBusy(true);
+    setErr(null);
+    setActionMsg(null);
+    try {
+      await refreshSyncOptions();
+      setActionMsg("HubSpot dropdown options refreshed from HubSpot.");
+    } catch (e) {
+      setErr(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Re-push needs a concrete enum object type, a specific property, and the
+  // dropped filter — it only re-sends that one field for its dropped rows.
+  const prop = property.trim();
+  const canRepush =
+    (objectType === "companies" || objectType === "deals") && prop !== "" && action === "dropped";
+
+  async function onRepush() {
+    if (!canRepush) return;
+    setBusy(true);
+    setErr(null);
+    setActionMsg(null);
+    try {
+      const r = await repushDroppedProperty({ objectType, property: prop });
+      setActionMsg(
+        r.optionsCached
+          ? `Re-pushed ${prop}: ${r.pushed} fixed, ${r.stillUnmatched} still unmatched` +
+              (r.errors ? `, ${r.errors} errors` : "") +
+              ` (of ${r.total}).`
+          : `No cached options for "${prop}" yet — click "Refresh HubSpot options" first.`,
+      );
+      await load();
+    } catch (e) {
+      setErr(formatErr(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="col" style={{ gap: 12 }}>
       <div className="card row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -330,6 +376,26 @@ function ErrorsTab() {
           <input placeholder="Property name" value={property} onChange={(e) => setProperty(e.target.value)} style={{ width: 180 }} />
           <button className="secondary" type="submit">Filter</button>
         </form>
+      </div>
+
+      <div className="card row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <button onClick={() => void onRefreshOptions()} disabled={busy}>
+          {busy ? <span className="spinner" /> : null}
+          Refresh HubSpot options
+        </button>
+        <button
+          onClick={() => void onRepush()}
+          disabled={busy || !canRepush}
+          title={
+            canRepush
+              ? `Re-push only the ${prop} field for its dropped rows`
+              : "Set Object to Deals/Companies, Action to Dropped, and a Property name first"
+          }
+        >
+          {busy ? <span className="spinner" /> : null}
+          {canRepush ? `Re-push dropped ${prop} (this field only)` : "Re-push dropped field (this field only)"}
+        </button>
+        {actionMsg && <span className="muted" style={{ fontSize: 13 }}>{actionMsg}</span>}
       </div>
 
       {err && <div className="alert error">{err}</div>}

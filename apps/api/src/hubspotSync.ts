@@ -3,13 +3,19 @@ import {
   type HubspotObjectType,
   dedupKeyFor,
   detectUnmappedFields,
+  norm,
   sapChangedAtFor,
+  smartMatchToAllowedOptions,
 } from "@wac/shared";
 import type { Env } from "./env.js";
-import { pushDeal, pushCompany } from "./hubspotPush.js";
+import { PATHS, hs, pushDeal, pushCompany } from "./hubspotPush.js";
+import { loadOptions, type OptionDef } from "./hubspotHeal.js";
 
 /** Wall-clock ceiling for an inline Worker push (deal + line items + assocs + retries). */
 const PUSH_TIMEOUT_MS = 50_000;
+
+/** Issue actions that keep a record out of `succeeded` (a value that didn't land). */
+const HARD_ISSUE_ACTIONS = ["dropped", "invalid", "held", "assoc_missing"];
 
 /**
  * SAP -> HubSpot durable sync domain layer (Phase 1: capture only).
@@ -386,9 +392,7 @@ export async function patchResult(
   const problemCount = count ?? issues.length;
 
   const failed = !!args.error || (args.status != null && args.status >= 400);
-  const hasHardIssue = issues.some((i) =>
-    ["dropped", "invalid", "held", "assoc_missing"].includes(i.action ?? ""),
-  );
+  const hasHardIssue = issues.some((i) => HARD_ISSUE_ACTIONS.includes(i.action ?? ""));
   const status: HubspotSyncStatus = failed
     ? "failed"
     : hasHardIssue
@@ -526,6 +530,149 @@ export async function replayRecords(
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return { total: ids.length, counts };
+}
+
+/**
+ * Per-object-type single-property upsert target: the HubSpot batch-upsert path and
+ * the idProperty whose value is the record's `dedup_key` (account_number_ for
+ * companies, sap_quote_number for deals).
+ */
+const REPUSH_TARGET: Record<string, { path: string; idProperty: string }> = {
+  companies: { path: PATHS.companyUpsert, idProperty: "account_number_" },
+  deals: { path: PATHS.dealUpsert, idProperty: "sap_quote_number" },
+};
+
+/** Exact value/label match (heal.norm), else conservative smart/prefix match; canonical option value or null. */
+export function matchOption(raw: string | null, options: OptionDef[]): string | null {
+  if (raw == null || raw === "") return null;
+  const exact = options.find((o) => norm(o.value) === norm(raw) || norm(o.label) === norm(raw));
+  if (exact) return exact.value;
+  return smartMatchToAllowedOptions(raw, options.map((o) => o.value));
+}
+
+/**
+ * After dropped-issue rows are removed, recompute a record's `problem_count` and
+ * status. Only a `partial` record can flip to `succeeded` (no remaining hard
+ * issue) — a `failed` record keeps its status, since a single-property fix doesn't
+ * clear a record-level push failure.
+ */
+async function recomputeRecordStatus(sb: SupabaseClient, recordId: string): Promise<void> {
+  const [remaining, record] = await Promise.all([
+    getFieldIssues(sb, recordId),
+    getRecord(sb, recordId),
+  ]);
+  const patch: Record<string, unknown> = {
+    problem_count: remaining.length,
+    updated_at: new Date().toISOString(),
+  };
+  if (record?.status === "partial") {
+    const hasHardIssue = remaining.some((i) => HARD_ISSUE_ACTIONS.includes(i.action ?? ""));
+    patch.status = hasHardIssue ? "partial" : "succeeded";
+  }
+  await sb.from("hubspot_sync_records").update(patch).eq("id", recordId);
+}
+
+/**
+ * Re-push ONLY a single dropped enum property (e.g. `program_level`) for the
+ * records where it was dropped — used after the matching HubSpot dropdown options
+ * are added and the option cache is refreshed. Unlike `replayRecords`, this does
+ * NOT re-send the whole payload (no ISR/association re-resolution): it re-validates
+ * each issue's stored `raw_value` against the freshly-cached options and, when it
+ * now matches, sends a minimal upsert of just that property. Resolved issue rows
+ * are removed and the parent record's status recomputed.
+ */
+export async function repushDroppedProperty(
+  env: Env,
+  serviceSb: SupabaseClient,
+  opts: { objectType: string; property: string; limit?: number },
+): Promise<{
+  total: number;
+  pushed: number;
+  stillUnmatched: number;
+  errors: number;
+  optionsCached: boolean;
+}> {
+  const target = REPUSH_TARGET[opts.objectType];
+  if (!target) throw new Error(`unsupported object type: ${opts.objectType}`);
+  const token = env.HUBSPOT_TOKEN;
+  if (!token) throw new Error("HUBSPOT_TOKEN not configured");
+
+  // The property must be a cached enum (run refresh-options first if not).
+  const optionsByProp = await loadOptions(serviceSb, opts.objectType);
+  const options = optionsByProp.get(opts.property);
+  if (!options || options.length === 0) {
+    return { total: 0, pushed: 0, stillUnmatched: 0, errors: 0, optionsCached: false };
+  }
+
+  type IssueRow = {
+    id: string;
+    raw_value: string | null;
+    record_id: string;
+    record: { dedup_key: string | null; status: string } | null;
+  };
+  const { data, error } = await serviceSb
+    .from("hubspot_sync_field_issues")
+    .select("id, raw_value, record_id, record:hubspot_sync_records(dedup_key, status)")
+    .eq("object_type", opts.objectType)
+    .eq("property", opts.property)
+    .eq("action", "dropped")
+    .limit(opts.limit ?? 500);
+  if (error) throw new Error(`dropped-issue query failed: ${error.message}`);
+  // The to-one embed is returned as an object at runtime, but typegen widens it to
+  // an array — cast through unknown (same shape the detail/list helpers rely on).
+  const rows = (data as unknown as IssueRow[] | null) ?? [];
+
+  // One push per record: take the first matchable dropped value for the property.
+  const byRecord = new Map<string, { dedupKey: string; canonical: string; issueIds: string[] }>();
+  let stillUnmatched = 0;
+  for (const r of rows) {
+    const dedupKey = r.record?.dedup_key ?? null;
+    const canonical = dedupKey ? matchOption(r.raw_value, options) : null;
+    if (!dedupKey || canonical === null) {
+      stillUnmatched++;
+      continue;
+    }
+    const existing = byRecord.get(r.record_id);
+    if (existing) existing.issueIds.push(r.id);
+    else byRecord.set(r.record_id, { dedupKey, canonical, issueIds: [r.id] });
+  }
+
+  const signal = AbortSignal.timeout(PUSH_TIMEOUT_MS);
+  const resolvedIssueIds: string[] = [];
+  const affectedRecordIds: string[] = [];
+  let pushed = 0;
+  let errors = 0;
+  for (const [recordId, info] of byRecord) {
+    const res = await hs(
+      token,
+      "POST",
+      target.path,
+      {
+        inputs: [
+          { idProperty: target.idProperty, id: info.dedupKey, properties: { [opts.property]: info.canonical } },
+        ],
+      },
+      signal,
+    );
+    if (res.ok) {
+      pushed++;
+      resolvedIssueIds.push(...info.issueIds);
+      affectedRecordIds.push(recordId);
+    } else {
+      errors++;
+    }
+  }
+
+  if (resolvedIssueIds.length) {
+    const { error: delErr } = await serviceSb
+      .from("hubspot_sync_field_issues")
+      .delete()
+      .in("id", resolvedIssueIds);
+    if (delErr) throw new Error(`clear resolved issues failed: ${delErr.message}`);
+    for (const recordId of affectedRecordIds) await recomputeRecordStatus(serviceSb, recordId);
+  }
+
+  return { total: rows.length, pushed, stillUnmatched, errors, optionsCached: true };
 }
 
 /**

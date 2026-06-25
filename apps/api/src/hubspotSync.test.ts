@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseForwardedPayload, sha256Hex } from "./hubspotSync.js";
+import { matchOption, parseForwardedPayload, sha256Hex } from "./hubspotSync.js";
 
 describe("parseForwardedPayload", () => {
   it("uses the envelope's idempotencyKey and the inner payload", async () => {
@@ -39,5 +39,28 @@ describe("parseForwardedPayload", () => {
   it("returns null on invalid JSON", async () => {
     expect(await parseForwardedPayload("not json")).toBeNull();
     expect(await parseForwardedPayload("")).toBeNull();
+  });
+});
+
+describe("matchOption (single-property re-push validation)", () => {
+  const opts = [
+    { label: "PPPD", value: "PPPD" },
+    { label: "PPPE", value: "PPPE" },
+    { label: "Commercial / Military", value: "COMMERCIAL_MILITARY" },
+  ];
+
+  it("returns the canonical value for a now-allowed value (exact, case/space-insensitive)", () => {
+    expect(matchOption("PPPD", opts)).toBe("PPPD");
+    expect(matchOption(" pppe ", opts)).toBe("PPPE");
+  });
+
+  it("matches on the option label and returns its value", () => {
+    expect(matchOption("Commercial / Military", opts)).toBe("COMMERCIAL_MILITARY");
+  });
+
+  it("returns null for a value that still matches no option, blank, or null", () => {
+    expect(matchOption("PPPZ", opts)).toBeNull();
+    expect(matchOption("", opts)).toBeNull();
+    expect(matchOption(null, opts)).toBeNull();
   });
 });

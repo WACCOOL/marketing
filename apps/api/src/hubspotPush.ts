@@ -39,7 +39,7 @@ import {
 
 const HS_BASE = "https://api.hubapi.com";
 
-const PATHS = {
+export const PATHS = {
   dealSearch: "/crm/v3/objects/0-3/search",
   dealUpsert: "/crm/v3/objects/0-3/batch/upsert",
   dealUpdate: "/crm/v3/objects/0-3/batch/update",
@@ -91,7 +91,7 @@ function delay(ms: number): Promise<void> {
 }
 
 /** One HubSpot call with 429 backoff. Returns parsed body + status (never throws on non-2xx). */
-async function hs(
+export async function hs(
   token: string,
   method: string,
   path: string,
