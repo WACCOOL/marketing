@@ -9,26 +9,22 @@
  *
  * Hybrid model (confirmed with the business):
  *  - Company HAS its own AMT code (`inside_sales_rep`, ~21.6k distributor/customer
- *    accounts): one ISR from amt -> owner. Write it to `inside_sales_rep_from_sap`,
- *    `inside_sales_manager_1` and `inside_sales_managers`; clear `inside_sales_manager_2`.
+ *    accounts): one ISR from amt -> owner.
  *  - Company has NO AMT but IS serviced by rep code(s) (~9.5k design/spec accounts,
- *    `sales_rep_code` can pack multiple like "OS, OSX"): one ISR per rep code ->
- *    `inside_sales_manager_1` (+ `_2` for a 2nd distinct) and the `inside_sales_managers`
- *    checkbox rollup; clear `inside_sales_rep_from_sap`.
+ *    `sales_rep_code` can pack multiple like "OS, OSX"): one ISR per rep code.
  *
- * Field types (verified live): from_sap / manager_1 / manager_2 are single-select
- * (value = owner id); `inside_sales_managers` is a checkbox (value = ids joined by ";").
+ * Writable fields (verified live): only `inside_sales_rep_from_sap` (single-select,
+ * owner id) and `inside_sales_managers` (checkbox, owner ids joined by ";"). The
+ * `inside_sales_manager_1` / `_2` properties are CALCULATED (readOnlyValue=true) —
+ * HubSpot derives them from `inside_sales_managers`, so we must NOT set them (a
+ * READ_ONLY_VALUE 400). We therefore write the single ISR (AMT path) or all ISRs
+ * (rep-code path) into `inside_sales_managers`, and manager_1/_2 follow automatically.
  * "" clears a property. The Rep-Code-owner side (gated on the company itself being a
  * rep) is handled by the caller, not here.
  */
 
-/** The Company ISR properties this module owns (everything else stays untouched). */
-export const INSIDE_SALES_FIELDS = [
-  "inside_sales_rep_from_sap",
-  "inside_sales_manager_1",
-  "inside_sales_manager_2",
-  "inside_sales_managers",
-] as const;
+/** The writable Company ISR properties this module sets (manager_1/_2 are calculated). */
+export const INSIDE_SALES_FIELDS = ["inside_sales_rep_from_sap", "inside_sales_managers"] as const;
 
 /** Multi-value (checkbox) enum: HubSpot joins selected values with ";". */
 export const INSIDE_SALES_MANAGERS_SEP = ";";
@@ -88,9 +84,7 @@ export function computeInsideSalesFields(
     const owner = resolvers.amtToOwner.get(amt);
     if (!owner) return { properties, path: "amt", unresolved: [amt] };
     properties.inside_sales_rep_from_sap = owner;
-    properties.inside_sales_manager_1 = owner;
-    properties.inside_sales_manager_2 = ""; // single ISR — clear any stale 2nd
-    properties.inside_sales_managers = owner;
+    properties.inside_sales_managers = owner; // manager_1/_2 are calculated from this
     return { properties, path: "amt", unresolved };
   }
 
@@ -110,8 +104,7 @@ export function computeInsideSalesFields(
   if (!owners.length) return { properties, path: "rep_code", unresolved };
 
   properties.inside_sales_rep_from_sap = ""; // no AMT — clear the SAP-derived field
-  properties.inside_sales_manager_1 = owners[0]!;
-  properties.inside_sales_manager_2 = owners[1] ?? "";
+  // All servicing ISRs into the checkbox; manager_1/_2 are calculated from it.
   properties.inside_sales_managers = owners.join(INSIDE_SALES_MANAGERS_SEP);
   return { properties, path: "rep_code", unresolved };
 }
