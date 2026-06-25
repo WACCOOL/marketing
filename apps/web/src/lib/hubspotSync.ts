@@ -117,6 +117,35 @@ export async function getSyncSummary(): Promise<SyncSummary> {
   return api<SyncSummary>(`/api/hubspot-sync/summary`);
 }
 
+/** Re-pull HubSpot's enum dropdown options into the cache (also runs daily on cron). */
+export async function refreshSyncOptions(): Promise<{ ok: true }> {
+  return api<{ ok: true }>(`/api/hubspot-sync/refresh-options`, { method: "POST" });
+}
+
+export interface RepushResult {
+  total: number;
+  pushed: number;
+  stillUnmatched: number;
+  errors: number;
+  optionsCached: boolean;
+}
+
+/**
+ * Re-push only a single dropped enum property (e.g. program_level) for the records
+ * where it was dropped — after adding the options in HubSpot and refreshing the
+ * cache. Touches just that one field, not the whole payload.
+ */
+export async function repushDroppedProperty(args: {
+  objectType: string;
+  property: string;
+  limit?: number;
+}): Promise<RepushResult> {
+  return api<RepushResult>(`/api/hubspot-sync/repush-property`, {
+    method: "POST",
+    body: JSON.stringify(args),
+  });
+}
+
 /** Statuses still in flight — drive auto-refresh polling. */
 export function isActiveSync(status: HubspotSyncStatus): boolean {
   return status === "captured" || status === "received" || status === "pushing";

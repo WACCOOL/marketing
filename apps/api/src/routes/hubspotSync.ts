@@ -19,6 +19,7 @@ import {
   patchResult,
   replayRawRange,
   replayRecords,
+  repushDroppedProperty,
   type FieldIssueRow,
   type HubspotSyncRecordRow,
 } from "../hubspotSync.js";
@@ -203,6 +204,37 @@ hubspotSyncRoutes.post("/replay", requireSapSyncAuth, async (c) => {
   const res = await replayRecords(c.env, serviceSupabase(c.env), {
     status: body.status ?? "partial",
     objectType: body.objectType,
+    limit: body.limit,
+  });
+  return c.json(res);
+});
+
+/**
+ * Re-push ONLY a single dropped enum property (e.g. `program_level`) for the
+ * records where it was dropped — after the matching HubSpot options are added and
+ * `/refresh-options` has run. Re-validates each dropped value against the cached
+ * options and sends a minimal upsert of just that property (not the whole payload).
+ */
+hubspotSyncRoutes.post("/repush-property", requireSapSyncAuth, async (c) => {
+  const user = c.get("user");
+  if (user.id !== SAP_SYNC_TOKEN_USER_ID && !canAccessData(user)) {
+    return c.json({ error: "internal access required" }, 403);
+  }
+  let body: { objectType?: string; property?: string; limit?: number } = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    /* empty body → validation below fails */
+  }
+  if (!body.objectType || !OBJECT_TYPES.includes(body.objectType as HubspotObjectType)) {
+    return c.json({ error: "unknown or missing object type" }, 400);
+  }
+  if (!body.property) {
+    return c.json({ error: "missing `property`" }, 400);
+  }
+  const res = await repushDroppedProperty(c.env, serviceSupabase(c.env), {
+    objectType: body.objectType,
+    property: body.property,
     limit: body.limit,
   });
   return c.json(res);

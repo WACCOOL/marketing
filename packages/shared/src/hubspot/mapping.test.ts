@@ -5,6 +5,7 @@ import {
   LINE_ITEM_FIELD_MAP,
   dedupKeyFor,
   detectUnmappedFields,
+  mapFields,
   sapChangedAtFor,
   toDecimalPercent,
   toHubspotDate,
@@ -40,6 +41,15 @@ describe("field maps preserve real-world quirks", () => {
   it("maps project_name_customer_po__ to dealname and name -> sap_company_name", () => {
     expect(DEAL_FIELD_MAP.project_name_customer_po__).toBe("dealname");
     expect(COMPANY_FIELD_MAP.name).toBe("sap_company_name");
+  });
+  it("routes the SAP `domain` (a full URL/path) to HubSpot's `website`, not `domain`", () => {
+    expect(COMPANY_FIELD_MAP.domain).toBe("website");
+    const out = mapFields(
+      { domain: "advanceelectriclighting.com/brand-wac-us-modern-fo" },
+      COMPANY_FIELD_MAP,
+    );
+    expect(out.website).toBe("advanceelectriclighting.com/brand-wac-us-modern-fo");
+    expect(out.domain).toBeUndefined();
   });
 });
 
