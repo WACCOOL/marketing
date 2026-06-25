@@ -46,7 +46,9 @@ async function hs(token: string, method: string, path: string, body?: unknown): 
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    if (res.status === 429 && attempt < 6) {
+    // Retry on rate-limit AND transient 5xx (502/503/504) — long paginated scans
+    // occasionally hit a Cloudflare/HubSpot bad-gateway; don't abort the whole run.
+    if ((res.status === 429 || res.status >= 500) && attempt < 6) {
       const ra = Number(res.headers.get("retry-after"));
       await new Promise((r) => setTimeout(r, ra > 0 ? ra * 1000 : Math.min(10_000, 500 * 2 ** attempt)));
       continue;
