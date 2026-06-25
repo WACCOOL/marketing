@@ -306,70 +306,66 @@ export function Admin() {
       </div>
 
       {manageable.length > 0 && (
-        <div className="card col" style={{ gap: 14 }}>
+        <div className="card col" style={{ gap: 12 }}>
           <div>
             <h3>Feature access</h3>
-            <div className="muted">
-              Grant or revoke individual tabs per user. Admins always have
-              everything; toggles here override the user's role defaults.
+            <div className="muted" style={{ fontSize: 12 }}>
+              Check the tabs each user can see. Admins always have everything;
+              toggles here override the user's role defaults.
             </div>
           </div>
-          {manageable.map((u) => (
-            <div
-              key={u.id}
-              className="col"
-              style={{
-                gap: 8,
-                paddingTop: 10,
-                borderTop: "1px solid var(--border)",
-              }}
-            >
-              <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                <strong
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {u.email}
-                </strong>
-                <span className="tag">{u.role}</span>
-                <button
-                  className="secondary"
-                  disabled={busyId === u.id}
-                  onClick={() => void resetFeatures(u.id, u.role)}
-                >
-                  Reset to {u.role} defaults
-                </button>
-              </div>
-              <div className="row" style={{ flexWrap: "wrap", gap: 14 }}>
-                {FEATURES.map((f) => (
-                  <label
-                    key={f.key}
-                    style={{
-                      display: "flex",
-                      gap: 6,
-                      alignItems: "center",
-                      fontSize: 13,
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={u.features.includes(f.key)}
-                      disabled={busyId === u.id}
-                      onChange={(e) =>
-                        void patchFeature(u.id, f.key, e.target.checked)
-                      }
-                    />
-                    {f.label}
-                  </label>
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>User</th>
+                  {FEATURES.map((f) => (
+                    <th key={f.key} style={{ textAlign: "center" }}>
+                      {f.label}
+                    </th>
+                  ))}
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {manageable.map((u) => (
+                  <tr key={u.id}>
+                    <td style={{ whiteSpace: "nowrap" }}>
+                      {u.email}{" "}
+                      <span className="muted" style={{ fontSize: 11 }}>
+                        ({u.role})
+                      </span>
+                    </td>
+                    {FEATURES.map((f) => (
+                      <td key={f.key} style={{ textAlign: "center" }}>
+                        <input
+                          type="checkbox"
+                          checked={u.features.includes(f.key)}
+                          disabled={busyId === u.id}
+                          onChange={(e) =>
+                            void patchFeature(u.id, f.key, e.target.checked)
+                          }
+                          style={{ width: 16, height: 16, margin: 0, cursor: "pointer" }}
+                          aria-label={`${u.email} — ${f.label}`}
+                        />
+                      </td>
+                    ))}
+                    <td style={{ whiteSpace: "nowrap", textAlign: "right" }}>
+                      <button
+                        className="secondary"
+                        disabled={busyId === u.id}
+                        onClick={() => void resetFeatures(u.id, u.role)}
+                        title={`Reset to ${u.role} defaults`}
+                        style={{ whiteSpace: "nowrap" }}
+                      >
+                        Reset
+                      </button>
+                    </td>
+                  </tr>
                 ))}
-              </div>
-            </div>
-          ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
