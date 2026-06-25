@@ -1,0 +1,48 @@
+name: Inside-Sales Reconcile
+
+# Catch-up sweep that re-owns HubSpot records to their rep code's ISR owner from
+# the deterministic sheet mapping (rep_codes / amt_isr_map):
+#   - Rep Code objects   -> hubspot_owner_id
+#   - Companies          -> inside_sales_rep_from_sap (+ manager rollups)
+#   - ACTIVE Deals       -> hubspot_owner_id (keyed off sales_group; closed-won/
+#                           closed-lost are skipped via hs_is_closed)
+# The real-time path in the API Worker (pushCompany) handles live SAP pushes;
+# this aligns quiet/existing records and is the one-time DEAL backfill. It is
+# idempotent + diff-only — a clean run writes nothing. Heavier than the territory
+# parse (it reads all companies/deals), so it runs on its own daily schedule.
+on:
+  schedule:
+    - cron: "37 6 * * *" # daily 06:37 UTC, offset from the territory parse
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Compute diffs but write nothing (safe default for manual runs)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: inside-sales-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build territory-sync
+        run: pnpm --filter @wac/territory-sync build
+      - name: Reconcile inside-sales owners
+        # Scheduled runs write (dry_run input is empty -> not 'true'); manual
+        # dispatch defaults to a dry run and must set dry_run=false to write.
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        run: pnpm --filter @wac/territory-sync sync -- --reconcile-inside-sales ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
