@@ -1,5 +1,6 @@
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, type ReactElement } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
+import { firstAccessiblePath, hasFeature, type FeatureKey } from "@wac/shared";
 import { AuthProvider, useAuth } from "./lib/auth.js";
 import { ThemeProvider } from "./lib/theme.js";
 import { Sidebar } from "./components/Sidebar.js";
@@ -86,122 +87,92 @@ function Shell() {
     );
   }
 
+  const isAdmin = user.role === "admin";
+  const landing = firstAccessiblePath(user.features, isAdmin);
+
+  // A non-admin with no features enabled has nothing to show.
+  if (!landing) {
+    return (
+      <div className="center-screen">
+        <div className="card signin">
+          <h2>No tools enabled</h2>
+          <p className="muted">
+            Your account ({user.email}) doesn't have access to any tools yet. An
+            admin needs to enable at least one feature for you.
+          </p>
+          <button className="secondary" onClick={signOut}>
+            Sign out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Render `element` if the user has `feature`, else bounce to their landing.
+  const gate = (feature: FeatureKey, element: ReactElement): ReactElement =>
+    hasFeature(user, feature) ? element : <Navigate to={landing} replace />;
+
   return (
     <div className="app">
       <Sidebar />
       <main className="main">
         <Routes>
-          <Route path="/" element={<Navigate to="/builder" replace />} />
-          <Route path="/builder" element={<Builder />} />
-          <Route path="/social" element={<Social />} />
-          <Route path="/bulk" element={<Bulk />} />
-          <Route path="/utm-qr" element={<UtmQr />} />
-          <Route
-            path="/utm-vocab"
-            element={
-              user.role === "admin" ? <VocabAdmin /> : <Navigate to="/builder" replace />
-            }
-          />
+          {/* Each tab is gated by its feature; admins always pass and the API
+              enforces the same server-side. A user without a feature is bounced
+              to their own landing page (`landing`). */}
+          <Route path="/" element={<Navigate to={landing} replace />} />
+          <Route path="/builder" element={gate("utm", <Builder />)} />
+          <Route path="/social" element={gate("utm", <Social />)} />
+          <Route path="/bulk" element={gate("utm", <Bulk />)} />
+          <Route path="/utm-qr" element={gate("utm", <UtmQr />)} />
+          <Route path="/utm-vocab" element={gate("utm-vocab", <VocabAdmin />)} />
           <Route path="/short-links" element={<Navigate to="/utm-qr" replace />} />
-          <Route path="/products" element={<Products />} />
+          <Route path="/products" element={gate("product", <Products />)} />
           <Route
             path="/product-info"
             element={<Navigate to="/product-info/romance" replace />}
           />
-          <Route path="/product-info/romance" element={<RomanceCopyPage />} />
-          <Route path="/product-info/seo" element={<SeoPage />} />
+          <Route
+            path="/product-info/romance"
+            element={gate("product", <RomanceCopyPage />)}
+          />
+          <Route path="/product-info/seo" element={gate("product", <SeoPage />)} />
           <Route
             path="/product-info/normalization"
-            element={<NormalizationPage />}
+            element={gate("product", <NormalizationPage />)}
           />
           {/* Families merged into the Products hub. */}
           <Route
             path="/product-info/families"
             element={<Navigate to="/products" replace />}
           />
-          {/* PPT Generator: internal-only (reps are hidden from the nav and
-              redirected; the API enforces access regardless). */}
           <Route path="/ppt" element={<Navigate to="/ppt/builder" replace />} />
-          <Route
-            path="/ppt/builder"
-            element={
-              user.role === "rep" ? <Navigate to="/builder" replace /> : <DeckBuilder />
-            }
-          />
-          <Route
-            path="/ppt/decks"
-            element={
-              user.role === "rep" ? <Navigate to="/builder" replace /> : <MyDecks />
-            }
-          />
-          <Route
-            path="/ppt/images"
-            element={
-              user.role === "rep" ? (
-                <Navigate to="/builder" replace />
-              ) : (
-                <PptRenderedImages />
-              )
-            }
-          />
+          <Route path="/ppt/builder" element={gate("ppt", <DeckBuilder />)} />
+          <Route path="/ppt/decks" element={gate("ppt", <MyDecks />)} />
+          <Route path="/ppt/images" element={gate("ppt", <PptRenderedImages />)} />
           <Route
             path="/ppt/templates"
-            element={
-              user.role === "admin" ? (
-                <PptTemplates />
-              ) : (
-                <Navigate to="/ppt/builder" replace />
-              )
-            }
+            element={gate("ppt-templates", <PptTemplates />)}
           />
           <Route
             path="/admin"
-            element={
-              user.role === "admin" ? <Admin /> : <Navigate to="/builder" replace />
-            }
+            element={isAdmin ? <Admin /> : <Navigate to={landing} replace />}
           />
-          {/* Marketing data ingestion: internal/admin only (reps redirected;
-              the API enforces access regardless). */}
           <Route
             path="/data"
             element={<Navigate to="/data/ingestions" replace />}
           />
           <Route
             path="/data/ingestions"
-            element={
-              user.role === "rep" ? (
-                <Navigate to="/builder" replace />
-              ) : (
-                <DataIngestions />
-              )
-            }
+            element={gate("data", <DataIngestions />)}
           />
-          {/* SAP -> HubSpot sync review dashboard: internal/admin only. */}
-          <Route
-            path="/data/hubspot"
-            element={
-              user.role === "rep" ? (
-                <Navigate to="/builder" replace />
-              ) : (
-                <HubspotSync />
-              )
-            }
-          />
-          {/* Pricing upload is admin-only (reps/internal redirected; API enforces). */}
-          <Route
-            path="/data/pricing"
-            element={
-              user.role === "admin" ? (
-                <PricingUpload />
-              ) : (
-                <Navigate to="/builder" replace />
-              )
-            }
-          />
-          <Route path="/app-image" element={<AppImage />} />
+          <Route path="/data/hubspot" element={gate("data", <HubspotSync />)} />
+          <Route path="/data/pricing" element={gate("pricing", <PricingUpload />)} />
+          <Route path="/app-image" element={gate("image", <AppImage />)} />
           <Route
             path="/app-shot"
-            element={
+            element={gate(
+              "image",
               <Suspense
                 fallback={
                   <div className="center-screen">
@@ -212,12 +183,13 @@ function Shell() {
                 }
               >
                 <AppShot />
-              </Suspense>
-            }
+              </Suspense>,
+            )}
           />
           <Route
             path="/cam-solve"
-            element={
+            element={gate(
+              "image",
               <Suspense
                 fallback={
                   <div className="center-screen">
@@ -228,18 +200,13 @@ function Shell() {
                 }
               >
                 <CamSolve />
-              </Suspense>
-            }
+              </Suspense>,
+            )}
           />
-          <Route
-            path="/library"
-            element={
-              user.role === "admin" ? <Library /> : <Navigate to="/final-images" replace />
-            }
-          />
-          <Route path="/final-images" element={<FinalImages />} />
-          <Route path="/render-queue" element={<RenderQueue />} />
-          <Route path="*" element={<Navigate to="/builder" replace />} />
+          <Route path="/library" element={gate("library", <Library />)} />
+          <Route path="/final-images" element={gate("image", <FinalImages />)} />
+          <Route path="/render-queue" element={gate("image", <RenderQueue />)} />
+          <Route path="*" element={<Navigate to={landing} replace />} />
         </Routes>
       </main>
     </div>

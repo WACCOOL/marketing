@@ -3,7 +3,7 @@ import { z } from "zod";
 import * as XLSX from "xlsx";
 import { parseTaggedUrl } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
-import { requireAuth } from "../auth.js";
+import { requireAuth, requireFeature } from "../auth.js";
 import { emailsForUserIds, userSupabase } from "../supabase.js";
 import {
   applyShortLinkPatch,
@@ -14,6 +14,10 @@ import {
 } from "../shortlinks.js";
 
 export const shortLinkRoutes = new Hono<AppBindings>();
+
+// Short links are created/managed from the UTM & QR tab — gate by `utm`.
+// (Public resolution happens in the separate redirect Worker, not here.)
+shortLinkRoutes.use("*", requireAuth, requireFeature("utm"));
 
 const CreateSchema = z.object({
   destinationUrl: z.string().url(),

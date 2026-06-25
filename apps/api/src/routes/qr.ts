@@ -6,13 +6,16 @@ import {
   type UtmFields,
 } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
-import { requireAuth } from "../auth.js";
+import { requireAuth, requireFeature } from "../auth.js";
 import { userSupabase } from "../supabase.js";
 import { createShortLink, shortLinkUrl } from "../shortlinks.js";
 import { renderQr } from "../qr.js";
 import { autoTags, createAsset } from "../assets.js";
 
 export const qrRoutes = new Hono<AppBindings>();
+
+// QR generation is part of the UTM & QR tab — gate by the `utm` feature.
+qrRoutes.use("*", requireAuth, requireFeature("utm"));
 
 const SingleQrSchema = z.object({
   name: z.string().min(1),

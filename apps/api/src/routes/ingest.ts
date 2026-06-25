@@ -51,10 +51,12 @@ function resolveContentType(
   return { contentType: ct, ext: "" }; // signals "unsupported"
 }
 
-/** Internal/admin guard for the read/reprocess endpoints. */
-function isInternalOrAdmin(user: AuthedUser): boolean {
+/** Data-tab guard for the read/reprocess endpoints: the `data` feature (admins
+ * always have it). Active status is still required for non-admins. */
+function canAccessData(user: AuthedUser): boolean {
   return (
-    user.status === "active" && (user.role === "internal" || user.role === "admin")
+    user.role === "admin" ||
+    (user.status === "active" && user.features.includes("data"))
   );
 }
 
@@ -104,16 +106,18 @@ ingestRoutes.post("/:source", requireIngestAuth, async (c) => {
   const user = c.get("user");
   const isTokenCaller = user.id === INGEST_TOKEN_USER_ID;
 
-  // Per-source authorization. Manual sources (pricing) are ADMIN-ONLY for human
-  // users via the GUI, but the trusted server-to-server ingest token (Power
-  // Automate / one-time bootstrap loads) is also accepted. Automated sources
-  // accept the token or any active internal/admin user.
+  // Per-source authorization. Manual sources (pricing) require the `pricing`
+  // feature for human users via the GUI (admins always have it), but the
+  // trusted server-to-server ingest token (Power Automate / one-time bootstrap
+  // loads) is also accepted. Automated sources accept the token or any user
+  // with the `data` feature.
   if (source.authMode === "manual") {
-    if (!isTokenCaller && user.role !== "admin") {
-      return c.json({ error: "admin access required" }, 403);
+    const canPricing = user.role === "admin" || user.features.includes("pricing");
+    if (!isTokenCaller && !canPricing) {
+      return c.json({ error: "Pricing Upload access is not enabled for your account" }, 403);
     }
-  } else if (!isInternalOrAdmin(user)) {
-    return c.json({ error: "internal access required" }, 403);
+  } else if (!canAccessData(user)) {
+    return c.json({ error: "Data access is not enabled for your account" }, 403);
   }
 
   // Variant handling (e.g. pricing price books).
@@ -167,7 +171,7 @@ ingestRoutes.post("/:source", requireIngestAuth, async (c) => {
 
 /** List recent ingestions across all sources (internal/admin). */
 ingestRoutes.get("/", requireAuth, async (c) => {
-  if (!isInternalOrAdmin(c.get("user"))) {
+  if (!canAccessData(c.get("user"))) {
     return c.json({ error: "internal access required" }, 403);
   }
   const source = c.req.query("source");
@@ -177,7 +181,7 @@ ingestRoutes.get("/", requireAuth, async (c) => {
 
 /** One ingestion (internal/admin). */
 ingestRoutes.get("/:id", requireAuth, async (c) => {
-  if (!isInternalOrAdmin(c.get("user"))) {
+  if (!canAccessData(c.get("user"))) {
     return c.json({ error: "internal access required" }, 403);
   }
   const row = await getIngestion(serviceSupabase(c.env), c.req.param("id"));
@@ -187,7 +191,7 @@ ingestRoutes.get("/:id", requireAuth, async (c) => {
 
 /** Re-enqueue an ingestion from its stored R2 key (internal/admin). */
 ingestRoutes.post("/:id/reprocess", requireAuth, async (c) => {
-  if (!isInternalOrAdmin(c.get("user"))) {
+  if (!canAccessData(c.get("user"))) {
     return c.json({ error: "internal access required" }, 403);
   }
   const res = await reprocessIngestion(

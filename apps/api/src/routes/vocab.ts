@@ -61,10 +61,16 @@ vocabRoutes.post("/", requireAuth, async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
   }
-  // `content` is user-extendable for everyone; `source`/`medium` are admin-only
-  // (RLS enforces the same, this just returns a clean error first).
-  if (parsed.data.type !== "content" && c.get("user").role !== "admin") {
-    return c.json({ error: "only admins can add source/medium vocab" }, 403);
+  // `content` is user-extendable for everyone; `source`/`medium` require the
+  // Sources & Mediums (`utm-vocab`) feature (admins always have it). RLS
+  // enforces the same; this just returns a clean error first.
+  const u = c.get("user");
+  const canVocab = u.role === "admin" || u.features.includes("utm-vocab");
+  if (parsed.data.type !== "content" && !canVocab) {
+    return c.json(
+      { error: "Sources & Mediums access is not enabled for your account" },
+      403,
+    );
   }
   const sb = userSupabase(c.env, c.get("jwt"));
   const { error } = await sb
@@ -84,10 +90,15 @@ const SourceMediumSchema = z.object({
   enabled: z.boolean(),
 });
 
-// Toggle one (source, medium) pair in the mapping. Admin only.
+// Toggle one (source, medium) pair in the mapping. Requires the Sources &
+// Mediums (`utm-vocab`) feature; admins always have it.
 vocabRoutes.post("/source-medium", requireAuth, async (c) => {
-  if (c.get("user").role !== "admin") {
-    return c.json({ error: "admin only" }, 403);
+  const u = c.get("user");
+  if (!(u.role === "admin" || u.features.includes("utm-vocab"))) {
+    return c.json(
+      { error: "Sources & Mediums access is not enabled for your account" },
+      403,
+    );
   }
   const parsed = SourceMediumSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {

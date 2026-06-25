@@ -2,10 +2,13 @@ import { Hono } from "hono";
 import { getContainer } from "@cloudflare/containers";
 import { z } from "zod";
 import type { AppBindings } from "../auth.js";
-import { requireAuth } from "../auth.js";
+import { requireAuth, requireFeature } from "../auth.js";
 import { containerPoolKey } from "../containerPool.js";
 
 export const cutoutRoutes = new Hono<AppBindings>();
+
+// Background cutout is part of the Image Generation tab — gate by `image`.
+cutoutRoutes.use("*", requireAuth, requireFeature("image"));
 
 const CutoutRequestSchema = z.object({ sourceUrl: z.string().url() });
 

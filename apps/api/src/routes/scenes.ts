@@ -2,11 +2,14 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { FixtureMountSchema, SceneGenRequestSchema } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
-import { requireAuth } from "../auth.js";
+import { requireAuth, requireFeature } from "../auth.js";
 import { generatorFetch } from "../generatorClient.js";
 import { publicOrigin } from "../publicUrl.js";
 
 export const sceneRoutes = new Hono<AppBindings>();
+
+// Scene generation is part of the Image Generation tab — gate by `image`.
+sceneRoutes.use("*", requireAuth, requireFeature("image"));
 
 /** Body for the perspective auto-fit proxy. */
 const PerspectiveRequestSchema = z.object({

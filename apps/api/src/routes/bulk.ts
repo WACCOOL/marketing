@@ -10,7 +10,7 @@ import {
   type HubspotCampaign,
 } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
-import { requireAuth } from "../auth.js";
+import { requireAuth, requireFeature } from "../auth.js";
 import { userSupabase } from "../supabase.js";
 import { createShortLink, shortLinkUrl } from "../shortlinks.js";
 import { renderQr } from "../qr.js";
@@ -18,6 +18,9 @@ import { autoTags, createAsset } from "../assets.js";
 import { makeCampaignAdapter } from "../hubspot.js";
 
 export const bulkRoutes = new Hono<AppBindings>();
+
+// Bulk Import is part of the UTM & QR tab — gate by the `utm` feature.
+bulkRoutes.use("*", requireAuth, requireFeature("utm"));
 
 /**
  * Map one raw spreadsheet/pasted row (arbitrary header casing) onto our

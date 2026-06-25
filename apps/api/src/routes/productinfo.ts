@@ -27,7 +27,7 @@ import {
 } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import type { Env } from "../env.js";
-import { requireAuth } from "../auth.js";
+import { requireAuth, requireFeature } from "../auth.js";
 import { geminiText } from "../gemini.js";
 import { serviceSupabase, userSupabase } from "../supabase.js";
 
@@ -44,12 +44,8 @@ import { serviceSupabase, userSupabase } from "../supabase.js";
  */
 export const productInfoRoutes = new Hono<AppBindings>();
 
-productInfoRoutes.use("*", requireAuth, async (c, next) => {
-  if (c.get("user").role === "rep") {
-    return c.json({ error: "Product Information is internal-only" }, 403);
-  }
-  await next();
-});
+// Product Info is gated by the `product` feature (admins always pass).
+productInfoRoutes.use("*", requireAuth, requireFeature("product"));
 
 interface ContentRow {
   id: string;

@@ -8,6 +8,8 @@ export interface AuthedUser {
   email: string;
   role: "internal" | "rep" | "admin";
   status: "active" | "pending";
+  /** Effective feature (menu-tab) access from /api/me; admins get all. */
+  features: string[];
 }
 
 interface AuthContextValue {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { FEATURES } from "@wac/shared";
 import { api } from "../lib/api.js";
 import { useAuth } from "../lib/auth.js";
 
@@ -8,6 +9,8 @@ interface AdminUser {
   role: "internal" | "rep" | "admin";
   status: "active" | "pending";
   created_at: string;
+  /** Effective feature access (role default ± per-user overrides). */
+  features: string[];
 }
 
 export function Admin() {
@@ -55,6 +58,45 @@ export function Admin() {
         body: JSON.stringify(patch),
       });
       setUsers((prev) => prev.map((u) => (u.id === id ? res.user : u)));
+    } catch (e) {
+      setErr(formatErr(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function patchFeature(id: string, feature: string, allowed: boolean) {
+    setBusyId(id);
+    setErr(null);
+    try {
+      const res = await api<{ id: string; features: string[] }>(
+        `/api/admin/users/${id}/features`,
+        { method: "PATCH", body: JSON.stringify({ feature, allowed }) },
+      );
+      setUsers((prev) =>
+        prev.map((u) => (u.id === id ? { ...u, features: res.features } : u)),
+      );
+    } catch (e) {
+      setErr(formatErr(e));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function resetFeatures(id: string, role: AdminUser["role"]) {
+    if (!confirm(`Reset this user's feature access to the ${role} defaults?`)) {
+      return;
+    }
+    setBusyId(id);
+    setErr(null);
+    try {
+      const res = await api<{ id: string; features: string[] }>(
+        `/api/admin/users/${id}/features`,
+        { method: "DELETE" },
+      );
+      setUsers((prev) =>
+        prev.map((u) => (u.id === id ? { ...u, features: res.features } : u)),
+      );
     } catch (e) {
       setErr(formatErr(e));
     } finally {
@@ -123,6 +165,8 @@ export function Admin() {
   }
 
   const pending = users.filter((u) => u.status === "pending");
+  // Admins always have every feature, so only non-admins are editable here.
+  const manageable = users.filter((u) => u.role !== "admin");
 
   if (loading) {
     return (
@@ -260,6 +304,74 @@ export function Admin() {
           </tbody>
         </table>
       </div>
+
+      {manageable.length > 0 && (
+        <div className="card col" style={{ gap: 14 }}>
+          <div>
+            <h3>Feature access</h3>
+            <div className="muted">
+              Grant or revoke individual tabs per user. Admins always have
+              everything; toggles here override the user's role defaults.
+            </div>
+          </div>
+          {manageable.map((u) => (
+            <div
+              key={u.id}
+              className="col"
+              style={{
+                gap: 8,
+                paddingTop: 10,
+                borderTop: "1px solid var(--border)",
+              }}
+            >
+              <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                <strong
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {u.email}
+                </strong>
+                <span className="tag">{u.role}</span>
+                <button
+                  className="secondary"
+                  disabled={busyId === u.id}
+                  onClick={() => void resetFeatures(u.id, u.role)}
+                >
+                  Reset to {u.role} defaults
+                </button>
+              </div>
+              <div className="row" style={{ flexWrap: "wrap", gap: 14 }}>
+                {FEATURES.map((f) => (
+                  <label
+                    key={f.key}
+                    style={{
+                      display: "flex",
+                      gap: 6,
+                      alignItems: "center",
+                      fontSize: 13,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={u.features.includes(f.key)}
+                      disabled={busyId === u.id}
+                      onChange={(e) =>
+                        void patchFeature(u.id, f.key, e.target.checked)
+                      }
+                    />
+                    {f.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="card col" style={{ gap: 12 }}>
         <h3>Approved domains</h3>

@@ -1,5 +1,10 @@
 import type { Context, Next } from "hono";
 import { createMiddleware } from "hono/factory";
+import {
+  ALL_FEATURE_KEYS,
+  computeFeatures,
+  type FeatureKey,
+} from "@wac/shared";
 import type { Env } from "./env.js";
 import { serviceSupabase, userSupabase } from "./supabase.js";
 
@@ -8,6 +13,12 @@ export interface AuthedUser {
   email: string;
   role: "internal" | "rep" | "admin";
   status: "active" | "pending";
+  /**
+   * Effective feature (menu-tab) access — role default adjusted by per-user
+   * overrides; admins always get every feature. See @wac/shared features +
+   * `requireFeature`. Drives the web sidebar/route guards and API gating.
+   */
+  features: string[];
 }
 
 export interface AppBindings {
@@ -45,6 +56,7 @@ export const requireAuthOrAdmin = createMiddleware<AppBindings>(
         email: "admin@token",
         role: "admin",
         status: "active",
+        features: [...ALL_FEATURE_KEYS],
       });
       await next();
       return;
@@ -76,6 +88,7 @@ export const requireIngestAuth = createMiddleware<AppBindings>(
         email: "ingest@token",
         role: "internal",
         status: "active",
+        features: [...ALL_FEATURE_KEYS],
       });
       await next();
       return;
@@ -106,6 +119,7 @@ export const requireSapSyncAuth = createMiddleware<AppBindings>(
         email: "sap-sync@token",
         role: "internal",
         status: "active",
+        features: [...ALL_FEATURE_KEYS],
       });
       await next();
       return;
@@ -128,8 +142,38 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/**
+ * Require an authenticated user with a specific feature granted. Assumes an
+ * auth middleware (requireAuth / requireAuthOrAdmin / ...) already ran and set
+ * `user`. Admins always pass; everyone else must have the feature in their
+ * effective set. Lets per-user grants actually gate the API, not just the nav.
+ */
+export function requireFeature(key: FeatureKey) {
+  return createMiddleware<AppBindings>(async (c, next) => {
+    const user = c.get("user");
+    if (!user) return c.json({ error: "missing bearer token" }, 401);
+    if (user.role === "admin" || user.features.includes(key)) {
+      await next();
+      return;
+    }
+    return c.json(
+      { error: `access to this feature ("${key}") is not enabled for your account` },
+      403,
+    );
+  });
+}
+
 /** Verify a Supabase session JWT and stash the user/jwt on the context. */
 async function verifySession(c: Context<AppBindings>, next: Next) {
+  // Idempotent: if an upstream auth middleware already resolved the user (e.g.
+  // a mount-level requireAuth+requireFeature gate in index.ts), don't re-verify
+  // the JWT — just continue. This lets routes keep their own requireAuth while
+  // a group gate runs first, without paying a double Supabase round-trip.
+  if (c.get("user")) {
+    await next();
+    return;
+  }
+
   const jwt = bearerToken(c);
   if (!jwt) return c.json({ error: "missing bearer token" }, 401);
 
@@ -167,7 +211,10 @@ export async function ensureUserProfile(
     .eq("id", authUser.id)
     .maybeSingle();
   if (selErr) throw new Error(`users lookup failed: ${selErr.message}`);
-  if (existing) return existing as AuthedUser;
+  if (existing) {
+    const base = existing as Omit<AuthedUser, "features">;
+    return { ...base, features: await loadFeatures(env, base.id, base.role) };
+  }
 
   // First login — decide role from email domain.
   const domain = authUser.email.split("@")[1]?.toLowerCase() ?? "";
@@ -196,5 +243,37 @@ export async function ensureUserProfile(
     .single();
   if (insErr) throw new Error(`users insert failed: ${insErr.message}`);
 
-  return inserted as AuthedUser;
+  // A brand-new user has no overrides yet, so their features are the pure role
+  // default.
+  const base = inserted as Omit<AuthedUser, "features">;
+  return { ...base, features: computeFeatures(base.role, []) };
+}
+
+/**
+ * Load a user's per-user feature overrides and fold them onto their role
+ * default to produce the effective feature set. Reads via the service client
+ * (RLS-exempt) since this runs in the auth path for the user themselves.
+ */
+async function loadFeatures(
+  env: Env,
+  userId: string,
+  role: AuthedUser["role"],
+): Promise<string[]> {
+  if (role === "admin") return [...ALL_FEATURE_KEYS];
+  const admin = serviceSupabase(env);
+  const { data, error } = await admin
+    .from("user_features")
+    .select("feature, allowed")
+    .eq("user_id", userId);
+  // Degrade gracefully rather than 500 the whole app: if the overrides table is
+  // unavailable (e.g. migration 0031 not yet applied) or the query errors, fall
+  // back to the user's role default instead of failing every authed request.
+  if (error) {
+    console.error(`[auth] user_features lookup failed, using role defaults: ${error.message}`);
+    return computeFeatures(role, []);
+  }
+  return computeFeatures(
+    role,
+    (data ?? []) as { feature: string; allowed: boolean }[],
+  );
 }

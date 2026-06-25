@@ -4,7 +4,7 @@ import type { Context } from "hono";
 import { PPT_LAYOUTS, PptDeckSchema, type PptDeck } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import type { Env } from "../env.js";
-import { requireAuth } from "../auth.js";
+import { requireAuth, requireFeature } from "../auth.js";
 import { generatorFetch } from "../generatorClient.js";
 import { geminiText } from "../gemini.js";
 import { userSupabase } from "../supabase.js";
@@ -23,12 +23,9 @@ import { userSupabase } from "../supabase.js";
  */
 export const pptRoutes = new Hono<AppBindings>();
 
-pptRoutes.use("*", requireAuth, async (c, next) => {
-  if (c.get("user").role === "rep") {
-    return c.json({ error: "the PPT generator is internal-only" }, 403);
-  }
-  await next();
-});
+// The PPT Generator tab is gated by the `ppt` feature; template management is
+// further gated by `ppt-templates` (see canManageTemplates). Admins pass both.
+pptRoutes.use("*", requireAuth, requireFeature("ppt"));
 
 interface TemplateRow {
   id: string;
@@ -55,8 +52,9 @@ const INTROSPECT_TIMEOUT_MS = 60_000;
 /** Partial record canonical-layout -> template layout name; unknown keys 400. */
 const LayoutMapSchema = z.record(z.enum(PPT_LAYOUTS), z.string().max(200));
 
-function isAdmin(c: Context<AppBindings>): boolean {
-  return c.get("user").role === "admin";
+function canManageTemplates(c: Context<AppBindings>): boolean {
+  const u = c.get("user");
+  return u.role === "admin" || u.features.includes("ppt-templates");
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +181,8 @@ pptRoutes.get("/templates", async (c) => {
 
 /** Upload a new .pptx template (admin), then introspect it to seed layout_map. */
 pptRoutes.post("/templates", async (c) => {
-  if (!isAdmin(c)) return c.json({ error: "admin only" }, 403);
+  if (!canManageTemplates(c))
+    return c.json({ error: "PPT template management is not enabled for your account" }, 403);
   const user = c.get("user");
 
   const upload = await readPptxUpload(c);
@@ -240,7 +239,8 @@ const TemplatePatchSchema = z
 
 /** Edit a template's name/brand/layout mapping (admin). */
 pptRoutes.patch("/templates/:id", async (c) => {
-  if (!isAdmin(c)) return c.json({ error: "admin only" }, 403);
+  if (!canManageTemplates(c))
+    return c.json({ error: "PPT template management is not enabled for your account" }, 403);
   const parsed = TemplatePatchSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
     return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
@@ -263,7 +263,8 @@ pptRoutes.patch("/templates/:id", async (c) => {
  * returned for the mapping UI but never auto-applied here.
  */
 pptRoutes.post("/templates/:id/file", async (c) => {
-  if (!isAdmin(c)) return c.json({ error: "admin only" }, 403);
+  if (!canManageTemplates(c))
+    return c.json({ error: "PPT template management is not enabled for your account" }, 403);
   const existing = await loadTemplate(c, c.req.param("id"));
   if (!existing) return c.json({ error: "not found" }, 404);
 
@@ -296,7 +297,8 @@ pptRoutes.post("/templates/:id/file", async (c) => {
 
 /** Re-run introspection on the stored file (admin, reopens the mapping UI). */
 pptRoutes.post("/templates/:id/introspect", async (c) => {
-  if (!isAdmin(c)) return c.json({ error: "admin only" }, 403);
+  if (!canManageTemplates(c))
+    return c.json({ error: "PPT template management is not enabled for your account" }, 403);
   const existing = await loadTemplate(c, c.req.param("id"));
   if (!existing) return c.json({ error: "not found" }, 404);
   const introspection = await introspectTemplate(

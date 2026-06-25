@@ -34,6 +34,7 @@ import {
   Webhook,
   type LucideIcon,
 } from "lucide-react";
+import { type FeatureKey } from "@wac/shared";
 import { useAuth } from "../lib/auth.js";
 import { useTheme } from "../lib/theme.js";
 
@@ -41,6 +42,8 @@ interface NavLeaf {
   to: string;
   label: string;
   icon: LucideIcon;
+  /** Feature that gates this item; omitted = always visible to active users. */
+  feature?: FeatureKey;
 }
 
 interface NavParent {
@@ -62,58 +65,59 @@ const NAV: NavEntry[] = [
     label: "UTM & QR",
     icon: QrCode,
     children: [
-      { to: "/builder", label: "UTM Builder", icon: Link2 },
-      { to: "/social", label: "Social Fan-out", icon: Share2 },
-      { to: "/bulk", label: "Bulk Import", icon: Upload },
-      { to: "/utm-qr", label: "UTM & QR", icon: QrCode },
-      { to: "/utm-vocab", label: "Sources & Mediums", icon: SlidersHorizontal },
+      { to: "/builder", label: "UTM Builder", icon: Link2, feature: "utm" },
+      { to: "/social", label: "Social Fan-out", icon: Share2, feature: "utm" },
+      { to: "/bulk", label: "Bulk Import", icon: Upload, feature: "utm" },
+      { to: "/utm-qr", label: "UTM & QR", icon: QrCode, feature: "utm" },
+      { to: "/utm-vocab", label: "Sources & Mediums", icon: SlidersHorizontal, feature: "utm-vocab" },
     ],
   },
   {
     label: "Image Generation",
     icon: ImageIcon,
     children: [
-      { to: "/app-shot", label: "3D App-Shot", icon: Box },
-      { to: "/cam-solve", label: "Cam Solve", icon: Aperture },
-      { to: "/app-image", label: "Image Generator", icon: ImageIcon },
-      { to: "/render-queue", label: "Render Queue", icon: ListChecks },
-      { to: "/final-images", label: "Final Images", icon: ImagePlay },
+      { to: "/app-shot", label: "3D App-Shot", icon: Box, feature: "image" },
+      { to: "/cam-solve", label: "Cam Solve", icon: Aperture, feature: "image" },
+      { to: "/app-image", label: "Image Generator", icon: ImageIcon, feature: "image" },
+      { to: "/render-queue", label: "Render Queue", icon: ListChecks, feature: "image" },
+      { to: "/final-images", label: "Final Images", icon: ImagePlay, feature: "image" },
     ],
   },
   {
     label: "PPT Generator",
     icon: Presentation,
     children: [
-      { to: "/ppt/builder", label: "Deck Builder", icon: LayoutTemplate },
-      { to: "/ppt/decks", label: "My Decks", icon: Files },
-      { to: "/ppt/images", label: "Rendered Images", icon: ImagePlay },
-      { to: "/ppt/templates", label: "Templates", icon: FileUp },
+      { to: "/ppt/builder", label: "Deck Builder", icon: LayoutTemplate, feature: "ppt" },
+      { to: "/ppt/decks", label: "My Decks", icon: Files, feature: "ppt" },
+      { to: "/ppt/images", label: "Rendered Images", icon: ImagePlay, feature: "ppt" },
+      { to: "/ppt/templates", label: "Templates", icon: FileUp, feature: "ppt-templates" },
     ],
   },
   {
     label: "Product Info",
     icon: FileText,
     children: [
-      { to: "/products", label: "Products", icon: Package },
-      { to: "/product-info/romance", label: "Romance Copy", icon: PenLine },
-      { to: "/product-info/seo", label: "SEO", icon: Search },
-      { to: "/product-info/normalization", label: "Data Normalization", icon: Ruler },
+      { to: "/products", label: "Products", icon: Package, feature: "product" },
+      { to: "/product-info/romance", label: "Romance Copy", icon: PenLine, feature: "product" },
+      { to: "/product-info/seo", label: "SEO", icon: Search, feature: "product" },
+      { to: "/product-info/normalization", label: "Data Normalization", icon: Ruler, feature: "product" },
     ],
   },
   {
     label: "Data",
     icon: Database,
     children: [
-      { to: "/data/ingestions", label: "Data Ingestions", icon: Inbox },
-      { to: "/data/hubspot", label: "HubSpot Sync", icon: Webhook },
-      { to: "/data/pricing", label: "Pricing Upload", icon: DollarSign },
+      { to: "/data/ingestions", label: "Data Ingestions", icon: Inbox, feature: "data" },
+      { to: "/data/hubspot", label: "HubSpot Sync", icon: Webhook, feature: "data" },
+      { to: "/data/pricing", label: "Pricing Upload", icon: DollarSign, feature: "pricing" },
     ],
   },
 ];
 
-// Appended for admins only: the cross-tool Asset Library and the Admin page.
+// The cross-tool Asset Library (gated by the `library` feature) and the Admin
+// page (admins only — managing access is inherently an admin function).
 const ADMIN_ENTRIES: NavLeaf[] = [
-  { to: "/library", label: "Asset Library", icon: FolderOpen },
+  { to: "/library", label: "Asset Library", icon: FolderOpen, feature: "library" },
   { to: "/admin", label: "Admin", icon: ShieldCheck },
 ];
 
@@ -152,42 +156,47 @@ export function Sidebar() {
     loadExpandedGroups,
   );
 
-  // Role-scoped nav: Product Info and the PPT Generator are internal-only
-  // workflows, and the Admin page only renders for admins (the API enforces
-  // all of this regardless).
-  const nav = useMemo(() => {
-    let entries = NAV;
-    if (user?.role === "rep") {
-      // Reps keep the catalog but not the internal content workflows.
-      entries = entries.flatMap((e) => {
-        if (e.label === "PPT Generator") return [];
-        // Marketing data ingestion is an internal/admin ops workflow.
-        if (e.label === "Data") return [];
-        if (e.label === "Product Info") {
-          return [{ to: "/products", label: "Products", icon: Package } as NavLeaf];
+  // Feature-scoped nav: each item shows only if the user has its feature
+  // (admins always do). The API enforces the same server-side regardless.
+  const nav = useMemo<NavEntry[]>(() => {
+    if (!user) return [];
+    const isAdmin = user.role === "admin";
+    const can = (feature?: FeatureKey) =>
+      !feature || isAdmin || user.features.includes(feature);
+
+    const entries: NavEntry[] = [];
+    for (const e of NAV) {
+      if (!isParent(e)) {
+        if (can(e.feature)) entries.push(e);
+        continue;
+      }
+      // Reps see Product Info collapsed to a single Products link (unchanged),
+      // still gated by the `product` feature.
+      if (e.label === "Product Info" && user.role === "rep") {
+        if (can("product")) {
+          entries.push({
+            to: "/products",
+            label: "Products",
+            icon: Package,
+            feature: "product",
+          });
         }
-        return [e];
-      });
+        continue;
+      }
+      const children = e.children.filter((c) => can(c.feature));
+      if (children.length) entries.push({ ...e, children });
     }
-    if (user?.role !== "admin") {
-      // Template management, Pricing upload, and the Sources & Mediums vocab
-      // editor are admin-only.
-      entries = entries.map((e) => {
-        if (isParent(e) && e.label === "PPT Generator") {
-          return { ...e, children: e.children.filter((c) => c.to !== "/ppt/templates") };
-        }
-        if (isParent(e) && e.label === "Data") {
-          return { ...e, children: e.children.filter((c) => c.to !== "/data/pricing") };
-        }
-        if (isParent(e) && e.label === "UTM & QR") {
-          return { ...e, children: e.children.filter((c) => c.to !== "/utm-vocab") };
-        }
-        return e;
-      });
+
+    // Asset Library by feature; the Admin page is admin-only.
+    for (const entry of ADMIN_ENTRIES) {
+      if (entry.to === "/admin") {
+        if (isAdmin) entries.push(entry);
+      } else if (can(entry.feature)) {
+        entries.push(entry);
+      }
     }
-    if (user?.role === "admin") entries = [...entries, ...ADMIN_ENTRIES];
     return entries;
-  }, [user?.role]);
+  }, [user]);
 
   // Which parent (if any) owns the active route, so we can auto-expand it.
   const activeParent = useMemo(() => {

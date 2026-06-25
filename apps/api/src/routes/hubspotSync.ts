@@ -39,9 +39,13 @@ export const hubspotSyncRoutes = new Hono<AppBindings>();
 
 const OBJECT_TYPES: HubspotObjectType[] = ["deals", "companies"];
 
-function isInternalOrAdmin(user: AuthedUser): boolean {
+/** Data-tab guard for the dashboard endpoints: the `data` feature (admins
+ * always have it). Active status is still required for non-admins. The SAP sync
+ * token bypasses this at each call site. */
+function canAccessData(user: AuthedUser): boolean {
   return (
-    user.status === "active" && (user.role === "internal" || user.role === "admin")
+    user.role === "admin" ||
+    (user.status === "active" && user.features.includes("data"))
   );
 }
 
@@ -187,7 +191,7 @@ hubspotSyncRoutes.post("/push/:object", requireSapSyncAuth, async (c) => {
 /** Bulk replay records (default: all `partial`) — re-push + self-heal in place. */
 hubspotSyncRoutes.post("/replay", requireSapSyncAuth, async (c) => {
   const user = c.get("user");
-  if (user.id !== SAP_SYNC_TOKEN_USER_ID && !isInternalOrAdmin(user)) {
+  if (user.id !== SAP_SYNC_TOKEN_USER_ID && !canAccessData(user)) {
     return c.json({ error: "internal access required" }, 403);
   }
   let body: { status?: string; objectType?: string; limit?: number } = {};
@@ -213,7 +217,7 @@ hubspotSyncRoutes.post("/replay", requireSapSyncAuth, async (c) => {
  */
 hubspotSyncRoutes.post("/replay-raw", requireSapSyncAuth, async (c) => {
   const user = c.get("user");
-  if (user.id !== SAP_SYNC_TOKEN_USER_ID && !isInternalOrAdmin(user)) {
+  if (user.id !== SAP_SYNC_TOKEN_USER_ID && !canAccessData(user)) {
     return c.json({ error: "internal access required" }, 403);
   }
   const objectQ = c.req.query("object");
@@ -244,7 +248,7 @@ hubspotSyncRoutes.post("/replay-raw", requireSapSyncAuth, async (c) => {
 /** Refresh the cached HubSpot enum option lists (also runs daily on cron). */
 hubspotSyncRoutes.post("/refresh-options", requireSapSyncAuth, async (c) => {
   const user = c.get("user");
-  if (user.id !== SAP_SYNC_TOKEN_USER_ID && !isInternalOrAdmin(user)) {
+  if (user.id !== SAP_SYNC_TOKEN_USER_ID && !canAccessData(user)) {
     return c.json({ error: "internal access required" }, 403);
   }
   await refreshHubspotOptions(c.env, serviceSupabase(c.env));
@@ -253,7 +257,7 @@ hubspotSyncRoutes.post("/refresh-options", requireSapSyncAuth, async (c) => {
 
 /** List recent records (internal/admin). */
 hubspotSyncRoutes.get("/", requireAuth, async (c) => {
-  if (!isInternalOrAdmin(c.get("user"))) {
+  if (!canAccessData(c.get("user"))) {
     return c.json({ error: "internal access required" }, 403);
   }
   const rows = await listRecords(serviceSupabase(c.env), {
@@ -268,7 +272,7 @@ hubspotSyncRoutes.get("/", requireAuth, async (c) => {
 
 /** List problem fields across records (Errors tab; internal/admin). */
 hubspotSyncRoutes.get("/issues", requireAuth, async (c) => {
-  if (!isInternalOrAdmin(c.get("user"))) {
+  if (!canAccessData(c.get("user"))) {
     return c.json({ error: "internal access required" }, 403);
   }
   const rows = await listFieldIssues(serviceSupabase(c.env), {
@@ -282,7 +286,7 @@ hubspotSyncRoutes.get("/issues", requireAuth, async (c) => {
 
 /** Dashboard summary aggregates (Summary tab; internal/admin). */
 hubspotSyncRoutes.get("/summary", requireAuth, async (c) => {
-  if (!isInternalOrAdmin(c.get("user"))) {
+  if (!canAccessData(c.get("user"))) {
     return c.json({ error: "internal access required" }, 403);
   }
   const summary = await getSummary(serviceSupabase(c.env));
@@ -291,7 +295,7 @@ hubspotSyncRoutes.get("/summary", requireAuth, async (c) => {
 
 /** One record with its stored payload + field issues (internal/admin). */
 hubspotSyncRoutes.get("/:id", requireAuth, async (c) => {
-  if (!isInternalOrAdmin(c.get("user"))) {
+  if (!canAccessData(c.get("user"))) {
     return c.json({ error: "internal access required" }, 403);
   }
   const sb = serviceSupabase(c.env);
