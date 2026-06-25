@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   addToAggregate,
   buildRepCodes,
+  parseAmtIsrMapping,
   parseRepCodeMapping,
   parseTerritoryHeader,
   unpivotTerritoryRow,
@@ -123,5 +124,28 @@ describe("buildRepCodes", () => {
     expect(by["CAX"]!.zipCount).toBe(0);
     expect(by["CAX"]!.district).toBe("East");
     expect(rows).toHaveLength(3);
+  });
+});
+
+describe("parseAmtIsrMapping", () => {
+  it("maps AMT Rep Code -> Inside Sales Person, flags missing, dedupes", () => {
+    const { mapping, errors, duplicates } = parseAmtIsrMapping([
+      { "AMT Rep Code": "464", "Inside Sales Person": "Aaron Jernoske" },
+      { "AMT Rep Code": "441", "Inside Sales Person": "Christina Yin" },
+      { "AMT Rep Code": "441", "Inside Sales Person": "Christina Yin" }, // dup -> last wins
+      { "AMT Rep Code": "", "Inside Sales Person": "Nobody" }, // missing code -> error
+      { "AMT Rep Code": "999", "Inside Sales Person": "" }, // missing person -> error
+      { "AMT Rep Code": "", "Inside Sales Person": "" }, // blank -> ignored
+    ]);
+    expect(mapping.get("464")).toBe("Aaron Jernoske");
+    expect(mapping.get("441")).toBe("Christina Yin");
+    expect(mapping.size).toBe(2);
+    expect(duplicates).toBe(1);
+    expect(errors).toHaveLength(2);
+  });
+
+  it('accepts an "ISR" header as the person column', () => {
+    const { mapping } = parseAmtIsrMapping([{ "AMT Rep Code": "403", ISR: "Nina Chou" }]);
+    expect(mapping.get("403")).toBe("Nina Chou");
   });
 });

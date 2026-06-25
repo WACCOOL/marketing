@@ -19,3 +19,4 @@ export * from "./ingest/openOrders.js";
 export * from "./ingest/sales.js";
 export * from "./hubspot/mapping.js";
 export * from "./hubspot/heal.js";
+export * from "./hubspot/insideSales.js";
