@@ -1221,7 +1221,7 @@ async function findRepCodesByAccount(
   token: string,
   accountNumber: string,
   signal: AbortSignal,
-): Promise<{ id: string; ownerId: string }[]> {
+): Promise<{ id: string; ownerId: string; repCode: string }[]> {
   const forms = accountForms(accountNumber);
   if (!forms.length) return [];
   const res = await hs(
@@ -1230,7 +1230,7 @@ async function findRepCodesByAccount(
     `/crm/v3/objects/${REP_OBJECT}/search`,
     {
       filterGroups: [{ filters: [{ propertyName: REP_CODE_ACCOUNT_PROP, operator: "IN", values: forms }] }],
-      properties: [REP_CODE_ACCOUNT_PROP, "hubspot_owner_id"],
+      properties: [REP_CODE_ACCOUNT_PROP, "hubspot_owner_id", "rep_code"],
       limit: 50,
     },
     signal,
@@ -1239,7 +1239,74 @@ async function findRepCodesByAccount(
   return (res.data?.results ?? []).map((r: any) => ({
     id: String(r.id),
     ownerId: String(r.properties?.hubspot_owner_id ?? ""),
+    repCode: String(r.properties?.rep_code ?? "").trim(),
   }));
+}
+
+/**
+ * Re-own a rep code's ACTIVE deals to a new owner. Deals link to a rep code via
+ * their `sales_group` property (= the deal's Current-labeled rep code); we filter
+ * to open deals with HubSpot's calculated `hs_is_closed` so closed-won/closed-lost
+ * are never touched. Diff-only: a deal already on `ownerId` is skipped. Returns the
+ * number updated plus any failures (surfaced as assocSkips by the caller). Used by
+ * the real-time path when a Rep Code owner actually changed.
+ */
+async function reownActiveDealsForRepCode(
+  token: string,
+  repCode: string,
+  ownerId: string,
+  signal: AbortSignal,
+): Promise<{ updated: number; failures: string[] }> {
+  const failures: string[] = [];
+  const code = repCode.trim();
+  if (!code || !ownerId) return { updated: 0, failures };
+
+  // Collect active deals (sales_group = repCode AND not closed) whose owner differs.
+  const toUpdate: string[] = [];
+  let after: string | undefined;
+  do {
+    const res = await hs(
+      token,
+      "POST",
+      PATHS.dealSearch,
+      {
+        filterGroups: [
+          {
+            filters: [
+              { propertyName: "sales_group", operator: "EQ", value: code },
+              { propertyName: "hs_is_closed", operator: "EQ", value: "false" },
+            ],
+          },
+        ],
+        properties: ["hubspot_owner_id"],
+        limit: 100,
+        after,
+      },
+      signal,
+    );
+    if (!res.ok) {
+      failures.push(`deal search for sales_group ${code} failed (${res.status})`);
+      break;
+    }
+    for (const d of res.data?.results ?? []) {
+      if (String(d.properties?.hubspot_owner_id ?? "") !== ownerId) toUpdate.push(String(d.id));
+    }
+    after = res.data?.paging?.next?.after;
+  } while (after);
+
+  // Batch-update the deal owner in chunks; idempotent — only diffs were collected.
+  let updated = 0;
+  for (let i = 0; i < toUpdate.length; i += BATCH_SIZE) {
+    const slice = toUpdate.slice(i, i + BATCH_SIZE);
+    const inputs = slice.map((id) => ({ id, properties: { hubspot_owner_id: ownerId } }));
+    const res = await hs(token, "POST", PATHS.dealUpdate, { inputs }, signal);
+    if (!res.ok) {
+      failures.push(`deal owner batch/update for sales_group ${code} failed (${res.status})`);
+      continue;
+    }
+    updated += slice.length;
+  }
+  return { updated, failures };
 }
 
 /** Push a Companies payload: upsert by account_number_ with heal. */
@@ -1324,6 +1391,13 @@ export async function pushCompany(
               rawValue: isrOwner,
               reason: `rep code ${rep.id} owner update failed (${pr.status})`,
             });
+            continue;
+          }
+          // Owner changed on this rep code → cascade to its ACTIVE deals (the
+          // batch sweep in territory-sync is the backfill / self-heal for the rest).
+          const { failures } = await reownActiveDealsForRepCode(token, rep.repCode, isrOwner, signal);
+          for (const reason of failures) {
+            assocSkips.push({ objectType: "deals", property: "hubspot_owner_id", rawValue: isrOwner, reason });
           }
         }
       } catch (e) {

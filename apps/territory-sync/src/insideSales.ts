@@ -378,3 +378,84 @@ export async function reconcileRepCodeOwners(opts: {
 
   return { scanned, updated, augmented };
 }
+
+export interface DealOwnerReconcileResult {
+  scanned: number;
+  updated: number;
+  /** Closed (won/lost) deals skipped — never re-owned. */
+  skippedClosed: number;
+  /** Active deals whose rep code (sales_group) didn't resolve to an owner, desc. */
+  unresolved: { code: string; deals: number }[];
+}
+
+/**
+ * Walk every Deal; for ACTIVE deals (HubSpot calculated `hs_is_closed` !== true, i.e.
+ * not closed-won/closed-lost), set `hubspot_owner_id` to the owner of the deal's rep
+ * code — keyed off `sales_group` (= the deal's Current-labeled rep code) via
+ * `resolvers.repCodeToOwner`. Diff-only (a clean run writes nothing) and never wipes
+ * an owner when the rep code is unresolved. Uses the paginated list endpoint (no 10k
+ * search cap, like the company pass). Run AFTER `reconcileRepCodeOwners` so the
+ * resolver is augmented. First run is the one-time backfill; later runs are the
+ * sheet-change sweep + self-heal.
+ */
+export async function reconcileDealOwners(opts: {
+  token: string;
+  resolvers: InsideSalesResolvers;
+  dryRun: boolean;
+  limit?: number;
+}): Promise<DealOwnerReconcileResult> {
+  const { token, resolvers, dryRun, limit } = opts;
+  const unresolved = new Map<string, number>(); // rep code -> # active deals affected
+  let scanned = 0;
+  let updated = 0;
+  let skippedClosed = 0;
+  let after: string | undefined;
+  const pending: { id: string; properties: { hubspot_owner_id: string } }[] = [];
+
+  const flush = async () => {
+    if (!pending.length) return;
+    if (!dryRun) {
+      for (let i = 0; i < pending.length; i += UPDATE_BATCH) {
+        const inputs = pending.slice(i, i + UPDATE_BATCH);
+        const res = await hs(token, "POST", "/crm/v3/objects/0-3/batch/update", { inputs });
+        if (!res.ok) {
+          throw new Error(`deal batch/update ${res.status}: ${JSON.stringify(res.data).slice(0, 300)}`);
+        }
+      }
+    }
+    updated += pending.length;
+    pending.length = 0;
+  };
+
+  do {
+    const qs = `?limit=100&properties=sales_group,hubspot_owner_id,hs_is_closed${after ? `&after=${after}` : ""}`;
+    const res = await hs(token, "GET", `/crm/v3/objects/0-3${qs}`);
+    if (!res.ok) throw new Error(`deals list ${res.status}: ${JSON.stringify(res.data).slice(0, 200)}`);
+    for (const d of res.data?.results ?? []) {
+      scanned++;
+      const p = d.properties ?? {};
+      if (String(p.hs_is_closed ?? "") === "true") {
+        skippedClosed++;
+        continue; // closed-won / closed-lost — never re-owned
+      }
+      const repCode = String(p.sales_group ?? "").trim().toUpperCase();
+      if (!repCode) continue;
+      const desired = resolvers.repCodeToOwner.get(repCode);
+      if (!desired) {
+        unresolved.set(repCode, (unresolved.get(repCode) ?? 0) + 1);
+        continue; // no owner for this rep code — leave the deal owner as-is
+      }
+      if (String(p.hubspot_owner_id ?? "") === desired) continue;
+      pending.push({ id: String(d.id), properties: { hubspot_owner_id: desired } });
+      if (pending.length >= UPDATE_BATCH) await flush();
+    }
+    after = res.data?.paging?.next?.after;
+    if (limit && scanned >= limit) break;
+  } while (after);
+  await flush();
+
+  const unresolvedSorted = [...unresolved.entries()]
+    .map(([code, deals]) => ({ code, deals }))
+    .sort((a, b) => b.deals - a.deals);
+  return { scanned, updated, skippedClosed, unresolved: unresolvedSorted };
+}

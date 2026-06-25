@@ -15,6 +15,7 @@ import { buildOwnerResolver, syncRepCodesToHubspot, type RepForPush } from "./hu
 import {
   buildInsideSalesResolvers,
   reconcileCompanyInsideSales,
+  reconcileDealOwners,
   reconcileManagersRollup,
   reconcileRepCodeOwners,
   type AmtIsrRow,
@@ -146,6 +147,19 @@ async function runInsideSalesReconcile(
   if (co.unresolved.length) {
     console.log("[inside-sales] unresolved codes (code×companies):");
     console.log(`  ${co.unresolved.map((u) => `${u.code}×${u.companies}`).join("  ")}`);
+  }
+
+  // Deal owners LAST — re-own each ACTIVE deal (not closed-won/closed-lost) to its
+  // rep code's owner via sales_group. First run is the backfill; later runs are the
+  // sheet-change sweep + self-heal. Resolver is fully augmented by the rep-code pass.
+  const dl = await reconcileDealOwners({ token, resolvers, dryRun, limit });
+  console.log(
+    `[inside-sales] deal owners: scanned=${dl.scanned} ${dryRun ? "would-update" : "updated"}=${dl.updated} ` +
+      `skippedClosed=${dl.skippedClosed} unresolved=${dl.unresolved.length} codes`,
+  );
+  if (dl.unresolved.length) {
+    console.log("[inside-sales] unresolved deal rep codes (code×deals):");
+    console.log(`  ${dl.unresolved.map((u) => `${u.code}×${u.deals}`).join("  ")}`);
   }
 }
 
