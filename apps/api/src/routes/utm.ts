@@ -2,9 +2,14 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { UtmFieldsSchema, buildTaggedUrl, auditTaggedUrl } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
-import { requireAuth } from "../auth.js";
+import { requireAuth, requireFeature } from "../auth.js";
 
 export const utmRoutes = new Hono<AppBindings>();
+
+// The UTM & QR tab is gated by the `utm` feature (admins always pass). The
+// per-route requireAuth below is a no-op once this group middleware has
+// resolved the user (verifySession is idempotent).
+utmRoutes.use("*", requireAuth, requireFeature("utm"));
 
 const PreviewSchema = z.object({
   destination: z.string().min(1),

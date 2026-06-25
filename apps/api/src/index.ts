@@ -61,6 +61,17 @@ app.onError((err, c) => {
 
 app.get("/api/_health", (c) => c.json({ ok: true }));
 
+// Per-user feature (menu-tab) access is enforced inside the relevant route
+// files via requireFeature() group/route middleware (see @wac/shared features):
+//   utm → utm/qr/short-links/social/bulk · image → scenes/cutout ·
+//   ppt → ppt (+ ppt-templates for template mgmt) · product → product-info ·
+//   data → ingest/hubspot-sync (+ pricing for the manual pricing source) ·
+//   utm-vocab → vocab source/medium.
+// Shared utility groups are intentionally NOT feature-gated to avoid cross-tab
+// breakage: jobs/uploads (generic generation pipeline used by image + ppt),
+// assets (cross-tool library), appshot (carries the fixture-sync admin token),
+// and the products catalog read. The web nav/route guards hide those tabs; the
+// Admin page stays admin-only.
 app.route("/api/me", meRoutes);
 app.route("/api/utm", utmRoutes);
 app.route("/api/vocab", vocabRoutes);

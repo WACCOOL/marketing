@@ -2,13 +2,16 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { SocialChannels, buildSocialFanout } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
-import { requireAuth } from "../auth.js";
+import { requireAuth, requireFeature } from "../auth.js";
 import { userSupabase } from "../supabase.js";
 import { createShortLink, shortLinkUrl } from "../shortlinks.js";
 import { renderQr } from "../qr.js";
 import { autoTags, createAsset } from "../assets.js";
 
 export const socialRoutes = new Hono<AppBindings>();
+
+// Social Fan-out lives under the UTM & QR tab — gate by the `utm` feature.
+socialRoutes.use("*", requireAuth, requireFeature("utm"));
 
 const SocialSchema = z.object({
   name: z.string().min(1),
