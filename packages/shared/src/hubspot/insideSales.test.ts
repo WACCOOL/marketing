@@ -35,20 +35,17 @@ describe("parseRepCodes", () => {
   });
 });
 
-describe("computeInsideSalesFields — AMT path", () => {
-  it("writes the single ISR to the writable fields (from_sap + managers); manager_1/_2 are calculated", () => {
+describe("computeInsideSalesFields — writes only inside_sales_rep_from_sap (AMT path)", () => {
+  it("writes the AMT-derived ISR to from_sap, nothing else", () => {
     const r = computeInsideSalesFields({ amtRepCode: "464", salesRepCode: "FRT" }, resolvers);
     expect(r.path).toBe("amt");
-    expect(r.properties).toEqual({
-      inside_sales_rep_from_sap: "80807344",
-      inside_sales_managers: "80807344",
-    });
+    expect(r.properties).toEqual({ inside_sales_rep_from_sap: "80807344" });
     expect(r.unresolved).toEqual([]);
   });
 
   it("accepts a numeric amt code", () => {
     const r = computeInsideSalesFields({ amtRepCode: 463 }, resolvers);
-    expect(r.properties.inside_sales_rep_from_sap).toBe("78403193");
+    expect(r.properties).toEqual({ inside_sales_rep_from_sap: "78403193" });
   });
 
   it("writes nothing (no wipe) when the amt code is unknown", () => {
@@ -57,39 +54,14 @@ describe("computeInsideSalesFields — AMT path", () => {
     expect(r.properties).toEqual({});
     expect(r.unresolved).toEqual(["999"]);
   });
-});
 
-describe("computeInsideSalesFields — rep-code path (no AMT)", () => {
-  it("captures two distinct ISRs from a multi-code account into managers and clears from_sap", () => {
+  it("writes nothing for a no-AMT company (its ISR lives in the calculated manager fields)", () => {
     const r = computeInsideSalesFields({ salesRepCode: "OS, OSX" }, resolvers);
-    expect(r.path).toBe("rep_code");
-    expect(r.properties).toEqual({
-      inside_sales_rep_from_sap: "",
-      inside_sales_managers: "80807344;78403193",
-    });
-  });
-
-  it("collapses duplicate owners (two codes, same person) to one", () => {
-    const r = computeInsideSalesFields({ salesRepCode: "PLM/PLD" }, resolvers);
-    expect(r.properties).toEqual({
-      inside_sales_rep_from_sap: "",
-      inside_sales_managers: "1386421143",
-    });
-  });
-
-  it("flags unresolved rep codes but still sets the resolved ones", () => {
-    const r = computeInsideSalesFields({ salesRepCode: "OS, ZZZ" }, resolvers);
-    expect(r.properties.inside_sales_managers).toBe("80807344");
-    expect(r.unresolved).toEqual(["ZZZ"]);
-  });
-
-  it("writes nothing when no rep code resolves", () => {
-    const r = computeInsideSalesFields({ salesRepCode: "ZZZ" }, resolvers);
+    expect(r.path).toBe("none");
     expect(r.properties).toEqual({});
-    expect(r.unresolved).toEqual(["ZZZ"]);
   });
 
-  it("returns the none path when there is neither an AMT nor a rep code", () => {
+  it("returns the none path when there is no AMT", () => {
     const r = computeInsideSalesFields({}, resolvers);
     expect(r.path).toBe("none");
     expect(r.properties).toEqual({});

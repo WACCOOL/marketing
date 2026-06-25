@@ -15,6 +15,7 @@ import { buildOwnerResolver, syncRepCodesToHubspot, type RepForPush } from "./hu
 import {
   buildInsideSalesResolvers,
   reconcileCompanyInsideSales,
+  reconcileManagersRollup,
   reconcileRepCodeOwners,
   type AmtIsrRow,
   type RepIsrRow,
@@ -160,10 +161,25 @@ async function main(): Promise<void> {
     { auth: { persistSession: false, autoRefreshToken: false } },
   );
 
+  const limitArg = process.argv.find((a) => a.startsWith("--limit="));
+  const limit = limitArg ? Number(limitArg.split("=")[1]) || undefined : undefined;
+
+  // One-time corrective: realign inside_sales_managers to the manager_1/_2 rollup.
+  if (process.argv.includes("--fix-managers-rollup")) {
+    const token = process.env.HUBSPOT_TOKEN;
+    if (!token) {
+      console.log("[managers-rollup] HUBSPOT_TOKEN unset; nothing to do.");
+      return;
+    }
+    const r = await reconcileManagersRollup({ token, dryRun, limit });
+    console.log(
+      `[managers-rollup] scanned=${r.scanned} ${dryRun ? "would-update" : "updated"}=${r.updated}`,
+    );
+    return;
+  }
+
   // Standalone reconciliation mode — independent of the parse/upsert flow.
   if (reconcileInsideSales) {
-    const limitArg = process.argv.find((a) => a.startsWith("--limit="));
-    const limit = limitArg ? Number(limitArg.split("=")[1]) || undefined : undefined;
     const amtCsvArg = process.argv.find((a) => a.startsWith("--amt-csv="));
     const amtCsv = amtCsvArg ? amtCsvArg.split("=").slice(1).join("=") : undefined;
     await runInsideSalesReconcile(sb, dryRun, limit, amtCsv);
