@@ -63,27 +63,41 @@ async function hs(method, path, body) {
   throw new Error(`${method} ${path}: exhausted retries`);
 }
 
+// All deal stages EXCEPT Pre-Qualified (1054295849). Paginating per-stage keeps
+// each search under HubSpot's 10,000-result offset cap (the whole in-scope set is
+// ~25k). Combined hs_object_id sort+filter 400s, so we partition by stage instead.
+const NON_PREQUAL_STAGES = [
+  "1054295850", // Planning
+  "1054295851", // Design & Budgeting
+  "1054295852", // Bidding & Negotiating
+  "1240424232", // Awarded
+  "1054295854", // Closed Won
+  "1054295855", // Closed Lost
+];
+
 /** Page through every in-scope deal id (SAP quote # present, not Pre-Qualified). */
 async function* inScopeDeals() {
-  let after;
-  do {
-    const body = {
-      filterGroups: [
-        {
-          filters: [
-            { propertyName: "sap_quote_number", operator: "HAS_PROPERTY" },
-            { propertyName: "dealstage", operator: "NEQ", value: PREQUAL_STAGE },
-          ],
-        },
-      ],
-      properties: ["sap_quote_number"],
-      limit: 100,
-      after,
-    };
-    const res = await hs("POST", "/crm/v3/objects/deals/search", body);
-    for (const d of res.results ?? []) yield d.id;
-    after = res.paging?.next?.after;
-  } while (after);
+  for (const stage of NON_PREQUAL_STAGES) {
+    let after;
+    do {
+      const body = {
+        filterGroups: [
+          {
+            filters: [
+              { propertyName: "sap_quote_number", operator: "HAS_PROPERTY" },
+              { propertyName: "dealstage", operator: "EQ", value: stage },
+            ],
+          },
+        ],
+        properties: ["hs_object_id"],
+        limit: 100,
+        after,
+      };
+      const res = await hs("POST", "/crm/v3/objects/deals/search", body);
+      for (const d of res.results ?? []) yield d.id;
+      after = res.paging?.next?.after;
+    } while (after);
+  }
 }
 
 /** The line items on a deal, partitioned into canonical vs dup. */
