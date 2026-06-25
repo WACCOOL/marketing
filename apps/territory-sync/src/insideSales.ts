@@ -204,6 +204,75 @@ export async function reconcileCompanyInsideSales(opts: {
   return { scanned, updated, unresolved: unresolvedSorted };
 }
 
+export interface ManagersRollupResult {
+  scanned: number;
+  updated: number;
+}
+
+/**
+ * One-time corrective: align `inside_sales_managers` to the rollup of the CALCULATED
+ * `inside_sales_manager_1`/`_2` (the rep-code ISRs) — undoing an earlier overwrite
+ * and matching what workflow 1745459869 maintains going forward. Sets managers =
+ * the distinct set of manager_1/_2 wherever it differs (clearing it when the company
+ * has no rep-code managers). Order-insensitive comparison (managers is a checkbox).
+ */
+export async function reconcileManagersRollup(opts: {
+  token: string;
+  dryRun: boolean;
+  limit?: number;
+}): Promise<ManagersRollupResult> {
+  const { token, dryRun, limit } = opts;
+  const props = "inside_sales_manager_1,inside_sales_manager_2,inside_sales_managers";
+  let scanned = 0;
+  let updated = 0;
+  let after: string | undefined;
+  const pending: { id: string; properties: { inside_sales_managers: string } }[] = [];
+
+  const flush = async () => {
+    if (!pending.length) return;
+    if (!dryRun) {
+      for (let i = 0; i < pending.length; i += UPDATE_BATCH) {
+        const inputs = pending.slice(i, i + UPDATE_BATCH);
+        const res = await hs(token, "POST", "/crm/v3/objects/companies/batch/update", { inputs });
+        if (!res.ok) {
+          throw new Error(`managers rollup batch/update ${res.status}: ${JSON.stringify(res.data).slice(0, 300)}`);
+        }
+      }
+    }
+    updated += pending.length;
+    pending.length = 0;
+  };
+
+  do {
+    const qs = `?limit=100&properties=${props}${after ? `&after=${after}` : ""}`;
+    const res = await hs(token, "GET", `/crm/v3/objects/companies${qs}`);
+    if (!res.ok) throw new Error(`companies list ${res.status}: ${JSON.stringify(res.data).slice(0, 200)}`);
+    for (const c of res.data?.results ?? []) {
+      scanned++;
+      const p = c.properties ?? {};
+      const m1 = String(p.inside_sales_manager_1 ?? "").trim();
+      const m2 = String(p.inside_sales_manager_2 ?? "").trim();
+      const rollup = [...new Set([m1, m2].filter(Boolean))];
+      const current = new Set(
+        String(p.inside_sales_managers ?? "")
+          .split(";")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      );
+      const same = current.size === rollup.length && rollup.every((x) => current.has(x));
+      if (!same) {
+        pending.push({ id: String(c.id), properties: { inside_sales_managers: rollup.join(";") } });
+      }
+      if (pending.length >= UPDATE_BATCH) await flush();
+    }
+    after = res.data?.paging?.next?.after;
+    if (limit && scanned >= limit) break;
+  } while (after);
+  await flush();
+
+  return { scanned, updated };
+}
+
 export interface RepOwnerReconcileResult {
   scanned: number;
   updated: number;

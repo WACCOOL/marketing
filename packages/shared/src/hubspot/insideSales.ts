@@ -7,24 +7,23 @@
  * pure logic here only turns (amt code | rep code(s)) + owner maps into the exact
  * Company properties to write.
  *
- * Hybrid model (confirmed with the business):
- *  - Company HAS its own AMT code (`inside_sales_rep`, ~21.6k distributor/customer
- *    accounts): one ISR from amt -> owner.
- *  - Company has NO AMT but IS serviced by rep code(s) (~9.5k design/spec accounts,
- *    `sales_rep_code` can pack multiple like "OS, OSX"): one ISR per rep code.
+ * The field model (verified live):
+ *  - `inside_sales_rep_from_sap` (writable) = the account's OWN ISR, from its AMT
+ *    code (`inside_sales_rep`). THIS is the only company field this module sets.
+ *  - `inside_sales_manager_1`/`_2` (CALCULATED, readOnlyValue=true) = the company's
+ *    REP-CODE association owner(s) — a different concept (the rep agency's ISR).
+ *    HubSpot derives them from the rep code owner we maintain elsewhere; setting
+ *    them returns READ_ONLY_VALUE. We never touch them.
+ *  - `inside_sales_managers` (writable) = the rollup of manager_1/_2, maintained by
+ *    the rep-code workflow (1745459869). NOT the AMT ISR — we never write it here.
  *
- * Writable fields (verified live): only `inside_sales_rep_from_sap` (single-select,
- * owner id) and `inside_sales_managers` (checkbox, owner ids joined by ";"). The
- * `inside_sales_manager_1` / `_2` properties are CALCULATED (readOnlyValue=true) —
- * HubSpot derives them from `inside_sales_managers`, so we must NOT set them (a
- * READ_ONLY_VALUE 400). We therefore write the single ISR (AMT path) or all ISRs
- * (rep-code path) into `inside_sales_managers`, and manager_1/_2 follow automatically.
- * "" clears a property. The Rep-Code-owner side (gated on the company itself being a
- * rep) is handled by the caller, not here.
+ * So this module resolves the AMT code to an owner and writes only
+ * `inside_sales_rep_from_sap`. The rep-code owner side (which drives manager_1/_2)
+ * is the caller's job. Writes NOTHING on an unresolved/absent AMT (never wipes).
  */
 
-/** The writable Company ISR properties this module sets (manager_1/_2 are calculated). */
-export const INSIDE_SALES_FIELDS = ["inside_sales_rep_from_sap", "inside_sales_managers"] as const;
+/** The Company ISR property this module sets (the rep-agency fields are not ours). */
+export const INSIDE_SALES_FIELDS = ["inside_sales_rep_from_sap"] as const;
 
 /** Multi-value (checkbox) enum: HubSpot joins selected values with ";". */
 export const INSIDE_SALES_MANAGERS_SEP = ";";
@@ -65,11 +64,13 @@ export function parseRepCodes(salesRepCode: unknown): string[] {
 }
 
 /**
- * Compute the Company ISR properties from its AMT code (preferred) or its rep
- * code(s). Returns only the properties to write; on a total resolution failure
- * (a known amt/rep code that maps to no owner) it writes NOTHING — never wipes
- * existing values on a lookup miss. `amtRepCode` is the Company's own
- * `inside_sales_rep` value; `salesRepCode` is its `sales_rep_code` value.
+ * Compute the Company ISR property to write from the company's AMT code. ONLY
+ * `inside_sales_rep_from_sap` (the account's own SAP/AMT inside-sales person) is
+ * ours to set. The rep-agency side — `inside_sales_manager_1`/`_2` (CALCULATED
+ * from the company's rep-code owner) and `inside_sales_managers` (their rollup,
+ * maintained by the rep-code workflow) — is handled entirely by the rep-code
+ * mechanism, not here. Writes NOTHING on an unresolved AMT (never wipes), and
+ * NOTHING for a no-AMT company (its ISR lives in the calculated manager fields).
  */
 export function computeInsideSalesFields(
   input: { amtRepCode?: unknown; salesRepCode?: unknown },
@@ -77,34 +78,9 @@ export function computeInsideSalesFields(
 ): InsideSalesResult {
   const amt = input.amtRepCode == null ? "" : String(input.amtRepCode).trim();
   const properties: Record<string, string> = {};
-  const unresolved: string[] = [];
-
-  // AMT path — the company has its own inside-sales code (one ISR).
-  if (amt) {
-    const owner = resolvers.amtToOwner.get(amt);
-    if (!owner) return { properties, path: "amt", unresolved: [amt] };
-    properties.inside_sales_rep_from_sap = owner;
-    properties.inside_sales_managers = owner; // manager_1/_2 are calculated from this
-    return { properties, path: "amt", unresolved };
-  }
-
-  // Rep-code path — no AMT; inherit ISR(s) from the servicing rep code(s).
-  const codes = parseRepCodes(input.salesRepCode);
-  if (!codes.length) return { properties, path: "none", unresolved };
-
-  const owners: string[] = [];
-  for (const code of codes) {
-    const owner = resolvers.repCodeToOwner.get(code);
-    if (!owner) {
-      unresolved.push(code);
-      continue;
-    }
-    if (!owners.includes(owner)) owners.push(owner);
-  }
-  if (!owners.length) return { properties, path: "rep_code", unresolved };
-
-  properties.inside_sales_rep_from_sap = ""; // no AMT — clear the SAP-derived field
-  // All servicing ISRs into the checkbox; manager_1/_2 are calculated from it.
-  properties.inside_sales_managers = owners.join(INSIDE_SALES_MANAGERS_SEP);
-  return { properties, path: "rep_code", unresolved };
+  if (!amt) return { properties, path: "none", unresolved: [] };
+  const owner = resolvers.amtToOwner.get(amt);
+  if (!owner) return { properties, path: "amt", unresolved: [amt] };
+  properties.inside_sales_rep_from_sap = owner;
+  return { properties, path: "amt", unresolved: [] };
 }
