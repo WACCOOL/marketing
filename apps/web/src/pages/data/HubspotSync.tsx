@@ -327,11 +327,27 @@ function ErrorsTab() {
     }
   }
 
-  // Re-push needs a concrete enum object type, a specific property, and the
-  // dropped filter — it only re-sends that one field for its dropped rows.
+  // Re-push only re-sends the dropped rows for ONE property, so it needs a
+  // concrete object type. Use the Object filter if set, else infer it from the
+  // dropped rows currently shown (e.g. a program_level filter → all companies).
   const prop = property.trim();
-  const canRepush =
-    (objectType === "companies" || objectType === "deals") && prop !== "" && action === "dropped";
+  const droppedRows = rows.filter((r) => r.action === "dropped");
+  const droppedObjectTypes = [...new Set(droppedRows.map((r) => r.objectType))];
+  const effectiveObjectType =
+    objectType === "companies" || objectType === "deals"
+      ? objectType
+      : droppedObjectTypes.length === 1 &&
+          (droppedObjectTypes[0] === "companies" || droppedObjectTypes[0] === "deals")
+        ? droppedObjectTypes[0]!
+        : "";
+  const canRepush = prop !== "" && effectiveObjectType !== "" && droppedRows.length > 0;
+  const repushHint = !prop
+    ? "Type a property name and click Filter first."
+    : droppedRows.length === 0
+      ? "No dropped rows shown for this property."
+      : effectiveObjectType === ""
+        ? "Set Object to Companies or Deals (the shown drops span multiple types)."
+        : "";
 
   async function onRepush() {
     if (!canRepush) return;
@@ -339,7 +355,7 @@ function ErrorsTab() {
     setErr(null);
     setActionMsg(null);
     try {
-      const r = await repushDroppedProperty({ objectType, property: prop });
+      const r = await repushDroppedProperty({ objectType: effectiveObjectType, property: prop });
       setActionMsg(
         r.optionsCached
           ? `Re-pushed ${prop}: ${r.pushed} fixed, ${r.stillUnmatched} still unmatched` +
@@ -386,16 +402,15 @@ function ErrorsTab() {
         <button
           onClick={() => void onRepush()}
           disabled={busy || !canRepush}
-          title={
-            canRepush
-              ? `Re-push only the ${prop} field for its dropped rows`
-              : "Set Object to Deals/Companies, Action to Dropped, and a Property name first"
-          }
+          title={canRepush ? `Re-push only the ${prop} field for its dropped rows` : repushHint}
         >
           {busy ? <span className="spinner" /> : null}
-          {canRepush ? `Re-push dropped ${prop} (this field only)` : "Re-push dropped field (this field only)"}
+          {prop ? `Re-push dropped ${prop} (this field only)` : "Re-push dropped field (this field only)"}
         </button>
         {actionMsg && <span className="muted" style={{ fontSize: 13 }}>{actionMsg}</span>}
+        {!actionMsg && !canRepush && repushHint && (
+          <span className="muted" style={{ fontSize: 13 }}>{repushHint}</span>
+        )}
       </div>
 
       {err && <div className="alert error">{err}</div>}
