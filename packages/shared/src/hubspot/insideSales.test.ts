@@ -36,13 +36,11 @@ describe("parseRepCodes", () => {
 });
 
 describe("computeInsideSalesFields — AMT path", () => {
-  it("mirrors the single ISR into from_sap/manager_1/managers and clears manager_2", () => {
+  it("writes the single ISR to the writable fields (from_sap + managers); manager_1/_2 are calculated", () => {
     const r = computeInsideSalesFields({ amtRepCode: "464", salesRepCode: "FRT" }, resolvers);
     expect(r.path).toBe("amt");
     expect(r.properties).toEqual({
       inside_sales_rep_from_sap: "80807344",
-      inside_sales_manager_1: "80807344",
-      inside_sales_manager_2: "",
       inside_sales_managers: "80807344",
     });
     expect(r.unresolved).toEqual([]);
@@ -62,13 +60,11 @@ describe("computeInsideSalesFields — AMT path", () => {
 });
 
 describe("computeInsideSalesFields — rep-code path (no AMT)", () => {
-  it("captures two distinct ISRs from a multi-code account and clears from_sap", () => {
+  it("captures two distinct ISRs from a multi-code account into managers and clears from_sap", () => {
     const r = computeInsideSalesFields({ salesRepCode: "OS, OSX" }, resolvers);
     expect(r.path).toBe("rep_code");
     expect(r.properties).toEqual({
       inside_sales_rep_from_sap: "",
-      inside_sales_manager_1: "80807344",
-      inside_sales_manager_2: "78403193",
       inside_sales_managers: "80807344;78403193",
     });
   });
@@ -77,15 +73,13 @@ describe("computeInsideSalesFields — rep-code path (no AMT)", () => {
     const r = computeInsideSalesFields({ salesRepCode: "PLM/PLD" }, resolvers);
     expect(r.properties).toEqual({
       inside_sales_rep_from_sap: "",
-      inside_sales_manager_1: "1386421143",
-      inside_sales_manager_2: "",
       inside_sales_managers: "1386421143",
     });
   });
 
   it("flags unresolved rep codes but still sets the resolved ones", () => {
     const r = computeInsideSalesFields({ salesRepCode: "OS, ZZZ" }, resolvers);
-    expect(r.properties.inside_sales_manager_1).toBe("80807344");
+    expect(r.properties.inside_sales_managers).toBe("80807344");
     expect(r.unresolved).toEqual(["ZZZ"]);
   });
 
