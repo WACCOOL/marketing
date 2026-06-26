@@ -18,6 +18,7 @@ import {
   reconcileDealOwners,
   reconcileManagersRollup,
   reconcileRepCodeOwners,
+  reconcileRepCodeSync,
   type AmtIsrRow,
   type RepIsrRow,
 } from "./insideSales.js";
@@ -161,6 +162,16 @@ async function runInsideSalesReconcile(
     console.log("[inside-sales] unresolved deal rep codes (code×deals):");
     console.log(`  ${dl.unresolved.map((u) => `${u.code}×${u.deals}`).join("  ")}`);
   }
+
+  // Rep Code ← agency company field sync + "Inactive" label (absorbs the
+  // "Account # to Rep Code Syncing" + status workflows). Idempotent backstop /
+  // backfill for the real-time path in the API Worker.
+  const rcs = await reconcileRepCodeSync({ token, dryRun, limit });
+  console.log(
+    `[rep-sync] rep codes: scanned=${rcs.scanned} ${dryRun ? "would-update" : "updated"}-fields=${rcs.fieldsUpdated} ` +
+      `inactive=${rcs.inactive} labels(+${rcs.labelsAdded}/-${rcs.labelsRemoved}) failures=${rcs.failures}` +
+      `${rcs.labelMissing ? " [Inactive label not set up — labeling skipped]" : ""}`,
+  );
 }
 
 async function main(): Promise<void> {

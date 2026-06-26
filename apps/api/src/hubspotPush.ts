@@ -4,17 +4,22 @@ import {
   DEAL_FIELD_MAP,
   LINE_ITEM_DATE_FIELDS,
   LINE_ITEM_FIELD_MAP,
+  companyStatusFromRiskCategory,
   computeInsideSalesFields,
   extractInvalidPropertyItems,
   healProperties,
   isValidationError,
   mapFields,
+  repCodeInactiveFromCompanyStatus,
+  repCodeSyncProperties,
+  resolveRepCodeSchema,
   smartMatchToAllowedOptions,
   toDecimalPercent,
   toHubspotDate,
   toNumber,
   type FixAction,
   type InsideSalesResolvers,
+  type RepCodeSchema,
 } from "@wac/shared";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Env } from "./env.js";
@@ -1221,16 +1226,18 @@ async function findRepCodesByAccount(
   token: string,
   accountNumber: string,
   signal: AbortSignal,
-): Promise<{ id: string; ownerId: string; repCode: string }[]> {
+  extraProps: string[] = [],
+): Promise<{ id: string; ownerId: string; repCode: string; properties: Record<string, string> }[]> {
   const forms = accountForms(accountNumber);
   if (!forms.length) return [];
+  const properties = [...new Set([REP_CODE_ACCOUNT_PROP, "hubspot_owner_id", "rep_code", ...extraProps])];
   const res = await hs(
     token,
     "POST",
     `/crm/v3/objects/${REP_OBJECT}/search`,
     {
       filterGroups: [{ filters: [{ propertyName: REP_CODE_ACCOUNT_PROP, operator: "IN", values: forms }] }],
-      properties: [REP_CODE_ACCOUNT_PROP, "hubspot_owner_id", "rep_code"],
+      properties,
       limit: 50,
     },
     signal,
@@ -1240,6 +1247,7 @@ async function findRepCodesByAccount(
     id: String(r.id),
     ownerId: String(r.properties?.hubspot_owner_id ?? ""),
     repCode: String(r.properties?.rep_code ?? "").trim(),
+    properties: (r.properties ?? {}) as Record<string, string>,
   }));
 }
 
@@ -1309,6 +1317,204 @@ async function reownActiveDealsForRepCode(
   return { updated, failures };
 }
 
+// --- Rep Code object sync (absorbs the "Account # to Rep Code Syncing" workflow) ---
+// The Rep Code object's property internal names + status option values aren't known
+// statically, so resolve them from the live schema once per worker.
+let repCodeSchemaCache: RepCodeSchema | null = null;
+async function getRepCodeSchema(token: string, signal: AbortSignal): Promise<RepCodeSchema | null> {
+  if (repCodeSchemaCache) return repCodeSchemaCache;
+  const res = await hs(token, "GET", `/crm/v3/properties/${REP_OBJECT}`, undefined, signal);
+  if (!res.ok || !Array.isArray(res.data?.results)) return null;
+  repCodeSchemaCache = resolveRepCodeSchema(res.data.results);
+  return repCodeSchemaCache;
+}
+
+// The directional "Inactive" association label, resolved by display label. `create`
+// is the {target}→repcode typeId used by batch create/labels-archive; `inverse` is
+// the repcode→{target} typeId seen when reading associations from the rep side (used
+// to diff). null = the label hasn't been created in HubSpot yet → labeling no-ops.
+interface InactiveLabel {
+  create: number;
+  inverse: number | null;
+}
+const inactiveLabelCache = new Map<string, InactiveLabel | null>();
+async function getInactiveLabel(
+  token: string,
+  target: "deals" | "companies",
+  signal: AbortSignal,
+): Promise<InactiveLabel | null> {
+  if (inactiveLabelCache.has(target)) return inactiveLabelCache.get(target)!;
+  let result: InactiveLabel | null = null;
+  const fwd = await hs(token, "GET", `/crm/v4/associations/${target}/${REP_OBJECT}/labels`, undefined, signal);
+  const fwdLabel = fwd.ok
+    ? (fwd.data?.results ?? []).find((l: any) => String(l.label ?? "").trim().toLowerCase() === "inactive")
+    : null;
+  if (fwdLabel?.typeId != null) {
+    const inv = await hs(token, "GET", `/crm/v4/associations/${REP_OBJECT}/${target}/labels`, undefined, signal);
+    // Pair the inverse typeId (the repcode→target "Inactive Rep Code" label) by its
+    // label text — names come back null from this endpoint. Falls back to idempotent
+    // add-all/remove-all if the inverse can't be paired.
+    const invLabel = inv.ok
+      ? (inv.data?.results ?? []).find((l: any) => String(l.label ?? "").trim().toLowerCase().includes("inactive"))
+      : null;
+    result = { create: Number(fwdLabel.typeId), inverse: invLabel?.typeId != null ? Number(invLabel.typeId) : null };
+  }
+  inactiveLabelCache.set(target, result);
+  return result;
+}
+
+/** Read a rep code's associated deal/company ids + the association typeIds present
+ * (repcode→target direction), paginated. */
+async function readRepAssociations(
+  token: string,
+  repId: string,
+  target: "deals" | "companies",
+  signal: AbortSignal,
+): Promise<{ toId: string; typeIds: number[] }[]> {
+  const out: { toId: string; typeIds: number[] }[] = [];
+  let after: string | undefined;
+  do {
+    const qs = `?limit=500${after ? `&after=${after}` : ""}`;
+    const res = await hs(token, "GET", `/crm/v4/objects/${REP_OBJECT}/${repId}/associations/${target}${qs}`, undefined, signal);
+    if (!res.ok) break;
+    for (const r of res.data?.results ?? []) {
+      const toId = String(r.toObjectId ?? r.to?.id ?? "");
+      const typeIds = (r.associationTypes ?? [])
+        .map((t: any) => Number(t.typeId))
+        .filter((n: number) => !Number.isNaN(n));
+      if (toId) out.push({ toId, typeIds });
+    }
+    after = res.data?.paging?.next?.after;
+  } while (after);
+  return out;
+}
+
+/**
+ * Make the "Inactive" directional label on a rep code's deal/company associations
+ * match its (in)active state. Diff-only when the inverse typeId is known; falls back
+ * to idempotent add-all / remove-all otherwise. Additive create + label-only archive
+ * preserve other labels (e.g. "Current"). No-op (with no error) until the label is
+ * created in HubSpot. Returns failure reasons (surfaced as assocSkips).
+ */
+async function syncInactiveLabel(
+  token: string,
+  repId: string,
+  target: "deals" | "companies",
+  inactive: boolean,
+  signal: AbortSignal,
+): Promise<string[]> {
+  const failures: string[] = [];
+  const label = await getInactiveLabel(token, target, signal);
+  if (!label) return failures; // label not set up in HubSpot yet → safe no-op
+  const assocs = await readRepAssociations(token, repId, target, signal);
+  if (!assocs.length) return failures;
+
+  const toAdd: string[] = [];
+  const toRemove: string[] = [];
+  for (const a of assocs) {
+    const known = label.inverse != null;
+    const has = known && a.typeIds.includes(label.inverse as number);
+    if (inactive) {
+      if (!known || !has) toAdd.push(a.toId);
+    } else if (!known || has) {
+      toRemove.push(a.toId);
+    }
+  }
+
+  const apply = async (op: "create" | "labels/archive", ids: string[]): Promise<void> => {
+    for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+      const inputs = ids.slice(i, i + BATCH_SIZE).map((toId) => ({
+        from: { id: toId },
+        to: { id: repId },
+        types: [{ associationCategory: "USER_DEFINED", associationTypeId: label.create }],
+      }));
+      const res = await hs(token, "POST", `/crm/v4/associations/${target}/${REP_OBJECT}/batch/${op}`, { inputs }, signal);
+      if (!res.ok) failures.push(`${target} inactive-label ${op} for rep ${repId} failed (${res.status})`);
+    }
+  };
+  await apply("create", toAdd);
+  await apply("labels/archive", toRemove);
+  return failures;
+}
+
+/**
+ * For a pushed company, sync its matching Rep Code object(s) — absorbing the
+ * "Account # to Rep Code Syncing" workflow (Owner/Agency/City/Brands/Status/State,
+ * diff-only) and applying/removing the directional "Inactive" label on each rep
+ * code's Deal/Company associations from the company's Status. Empty rep-code match
+ * (a regular customer company) = no-op. All writes are non-fatal → assocSkips.
+ */
+async function syncRepCodesForCompany(opts: {
+  token: string;
+  accountNumber: string;
+  companyFields: { companyName?: unknown; city?: unknown; productBrand?: unknown; stateAbbr?: unknown };
+  companyStatus: "true" | "false" | null;
+  isrOwner: string;
+  signal: AbortSignal;
+}): Promise<AssocSkip[]> {
+  const { token, accountNumber, companyFields, companyStatus, isrOwner, signal } = opts;
+  const skips: AssocSkip[] = [];
+
+  const schema = await getRepCodeSchema(token, signal);
+  const extra = schema
+    ? [schema.agency, schema.city, schema.brands, schema.state, schema.status].filter((x): x is string => !!x)
+    : [];
+
+  let reps: Awaited<ReturnType<typeof findRepCodesByAccount>>;
+  try {
+    reps = await findRepCodesByAccount(token, accountNumber, signal, extra);
+  } catch (e) {
+    skips.push({
+      objectType: REP_OBJECT,
+      property: "rep_code_sync",
+      rawValue: accountNumber,
+      reason: `rep-code lookup error: ${e instanceof Error ? e.message : String(e)}`,
+    });
+    return skips;
+  }
+  if (!reps.length) return skips;
+
+  const inactive = repCodeInactiveFromCompanyStatus(companyStatus);
+
+  for (const rep of reps) {
+    // Field sync (workflow B): owner + agency/city/brands/state/status, diff-only.
+    const desired: Record<string, string> = {};
+    if (isrOwner) desired.hubspot_owner_id = isrOwner;
+    if (schema) Object.assign(desired, repCodeSyncProperties({ ...companyFields, companyStatus }, schema));
+    const patch: Record<string, string> = {};
+    for (const [k, v] of Object.entries(desired)) {
+      if (String(rep.properties[k] ?? "") !== v) patch[k] = v;
+    }
+    if (Object.keys(patch).length) {
+      const pr = await hs(token, "PATCH", `/crm/v3/objects/${REP_OBJECT}/${rep.id}`, { properties: patch }, signal);
+      if (!pr.ok) {
+        skips.push({
+          objectType: REP_OBJECT,
+          property: Object.keys(patch).join(","),
+          rawValue: null,
+          reason: `rep code ${rep.id} field sync failed (${pr.status})`,
+        });
+      } else if ("hubspot_owner_id" in patch && isrOwner) {
+        // Owner changed → cascade to its ACTIVE deals (territory-sync is the backfill).
+        const { failures } = await reownActiveDealsForRepCode(token, rep.repCode, isrOwner, signal);
+        for (const reason of failures) {
+          skips.push({ objectType: "deals", property: "hubspot_owner_id", rawValue: isrOwner, reason });
+        }
+      }
+    }
+
+    // Inactive label (the original ask) — only when we know the status this push.
+    if (inactive !== null) {
+      for (const target of ["deals", "companies"] as const) {
+        for (const reason of await syncInactiveLabel(token, rep.id, target, inactive, signal)) {
+          skips.push({ objectType: target, property: "association_label", rawValue: "Inactive", reason });
+        }
+      }
+    }
+  }
+  return skips;
+}
+
 /** Push a Companies payload: upsert by account_number_ with heal. */
 export async function pushCompany(
   env: Env,
@@ -1361,6 +1567,15 @@ export async function pushCompany(
       });
     }
 
+    // Company Status, derived from Risk Category Description (absorbs the "Set
+    // Company Status to Active or Inactive" workflow). Injected AFTER normalize —
+    // "true"/"false" are valid options, but injecting here keeps it out of the enum
+    // heal path. Only when the payload carries the field, so a payload that omits it
+    // never clobbers an existing status. `companyStatus` also drives the Rep Code
+    // inactive labeling below (null = unknown this push → leave labels to reconcile).
+    const companyStatus = companyStatusFromRiskCategory(payload.risk_category_description);
+    if (companyStatus !== null) properties.status = companyStatus;
+
     const res = await withHeal(token, signal, "company", fixActions, properties, (props) =>
       hs(token, "POST", PATHS.companyUpsert, {
         inputs: [{ idProperty: "account_number_", id: accountNumber, properties: props }],
@@ -1369,45 +1584,39 @@ export async function pushCompany(
     const result = res.data?.results?.[0];
     if (!result?.id) throw new Error("HubSpot company upsert response missing id");
 
-    // Propagate the ISR to the Rep Code owner — ONLY when this company itself IS a
-    // rep (its account number matches a Rep Code's `account`). Regular customer
-    // companies match no Rep Code → no update. This is the gate.
+    // Sync the matching Rep Code object(s) — owner + Agency/City/Brands/Status/State
+    // (absorbs the "Account # to Rep Code Syncing" workflow) and the directional
+    // "Inactive" association label, all driven from this company. A regular customer
+    // company matches no Rep Code → no-op. Owner only flows when path is AMT (the
+    // company's own ISR). All failures are non-fatal (assocSkips).
     const isrOwner = isr.path === "amt" ? isr.properties.inside_sales_rep_from_sap ?? "" : "";
-    if (isrOwner) {
-      try {
-        for (const rep of await findRepCodesByAccount(token, accountNumber, signal)) {
-          if (rep.ownerId === isrOwner) continue; // already correct — skip no-op write
-          const pr = await hs(
-            token,
-            "PATCH",
-            `/crm/v3/objects/${REP_OBJECT}/${rep.id}`,
-            { properties: { hubspot_owner_id: isrOwner } },
-            signal,
-          );
-          if (!pr.ok) {
-            assocSkips.push({
-              objectType: REP_OBJECT,
-              property: "hubspot_owner_id",
-              rawValue: isrOwner,
-              reason: `rep code ${rep.id} owner update failed (${pr.status})`,
-            });
-            continue;
-          }
-          // Owner changed on this rep code → cascade to its ACTIVE deals (the
-          // batch sweep in territory-sync is the backfill / self-heal for the rest).
-          const { failures } = await reownActiveDealsForRepCode(token, rep.repCode, isrOwner, signal);
-          for (const reason of failures) {
-            assocSkips.push({ objectType: "deals", property: "hubspot_owner_id", rawValue: isrOwner, reason });
-          }
-        }
-      } catch (e) {
-        assocSkips.push({
-          objectType: REP_OBJECT,
-          property: "hubspot_owner_id",
-          rawValue: isrOwner,
-          reason: `rep-code owner propagation error: ${e instanceof Error ? e.message : String(e)}`,
-        });
+    // The company upsert already succeeded; rep-code sync must never fail the push.
+    // NOTE: `agency` (= the company's HubSpot `name`, which carries a "#account"
+    // suffix the writer doesn't have here) is intentionally owned by the territory
+    // reconcile, which reads the real `name` — passing the bare SAP name here would
+    // flip-flop against it. City/Brands/State/Status are identical either side.
+    try {
+      for (const skip of await syncRepCodesForCompany({
+        token,
+        accountNumber,
+        companyFields: {
+          city: payload.city,
+          productBrand: payload.product_brand,
+          stateAbbr: payload.state,
+        },
+        companyStatus,
+        isrOwner,
+        signal,
+      })) {
+        assocSkips.push(skip);
       }
+    } catch (e) {
+      assocSkips.push({
+        objectType: REP_OBJECT,
+        property: "rep_code_sync",
+        rawValue: accountNumber,
+        reason: `rep-code sync error: ${e instanceof Error ? e.message : String(e)}`,
+      });
     }
 
     return {

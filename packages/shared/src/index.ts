@@ -21,3 +21,5 @@ export * from "./ingest/sales.js";
 export * from "./hubspot/mapping.js";
 export * from "./hubspot/heal.js";
 export * from "./hubspot/insideSales.js";
+export * from "./hubspot/state.js";
+export * from "./hubspot/repCode.js";
