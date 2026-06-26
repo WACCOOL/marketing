@@ -284,3 +284,57 @@ export async function backfillCompanySubTypes(opts: {
 
   return result;
 }
+
+export interface ReportRow {
+  companyId: string;
+  name: string;
+  site: string;
+  result: string;
+  confidence: number | null;
+}
+
+/**
+ * Read recent classification attempts from the audit table and join the company
+ * name from HubSpot, so picks from a (no-write) sample can be eyeballed. Read-only.
+ */
+export async function reportClassifications(opts: {
+  sb: SupabaseClient;
+  token: string;
+  status?: string; // default "classified"
+  limit?: number; // default 50
+}): Promise<ReportRow[]> {
+  const { sb, token } = opts;
+  const status = opts.status ?? "classified";
+  const limit = opts.limit ?? 50;
+
+  const { data, error } = await sb
+    .from("company_sub_type_classifications")
+    .select("company_id, result, confidence")
+    .eq("status", status)
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(`audit query failed: ${error.message}`);
+  const rows = (data ?? []) as { company_id: string; result: string; confidence: number | null }[];
+  if (!rows.length) return [];
+
+  const meta = new Map<string, { name: string; site: string }>();
+  for (let i = 0; i < rows.length; i += 100) {
+    const chunk = rows.slice(i, i + 100);
+    const res = await hs(token, "POST", "/crm/v3/objects/companies/batch/read", {
+      properties: ["name", "website", "domain"],
+      inputs: chunk.map((r) => ({ id: r.company_id })),
+    });
+    for (const c of res.data?.results ?? []) {
+      const p = c.properties ?? {};
+      meta.set(String(c.id), { name: String(p.name ?? ""), site: String(p.website || p.domain || "") });
+    }
+  }
+
+  return rows.map((r) => ({
+    companyId: r.company_id,
+    name: meta.get(r.company_id)?.name ?? "",
+    site: meta.get(r.company_id)?.site ?? "",
+    result: r.result,
+    confidence: r.confidence,
+  }));
+}

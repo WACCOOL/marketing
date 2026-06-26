@@ -12,7 +12,11 @@ import {
   type RepAggregate,
 } from "@wac/shared";
 import { buildOwnerResolver, syncRepCodesToHubspot, type RepForPush } from "./hubspot.js";
-import { backfillCompanySubTypes, buildSubTypeCandidates } from "./companySubType.js";
+import {
+  backfillCompanySubTypes,
+  buildSubTypeCandidates,
+  reportClassifications,
+} from "./companySubType.js";
 import {
   buildInsideSalesResolvers,
   reconcileCompanyInsideSales,
@@ -305,6 +309,25 @@ async function main(): Promise<void> {
           `output=${Math.round(r.outputTokens / Math.max(1, r.processed))} ` +
           `(price these against your model's per-token rate, then × the blank count to project the full run)`,
       );
+    }
+    return;
+  }
+
+  // Show recent classification picks (name → sub-type @ confidence) from the
+  // audit table, for eyeballing a no-write sample. Read-only.
+  if (process.argv.includes("--report-subtype-classifications")) {
+    const token = process.env.HUBSPOT_TOKEN;
+    if (!token) {
+      console.log("[subtype-report] HUBSPOT_TOKEN unset; nothing to do.");
+      return;
+    }
+    const statusArg = process.argv.find((a) => a.startsWith("--status="));
+    const status = statusArg ? statusArg.split("=")[1] : "classified";
+    const rows = await reportClassifications({ sb, token, status, limit });
+    console.log(`[subtype-report] ${rows.length} "${status}" picks (most recent first):`);
+    for (const r of rows) {
+      const conf = r.confidence == null ? "?" : r.confidence.toFixed(2);
+      console.log(`  ${r.result}  @${conf}  ←  ${r.name || "(no name)"}${r.site ? `  [${r.site}]` : ""}`);
     }
     return;
   }
