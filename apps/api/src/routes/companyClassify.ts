@@ -68,7 +68,7 @@ companyClassifyRoutes.post("/classify-company", async (c) => {
     classifySubType(c.env, serviceSupabase(c.env), {
       companyId,
       source: "webhook",
-      signal: AbortSignal.timeout(25_000),
+      signal: AbortSignal.timeout(40_000),
       write: true,
       scrapeWebsite: true,
     }).catch((e) => console.error(`[classify] webhook ${companyId} failed:`, e)),
@@ -85,7 +85,9 @@ companyClassifyRoutes.post("/classify-company/sync", async (c) => {
   if (!companyId) return c.json({ error: "missing company id" }, 400);
 
   const write = body.write !== false && c.req.query("write") !== "false";
-  const scrapeWebsite = body.scrapeWebsite === true; // default OFF for backfill
+  // Fallback scrape on by default (only the low-confidence ~30% actually fetch a
+  // site); pass scrapeWebsite:false to force a pure fields-only run.
+  const scrapeWebsite = body.scrapeWebsite !== false;
   const properties =
     body.properties && typeof body.properties === "object"
       ? (body.properties as Record<string, unknown>)
@@ -95,7 +97,7 @@ companyClassifyRoutes.post("/classify-company/sync", async (c) => {
   const res = await classifySubType(c.env, serviceSupabase(c.env), {
     companyId,
     source,
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(45_000),
     write,
     scrapeWebsite,
     properties,

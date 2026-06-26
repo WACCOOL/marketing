@@ -2,8 +2,6 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   buildSubTypePrompt,
   COMPANY_SUB_TYPE_PROP,
-  deriveSubTypeCandidates,
-  hasClassifiableSignal,
   inputsHash,
   isJunkSubType,
   parseClassification,
@@ -11,6 +9,7 @@ import {
   validateSubType,
   type CompanyForClassify,
   type SubTypeCandidate,
+  type SubTypeClassification,
 } from "@wac/shared";
 import type { Env } from "./env.js";
 import { geminiTextWithUsage } from "./gemini.js";
@@ -36,8 +35,6 @@ const WEBSITE_USER_AGENT = "WAC-Marketing-App/1.0 (+company-classifier)";
 const DEFAULT_MIN_CONFIDENCE = 0.6;
 /** Skip a near-duplicate webhook for the same company seen within this window. */
 const DEDUP_WINDOW_MS = 2 * 60 * 1000;
-/** Only bother scraping the site when the HubSpot description is this thin. */
-const THIN_DESCRIPTION_CHARS = 40;
 
 const CLASSIFY_PROPS = "name,company_sub_type,description,industry,website,domain";
 
@@ -249,9 +246,12 @@ export async function classifySubType(
     website: str(props.website),
   };
 
-  if (!hasClassifiableSignal(company)) {
+  // Gate: require a website or domain. Without one we don't attempt at all —
+  // we'd be guessing from a name alone, which we'd rather leave blank.
+  const site = company.website || company.domain;
+  if (!site) {
     await recordAttempt(sb, baseAudit(companyId, model, source, "no_data"));
-    return { ...base, status: "no_data", reason: "no name/description/industry" };
+    return { ...base, status: "no_data", reason: "no website/domain" };
   }
 
   const candidates = await loadSubTypeCandidates(sb);
@@ -259,83 +259,74 @@ export async function classifySubType(
     return { ...base, status: "error", reason: "no candidate sub-types configured" };
   }
 
-  // Best-effort website scrape: only when asked, a site exists, and the
-  // description is too thin to classify on its own.
+  const minConf = minConfidence(env);
+  // Fallback scrape is on by default; callers can disable it with scrapeWebsite:false.
+  const allowScrape = opts.scrapeWebsite ?? true;
+
+  // Pass 1 — classify from HubSpot fields only (no scrape). Resolves the
+  // majority confidently and for free.
+  let promptTokens = 0;
+  let outputTokens = 0;
   let websiteText: string | null = null;
-  const scrape = opts.scrapeWebsite ?? source === "webhook";
-  const site = company.website || company.domain;
-  if (scrape && site && (company.description ?? "").trim().length < THIN_DESCRIPTION_CHARS) {
-    websiteText = await fetchWebsiteText(site);
-  }
-
-  const { system, prompt } = buildSubTypePrompt({ company, websiteText, candidates });
-
-  let text: string;
-  let usage: { promptTokens: number; outputTokens: number } | null;
+  let best: PassResult;
   try {
-    const r = await geminiTextWithUsage(env, {
-      prompt,
-      system,
-      json: true,
-      model,
-      temperature: 0,
-      timeoutMs: 20_000,
-    });
-    text = r.text;
-    usage = r.usage;
+    const r = await classifyPass(env, { company, websiteText: null, candidates, model });
+    promptTokens += r.promptTokens;
+    outputTokens += r.outputTokens;
+    best = resolvePass(r.parsed, candidates);
   } catch (e) {
     return { ...base, status: "error", reason: e instanceof Error ? e.message : String(e) };
   }
 
-  const parsed = parseClassification(text);
-  const promptTokens = usage?.promptTokens ?? null;
-  const outputTokens = usage?.outputTokens ?? null;
+  // Pass 2 (fallback) — only when pass 1 wasn't confident: scrape the site and
+  // re-classify with the page text, keeping whichever result is stronger.
+  if (!(best.canonical && best.confidence >= minConf) && allowScrape) {
+    websiteText = await fetchWebsiteText(site);
+    if (websiteText) {
+      try {
+        const r = await classifyPass(env, { company, websiteText, candidates, model });
+        promptTokens += r.promptTokens;
+        outputTokens += r.outputTokens;
+        const alt = resolvePass(r.parsed, candidates);
+        if (passScore(alt) > passScore(best)) best = alt;
+      } catch {
+        /* pass 2 failure is non-fatal — keep pass 1's result */
+      }
+    }
+  }
+
   const hash = inputsHash(company, websiteText);
 
-  if (!parsed) {
-    await recordAttempt(sb, {
-      company_id: companyId,
-      result: null,
-      confidence: null,
-      model,
-      source,
-      status: "error",
-      wrote: false,
-      prompt_tokens: promptTokens,
-      output_tokens: outputTokens,
-      inputs_hash: hash,
-    });
+  // Neither pass produced a parseable answer.
+  if (!best.parsed) {
+    await recordAttempt(
+      sb,
+      auditRow(companyId, model, source, "error", null, null, false, promptTokens, outputTokens, hash),
+    );
     return { ...base, status: "error", reason: "unparseable model output", promptTokens, outputTokens };
   }
 
-  const canonical = validateSubType(parsed.subType, candidates);
-  const confident = canonical !== null && parsed.confidence >= minConfidence(env);
+  const canonical = best.canonical;
+  const confidence = best.confidence;
+  const confident = canonical !== null && confidence >= minConf;
 
   let wrote = false;
   let status: ClassifyStatus;
   if (confident) {
     if (write) {
       try {
-        await writeSubType(token, companyId, canonical, signal);
+        await writeSubType(token, companyId, canonical!, signal);
         wrote = true;
       } catch (e) {
-        await recordAttempt(sb, {
-          company_id: companyId,
-          result: canonical,
-          confidence: parsed.confidence,
-          model,
-          source,
-          status: "error",
-          wrote: false,
-          prompt_tokens: promptTokens,
-          output_tokens: outputTokens,
-          inputs_hash: hash,
-        });
+        await recordAttempt(
+          sb,
+          auditRow(companyId, model, source, "error", canonical, confidence, false, promptTokens, outputTokens, hash),
+        );
         return {
           ...base,
           status: "error",
           subType: canonical,
-          confidence: parsed.confidence,
+          confidence,
           promptTokens,
           outputTokens,
           reason: e instanceof Error ? e.message : String(e),
@@ -347,28 +338,65 @@ export async function classifySubType(
     status = "no_confident_match";
   }
 
-  await recordAttempt(sb, {
-    company_id: companyId,
-    result: canonical ?? parsed.subType,
-    confidence: parsed.confidence,
-    model,
-    source,
-    status,
-    wrote,
-    prompt_tokens: promptTokens,
-    output_tokens: outputTokens,
-    inputs_hash: hash,
-  });
+  const resultValue = canonical ?? best.parsed.subType;
+  await recordAttempt(
+    sb,
+    auditRow(companyId, model, source, status, resultValue, confidence, wrote, promptTokens, outputTokens, hash),
+  );
 
+  return { companyId, status, subType: resultValue, confidence, wrote, promptTokens, outputTokens };
+}
+
+/** One classification call (build prompt → Gemini JSON → parse) with token usage. */
+async function classifyPass(
+  env: Env,
+  args: {
+    company: CompanyForClassify;
+    websiteText: string | null;
+    candidates: SubTypeCandidate[];
+    model: string;
+  },
+): Promise<{ parsed: SubTypeClassification | null; promptTokens: number; outputTokens: number }> {
+  const { system, prompt } = buildSubTypePrompt({
+    company: args.company,
+    websiteText: args.websiteText,
+    candidates: args.candidates,
+  });
+  const r = await geminiTextWithUsage(env, {
+    prompt,
+    system,
+    json: true,
+    model: args.model,
+    temperature: 0,
+    timeoutMs: 20_000,
+  });
   return {
-    companyId,
-    status,
-    subType: canonical ?? parsed.subType,
-    confidence: parsed.confidence,
-    wrote,
-    promptTokens,
-    outputTokens,
+    parsed: parseClassification(r.text),
+    promptTokens: r.usage?.promptTokens ?? 0,
+    outputTokens: r.usage?.outputTokens ?? 0,
   };
+}
+
+interface PassResult {
+  parsed: SubTypeClassification | null;
+  canonical: string | null;
+  confidence: number;
+}
+
+/** Validate a pass's answer against the candidates. */
+function resolvePass(
+  parsed: SubTypeClassification | null,
+  candidates: SubTypeCandidate[],
+): PassResult {
+  if (!parsed) return { parsed: null, canonical: null, confidence: 0 };
+  return { parsed, canonical: validateSubType(parsed.subType, candidates), confidence: parsed.confidence };
+}
+
+/** Rank a pass result: a valid match beats a parse-without-match beats nothing. */
+function passScore(r: PassResult): number {
+  if (r.canonical) return 2 + r.confidence;
+  if (r.parsed) return 1;
+  return 0;
 }
 
 function str(v: unknown): string | null {
@@ -394,5 +422,31 @@ function baseAudit(
     prompt_tokens: null,
     output_tokens: null,
     inputs_hash: null,
+  };
+}
+
+function auditRow(
+  companyId: string,
+  model: string,
+  source: ClassifySource,
+  status: ClassifyStatus,
+  result: string | null,
+  confidence: number | null,
+  wrote: boolean,
+  promptTokens: number | null,
+  outputTokens: number | null,
+  hash: string | null,
+) {
+  return {
+    company_id: companyId,
+    result,
+    confidence,
+    model,
+    source,
+    status,
+    wrote,
+    prompt_tokens: promptTokens,
+    output_tokens: outputTokens,
+    inputs_hash: hash,
   };
 }
