@@ -140,6 +140,9 @@ export async function loadSubTypeCandidates(sb: SupabaseClient): Promise<SubType
   if (!error && data && data.length) {
     return (data as { value: string; label: string; count: number }[])
       .map((r) => ({ value: r.value, label: r.label ?? r.value, count: r.count ?? 0 }))
+      // Belt-and-suspenders: drop any denylisted/junk value even if it's still in
+      // the table (so a denylist change is effective on deploy, before a rebuild).
+      .filter((c) => !isJunkSubType(c))
       .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value));
   }
   if (error) console.error("[classify] candidates load failed:", error.message);
