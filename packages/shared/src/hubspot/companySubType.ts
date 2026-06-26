@@ -164,6 +164,54 @@ export const SUBTYPE_GUIDANCE: Record<string, string> = {
   "Elec. House w/ SHOW": "electrical distributor/wholesale house WITH a showroom",
 };
 
+/** Corporate/filler words ignored when comparing a company name to its domain. */
+const NAME_STOPWORDS = new Set([
+  "inc", "llc", "corp", "corporation", "co", "company", "ltd", "limited", "the", "and",
+  "of", "group", "enterprises", "international", "intl", "services", "service", "supply",
+  "systems", "associates", "assoc", "sales",
+]);
+
+/** The distinctive core of a domain: "https://www.ferguson.com/x" → "ferguson". */
+export function domainCore(site: string): string {
+  const host = (site || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z]+:\/\//, "")
+    .replace(/\/.*$/, "")
+    .replace(/^www\./, "");
+  const labels = host.split(".").filter(Boolean);
+  const SUFFIX = new Set(["com", "net", "org", "co", "io", "ca", "us", "uk", "au", "biz", "info"]);
+  while (labels.length > 1 && SUFFIX.has(labels[labels.length - 1]!)) labels.pop();
+  return labels.join("");
+}
+
+function nameTokens(name: string): string[] {
+  return (name || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Conservative check: does the website domain look UNRELATED to the company
+ * name? Only true when there's no meaningful token or acronym overlap — so it
+ * flags clear mismatches (Hajoca↔onc.com, CED-Yakima↔jcwrightlighting.com) and
+ * leaves anything plausible alone. Used as a HINT to the model (which then
+ * adjudicates), so a rare false positive is harmless.
+ */
+export function siteLikelyUnrelated(name: string, site: string): boolean {
+  const core = domainCore(site);
+  if (core.length < 3) return false; // can't tell
+  const raw = nameTokens(name);
+  if (!raw.length) return false;
+  const sig = raw.filter((t) => t.length >= 3 && !NAME_STOPWORDS.has(t));
+  for (const t of sig) {
+    if (core.includes(t) || t.includes(core)) return false; // token overlap → related
+  }
+  const acronym = raw.map((t) => t[0]).join("");
+  if (acronym.length >= 2 && core.includes(acronym)) return false; // e.g. "ced" in domain
+  const sigAcr = sig.map((t) => t[0]).join("");
+  if (sigAcr.length >= 2 && core.includes(sigAcr)) return false;
+  return true; // no overlap → likely a different company's site
+}
+
 /**
  * Build the system + user prompt. The model must return strict JSON and pick
  * exactly one allowed value or null.
@@ -172,13 +220,19 @@ export function buildSubTypePrompt(input: {
   company: CompanyForClassify;
   websiteText?: string | null;
   candidates: SubTypeCandidate[];
+  /** True when the website domain looks unrelated to the company name. */
+  siteSuspect?: boolean;
 }): { system: string; prompt: string } {
-  const { company, websiteText, candidates } = input;
+  const { company, websiteText, candidates, siteSuspect } = input;
   const system =
     'You classify a company in a lighting-industry CRM (WAC Lighting) into exactly one "company sub-type". ' +
     "Choose the single best-fitting value from the ALLOWED LIST, copied verbatim. " +
     "Base the decision on the company's name, industry, description, and any website text provided. " +
     "Classify the company by what it IS, not by who its customers are. " +
+    "Treat the Website as a HINT, not ground truth: if it appears to belong to a different company than the name " +
+    "indicates, ignore it and classify from the name + industry and your knowledge of known companies " +
+    "(e.g. CED = Consolidated Electrical Distributors, a distributor; Hajoca = a plumbing distributor; Ferguson = a distributor). " +
+    "If you cannot reconcile the name and the website, return null rather than trusting the website. " +
     'A sub-type containing "Rep" means a MANUFACTURERS\' SALES REPRESENTATIVE AGENCY — an independent firm that sells ' +
     "manufacturers' product lines on commission. Only choose a *Rep value when the company is actually such an agency; " +
     "a company that does the work itself (an integrator, contractor, designer, distributor, etc.) is NOT a Rep " +
@@ -192,7 +246,13 @@ export function buildSubTypePrompt(input: {
   if (company.name) lines.push(`Name: ${company.name}`);
   if (company.industry) lines.push(`Industry: ${company.industry}`);
   const site = company.website || company.domain;
-  if (site) lines.push(`Website: ${site}`);
+  if (site) {
+    lines.push(
+      siteSuspect
+        ? `Website: ${site}  (⚠ this domain may belong to a DIFFERENT company — verify against the name; ignore it if it conflicts)`
+        : `Website: ${site}`,
+    );
+  }
   if (company.description) lines.push(`Description: ${company.description}`);
   if (websiteText && websiteText.trim()) {
     lines.push("", "WEBSITE TEXT (excerpt)", websiteText.trim());

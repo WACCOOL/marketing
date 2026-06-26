@@ -6,6 +6,7 @@ import {
   inputsHash,
   isJunkSubType,
   parseClassification,
+  siteLikelyUnrelated,
   validateSubType,
   type CompanyForClassify,
   type SubTypeCandidate,
@@ -265,6 +266,10 @@ export async function classifySubType(
   const minConf = minConfidence(env);
   // Fallback scrape is on by default; callers can disable it with scrapeWebsite:false.
   const allowScrape = opts.scrapeWebsite ?? true;
+  // When the domain looks unrelated to the company name (bad CRM data, e.g.
+  // CED-Yakima → jcwrightlighting.com), flag it so the model distrusts the URL
+  // and classifies from the name — and don't bother scraping that wrong site.
+  const siteSuspect = siteLikelyUnrelated(company.name ?? "", site);
 
   // Pass 1 — classify from HubSpot fields only (no scrape). Resolves the
   // majority confidently and for free.
@@ -273,7 +278,7 @@ export async function classifySubType(
   let websiteText: string | null = null;
   let best: PassResult;
   try {
-    const r = await classifyPass(env, { company, websiteText: null, candidates, model });
+    const r = await classifyPass(env, { company, websiteText: null, candidates, model, siteSuspect });
     promptTokens += r.promptTokens;
     outputTokens += r.outputTokens;
     best = resolvePass(r.parsed, candidates);
@@ -281,13 +286,13 @@ export async function classifySubType(
     return { ...base, status: "error", reason: e instanceof Error ? e.message : String(e) };
   }
 
-  // Pass 2 (fallback) — only when pass 1 wasn't confident: scrape the site and
-  // re-classify with the page text, keeping whichever result is stronger.
-  if (!(best.canonical && best.confidence >= minConf) && allowScrape) {
+  // Pass 2 (fallback) — only when pass 1 wasn't confident AND the site looks
+  // trustworthy: scrape it and re-classify, keeping whichever result is stronger.
+  if (!(best.canonical && best.confidence >= minConf) && allowScrape && !siteSuspect) {
     websiteText = await fetchWebsiteText(site);
     if (websiteText) {
       try {
-        const r = await classifyPass(env, { company, websiteText, candidates, model });
+        const r = await classifyPass(env, { company, websiteText, candidates, model, siteSuspect });
         promptTokens += r.promptTokens;
         outputTokens += r.outputTokens;
         const alt = resolvePass(r.parsed, candidates);
@@ -358,12 +363,14 @@ async function classifyPass(
     websiteText: string | null;
     candidates: SubTypeCandidate[];
     model: string;
+    siteSuspect: boolean;
   },
 ): Promise<{ parsed: SubTypeClassification | null; promptTokens: number; outputTokens: number }> {
   const { system, prompt } = buildSubTypePrompt({
     company: args.company,
     websiteText: args.websiteText,
     candidates: args.candidates,
+    siteSuspect: args.siteSuspect,
   });
   const r = await geminiTextWithUsage(env, {
     prompt,
