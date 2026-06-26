@@ -3,6 +3,7 @@ import {
   COMPANY_FIELD_MAP,
   DEAL_FIELD_MAP,
   LINE_ITEM_FIELD_MAP,
+  companyStatusFromRiskCategory,
   dedupKeyFor,
   detectUnmappedFields,
   mapFields,
@@ -11,6 +12,25 @@ import {
   toHubspotDate,
   toNumber,
 } from "./mapping.js";
+
+describe("companyStatusFromRiskCategory", () => {
+  it('returns "false" (Inactive) for "Inactive Account", case/space-insensitive', () => {
+    expect(companyStatusFromRiskCategory("Inactive Account")).toBe("false");
+    expect(companyStatusFromRiskCategory("inactive account")).toBe("false");
+    expect(companyStatusFromRiskCategory("  INACTIVE ACCOUNT  ")).toBe("false");
+  });
+  it('returns "true" (Active) for any other non-empty value', () => {
+    expect(companyStatusFromRiskCategory("Active Account")).toBe("true");
+    expect(companyStatusFromRiskCategory("Low Risk")).toBe("true");
+    expect(companyStatusFromRiskCategory("anything else")).toBe("true");
+  });
+  it("returns null when there is nothing to derive from (leave status untouched)", () => {
+    expect(companyStatusFromRiskCategory(null)).toBeNull();
+    expect(companyStatusFromRiskCategory(undefined)).toBeNull();
+    expect(companyStatusFromRiskCategory("")).toBeNull();
+    expect(companyStatusFromRiskCategory("   ")).toBeNull();
+  });
+});
 
 describe("toHubspotDate", () => {
   it("converts MM/DD/YYYY to a midnight-UTC ms timestamp", () => {

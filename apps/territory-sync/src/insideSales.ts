@@ -9,7 +9,15 @@
  * (`apps/api/src/hubspotPush.ts`); this is the catch-up for quiet/existing accounts.
  */
 
-import { computeInsideSalesFields, INSIDE_SALES_FIELDS, type InsideSalesResolvers } from "@wac/shared";
+import {
+  computeInsideSalesFields,
+  INSIDE_SALES_FIELDS,
+  repCodeInactiveFromCompanyStatus,
+  repCodeSyncProperties,
+  resolveRepCodeSchema,
+  type InsideSalesResolvers,
+  type RepCodeSchema,
+} from "@wac/shared";
 import type { OwnerResolver } from "./hubspot.js";
 
 const BASE = "https://api.hubapi.com";
@@ -458,4 +466,235 @@ export async function reconcileDealOwners(opts: {
     .map(([code, deals]) => ({ code, deals }))
     .sort((a, b) => b.deals - a.deals);
   return { scanned, updated, skippedClosed, unresolved: unresolvedSorted };
+}
+
+// --- Rep Code ← Agency Company sync + "Inactive" label (absorbs "Account # to Rep
+// Code Syncing" + the inactive labeling). The real-time path is in the API Worker
+// (`apps/api/src/hubspotPush.ts` pushCompany); this is the daily catch-up + initial
+// backfill, keyed off each rep code's agency company (matched by account number). ---
+
+/** The directional "Inactive" association label: `create` is the {target}→repcode
+ * typeId used for batch create/labels-archive; `inverse` is the repcode→{target}
+ * typeId seen when reading from the rep side (for diffing). null = not created in
+ * HubSpot yet → labeling is a safe no-op. */
+interface InactiveLabel {
+  create: number;
+  inverse: number | null;
+}
+
+async function resolveInactiveLabel(token: string, target: "deals" | "companies"): Promise<InactiveLabel | null> {
+  const fwd = await hs(token, "GET", `/crm/v4/associations/${target}/${REP_OBJECT}/labels`);
+  const fwdLabel = fwd.ok
+    ? (fwd.data?.results ?? []).find((l: any) => String(l.label ?? "").trim().toLowerCase() === "inactive")
+    : null;
+  if (fwdLabel?.typeId == null) return null;
+  const inv = await hs(token, "GET", `/crm/v4/associations/${REP_OBJECT}/${target}/labels`);
+  // Pair the inverse typeId (repcode→target "Inactive Rep Code") by label text —
+  // names come back null. Falls back to idempotent add/remove if it can't pair.
+  const invLabel = inv.ok
+    ? (inv.data?.results ?? []).find((l: any) => String(l.label ?? "").trim().toLowerCase().includes("inactive"))
+    : null;
+  return { create: Number(fwdLabel.typeId), inverse: invLabel?.typeId != null ? Number(invLabel.typeId) : null };
+}
+
+/** Read a rep code's associated deal/company ids + present association typeIds. */
+async function readRepAssociations(
+  token: string,
+  repId: string,
+  target: "deals" | "companies",
+): Promise<{ toId: string; typeIds: number[] }[]> {
+  const out: { toId: string; typeIds: number[] }[] = [];
+  let after: string | undefined;
+  do {
+    const qs = `?limit=500${after ? `&after=${after}` : ""}`;
+    const res = await hs(token, "GET", `/crm/v4/objects/${REP_OBJECT}/${repId}/associations/${target}${qs}`);
+    if (!res.ok) break;
+    for (const r of res.data?.results ?? []) {
+      const toId = String(r.toObjectId ?? r.to?.id ?? "");
+      const typeIds = (r.associationTypes ?? [])
+        .map((t: any) => Number(t.typeId))
+        .filter((n: number) => !Number.isNaN(n));
+      if (toId) out.push({ toId, typeIds });
+    }
+    after = res.data?.paging?.next?.after;
+  } while (after);
+  return out;
+}
+
+/** Make the "Inactive" label on a rep code's target associations match its state.
+ * Diff-only when the inverse typeId is known, else idempotent add-all/remove-all.
+ * Additive create + label-only archive preserve other labels (e.g. "Current"). */
+async function syncRepInactiveLabel(
+  token: string,
+  repId: string,
+  target: "deals" | "companies",
+  inactive: boolean,
+  label: InactiveLabel,
+  dryRun: boolean,
+): Promise<{ added: number; removed: number; failures: number }> {
+  const assocs = await readRepAssociations(token, repId, target);
+  if (!assocs.length) return { added: 0, removed: 0, failures: 0 };
+  const toAdd: string[] = [];
+  const toRemove: string[] = [];
+  for (const a of assocs) {
+    const known = label.inverse != null;
+    const has = known && a.typeIds.includes(label.inverse as number);
+    if (inactive) {
+      if (!known || !has) toAdd.push(a.toId);
+    } else if (!known || has) {
+      toRemove.push(a.toId);
+    }
+  }
+  let failures = 0;
+  const apply = async (op: "create" | "labels/archive", ids: string[]): Promise<void> => {
+    if (dryRun) return;
+    for (let i = 0; i < ids.length; i += UPDATE_BATCH) {
+      const inputs = ids.slice(i, i + UPDATE_BATCH).map((toId) => ({
+        from: { id: toId },
+        to: { id: repId },
+        types: [{ associationCategory: "USER_DEFINED", associationTypeId: label.create }],
+      }));
+      const res = await hs(token, "POST", `/crm/v4/associations/${target}/${REP_OBJECT}/batch/${op}`, { inputs });
+      if (!res.ok) failures++;
+    }
+  };
+  await apply("create", toAdd);
+  await apply("labels/archive", toRemove);
+  return { added: toAdd.length, removed: toRemove.length, failures };
+}
+
+export interface RepCodeSyncReconcileResult {
+  scanned: number;
+  fieldsUpdated: number;
+  inactive: number;
+  labelsAdded: number;
+  labelsRemoved: number;
+  failures: number;
+  /** True when the "Inactive" label isn't set up in HubSpot (labeling skipped). */
+  labelMissing: boolean;
+}
+
+/**
+ * Walk every Rep Code; from its agency company (matched by `account` →
+ * `account_number_`) sync Agency/City/Brands/Status/State (diff-only — NOT owner,
+ * which stays with reconcileRepCodeOwners) and apply/remove the directional
+ * "Inactive" label on its Deal/Company associations from the company's Status.
+ * Idempotent; first run backfills. `dryRun` counts without writing.
+ */
+export async function reconcileRepCodeSync(opts: {
+  token: string;
+  dryRun: boolean;
+  limit?: number;
+}): Promise<RepCodeSyncReconcileResult> {
+  const { token, dryRun, limit } = opts;
+  const result: RepCodeSyncReconcileResult = {
+    scanned: 0,
+    fieldsUpdated: 0,
+    inactive: 0,
+    labelsAdded: 0,
+    labelsRemoved: 0,
+    failures: 0,
+    labelMissing: false,
+  };
+
+  const propsRes = await hs(token, "GET", `/crm/v3/properties/${REP_OBJECT}`);
+  const schema: RepCodeSchema | null =
+    propsRes.ok && Array.isArray(propsRes.data?.results) ? resolveRepCodeSchema(propsRes.data.results) : null;
+  if (!schema) console.warn("[rep-sync] could not load Rep Code property schema; field sync skipped");
+
+  const labels: Record<"deals" | "companies", InactiveLabel | null> = {
+    deals: await resolveInactiveLabel(token, "deals"),
+    companies: await resolveInactiveLabel(token, "companies"),
+  };
+  result.labelMissing = !labels.deals && !labels.companies;
+  if (result.labelMissing) {
+    console.warn("[rep-sync] 'Inactive' association label not found — labeling is a no-op until it's created in HubSpot");
+  }
+
+  const companyCache = new Map<string, Record<string, string> | null>();
+  const lookupAgency = async (account: string): Promise<Record<string, string> | null> => {
+    if (companyCache.has(account)) return companyCache.get(account)!;
+    let found: Record<string, string> | null = null;
+    for (const form of accountForms(account)) {
+      const r = await hs(
+        token,
+        "GET",
+        `/crm/v3/objects/companies/${encodeURIComponent(form)}?idProperty=account_number_&properties=name,city,product_brand,status,state,inside_sales_rep_from_sap`,
+      );
+      if (r.ok && r.data?.properties) {
+        found = r.data.properties;
+        break;
+      }
+    }
+    companyCache.set(account, found);
+    return found;
+  };
+
+  const repProps = [
+    "rep_code",
+    "account",
+    ...(schema ? [schema.agency, schema.city, schema.brands, schema.state, schema.status].filter((x): x is string => !!x) : []),
+  ].join(",");
+
+  let after: string | undefined;
+  do {
+    const qs = `?limit=100&properties=${repProps}${after ? `&after=${after}` : ""}`;
+    const page = await hs(token, "GET", `/crm/v3/objects/${REP_OBJECT}${qs}`);
+    if (!page.ok) throw new Error(`rep list ${page.status}: ${JSON.stringify(page.data).slice(0, 200)}`);
+    for (const rep of page.data?.results ?? []) {
+      result.scanned++;
+      const account = String(rep.properties?.account ?? "").trim();
+      if (!account) continue;
+      const company = await lookupAgency(account);
+      if (!company) continue;
+      const rawStatus = String(company.status ?? "");
+      const companyStatus: "true" | "false" | null =
+        rawStatus === "false" ? "false" : rawStatus === "true" ? "true" : null;
+
+      // Field sync (no owner — that stays with reconcileRepCodeOwners), diff-only.
+      if (schema) {
+        const desired = repCodeSyncProperties(
+          {
+            companyName: company.name,
+            city: company.city,
+            productBrand: company.product_brand,
+            stateAbbr: company.state,
+            companyStatus,
+          },
+          schema,
+        );
+        const patch: Record<string, string> = {};
+        for (const [k, v] of Object.entries(desired)) {
+          if (String(rep.properties?.[k] ?? "") !== v) patch[k] = v;
+        }
+        if (Object.keys(patch).length) {
+          if (dryRun) {
+            result.fieldsUpdated++;
+          } else {
+            const pr = await hs(token, "PATCH", `/crm/v3/objects/${REP_OBJECT}/${rep.id}`, { properties: patch });
+            if (pr.ok) result.fieldsUpdated++;
+            else result.failures++;
+          }
+        }
+      }
+
+      // Inactive label.
+      const inactive = repCodeInactiveFromCompanyStatus(companyStatus);
+      if (inactive !== null) {
+        if (inactive) result.inactive++;
+        for (const target of ["deals", "companies"] as const) {
+          const label = labels[target];
+          if (!label) continue;
+          const r = await syncRepInactiveLabel(token, String(rep.id), target, inactive, label, dryRun);
+          result.labelsAdded += r.added;
+          result.labelsRemoved += r.removed;
+          result.failures += r.failures;
+        }
+      }
+    }
+    after = page.data?.paging?.next?.after;
+    if (limit && result.scanned >= limit) break;
+  } while (after);
+
+  return result;
 }

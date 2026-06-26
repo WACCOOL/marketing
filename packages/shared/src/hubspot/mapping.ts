@@ -207,6 +207,26 @@ export const COMPANY_FIELD_MAP: Record<string, string> = {
 };
 
 /**
+ * The company `status` value is fully derived from `risk_category_description`,
+ * replicating the "Set Company Status to Active or Inactive" HubSpot workflow:
+ * `risk_category_description == "Inactive Account"` (case/space-insensitive) →
+ * Inactive, anything else → Active. `status` is a boolean-style enum whose values
+ * are the strings `"false"` (Inactive) and `"true"` (Active).
+ *
+ * Returns `null` when there is no risk category to derive from, so the caller
+ * leaves `status` untouched rather than clobbering an existing value (a SAP payload
+ * that omits the field must NOT flip a company to Active).
+ */
+export function companyStatusFromRiskCategory(
+  riskCategoryDescription: unknown,
+): "true" | "false" | null {
+  if (riskCategoryDescription === null || riskCategoryDescription === undefined) return null;
+  const v = String(riskCategoryDescription).trim();
+  if (!v) return null;
+  return v.toLowerCase() === "inactive account" ? "false" : "true";
+}
+
+/**
  * Keys the Deals payload carries that are NOT Deal properties but are still
  * EXPECTED (consumed elsewhere or structural), so they must not be flagged as
  * unmapped: dedupe/id fallbacks and the nested line-item array.
