@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildSubTypePrompt,
   deriveSubTypeCandidates,
+  domainCore,
   extractSiteSummary,
   hasClassifiableSignal,
   isJunkSubType,
   parseClassification,
+  siteLikelyUnrelated,
   stripHtmlToText,
   validateSubType,
   type SubTypeCandidate,
@@ -139,6 +141,29 @@ describe("stripHtmlToText", () => {
   });
 });
 
+describe("domainCore + siteLikelyUnrelated", () => {
+  it("extracts the distinctive domain core", () => {
+    expect(domainCore("https://www.ferguson.com/store")).toBe("ferguson");
+    expect(domainCore("cityelectricsupply.com")).toBe("cityelectricsupply");
+    expect(domainCore("https://example.co.uk")).toBe("example");
+  });
+  it("does NOT flag plausible name↔domain matches", () => {
+    expect(siteLikelyUnrelated("FERGUSON ENTERPRISES", "https://www.ferguson.com")).toBe(false);
+    expect(siteLikelyUnrelated("Lamps Plus", "lampsplus.com")).toBe(false);
+    expect(siteLikelyUnrelated("City Electric Supply", "cityelectricsupply.com")).toBe(false);
+    expect(siteLikelyUnrelated("CED Yakima", "ced.com")).toBe(false); // acronym/substring
+  });
+  it("flags clear mismatches (wrong website data)", () => {
+    expect(siteLikelyUnrelated("CED-YAKIMA", "https://www.jcwrightlighting.com")).toBe(true);
+    expect(siteLikelyUnrelated("HAJOCA CORPORATION", "https://onc.com")).toBe(true);
+    expect(siteLikelyUnrelated("VAN ISLE WATER SERVICES", "cityelectricsupply.com")).toBe(true);
+  });
+  it("declines to judge when there is no name or no usable domain", () => {
+    expect(siteLikelyUnrelated("", "anything.com")).toBe(false);
+    expect(siteLikelyUnrelated("Some Co", "")).toBe(false);
+  });
+});
+
 describe("extractSiteSummary", () => {
   it("prefers title + meta description and decodes entities", () => {
     const html =
@@ -173,6 +198,18 @@ describe("buildSubTypePrompt + hasClassifiableSignal", () => {
     expect(prompt).toContain("Bright Lights Showroom");
     expect(prompt).toContain("- Lighting Showroom");
     expect(prompt).toContain("- Distributor");
+  });
+  it("flags a suspect website with a warning in the prompt", () => {
+    const candidates = [{ value: "Distributor", label: "Distributor", count: 9 }];
+    const clean = buildSubTypePrompt({ company: { name: "X", website: "x.com" }, candidates });
+    expect(clean.prompt).not.toContain("DIFFERENT company");
+    const suspect = buildSubTypePrompt({
+      company: { name: "X", website: "x.com" },
+      candidates,
+      siteSuspect: true,
+    });
+    expect(suspect.prompt).toContain("may belong to a DIFFERENT company");
+    expect(suspect.system).toContain("HINT, not ground truth");
   });
   it("states the Rep rule and glosses *Rep / cryptic values", () => {
     const { system, prompt } = buildSubTypePrompt({
