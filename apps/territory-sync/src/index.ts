@@ -12,6 +12,7 @@ import {
   type RepAggregate,
 } from "@wac/shared";
 import { buildOwnerResolver, syncRepCodesToHubspot, type RepForPush } from "./hubspot.js";
+import { backfillCompanySubTypes, buildSubTypeCandidates } from "./companySubType.js";
 import {
   buildInsideSalesResolvers,
   reconcileCompanyInsideSales,
@@ -227,6 +228,84 @@ async function main(): Promise<void> {
       `[specifier-assoc] deals: scanned=${r.scanned} ${dryRun ? "would-associate" : "associated"}=${r.associated} ` +
         `unresolved=${r.unresolved}${r.labelMissing ? " [Specifier label not set up — labeling skipped]" : ""}`,
     );
+    return;
+  }
+
+  // Build the curated company_sub_type candidate set from values actually in use
+  // (junk/typos dropped, frequency-ranked). No LLM cost. Run --dry-run to preview.
+  if (process.argv.includes("--build-subtype-candidates")) {
+    const token = process.env.HUBSPOT_TOKEN;
+    if (!token) {
+      console.log("[subtype-candidates] HUBSPOT_TOKEN unset; nothing to do.");
+      return;
+    }
+    const minArg = process.argv.find((a) => a.startsWith("--min-count="));
+    const minCount = minArg ? Number(minArg.split("=")[1]) || undefined : undefined;
+    const r = await buildSubTypeCandidates({ sb, token, dryRun, minCount });
+    console.log(
+      `[subtype-candidates] scanned=${r.scanned} distinctUsed=${r.distinctUsed} ` +
+        `candidates=${r.candidates.length}${dryRun ? " (DRY RUN — not written)" : ""}`,
+    );
+    console.log(
+      "[subtype-candidates] top:\n  " +
+        r.candidates.slice(0, 40).map((c) => `${c.value} (${c.count})`).join("\n  "),
+    );
+    return;
+  }
+
+  // Backfill: classify companies with a BLANK sub-type via the Worker endpoint.
+  // GATED so the full population can't run by accident — requires --limit=N or --all.
+  //   --dry-run    enumerate only (no LLM cost)
+  //   --no-write   real LLM + audit log, but no HubSpot write (the cost/quality sample)
+  //   --force      re-process companies already attempted
+  // Env: MARKETING_APP_URL (Worker base URL), REP_LOOKUP_TOKEN, HUBSPOT_TOKEN.
+  if (process.argv.includes("--backfill-company-subtypes")) {
+    const token = process.env.HUBSPOT_TOKEN;
+    const appBaseUrl = process.env.MARKETING_APP_URL;
+    const classifyToken = process.env.REP_LOOKUP_TOKEN;
+    if (!token || !appBaseUrl || !classifyToken) {
+      console.log(
+        "[subtype-backfill] need HUBSPOT_TOKEN, MARKETING_APP_URL, and REP_LOOKUP_TOKEN; aborting.",
+      );
+      return;
+    }
+    const all = process.argv.includes("--all");
+    if (!limit && !all) {
+      console.log(
+        "[subtype-backfill] refusing to run unbounded. Pass --limit=N (recommended) or --all. " +
+          "Tip: start with `--dry-run` then `--limit=200 --no-write` to prove the cost.",
+      );
+      process.exitCode = 1;
+      return;
+    }
+    const write = !process.argv.includes("--no-write");
+    const force = process.argv.includes("--force");
+    const concArg = process.argv.find((a) => a.startsWith("--concurrency="));
+    const concurrency = concArg ? Number(concArg.split("=")[1]) || undefined : undefined;
+    const r = await backfillCompanySubTypes({
+      sb,
+      token,
+      appBaseUrl,
+      classifyToken,
+      dryRun,
+      write,
+      force,
+      limit: all ? undefined : limit,
+      concurrency,
+    });
+    console.log(
+      `[subtype-backfill] scanned=${r.scanned} blank=${r.blank} skippedAttempted=${r.skippedAttempted} ` +
+        `processed=${r.processed}${dryRun ? " (DRY RUN — no LLM)" : write ? "" : " (NO-WRITE)"}`,
+    );
+    console.log(`[subtype-backfill] byStatus=${JSON.stringify(r.byStatus)} wrote=${r.wrote}`);
+    if (r.promptTokens || r.outputTokens) {
+      console.log(
+        `[subtype-backfill] tokens: prompt=${r.promptTokens} output=${r.outputTokens} ` +
+          `→ avg/company prompt=${Math.round(r.promptTokens / Math.max(1, r.processed))} ` +
+          `output=${Math.round(r.outputTokens / Math.max(1, r.processed))} ` +
+          `(price these against your model's per-token rate, then × the blank count to project the full run)`,
+      );
+    }
     return;
   }
 

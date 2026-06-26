@@ -112,10 +112,16 @@ export interface Env {
   // The mailbox (UPN/address) the daily SAP Open Orders email lands in.
   OPEN_ORDERS_MAILBOX?: string;
 
-  // Shared token for the public zip -> rep-codes lookup (GET/POST
-  // /api/rep-codes/by-zip), called by HubSpot workflows. When unset the
-  // endpoint is closed.
+  // Shared token for HubSpot-workflow-called endpoints: the public zip ->
+  // rep-codes lookup (GET/POST /api/rep-codes/by-zip) AND the company sub-type
+  // classifier (POST /api/hubspot/classify-company[/sync]), which the
+  // territory-sync backfill also presents. When unset, those endpoints are closed.
   REP_LOOKUP_TOKEN?: string;
+
+  // Minimum model confidence (0..1) required to WRITE a sub-type. Default 0.6.
+  CLASSIFY_MIN_CONFIDENCE?: string;
+  // Gemini model for sub-type classification. Default: gemini-2.5-flash.
+  CLASSIFY_MODEL?: string;
 
   // Origin used when building public URLs (uploads / generated scenes / shot
   // previews) that the render-worker and generator fetch back over HTTP. Defaults
