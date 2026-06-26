@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSubTypePrompt,
   deriveSubTypeCandidates,
+  extractSiteSummary,
   hasClassifiableSignal,
   isJunkSubType,
   parseClassification,
@@ -134,6 +135,27 @@ describe("stripHtmlToText", () => {
   });
 });
 
+describe("extractSiteSummary", () => {
+  it("prefers title + meta description and decodes entities", () => {
+    const html =
+      '<html><head><title>Acme Lighting</title>' +
+      '<meta name="description" content="Wholesale lighting distributor &amp; supplier"></head>' +
+      "<body><p>lots of body text we should NOT need</p></body></html>";
+    expect(extractSiteSummary(html)).toBe(
+      "Acme Lighting — Wholesale lighting distributor & supplier",
+    );
+  });
+  it("falls back to og:description when no name=description", () => {
+    const html =
+      '<head><title>Beam Co</title><meta property="og:description" content="Lighting showroom"></head>';
+    expect(extractSiteSummary(html)).toBe("Beam Co — Lighting showroom");
+  });
+  it("falls back to body text when there is no meta description", () => {
+    const html = "<head><title>X</title></head><body><h1>Acme</h1><p>We design lighting</p></body>";
+    expect(extractSiteSummary(html)).toContain("We design lighting");
+  });
+});
+
 describe("buildSubTypePrompt + hasClassifiableSignal", () => {
   it("lists allowed values and includes provided fields", () => {
     const { system, prompt } = buildSubTypePrompt({
@@ -147,6 +169,18 @@ describe("buildSubTypePrompt + hasClassifiableSignal", () => {
     expect(prompt).toContain("Bright Lights Showroom");
     expect(prompt).toContain("- Lighting Showroom");
     expect(prompt).toContain("- Distributor");
+  });
+  it("states the Rep rule and glosses *Rep / cryptic values", () => {
+    const { system, prompt } = buildSubTypePrompt({
+      company: { name: "Acme Integration" },
+      candidates: [
+        { value: "Integrators", label: "Integrators", count: 5 },
+        { value: "Integrator Rep", label: "Integrator Rep", count: 2 },
+      ],
+    });
+    expect(system).toContain("SALES REPRESENTATIVE AGENCY");
+    expect(prompt).toContain("- Integrator Rep — a manufacturers' sales-rep agency");
+    expect(prompt).toContain("- Integrators — designs/installs integrated");
   });
   it("hasClassifiableSignal needs a name, description, or industry", () => {
     expect(hasClassifiableSignal({ name: "X" })).toBe(true);
