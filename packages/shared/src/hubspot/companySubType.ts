@@ -56,11 +56,18 @@ export const SUBTYPE_JUNK_PATTERNS: readonly RegExp[] = [
 
 /**
  * Exact option VALUES to exclude — clear typos/dupes that have a clean twin and
- * that the pattern filter wouldn't catch. Keep this tight; tune as needed.
+ * that the pattern filter wouldn't catch, plus generic catch-alls we'd rather the
+ * model abstain on (return null → leave blank) than apply as a meaningless label.
+ * Keep this tight; tune as needed.
  */
 export const SUBTYPE_DENYLIST_VALUES: ReadonlySet<string> = new Set([
   "Destributor", // dupe of "Distributor"
   "Contractor.", // dupe of "Contractor"
+  // Generic catch-alls — excluded by request so an ambiguous company stays blank
+  // (and re-triggers cleanly) instead of being labeled with a useless value.
+  "Other",
+  "Others",
+  "Owner",
 ]);
 
 /** Normalize for case/spacing-insensitive comparison. */

@@ -22,6 +22,11 @@ describe("isJunkSubType", () => {
     expect(isJunkSubType({ value: "Contractor.", label: "Contractor" })).toBe(true);
     expect(isJunkSubType({ value: "  ", label: "" })).toBe(true);
   });
+  it("drops generic catch-alls (Other/Others/Owner)", () => {
+    expect(isJunkSubType({ value: "Other", label: "Other" })).toBe(true);
+    expect(isJunkSubType({ value: "Others", label: "Others" })).toBe(true);
+    expect(isJunkSubType({ value: "Owner", label: "Owner" })).toBe(true);
+  });
   it("keeps clean options", () => {
     expect(isJunkSubType({ value: "Distributor", label: "Distributor" })).toBe(false);
     expect(isJunkSubType({ value: "Lighting Showroom", label: "Lighting Showroom" })).toBe(false);
