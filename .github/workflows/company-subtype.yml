@@ -1,0 +1,89 @@
+name: Company Sub-Type Classify
+
+# Manual-dispatch helper for the company_sub_type auto-classifier (territory-sync).
+# Two modes:
+#   build-candidates — crawl companies, derive the curated candidate set, write
+#                      company_sub_type_candidates. No LLM cost. Run --dry-run first.
+#   backfill         — classify companies with a BLANK sub-type via the Worker
+#                      endpoint. Gated: needs a limit (or 'all'). Use no_write=true
+#                      for the priced sample (real LLM + audit log, no HubSpot write).
+#
+# The backfill mode needs a REP_LOOKUP_TOKEN GitHub Actions secret (same value as
+# the HubSpot `wac_marketing_api` secret / the Worker's REP_LOOKUP_TOKEN) so the
+# job can authenticate to https://marketing.gowac.cc. build-candidates does not.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Which step to run"
+        type: choice
+        options:
+          - build-candidates
+          - backfill
+        default: build-candidates
+      dry_run:
+        description: "Dry run (build: don't persist · backfill: enumerate only, no LLM)"
+        type: boolean
+        default: true
+      no_write:
+        description: "Backfill only: classify + log but DON'T write to HubSpot (priced sample)"
+        type: boolean
+        default: true
+      limit:
+        description: "Backfill only: max companies to process (required unless 'all')"
+        type: string
+        default: "200"
+      all:
+        description: "Backfill only: process ALL blank companies (ignores limit)"
+        type: boolean
+        default: false
+      force:
+        description: "Backfill only: re-process companies already attempted"
+        type: boolean
+        default: false
+
+concurrency:
+  group: company-subtype-classify
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build territory-sync
+        run: pnpm --filter @wac/territory-sync build
+      - name: Run
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          MARKETING_APP_URL: https://marketing.gowac.cc
+          REP_LOOKUP_TOKEN: ${{ secrets.REP_LOOKUP_TOKEN }}
+          MODE: ${{ inputs.mode }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          NO_WRITE: ${{ inputs.no_write }}
+          LIMIT: ${{ inputs.limit }}
+          ALL: ${{ inputs.all }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          ARGS=""
+          if [ "$MODE" = "build-candidates" ]; then
+            ARGS="--build-subtype-candidates"
+            if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          else
+            ARGS="--backfill-company-subtypes"
+            if [ "$ALL" = "true" ]; then ARGS="$ARGS --all"; else ARGS="$ARGS --limit=$LIMIT"; fi
+            if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+            if [ "$NO_WRITE" = "true" ]; then ARGS="$ARGS --no-write"; fi
+            if [ "$FORCE" = "true" ]; then ARGS="$ARGS --force"; fi
+          fi
+          echo "Running: territory-sync $ARGS"
+          pnpm --filter @wac/territory-sync sync -- $ARGS

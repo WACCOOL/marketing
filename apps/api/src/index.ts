@@ -23,6 +23,7 @@ import { pptRoutes } from "./routes/ppt.js";
 import { ingestRoutes } from "./routes/ingest.js";
 import { hubspotSyncRoutes } from "./routes/hubspotSync.js";
 import { repCodeRoutes } from "./routes/repCodes.js";
+import { companyClassifyRoutes } from "./routes/companyClassify.js";
 import { makeProductAdapter } from "./saleslayer.js";
 import { serviceSupabase } from "./supabase.js";
 import { updateJobStatus, type GenerationMessage } from "./generation.js";
@@ -91,6 +92,7 @@ app.route("/api/product-info", productInfoRoutes);
 app.route("/api/ppt", pptRoutes);
 app.route("/api/ingest", ingestRoutes);
 app.route("/api/hubspot-sync", hubspotSyncRoutes);
+app.route("/api/hubspot", companyClassifyRoutes);
 app.route("/api/rep-codes", repCodeRoutes);
 
 // Anything not handled by a /api/* route falls through to the SPA assets

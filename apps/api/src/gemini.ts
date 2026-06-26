@@ -14,17 +14,36 @@ export function geminiConfigured(env: Env): boolean {
   return !!env.GEMINI_API_KEY;
 }
 
-export async function geminiText(
+export interface GeminiUsage {
+  promptTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+export interface GeminiTextOpts {
+  prompt: string;
+  system?: string;
+  json?: boolean;
+  model?: string;
+  /** Override generation temperature (default 0.7). Classification wants ~0. */
+  temperature?: number;
+  /** Override for long generations (e.g. doc-to-deck drafting); default 30s. */
+  timeoutMs?: number;
+}
+
+export async function geminiText(env: Env, opts: GeminiTextOpts): Promise<string> {
+  return (await geminiTextWithUsage(env, opts)).text;
+}
+
+/**
+ * Same as geminiText but also returns the response's token usage (so callers can
+ * measure ACTUAL spend — used by the company sub-type classifier to price a
+ * sample before any large run).
+ */
+export async function geminiTextWithUsage(
   env: Env,
-  opts: {
-    prompt: string;
-    system?: string;
-    json?: boolean;
-    model?: string;
-    /** Override for long generations (e.g. doc-to-deck drafting); default 30s. */
-    timeoutMs?: number;
-  },
-): Promise<string> {
+  opts: GeminiTextOpts,
+): Promise<{ text: string; usage: GeminiUsage | null }> {
   if (!env.GEMINI_API_KEY) {
     throw new Error(
       "AI text generation is not configured (GEMINI_API_KEY is unset)",
@@ -45,7 +64,7 @@ export async function geminiText(
         : {}),
       contents: [{ role: "user", parts: [{ text: opts.prompt }] }],
       generationConfig: {
-        temperature: 0.7,
+        temperature: opts.temperature ?? 0.7,
         ...(opts.json ? { responseMimeType: "application/json" } : {}),
       },
     }),
@@ -57,11 +76,24 @@ export async function geminiText(
   }
   const data = (await res.json()) as {
     candidates?: { content?: { parts?: { text?: string }[] } }[];
+    usageMetadata?: {
+      promptTokenCount?: number;
+      candidatesTokenCount?: number;
+      totalTokenCount?: number;
+    };
   };
   const text = (data.candidates?.[0]?.content?.parts ?? [])
     .map((p) => p.text ?? "")
     .join("")
     .trim();
   if (!text) throw new Error("Gemini returned an empty response");
-  return text;
+  const um = data.usageMetadata;
+  const usage: GeminiUsage | null = um
+    ? {
+        promptTokens: um.promptTokenCount ?? 0,
+        outputTokens: um.candidatesTokenCount ?? 0,
+        totalTokens: um.totalTokenCount ?? 0,
+      }
+    : null;
+  return { text, usage };
 }
