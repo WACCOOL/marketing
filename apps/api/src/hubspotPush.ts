@@ -4,6 +4,8 @@ import {
   DEAL_FIELD_MAP,
   LINE_ITEM_DATE_FIELDS,
   LINE_ITEM_FIELD_MAP,
+  SPECIFIER_LABEL,
+  accountForms,
   companyStatusFromRiskCategory,
   computeInsideSalesFields,
   extractInvalidPropertyItems,
@@ -14,6 +16,7 @@ import {
   repCodeSyncProperties,
   resolveRepCodeSchema,
   smartMatchToAllowedOptions,
+  specifierAccountNumbers,
   toDecimalPercent,
   toHubspotDate,
   toNumber,
@@ -54,6 +57,7 @@ export const PATHS = {
   contactToDeal: "/crm/v4/associations/contacts/0-3/batch/create",
   companyUpsert: "/crm/v3/objects/companies/batch/upsert",
   companyLookup: "/crm/v3/objects/companies/",
+  companySearch: "/crm/v3/objects/companies/search",
   contactLookup: "/crm/v3/objects/contacts/",
   contactSearch: "/crm/v3/objects/contacts/search",
   owners: "/crm/v3/owners",
@@ -952,10 +956,11 @@ async function batchAssociate(
   typeId: number,
   pairs: { fromId: string; toId: string }[],
   signal: AbortSignal,
+  category: "HUBSPOT_DEFINED" | "USER_DEFINED" = "HUBSPOT_DEFINED",
 ): Promise<void> {
   for (let i = 0; i < pairs.length; i += BATCH_SIZE) {
     const inputs = pairs.slice(i, i + BATCH_SIZE).map((p) => ({
-      types: [{ associationCategory: ASSOC.category, associationTypeId: typeId }],
+      types: [{ associationCategory: category, associationTypeId: typeId }],
       from: { id: p.fromId },
       to: { id: p.toId },
     }));
@@ -975,6 +980,128 @@ async function lookupCompanyId(
   if (res.status === 404 || !res.data?.id) return null;
   if (!res.ok) throw new HsError(res);
   return String(res.data.id);
+}
+
+/* -------------------------------- specifiers ------------------------------- */
+
+// Company property holding the Sugar legacy account number (final fallback).
+const SPECIFIER_SUGAR_PROP = "sugar_legacy_account_number_uniqueid";
+
+/**
+ * Resolve a specifier account-number value to a Company id via the cascade:
+ *   1. `account_number_` (across padded/stripped forms),
+ *   2. the value as a HubSpot Record ID (`hs_object_id`),
+ *   3. the Sugar legacy account number (`sugar_legacy_account_number_uniqueid`).
+ * First hit wins; null when nothing matches.
+ */
+async function resolveSpecifierCompanyId(
+  token: string,
+  value: string,
+  signal: AbortSignal,
+): Promise<string | null> {
+  // 1. account number (account_number_)
+  for (const form of accountForms(value)) {
+    const id = await lookupCompanyId(token, form, signal);
+    if (id) return id;
+  }
+  // 2. HubSpot Record ID (numeric only)
+  if (/^\d+$/.test(value)) {
+    const res = await hs(token, "GET", `${PATHS.companyLookup}${encodeURIComponent(value)}`, undefined, signal);
+    if (res.ok && res.data?.id) return String(res.data.id);
+  }
+  // 3. Sugar legacy account number
+  const res = await hs(
+    token,
+    "POST",
+    PATHS.companySearch,
+    {
+      filterGroups: [{ filters: [{ propertyName: SPECIFIER_SUGAR_PROP, operator: "EQ", value }] }],
+      properties: ["hs_object_id"],
+      limit: 1,
+    },
+    signal,
+  );
+  const hit = res.ok ? res.data?.results?.[0] : null;
+  return hit?.id ? String(hit.id) : null;
+}
+
+// The companies→deals "Specifier" USER_DEFINED association label typeId, resolved by
+// display name. null = the label hasn't been created in HubSpot yet → associating
+// no-ops. undefined = not yet resolved this worker lifetime.
+let specifierLabelCache: number | null | undefined;
+async function getSpecifierLabel(token: string, signal: AbortSignal): Promise<number | null> {
+  if (specifierLabelCache !== undefined) return specifierLabelCache;
+  const res = await hs(token, "GET", `/crm/v4/associations/companies/0-3/labels`, undefined, signal);
+  const match = res.ok
+    ? (res.data?.results ?? []).find(
+        (l: any) => String(l.label ?? "").trim().toLowerCase() === SPECIFIER_LABEL.toLowerCase(),
+      )
+    : null;
+  specifierLabelCache = match?.typeId != null ? Number(match.typeId) : null;
+  return specifierLabelCache;
+}
+
+/**
+ * Associate each of a deal's specifier companies (`specifier_account_number_1..5`,
+ * resolved via {@link resolveSpecifierCompanyId}) to the deal with the "Specifier"
+ * label — absorbing the 5 "Associated Specifier N to Opportunity" workflows.
+ * Additive + idempotent (re-creating the same labeled association is a HubSpot
+ * no-op); stale-specifier removal is left to the daily reconcile. No-op until the
+ * label exists in HubSpot. Every failure is non-fatal → assocSkips.
+ */
+async function associateSpecifiersForDeal(
+  token: string,
+  dealId: string,
+  payload: Record<string, unknown>,
+  signal: AbortSignal,
+  assocSkips: AssocSkip[],
+): Promise<void> {
+  const values = specifierAccountNumbers(payload);
+  if (!values.length) return;
+  const typeId = await getSpecifierLabel(token, signal);
+  if (typeId == null) return; // label not set up yet → safe no-op
+
+  const companyIds = new Set<string>();
+  for (const value of values) {
+    let id: string | null = null;
+    try {
+      id = await resolveSpecifierCompanyId(token, value, signal);
+    } catch (e) {
+      assocSkips.push({
+        objectType: "companies",
+        property: "specifier_account_number",
+        rawValue: value,
+        reason: `specifier lookup error: ${e instanceof Error ? e.message : String(e)}`,
+      });
+      continue;
+    }
+    if (id) companyIds.add(id);
+    else
+      assocSkips.push({
+        objectType: "companies",
+        property: "specifier_account_number",
+        rawValue: value,
+        reason: `no company for specifier ${value}`,
+      });
+  }
+  if (!companyIds.size) return;
+  try {
+    await batchAssociate(
+      token,
+      PATHS.companyToDeal,
+      typeId,
+      [...companyIds].map((fromId) => ({ fromId, toId: dealId })),
+      signal,
+      "USER_DEFINED",
+    );
+  } catch (e) {
+    assocSkips.push({
+      objectType: "companies",
+      property: "specifier_account_number",
+      rawValue: [...companyIds].join(","),
+      reason: `specifier assoc error: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
 }
 
 /* -------------------------------- entry points ----------------------------- */
@@ -1060,6 +1187,10 @@ export async function pushDeal(
         reason: poc.reason,
       });
     }
+
+    // Specifier companies → deal, with the "Specifier" label (absorbs the 5
+    // "Associated Specifier N to Opportunity" workflows). Non-fatal → assocSkips.
+    await associateSpecifiersForDeal(token, deal.id, payload, signal, assocSkips);
 
     return {
       result: {
@@ -1203,18 +1334,6 @@ async function loadRepResolvers(
 
   repResolverCache = { maps: { amtToOwner, repCodeToOwner }, at: Date.now() };
   return repResolverCache.maps;
-}
-
-/** Account-number forms a HubSpot record may store (padded / stripped). */
-function accountForms(accountNumber: string): string[] {
-  const forms = new Set<string>();
-  const acct = accountNumber.trim();
-  if (!acct) return [];
-  forms.add(acct);
-  const stripped = acct.replace(/^0+/, "");
-  if (stripped) forms.add(stripped);
-  if (/^\d+$/.test(stripped)) forms.add(stripped.padStart(10, "0"));
-  return [...forms];
 }
 
 /**
