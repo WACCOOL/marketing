@@ -125,6 +125,44 @@ export function deriveSubTypeCandidates(
 }
 
 /**
+ * Short '— meaning' glosses for cryptic/ambiguous option values, appended to the
+ * allowed list so the model interprets them correctly. Keyed by exact value.
+ *
+ * The "Rep" family is the big one: in this taxonomy a *Rep value means a
+ * MANUFACTURERS' SALES REPRESENTATIVE AGENCY, not a company that does that kind
+ * of work itself (an integrator is "Integrators", not "Integrator Rep").
+ */
+export const SUBTYPE_GUIDANCE: Record<string, string> = {
+  Integrators:
+    "designs/installs integrated AV, lighting, or building-control systems — does the integration work itself",
+  "Integrator Rep":
+    "a manufacturers' sales-rep agency that represents integrator/AV product lines — NOT a company that performs integration",
+  "Contract Rep": "a manufacturers' sales-rep agency (contract/commercial)",
+  "Principal Com. Rep": "a manufacturers' sales-rep agency (commercial)",
+  "Principal Reside Rep": "a manufacturers' sales-rep agency (residential)",
+  "Sub-Rep Com. Rep": "a sub-agent of a manufacturers' sales-rep agency (commercial)",
+  "Sub-Rep Reside Rep": "a sub-agent of a manufacturers' sales-rep agency (residential)",
+  "MF Designer Rep": "a manufacturers' sales-rep agency",
+  Distributor: "buys and resells/stocks product at wholesale",
+  Dealer: "resells product; typically smaller/local than a distributor",
+  "Lighting Showroom": "retail showroom that displays and sells lighting",
+  "Lighting Designer": "a firm/individual that designs lighting and specifies fixtures (not a manufacturer or rep)",
+  "Lighting Design": "a lighting-design firm (same idea as Lighting Designer)",
+  "Lighting Supplier": "supplies/sells lighting products (reseller or wholesaler)",
+  "Lighting Manufacturer": "manufactures lighting products",
+  "Interior Designer": "designs interior spaces and specifies furnishings/lighting",
+  "Building Contractor": "general construction contractor",
+  "Elect. Contractor": "electrical installation contractor",
+  "M&E Consultant": "mechanical & electrical engineering consultancy",
+  OEM: "original-equipment manufacturer that builds product incorporating components",
+  "Internet Retailer": "sells product online (e-commerce)",
+  "Furniture Store": "retailer that sells furniture (may carry lighting)",
+  "Designer/Int. Decor.": "interior designer / interior decorator",
+  "Elec. House w/o SHOW": "electrical distributor/wholesale house WITHOUT a showroom",
+  "Elec. House w/ SHOW": "electrical distributor/wholesale house WITH a showroom",
+};
+
+/**
  * Build the system + user prompt. The model must return strict JSON and pick
  * exactly one allowed value or null.
  */
@@ -138,6 +176,12 @@ export function buildSubTypePrompt(input: {
     'You classify a company in a lighting-industry CRM (WAC Lighting) into exactly one "company sub-type". ' +
     "Choose the single best-fitting value from the ALLOWED LIST, copied verbatim. " +
     "Base the decision on the company's name, industry, description, and any website text provided. " +
+    "Classify the company by what it IS, not by who its customers are. " +
+    'A sub-type containing "Rep" means a MANUFACTURERS\' SALES REPRESENTATIVE AGENCY — an independent firm that sells ' +
+    "manufacturers' product lines on commission. Only choose a *Rep value when the company is actually such an agency; " +
+    "a company that does the work itself (an integrator, contractor, designer, distributor, etc.) is NOT a Rep " +
+    '(e.g. a systems integrator is "Integrators", not "Integrator Rep"). ' +
+    "Some allowed values carry a short ' — meaning' note; use it to decide. " +
     "If the information is insufficient to choose with reasonable confidence, return null — do not guess. " +
     "Never return a value that is not in the ALLOWED LIST. " +
     'Respond with STRICT JSON only: {"sub_type": <allowed value or null>, "confidence": <number 0..1>, "reasoning": <short string>}.';
@@ -152,7 +196,10 @@ export function buildSubTypePrompt(input: {
     lines.push("", "WEBSITE TEXT (excerpt)", websiteText.trim());
   }
   lines.push("", "ALLOWED LIST (choose exactly one of these values, or null):");
-  for (const c of candidates) lines.push(`- ${c.value}`);
+  for (const c of candidates) {
+    const gloss = SUBTYPE_GUIDANCE[c.value];
+    lines.push(gloss ? `- ${c.value} — ${gloss}` : `- ${c.value}`);
+  }
   return { system, prompt: lines.join("\n") };
 }
 
@@ -219,6 +266,53 @@ export function stripHtmlToText(html: string, maxChars = 3500): string {
     .replace(/\s+/g, " ")
     .trim();
   return cleaned.slice(0, maxChars);
+}
+
+const ENTITIES: Record<string, string> = {
+  amp: "&",
+  quot: '"',
+  apos: "'",
+  lt: "<",
+  gt: ">",
+  nbsp: " ",
+};
+function decodeEntities(s: string): string {
+  return s.replace(/&(#?\w+);/g, (_, e: string) => {
+    if (e[0] === "#") {
+      const code = Number(e.slice(1));
+      return Number.isFinite(code) ? String.fromCharCode(code) : " ";
+    }
+    return ENTITIES[e.toLowerCase()] ?? " ";
+  });
+}
+
+/**
+ * Lightweight site summary: page title + meta/og description — cheap and
+ * concise, which is usually enough to classify. Falls back to readable body
+ * text ONLY when the page has no meta description.
+ */
+export function extractSiteSummary(html: string, maxChars = 1200): string {
+  const title = decodeEntities(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  let desc = "";
+  let ogDesc = "";
+  let keywords = "";
+  for (const tag of html.match(/<meta\b[^>]*>/gi) ?? []) {
+    const key = (tag.match(/\b(?:name|property)\s*=\s*["']([^"']+)["']/i)?.[1] ?? "").toLowerCase();
+    const content = tag.match(/\bcontent\s*=\s*["']([^"']*)["']/i)?.[1];
+    if (!content) continue;
+    if (key === "description" && !desc) desc = content;
+    else if (key === "og:description" && !ogDesc) ogDesc = content;
+    else if (key === "keywords" && !keywords) keywords = content;
+  }
+  const summary = decodeEntities(desc || ogDesc).replace(/\s+/g, " ").trim();
+  if (summary) {
+    const parts = [title, summary];
+    if (keywords) parts.push(`Keywords: ${decodeEntities(keywords).replace(/\s+/g, " ").trim()}`);
+    return parts.filter(Boolean).join(" — ").slice(0, maxChars);
+  }
+  return stripHtmlToText(html, maxChars);
 }
 
 /** True when a company has essentially no signal to classify on. */

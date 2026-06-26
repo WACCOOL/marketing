@@ -2,10 +2,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   buildSubTypePrompt,
   COMPANY_SUB_TYPE_PROP,
+  extractSiteSummary,
   inputsHash,
   isJunkSubType,
   parseClassification,
-  stripHtmlToText,
   validateSubType,
   type CompanyForClassify,
   type SubTypeCandidate,
@@ -120,7 +120,7 @@ async function fetchWebsiteText(siteRaw: string): Promise<string | null> {
     });
     if (!res.ok) return null;
     const html = await res.text();
-    const text = stripHtmlToText(html);
+    const text = extractSiteSummary(html);
     return text || null;
   } catch {
     return null;
