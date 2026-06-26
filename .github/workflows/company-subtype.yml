@@ -20,6 +20,7 @@ on:
         options:
           - build-candidates
           - backfill
+          - report
         default: build-candidates
       dry_run:
         description: "Dry run (build: don't persist · backfill: enumerate only, no LLM)"
@@ -78,6 +79,9 @@ jobs:
           if [ "$MODE" = "build-candidates" ]; then
             ARGS="--build-subtype-candidates"
             if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          elif [ "$MODE" = "report" ]; then
+            # Show the most recent classification picks (name -> sub-type) for review.
+            ARGS="--report-subtype-classifications --limit=$LIMIT"
           else
             ARGS="--backfill-company-subtypes"
             if [ "$ALL" = "true" ]; then ARGS="$ARGS --all"; else ARGS="$ARGS --limit=$LIMIT"; fi
