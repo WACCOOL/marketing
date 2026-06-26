@@ -10,12 +10,16 @@
  */
 
 import {
+  SPECIFIER_LABEL,
+  SPECIFIER_SLOTS,
+  accountForms,
   companyStatusFromRiskCategory,
   computeInsideSalesFields,
   INSIDE_SALES_FIELDS,
   repCodeInactiveFromCompanyStatus,
   repCodeSyncProperties,
   resolveRepCodeSchema,
+  specifierAccountNumbers,
   type InsideSalesResolvers,
   type RepCodeSchema,
 } from "@wac/shared";
@@ -71,17 +75,6 @@ async function hs(token: string, method: string, path: string, body?: unknown): 
     }
     return { ok: res.ok, status: res.status, data };
   }
-}
-
-/** Account-number forms a HubSpot record may store (raw / stripped / zero-padded). */
-function accountForms(accountNumber: string): string[] {
-  const acct = accountNumber.trim();
-  if (!acct) return [];
-  const forms = new Set<string>([acct]);
-  const stripped = acct.replace(/^0+/, "");
-  if (stripped) forms.add(stripped);
-  if (/^\d+$/.test(stripped)) forms.add(stripped.padStart(10, "0"));
-  return [...forms];
 }
 
 /**
@@ -699,6 +692,175 @@ export async function reconcileRepCodeSync(opts: {
           result.labelsRemoved += r.removed;
           result.failures += r.failures;
         }
+      }
+    }
+    after = page.data?.paging?.next?.after;
+    if (limit && result.scanned >= limit) break;
+  } while (after);
+
+  return result;
+}
+
+// --- Specifier companies → Opportunity associations (absorbs the 5 "Associated
+// Specifier N to Opportunity" workflows). The real-time path is in the API Worker
+// (`apps/api/src/hubspotPush.ts` pushDeal); this is the daily catch-up + the
+// one-time backfill of every existing Opportunity (run with `--reconcile-specifiers`
+// and no `--limit`). Keyed off each deal's specifier_account_number_1..5. ---
+
+// Company property holding the Sugar legacy account number (final fallback).
+const SPECIFIER_SUGAR_PROP = "sugar_legacy_account_number_uniqueid";
+
+/** The "Specifier" company↔deal label: `create` is the companies→deals typeId used to
+ * create the labeled association; `inverse` is the deals→companies typeId seen when
+ * reading from the deal side (for diffing). null inverse = can't diff → additive
+ * create-all (idempotent). Whole label null = not created in HubSpot yet → no-op. */
+interface SpecifierLabel {
+  create: number;
+  inverse: number | null;
+}
+
+async function resolveSpecifierLabel(token: string): Promise<SpecifierLabel | null> {
+  const fwd = await hs(token, "GET", `/crm/v4/associations/companies/0-3/labels`);
+  const fwdLabel = fwd.ok
+    ? (fwd.data?.results ?? []).find((l: any) => String(l.label ?? "").trim().toLowerCase() === SPECIFIER_LABEL.toLowerCase())
+    : null;
+  if (fwdLabel?.typeId == null) return null;
+  const inv = await hs(token, "GET", `/crm/v4/associations/0-3/companies/labels`);
+  // The inverse endpoint may return null label names; match leniently and fall back
+  // to idempotent create-all if it can't be paired.
+  const invLabel = inv.ok
+    ? (inv.data?.results ?? []).find((l: any) => String(l.label ?? "").trim().toLowerCase().includes("specifier"))
+    : null;
+  return { create: Number(fwdLabel.typeId), inverse: invLabel?.typeId != null ? Number(invLabel.typeId) : null };
+}
+
+/**
+ * Resolve a specifier account-number value to a Company id via the cascade:
+ *   1. `account_number_` (across padded/stripped forms),
+ *   2. the value as a HubSpot Record ID (`hs_object_id`),
+ *   3. the Sugar legacy account number (`sugar_legacy_account_number_uniqueid`).
+ * First hit wins; null when nothing matches. (Twin of the API Worker's resolver.)
+ */
+async function resolveSpecifierCompanyId(token: string, value: string): Promise<string | null> {
+  for (const form of accountForms(value)) {
+    const r = await hs(token, "GET", `/crm/v3/objects/companies/${encodeURIComponent(form)}?idProperty=account_number_`);
+    if (r.ok && r.data?.id) return String(r.data.id);
+  }
+  if (/^\d+$/.test(value)) {
+    const r = await hs(token, "GET", `/crm/v3/objects/companies/${encodeURIComponent(value)}`);
+    if (r.ok && r.data?.id) return String(r.data.id);
+  }
+  const r = await hs(token, "POST", `/crm/v3/objects/companies/search`, {
+    filterGroups: [{ filters: [{ propertyName: SPECIFIER_SUGAR_PROP, operator: "EQ", value }] }],
+    properties: ["hs_object_id"],
+    limit: 1,
+  });
+  const hit = r.ok ? r.data?.results?.[0] : null;
+  return hit?.id ? String(hit.id) : null;
+}
+
+/** Company ids already associated to a deal WITH the Specifier label (by inverse
+ * typeId). Empty when the inverse can't be resolved → caller does additive create-all
+ * (idempotent). Paginated. */
+async function readDealSpecifierCompanies(
+  token: string,
+  dealId: string,
+  inverseTypeId: number | null,
+): Promise<Set<string>> {
+  const labeled = new Set<string>();
+  if (inverseTypeId == null) return labeled;
+  let after: string | undefined;
+  do {
+    const qs = `?limit=500${after ? `&after=${after}` : ""}`;
+    const res = await hs(token, "GET", `/crm/v4/objects/0-3/${dealId}/associations/companies${qs}`);
+    if (!res.ok) break;
+    for (const r of res.data?.results ?? []) {
+      const toId = String(r.toObjectId ?? r.to?.id ?? "");
+      const typeIds = (r.associationTypes ?? []).map((t: any) => Number(t.typeId)).filter((n: number) => !Number.isNaN(n));
+      if (toId && typeIds.includes(inverseTypeId)) labeled.add(toId);
+    }
+    after = res.data?.paging?.next?.after;
+  } while (after);
+  return labeled;
+}
+
+export interface SpecifierReconcileResult {
+  scanned: number;
+  /** Specifier-labeled associations created (or would-create in dryRun). */
+  associated: number;
+  /** Specifier account numbers that matched no company (across the cascade). */
+  unresolved: number;
+  /** True when the "Specifier" label isn't set up in HubSpot (labeling skipped). */
+  labelMissing: boolean;
+}
+
+/**
+ * Walk every Deal; for each `specifier_account_number_1..5`, resolve the Company via
+ * the cascade and ensure it's associated to the deal with the "Specifier" label.
+ * Additive + diff-only (a deal already labeled for that company is skipped) — stale
+ * specifier removal is out of scope, matching the workflows + the real-time path.
+ * Idempotent; the first full run (no `--limit`) is the backfill. `dryRun` counts
+ * without writing. Uses the paginated list endpoint (no 10k search cap).
+ */
+export async function reconcileSpecifierAssociations(opts: {
+  token: string;
+  dryRun: boolean;
+  limit?: number;
+}): Promise<SpecifierReconcileResult> {
+  const { token, dryRun, limit } = opts;
+  const result: SpecifierReconcileResult = { scanned: 0, associated: 0, unresolved: 0, labelMissing: false };
+
+  const label = await resolveSpecifierLabel(token);
+  if (!label) {
+    result.labelMissing = true;
+    console.warn("[specifier-assoc] 'Specifier' association label not found — labeling is a no-op until it's created in HubSpot");
+    return result;
+  }
+
+  // Cache specifier→company lookups across deals (many deals share specifiers).
+  const companyCache = new Map<string, string | null>();
+  const resolveCompany = async (value: string): Promise<string | null> => {
+    if (companyCache.has(value)) return companyCache.get(value)!;
+    const id = await resolveSpecifierCompanyId(token, value);
+    companyCache.set(value, id);
+    return id;
+  };
+
+  const specProps = SPECIFIER_SLOTS.map((n) => `specifier_account_number_${n}`).join(",");
+  let after: string | undefined;
+  do {
+    const qs = `?limit=100&properties=${specProps}${after ? `&after=${after}` : ""}`;
+    const page = await hs(token, "GET", `/crm/v3/objects/0-3${qs}`);
+    if (!page.ok) throw new Error(`deals list ${page.status}: ${JSON.stringify(page.data).slice(0, 200)}`);
+    for (const deal of page.data?.results ?? []) {
+      result.scanned++;
+      const values = specifierAccountNumbers(deal.properties ?? {});
+      if (!values.length) continue;
+
+      const want = new Set<string>();
+      for (const value of values) {
+        const id = await resolveCompany(value);
+        if (id) want.add(id);
+        else result.unresolved++;
+      }
+      if (!want.size) continue;
+
+      const existing = await readDealSpecifierCompanies(token, String(deal.id), label.inverse);
+      const toAdd = [...want].filter((id) => !existing.has(id));
+      if (!toAdd.length) continue;
+
+      if (dryRun) {
+        result.associated += toAdd.length;
+        continue;
+      }
+      for (let i = 0; i < toAdd.length; i += UPDATE_BATCH) {
+        const inputs = toAdd.slice(i, i + UPDATE_BATCH).map((companyId) => ({
+          from: { id: companyId },
+          to: { id: String(deal.id) },
+          types: [{ associationCategory: "USER_DEFINED", associationTypeId: label.create }],
+        }));
+        const res = await hs(token, "POST", `/crm/v4/associations/companies/0-3/batch/create`, { inputs });
+        if (res.ok) result.associated += inputs.length;
       }
     }
     after = page.data?.paging?.next?.after;

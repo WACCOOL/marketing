@@ -19,6 +19,7 @@ import {
   reconcileManagersRollup,
   reconcileRepCodeOwners,
   reconcileRepCodeSync,
+  reconcileSpecifierAssociations,
   type AmtIsrRow,
   type RepIsrRow,
 } from "./insideSales.js";
@@ -172,6 +173,15 @@ async function runInsideSalesReconcile(
       `inactive=${rcs.inactive} labels(+${rcs.labelsAdded}/-${rcs.labelsRemoved}) failures=${rcs.failures}` +
       `${rcs.labelMissing ? " [Inactive label not set up — labeling skipped]" : ""}`,
   );
+
+  // Specifier companies → Opportunity associations (absorbs the 5 "Associated
+  // Specifier N to Opportunity" workflows). Idempotent backstop for the real-time
+  // path; the first full run is the backfill of every existing Opportunity.
+  const spec = await reconcileSpecifierAssociations({ token, dryRun, limit });
+  console.log(
+    `[specifier-assoc] deals: scanned=${spec.scanned} ${dryRun ? "would-associate" : "associated"}=${spec.associated} ` +
+      `unresolved=${spec.unresolved}${spec.labelMissing ? " [Specifier label not set up — labeling skipped]" : ""}`,
+  );
 }
 
 async function main(): Promise<void> {
@@ -199,6 +209,23 @@ async function main(): Promise<void> {
     const r = await reconcileManagersRollup({ token, dryRun, limit });
     console.log(
       `[managers-rollup] scanned=${r.scanned} ${dryRun ? "would-update" : "updated"}=${r.updated}`,
+    );
+    return;
+  }
+
+  // Specifier → Opportunity associations on their own (the one-time backfill of every
+  // existing Opportunity; run with no --limit). Runs daily as part of the inside-sales
+  // reconcile too — this flag just lets it run standalone.
+  if (process.argv.includes("--reconcile-specifiers")) {
+    const token = process.env.HUBSPOT_TOKEN;
+    if (!token) {
+      console.log("[specifier-assoc] HUBSPOT_TOKEN unset; nothing to do.");
+      return;
+    }
+    const r = await reconcileSpecifierAssociations({ token, dryRun, limit });
+    console.log(
+      `[specifier-assoc] deals: scanned=${r.scanned} ${dryRun ? "would-associate" : "associated"}=${r.associated} ` +
+        `unresolved=${r.unresolved}${r.labelMissing ? " [Specifier label not set up — labeling skipped]" : ""}`,
     );
     return;
   }
