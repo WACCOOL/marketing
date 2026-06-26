@@ -28,6 +28,10 @@ describe("isJunkSubType", () => {
     expect(isJunkSubType({ value: "Others", label: "Others" })).toBe(true);
     expect(isJunkSubType({ value: "Owner", label: "Owner" })).toBe(true);
   });
+  it("drops Modern Forms internal-only designer lines", () => {
+    expect(isJunkSubType({ value: "MF Designer", label: "MF Designer" })).toBe(true);
+    expect(isJunkSubType({ value: "MF Designer Rep", label: "MF Designer Rep" })).toBe(true);
+  });
   it("keeps clean options", () => {
     expect(isJunkSubType({ value: "Distributor", label: "Distributor" })).toBe(false);
     expect(isJunkSubType({ value: "Lighting Showroom", label: "Lighting Showroom" })).toBe(false);

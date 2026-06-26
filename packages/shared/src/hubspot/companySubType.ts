@@ -68,6 +68,9 @@ export const SUBTYPE_DENYLIST_VALUES: ReadonlySet<string> = new Set([
   "Other",
   "Others",
   "Owner",
+  // Modern Forms ("MF") designer lines — set internally only, never auto-classified.
+  "MF Designer",
+  "MF Designer Rep",
 ]);
 
 /** Normalize for case/spacing-insensitive comparison. */
@@ -142,7 +145,6 @@ export const SUBTYPE_GUIDANCE: Record<string, string> = {
   "Principal Reside Rep": "a manufacturers' sales-rep agency (residential)",
   "Sub-Rep Com. Rep": "a sub-agent of a manufacturers' sales-rep agency (commercial)",
   "Sub-Rep Reside Rep": "a sub-agent of a manufacturers' sales-rep agency (residential)",
-  "MF Designer Rep": "a manufacturers' sales-rep agency",
   Distributor: "buys and resells/stocks product at wholesale",
   Dealer: "resells product; typically smaller/local than a distributor",
   "Lighting Showroom": "retail showroom that displays and sells lighting",
