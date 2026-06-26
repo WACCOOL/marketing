@@ -10,6 +10,7 @@
  */
 
 import {
+  companyStatusFromRiskCategory,
   computeInsideSalesFields,
   INSIDE_SALES_FIELDS,
   repCodeInactiveFromCompanyStatus,
@@ -163,7 +164,9 @@ export async function reconcileCompanyInsideSales(opts: {
   limit?: number;
 }): Promise<CompanyReconcileResult> {
   const { token, resolvers, dryRun, limit } = opts;
-  const props = ["inside_sales_rep", "sales_rep_code", ...INSIDE_SALES_FIELDS].join(",");
+  const props = ["inside_sales_rep", "sales_rep_code", "risk_category_description", "status", ...INSIDE_SALES_FIELDS].join(
+    ",",
+  );
   const unresolved = new Map<string, number>(); // code -> # companies affected
   let scanned = 0;
   let updated = 0;
@@ -197,10 +200,16 @@ export async function reconcileCompanyInsideSales(opts: {
         resolvers,
       );
       for (const u of isr.unresolved) unresolved.set(u, (unresolved.get(u) ?? 0) + 1);
-      const entries = Object.entries(isr.properties);
+      const desired: Record<string, string> = { ...isr.properties };
+      // Company Status backstop — recompute from risk_category_description, replacing
+      // the now-disabled "Set Company Status to Active or Inactive" workflow. The
+      // real-time writer sets this on push; this is the daily catch-up/self-heal.
+      const status = companyStatusFromRiskCategory(p.risk_category_description);
+      if (status !== null) desired.status = status;
+      const entries = Object.entries(desired);
       if (!entries.length) continue;
       const differs = entries.some(([k, v]) => String(p[k] ?? "") !== v);
-      if (differs) pending.push({ id: String(c.id), properties: isr.properties });
+      if (differs) pending.push({ id: String(c.id), properties: desired });
       if (pending.length >= UPDATE_BATCH) await flush();
     }
     after = res.data?.paging?.next?.after;
