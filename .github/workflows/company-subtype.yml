@@ -42,6 +42,10 @@ on:
         description: "Backfill only: re-process companies already attempted"
         type: boolean
         default: false
+      concurrency:
+        description: "Backfill only: parallel workers (6 default; ~24-30 is much faster, more API load)"
+        type: string
+        default: "6"
 
 concurrency:
   group: company-subtype-classify
@@ -74,6 +78,7 @@ jobs:
           LIMIT: ${{ inputs.limit }}
           ALL: ${{ inputs.all }}
           FORCE: ${{ inputs.force }}
+          CONCURRENCY: ${{ inputs.concurrency }}
         run: |
           ARGS=""
           if [ "$MODE" = "build-candidates" ]; then
@@ -88,6 +93,7 @@ jobs:
             if [ "$DRY_RUN" = "true" ]; then ARGS="$ARGS --dry-run"; fi
             if [ "$NO_WRITE" = "true" ]; then ARGS="$ARGS --no-write"; fi
             if [ "$FORCE" = "true" ]; then ARGS="$ARGS --force"; fi
+            if [ -n "$CONCURRENCY" ]; then ARGS="$ARGS --concurrency=$CONCURRENCY"; fi
           fi
           echo "Running: territory-sync $ARGS"
           pnpm --filter @wac/territory-sync sync -- $ARGS

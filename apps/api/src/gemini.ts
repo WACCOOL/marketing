@@ -52,27 +52,37 @@ export async function geminiTextWithUsage(
   const model = opts.model || env.GEMINI_TEXT_MODEL || GEMINI_TEXT_MODEL_DEFAULT;
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-goog-api-key": env.GEMINI_API_KEY,
+  const reqBody = JSON.stringify({
+    ...(opts.system
+      ? { systemInstruction: { parts: [{ text: opts.system }] } }
+      : {}),
+    contents: [{ role: "user", parts: [{ text: opts.prompt }] }],
+    generationConfig: {
+      temperature: opts.temperature ?? 0.7,
+      ...(opts.json ? { responseMimeType: "application/json" } : {}),
     },
-    body: JSON.stringify({
-      ...(opts.system
-        ? { systemInstruction: { parts: [{ text: opts.system }] } }
-        : {}),
-      contents: [{ role: "user", parts: [{ text: opts.prompt }] }],
-      generationConfig: {
-        temperature: opts.temperature ?? 0.7,
-        ...(opts.json ? { responseMimeType: "application/json" } : {}),
-      },
-    }),
-    signal: AbortSignal.timeout(opts.timeoutMs ?? GEMINI_TIMEOUT_MS),
   });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Gemini responded ${res.status}: ${body.slice(0, 300)}`);
+  let res: Response;
+  for (let attempt = 0; ; attempt++) {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-goog-api-key": env.GEMINI_API_KEY,
+      },
+      body: reqBody,
+      signal: AbortSignal.timeout(opts.timeoutMs ?? GEMINI_TIMEOUT_MS),
+    });
+    if (res.ok) break;
+    // Retry transient rate-limit / server errors — matters at backfill concurrency.
+    if ((res.status === 429 || res.status >= 500) && attempt < 4) {
+      const ra = Number(res.headers.get("retry-after"));
+      const wait = Number.isFinite(ra) && ra > 0 ? ra * 1000 : Math.min(8_000, 400 * 2 ** attempt);
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
+    const errText = await res.text().catch(() => "");
+    throw new Error(`Gemini responded ${res.status}: ${errText.slice(0, 300)}`);
   }
   const data = (await res.json()) as {
     candidates?: { content?: { parts?: { text?: string }[] } }[];
