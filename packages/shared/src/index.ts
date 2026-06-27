@@ -18,6 +18,7 @@ export * from "./ingest/headers.js";
 export * from "./ingest/pricing.js";
 export * from "./ingest/territory.js";
 export * from "./ingest/openOrders.js";
+export * from "./ingest/riskCodes.js";
 export * from "./ingest/sales.js";
 export * from "./hubspot/mapping.js";
 export * from "./hubspot/heal.js";
