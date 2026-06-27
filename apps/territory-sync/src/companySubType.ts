@@ -36,15 +36,26 @@ interface HsRes {
 
 async function hs(token: string, method: string, path: string, body?: unknown): Promise<HsRes> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`${BASE}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        accept: "application/json",
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (e) {
+      // Timeout/network error — retry a few times, then surface it.
+      if (attempt < 6) {
+        await new Promise((r) => setTimeout(r, Math.min(10_000, 500 * 2 ** attempt)));
+        continue;
+      }
+      throw e;
+    }
     if ((res.status === 429 || res.status >= 500) && attempt < 6) {
       const ra = Number(res.headers.get("retry-after"));
       await new Promise((r) => setTimeout(r, ra > 0 ? ra * 1000 : Math.min(10_000, 500 * 2 ** attempt)));
@@ -227,6 +238,9 @@ export async function backfillCompanySubTypes(opts: {
           source: "backfill",
           write,
         }),
+        // Client-side ceiling so a hung request can't block a worker forever
+        // (the Worker's own /sync ceiling is 45s; give it margin).
+        signal: AbortSignal.timeout(60_000),
       });
       const out = (await res.json().catch(() => ({}))) as {
         status?: string;
