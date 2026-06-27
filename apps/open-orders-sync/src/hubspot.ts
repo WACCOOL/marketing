@@ -50,7 +50,12 @@ const ORDER_FIELDS: FieldDef[] = [
   { prop: "complete_dlv", src: { raw: "Complete Dlv" }, type: "string" },
   { prop: "credit_rep", src: { raw: "Credit Rep" }, type: "string", create: true },
   { prop: "credit_status", src: { raw: "Credit Status" }, type: "string", create: true },
-  { prop: "risk_code", src: { raw: "Risk Code" }, type: "string", create: true },
+  // Risk code + its two legend meanings are enumeration (dropdown) props managed
+  // by ensureRiskEnums — NOT the generic text `create` path. All three carry the
+  // CODE as the value; they differ only in option label (code / desc / meaning).
+  { prop: "risk_code", src: { raw: "Risk Code" }, type: "string" },
+  { prop: "risk_code_description", src: { raw: "Risk Code" }, type: "string" },
+  { prop: "risk_code_meaning", src: { raw: "Risk Code" }, type: "string" },
   { prop: "sales_group", src: "sales_group", type: "string", create: true },
   { prop: "sales_territory", src: "sales_territory", type: "string", create: true },
   { prop: "purchasing_group", src: { raw: "Purchasing Group" }, type: "string", create: true },
@@ -167,9 +172,154 @@ export function buildLineProperties(r: OpenOrderDbRow): Record<string, string | 
   return properties;
 }
 
+// --- Risk Code dropdowns -----------------------------------------------------
+// `risk_code` and its legend meanings are exposed as three enumeration props on
+// the Order. Each record stores the CODE as the value on all three; HubSpot just
+// renders a different option LABEL per prop (the code / its Code Description / its
+// Meaning). Options are synced from the `open_order_risk_codes` legend each run,
+// additively, so a new code in the sheet auto-adds an option and never breaks the
+// push on an unknown enum value.
+
+const RISK_ENUM_PROPS = ["risk_code", "risk_code_description", "risk_code_meaning"] as const;
+type RiskEnumProp = (typeof RISK_ENUM_PROPS)[number];
+type RiskOptionSet = Record<RiskEnumProp, HsOption[]>;
+
+interface HsOption {
+  label: string;
+  value: string;
+  displayOrder?: number;
+  hidden?: boolean;
+}
+interface RiskLegendEntry {
+  description: string | null;
+  meaning: string | null;
+}
+type RiskLegend = Map<string, RiskLegendEntry>;
+
+/** Load the code -> {description, meaning} legend (best-effort; an empty map just
+ * means dropdowns fall back to showing the bare code). */
+async function loadRiskLegend(sb: SupabaseClient): Promise<RiskLegend> {
+  const legend: RiskLegend = new Map();
+  const { data, error } = await sb
+    .from("open_order_risk_codes")
+    .select("code, code_description, meaning");
+  if (error) {
+    console.warn(`[open-orders-sync] risk legend load failed (continuing): ${error.message}`);
+    return legend;
+  }
+  for (const r of (data ?? []) as { code: string; code_description: string | null; meaning: string | null }[]) {
+    const code = String(r.code).trim();
+    if (code) legend.set(code, { description: r.code_description ?? null, meaning: r.meaning ?? null });
+  }
+  return legend;
+}
+
+/** HubSpot wants unique option labels within a property; on a collision (two codes
+ * sharing a Meaning) suffix the code so both remain distinct. Values are already
+ * unique (one option per code). */
+function dedupeLabels(opts: { label: string; value: string }[]): HsOption[] {
+  const used = new Set<string>();
+  return opts.map((o, i) => {
+    let label = o.label;
+    if (used.has(label)) label = `${o.label} (${o.value})`;
+    while (used.has(label)) label = `${label}.`;
+    used.add(label);
+    return { label, value: o.value, displayOrder: i, hidden: false };
+  });
+}
+
+/** Build the three desired option lists from the union of legend codes and codes
+ * actually present in the snapshot (so every pushed value has an option). */
+function buildRiskOptions(codes: Iterable<string>, legend: RiskLegend): RiskOptionSet {
+  const sorted = [...new Set(codes)].filter(Boolean).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return {
+    risk_code: dedupeLabels(sorted.map((c) => ({ label: c, value: c }))),
+    risk_code_description: dedupeLabels(sorted.map((c) => ({ label: legend.get(c)?.description || c, value: c }))),
+    risk_code_meaning: dedupeLabels(
+      sorted.map((c) => {
+        const e = legend.get(c);
+        return { label: e?.meaning || e?.description || c, value: c };
+      }),
+    ),
+  };
+}
+
+/** Merge desired options over the current ones, additively: desired labels/order
+ * win, current-only values are kept (so records on old codes don't break). Returns
+ * null when nothing changed (skip the PATCH). */
+function mergeOptions(current: { label: string; value: string }[], desired: HsOption[]): HsOption[] | null {
+  const haveValues = new Set(desired.map((o) => o.value));
+  const merged: HsOption[] = [...desired];
+  for (const c of current) {
+    if (!haveValues.has(c.value)) merged.push({ label: c.label, value: c.value, displayOrder: merged.length, hidden: false });
+  }
+  const curLabelByValue = new Map(current.map((o) => [o.value, o.label]));
+  let changed = merged.length !== current.length;
+  if (!changed) {
+    for (const o of merged) {
+      if (curLabelByValue.get(o.value) !== o.label) {
+        changed = true;
+        break;
+      }
+    }
+  }
+  return changed ? merged : null;
+}
+
+/** Create/migrate one enumeration prop to the desired options. Handles the
+ * text -> enumeration migration (HubSpot can't change `type` in place → delete +
+ * recreate) and additive option updates once it's an enum. */
+async function ensureRiskEnum(
+  token: string,
+  prop: string,
+  desired: HsOption[],
+  existing: { name: string; type?: string }[],
+): Promise<void> {
+  const create = () =>
+    hs(token, "/crm/v3/properties/orders", {
+      method: "POST",
+      body: JSON.stringify({
+        name: prop,
+        label: labelFor(prop),
+        groupName: "open_orders",
+        type: "enumeration",
+        fieldType: "select",
+        options: desired,
+      }),
+    });
+
+  const found = existing.find((p) => p.name === prop);
+  if (!found) {
+    await create();
+    console.log(`[open-orders-sync] created orders enum ${prop} (${desired.length} options)`);
+    return;
+  }
+  if (found.type !== "enumeration") {
+    await hs(token, `/crm/v3/properties/orders/${prop}`, { method: "DELETE" });
+    await create();
+    console.log(`[open-orders-sync] migrated orders.${prop} ${found.type} -> enumeration (${desired.length} options)`);
+    return;
+  }
+  // Already an enum — sync options additively.
+  const cur = await hs<{ options?: { label: string; value: string }[] }>(token, `/crm/v3/properties/orders/${prop}`);
+  const merged = mergeOptions(cur.options ?? [], desired);
+  if (merged) {
+    await hs(token, `/crm/v3/properties/orders/${prop}`, { method: "PATCH", body: JSON.stringify({ options: merged }) });
+    console.log(`[open-orders-sync] updated orders.${prop} options (${merged.length})`);
+  }
+}
+
+/** Ensure all three risk-code dropdowns exist with up-to-date options. */
+async function ensureRiskEnums(token: string, riskOptions: RiskOptionSet): Promise<void> {
+  const existing = await hs<{ results: { name: string; type?: string }[] }>(token, "/crm/v3/properties/orders");
+  for (const prop of RISK_ENUM_PROPS) {
+    await ensureRiskEnum(token, prop, riskOptions[prop], existing.results);
+  }
+}
+
 /** Create the property group, line key, missing props, and the rep-code
  * association type — all idempotent (409 = already exists). */
-async function ensureSchema(token: string): Promise<{ repCodeTypeId: number | null }> {
+async function ensureSchema(token: string, riskOptions: RiskOptionSet): Promise<{ repCodeTypeId: number | null }> {
   // Property group on both objects.
   for (const obj of ["orders", "line_items"] as Obj[]) {
     try {
@@ -196,6 +346,9 @@ async function ensureSchema(token: string): Promise<{ repCodeTypeId: number | nu
   };
   await ensureProps("orders", ORDER_FIELDS);
   await ensureProps("line_items", LINE_FIELDS);
+
+  // Risk Code dropdowns (create/migrate to enumeration + sync legend options).
+  await ensureRiskEnums(token, riskOptions);
 
   // Line key: unique so_posnr (SO + line position) on line items.
   const liProps = await hs<{ results: { name: string; hasUniqueValue?: boolean }[] }>(token, "/crm/v3/properties/line_items");
@@ -353,6 +506,17 @@ export async function syncOpenOrdersToHubspot(
   console.log(`[open-orders-sync] HubSpot push: ${rows.length} open line rows`);
   if (rows.length === 0) return;
 
+  // Risk Code dropdowns: load the code -> meaning legend and build the three
+  // option sets from the union of legend codes and codes present in the snapshot
+  // (so every value we push has a matching option — no "invalid enum" failures).
+  const legend = await loadRiskLegend(sb);
+  const dataCodes = new Set<string>();
+  for (const r of rows) {
+    const c = coerce(rawField(r.raw_json ?? {}, "Risk Code"), "string");
+    if (typeof c === "string" && c) dataCodes.add(c);
+  }
+  const riskOptions = buildRiskOptions([...legend.keys(), ...dataCodes], legend);
+
   // Group by SO for orders (last line wins for order-level fields).
   const orderBySo = new Map<string, OpenOrderDbRow>();
   for (const r of rows) orderBySo.set(r.so, r);
@@ -405,10 +569,13 @@ export async function syncOpenOrdersToHubspot(
     console.log(`[open-orders-sync] DRY RUN: ${orderInputs.length} orders, ${lineInputs.length} line items`);
     console.log("[open-orders-sync] sample order:", JSON.stringify(orderInputs[0], null, 1));
     console.log("[open-orders-sync] sample line:", JSON.stringify(lineInputs[0], null, 1));
+    for (const p of RISK_ENUM_PROPS) {
+      console.log(`[open-orders-sync] DRY RUN ${p}: ${riskOptions[p].length} options (sample):`, riskOptions[p].slice(0, 3));
+    }
     return;
   }
 
-  const { repCodeTypeId } = await ensureSchema(token);
+  const { repCodeTypeId } = await ensureSchema(token, riskOptions);
 
   // Upsert orders, then line items.
   const orderIdBySo = await batchUpsert(token, "orders", orderInputs);

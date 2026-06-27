@@ -1,7 +1,7 @@
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import * as XLSX from "xlsx";
-import { parseOpenOrders, type OpenOrderRow } from "@wac/shared";
+import { parseOpenOrders, parseRiskCodes, type OpenOrderRow } from "@wac/shared";
 import { syncOpenOrdersToHubspot } from "./hubspot.js";
 
 /**
@@ -29,6 +29,9 @@ import { syncOpenOrdersToHubspot } from "./hubspot.js";
  */
 
 const REPORT_SHEET = "Report";
+// Legend tab: maps each Risk Code to a Code Description + Meaning. Header is on
+// the first row (no range offset, unlike Report).
+const RISK_CODES_SHEET = "Customer Risk Codes";
 // Header is on sheet row 3 (rows 1-2 are blank) — 0-indexed 2.
 const HEADER_ROW = 2;
 const UPSERT_CHUNK = 1000;
@@ -71,6 +74,43 @@ function toDbRow(r: OpenOrderRow, ingestionId: string) {
     last_seen_ingestion_id: ingestionId,
     updated_at: iso(),
   };
+}
+
+/** Parse the "Customer Risk Codes" legend tab and upsert it (non-destructive,
+ * on `code`). Fully defensive: a missing/empty tab or a write error is a warning,
+ * never a failure — the legend is secondary and must not block the order sync. */
+async function syncRiskCodeLegend(sb: SupabaseClient, wb: XLSX.WorkBook): Promise<void> {
+  try {
+    const sheet = wb.Sheets[RISK_CODES_SHEET];
+    if (!sheet) {
+      console.warn(`[open-orders-sync] no "${RISK_CODES_SHEET}" tab; skipping risk-code legend`);
+      return;
+    }
+    // Header is on the first row here (no range offset, unlike Report).
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+      defval: null,
+      blankrows: false,
+    });
+    const legend = parseRiskCodes(rows);
+    if (legend.length === 0) {
+      console.warn(`[open-orders-sync] "${RISK_CODES_SHEET}" parsed to 0 codes; skipping legend`);
+      return;
+    }
+    const { error } = await sb.from("open_order_risk_codes").upsert(
+      legend.map((r) => ({
+        code: r.code,
+        code_description: r.codeDescription,
+        meaning: r.meaning,
+        updated_at: iso(),
+      })),
+      { onConflict: "code" },
+    );
+    if (error) throw new Error(error.message);
+    console.log(`[open-orders-sync] risk-code legend: upserted ${legend.length} codes`);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[open-orders-sync] risk-code legend sync failed (continuing): ${msg}`);
+  }
 }
 
 async function main(): Promise<void> {
@@ -144,7 +184,7 @@ async function main(): Promise<void> {
     // (asIsoDate normalizes). range:HEADER_ROW puts the header on sheet row 3.
     const wb = XLSX.read(bytes, {
       type: "array",
-      sheets: [REPORT_SHEET],
+      sheets: [REPORT_SHEET, RISK_CODES_SHEET],
       cellDates: true,
       dense: true,
     });
@@ -167,6 +207,11 @@ async function main(): Promise<void> {
     if (dryRun) {
       console.log("[open-orders-sync] --dry-run: skipping all writes.");
       console.log("[open-orders-sync] sample:", JSON.stringify(valid[0], null, 2).slice(0, 800));
+      const legendSheet = wb.Sheets[RISK_CODES_SHEET];
+      const legend = legendSheet
+        ? parseRiskCodes(XLSX.utils.sheet_to_json(legendSheet, { defval: null, blankrows: false }))
+        : [];
+      console.log(`[open-orders-sync] risk-code legend: ${legend.length} codes (sample):`, legend.slice(0, 3));
       return;
     }
 
@@ -190,6 +235,9 @@ async function main(): Promise<void> {
       .neq("last_seen_ingestion_id", ingestion.id)
       .eq("is_open", true);
     if (ce) throw new Error(`open_orders close-on-missing failed: ${ce.message}`);
+
+    // Refresh the Customer Risk Codes legend (secondary; never blocks the sync).
+    await syncRiskCodeLegend(sb, wb);
 
     await sb
       .from("data_ingestions")
