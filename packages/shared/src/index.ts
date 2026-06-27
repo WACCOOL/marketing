@@ -10,6 +10,7 @@ export * from "./roomcalib.js";
 export * from "./roombox.js";
 export * from "./productinfo.js";
 export * from "./seo.js";
+export * from "./stageprob.js";
 export * from "./ppt.js";
 export * from "./ingest/registry.js";
 export * from "./ingest/types.js";

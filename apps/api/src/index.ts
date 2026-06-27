@@ -31,7 +31,7 @@ import { handleIngestBatch } from "./ingestQueue.js";
 import type { IngestMessage } from "./ingest.js";
 import { runGraphPull } from "./graphPull.js";
 import { runHubspotHeartbeat } from "./alerts.js";
-import { refreshHubspotOptions } from "./hubspotPush.js";
+import { refreshHubspotOptions, refreshStageProbabilities } from "./hubspotPush.js";
 import { GenerationContainer } from "./container.js";
 
 const app = new Hono<AppBindings>();
@@ -105,6 +105,7 @@ app.all("*", async (c) => c.env.ASSETS.fetch(c.req.raw));
  *   - every 30 minutes — marketing-data Graph pull (Territory + Open Orders)
  *   - hourly — SAP -> HubSpot sync heartbeat (alert if the feed goes quiet)
  *   - daily 05:00 UTC — refresh cached HubSpot dropdown options (self-heal)
+ *   - weekly Mon 06:30 UTC — recompute deal-stage probabilities (weighted pipeline)
  * Each branch is best-effort and logs rather than throwing so one blip doesn't
  * fail the invocation.
  */
@@ -120,6 +121,9 @@ async function scheduled(event: ScheduledController, env: Env): Promise<void> {
   }
   if (event.cron === "0 5 * * *") {
     await refreshHubspotOptions(env, serviceSupabase(env));
+  }
+  if (event.cron === "30 6 * * 1") {
+    await refreshStageProbabilities(env);
   }
 }
 
