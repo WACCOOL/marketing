@@ -208,12 +208,23 @@ export async function backfillCompanySubTypes(opts: {
   const concurrency = opts.concurrency ?? 6;
   const url = `${appBaseUrl.replace(/\/$/, "")}/api/hubspot/classify-company/sync`;
 
-  // Preload already-attempted company ids (skip unless --force).
+  // Preload already-RESOLVED company ids to skip (unless --force). We exclude
+  // status='error' so transient failures (e.g. Gemini rate-limits) get retried,
+  // and we paginate past Supabase's 1000-row default so the skip set is complete.
   const attempted = new Set<string>();
   if (!force) {
-    const { data, error } = await sb.from("company_sub_type_classifications").select("company_id");
-    if (error) throw new Error(`audit preload failed: ${error.message}`);
-    for (const r of (data ?? []) as { company_id: string }[]) attempted.add(r.company_id);
+    const PAGE = 1000;
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await sb
+        .from("company_sub_type_classifications")
+        .select("company_id")
+        .neq("status", "error")
+        .range(from, from + PAGE - 1);
+      if (error) throw new Error(`audit preload failed: ${error.message}`);
+      const rows = (data ?? []) as { company_id: string }[];
+      for (const r of rows) attempted.add(r.company_id);
+      if (rows.length < PAGE) break;
+    }
   }
 
   const result: BackfillResult = {
