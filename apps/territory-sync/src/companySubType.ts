@@ -245,20 +245,47 @@ export async function backfillCompanySubTypes(opts: {
     }
   };
 
-  let after: string | undefined;
-  outer: do {
-    const qs = `?limit=100&properties=${CRAWL_PROPS}${after ? `&after=${after}` : ""}`;
-    const res = await hs(token, "GET", `/crm/v3/objects/companies${qs}`);
-    if (!res.ok) throw new Error(`companies list ${res.status}: ${JSON.stringify(res.data).slice(0, 200)}`);
+  // Fetch ONLY blank-AND-has-a-site companies directly via search, in record-id
+  // order. This skips the wasted crawl of already-classified companies AND the
+  // no-website ones (which always no_data) entirely. Two filter groups (OR'd):
+  // blank+website or blank+domain. The hs_object_id cursor pages past search's
+  // 10k window. Written companies drop out of results automatically.
+  const searchProps = CRAWL_PROPS.split(",");
+  let lastId = "0";
+  outer: for (;;) {
+    const idFilter = { propertyName: "hs_object_id", operator: "GT", value: lastId };
+    const res = await hs(token, "POST", "/crm/v3/objects/companies/search", {
+      filterGroups: [
+        {
+          filters: [
+            { propertyName: COMPANY_SUB_TYPE_PROP, operator: "NOT_HAS_PROPERTY" },
+            { propertyName: "website", operator: "HAS_PROPERTY" },
+            idFilter,
+          ],
+        },
+        {
+          filters: [
+            { propertyName: COMPANY_SUB_TYPE_PROP, operator: "NOT_HAS_PROPERTY" },
+            { propertyName: "domain", operator: "HAS_PROPERTY" },
+            idFilter,
+          ],
+        },
+      ],
+      sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
+      properties: searchProps,
+      limit: 200,
+    });
+    if (!res.ok) throw new Error(`companies search ${res.status}: ${JSON.stringify(res.data).slice(0, 200)}`);
+    const results = (res.data?.results ?? []) as { id: string | number; properties?: Record<string, unknown> }[];
+    if (!results.length) break;
 
     const todo: { id: string; properties: Record<string, unknown> }[] = [];
-    for (const c of res.data?.results ?? []) {
+    for (const c of results) {
       result.scanned++;
-      const props = (c.properties ?? {}) as Record<string, unknown>;
-      const current = String(props[COMPANY_SUB_TYPE_PROP] ?? "").trim();
-      if (current) continue;
-      result.blank++;
+      result.blank++; // every result is blank-with-a-site by construction
       const id = String(c.id);
+      lastId = id; // results are sorted ascending by id → advance the cursor
+      const props = (c.properties ?? {}) as Record<string, unknown>;
       if (!force && attempted.has(id)) {
         result.skippedAttempted++;
         continue;
@@ -279,8 +306,7 @@ export async function backfillCompanySubTypes(opts: {
     }
 
     if (limit && result.processed >= limit) break outer;
-    after = res.data?.paging?.next?.after;
-  } while (after);
+  }
 
   return result;
 }
