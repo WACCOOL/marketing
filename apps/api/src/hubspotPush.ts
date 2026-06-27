@@ -16,13 +16,16 @@ import {
   repCodeSyncProperties,
   resolveRepCodeSchema,
   smartMatchToAllowedOptions,
+  solveStageProbabilities,
   specifierAccountNumbers,
   toDecimalPercent,
   toHubspotDate,
   toNumber,
+  weightedAverageProbability,
   type FixAction,
   type InsideSalesResolvers,
   type RepCodeSchema,
+  type StageOpenCounts,
 } from "@wac/shared";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Env } from "./env.js";
@@ -47,6 +50,21 @@ import {
 
 const HS_BASE = "https://api.hubapi.com";
 
+/**
+ * Universal Pipeline (deals) + the stages whose probability we calibrate. Pre-Qualified
+ * and Awarded are pinned to their own observed win rates (round to ~0% / ~100%); the
+ * three middle stages are calibrated. Closed Won/Lost are fixed by HubSpot (100% / 0%)
+ * and untouched.
+ */
+export const UNIVERSAL_PIPELINE_ID = "723098519";
+export const DEAL_STAGES = {
+  prequal: "1054295849",
+  planning: "1054295850",
+  db: "1054295851",
+  bidding: "1054295852",
+  awarded: "1240424232",
+} as const;
+
 export const PATHS = {
   dealSearch: "/crm/v3/objects/0-3/search",
   dealUpsert: "/crm/v3/objects/0-3/batch/upsert",
@@ -61,6 +79,8 @@ export const PATHS = {
   contactLookup: "/crm/v3/objects/contacts/",
   contactSearch: "/crm/v3/objects/contacts/search",
   owners: "/crm/v3/owners",
+  dealPipeline: `/crm/v3/pipelines/deals/${UNIVERSAL_PIPELINE_ID}`,
+  dealPipelineStage: `/crm/v3/pipelines/deals/${UNIVERSAL_PIPELINE_ID}/stages`,
 };
 
 const ASSOC = {
@@ -1791,5 +1811,159 @@ export async function refreshHubspotOptions(env: Env, sb: SupabaseClient): Promi
     } catch (e) {
       console.error(`[heal] refresh ${objectType} failed:`, e);
     }
+  }
+}
+
+// --- Deal-stage probability calibration (weekly cron) ---
+// Set each stage's HubSpot "Deal probability" so the open-deal-weighted average equals
+// the realized overall win rate W. Pre-Qualified and Awarded are pinned to their own
+// observed win rates (round to ~0% / ~100%); the three middle stages are calibrated. All
+// rates round to the nearest whole percent. The pure solve lives in @wac/shared; this is
+// the HubSpot I/O. See docs in stageprob.ts.
+
+const PIN_MIN_SAMPLE = 30; // below this, don't trust a thin end-stage cohort
+const DEFAULT_AWARDED_PROB = 0.95; // fallback only if the Awarded cohort is too thin
+const round2 = (x: number): number => Math.round(x * 100) / 100; // → nearest whole percent
+
+type SearchFilter = { propertyName: string; operator: string; value?: string };
+const stageFilter = (stageId: string): SearchFilter => ({
+  propertyName: "dealstage",
+  operator: "EQ",
+  value: stageId,
+});
+
+/** Count deals matching one AND-group of filters via the search `total` (never throws; -1 on error). */
+async function countDeals(token: string, filters: SearchFilter[], signal: AbortSignal): Promise<number> {
+  const res = await hs(token, "POST", PATHS.dealSearch, { filterGroups: [{ filters }], limit: 1 }, signal);
+  if (!res.ok) {
+    console.error(`[stageprob] deal count failed (${res.status})`);
+    return -1;
+  }
+  return Number(res.data?.total ?? 0);
+}
+
+/** Read-modify-write each stage's probability, preserving label/displayOrder/metadata. */
+async function writeStageProbabilities(
+  token: string,
+  probs: { prequal: number; planning: number; db: number; bidding: number; awarded: number },
+  signal: AbortSignal,
+): Promise<void> {
+  const res = await hs(token, "GET", PATHS.dealPipeline, undefined, signal);
+  if (!res.ok) {
+    console.error(`[stageprob] pipeline GET failed (${res.status}) — needs the crm.pipelines.deals scope?`);
+    return;
+  }
+  const stages = (res.data?.stages ?? []) as any[];
+  const targets: { id: string; prob: number }[] = [
+    { id: DEAL_STAGES.prequal, prob: probs.prequal },
+    { id: DEAL_STAGES.planning, prob: probs.planning },
+    { id: DEAL_STAGES.db, prob: probs.db },
+    { id: DEAL_STAGES.bidding, prob: probs.bidding },
+    { id: DEAL_STAGES.awarded, prob: probs.awarded },
+  ];
+  for (const t of targets) {
+    const stage = stages.find((s) => String(s?.id) === t.id);
+    if (!stage) {
+      console.error(`[stageprob] stage ${t.id} not found in pipeline`);
+      continue;
+    }
+    const next = t.prob.toFixed(2);
+    const old = stage?.metadata?.probability;
+    if (String(old) === next) {
+      console.log(`[stageprob] ${stage.label}: probability already ${next}, skipping`);
+      continue;
+    }
+    const body = {
+      label: stage.label,
+      displayOrder: stage.displayOrder,
+      metadata: { ...(stage.metadata ?? {}), probability: next },
+    };
+    const up = await hs(token, "PATCH", `${PATHS.dealPipelineStage}/${t.id}`, body, signal);
+    if (!up.ok) {
+      console.error(`[stageprob] ${stage.label} PATCH failed (${up.status})`, up.data);
+      continue;
+    }
+    console.log(`[stageprob] ${stage.label}: probability ${old} -> ${next}`);
+  }
+}
+
+/**
+ * Weekly recompute of the four managed deal-stage probabilities (called by the cron).
+ * Log-only unless STAGE_PROB_WRITE === "1", so the numbers can be validated before any
+ * write (and so a missing crm.pipelines.deals scope can't block the computation). Pure
+ * read until that flag is set. Best-effort: logs rather than throwing.
+ */
+export async function refreshStageProbabilities(env: Env): Promise<void> {
+  const token = env.HUBSPOT_TOKEN;
+  if (!token) return;
+  const write = env.STAGE_PROB_WRITE === "1";
+  const signal = AbortSignal.timeout(60_000);
+  try {
+    const closedFilter: SearchFilter = { propertyName: "hs_is_closed", operator: "EQ", value: "true" };
+    const wonFilter: SearchFilter = { propertyName: "hs_is_closed_won", operator: "EQ", value: "true" };
+    const enteredFilter = (stageId: string): SearchFilter => ({
+      propertyName: `hs_v2_date_entered_${stageId}`,
+      operator: "HAS_PROPERTY",
+    });
+
+    // Realized overall win rate W = won / closed.
+    const closed = await countDeals(token, [closedFilter], signal);
+    const won = await countDeals(token, [wonFilter], signal);
+    if (closed <= 0 || won < 0) {
+      console.warn("[stageprob] no closed-deal data; skipping");
+      return;
+    }
+    const winRate = won / closed;
+
+    // End stages pinned to their own observed win rates; the solver rounds + bands them
+    // to [1%, 99%] (Pre-Qualified floors at 1%, Awarded ceils at 99% — HubSpot reserves
+    // 0/100 for lost/won). Thin cohort → fall back (Pre-Qualified 0, Awarded default).
+    const pqEntered = enteredFilter(DEAL_STAGES.prequal);
+    const pqClosed = await countDeals(token, [pqEntered, closedFilter], signal);
+    const pqWon = await countDeals(token, [pqEntered, wonFilter], signal);
+    const prequalProb = pqClosed >= PIN_MIN_SAMPLE && pqWon >= 0 ? round2(pqWon / pqClosed) : 0;
+
+    const awEntered = enteredFilter(DEAL_STAGES.awarded);
+    const awClosed = await countDeals(token, [awEntered, closedFilter], signal);
+    const awWon = await countDeals(token, [awEntered, wonFilter], signal);
+    const awardedProb =
+      awClosed >= PIN_MIN_SAMPLE && awWon >= 0 ? round2(awWon / awClosed) : DEFAULT_AWARDED_PROB;
+
+    // Current open-deal counts per stage.
+    const openCounts: StageOpenCounts = {
+      prequal: await countDeals(token, [stageFilter(DEAL_STAGES.prequal)], signal),
+      planning: await countDeals(token, [stageFilter(DEAL_STAGES.planning)], signal),
+      db: await countDeals(token, [stageFilter(DEAL_STAGES.db)], signal),
+      bidding: await countDeals(token, [stageFilter(DEAL_STAGES.bidding)], signal),
+      awarded: await countDeals(token, [stageFilter(DEAL_STAGES.awarded)], signal),
+    };
+    if (Object.values(openCounts).some((v) => v < 0)) {
+      console.warn("[stageprob] open-count fetch failed; skipping");
+      return;
+    }
+
+    const probs = solveStageProbabilities({ winRate, openCounts, prequalProb, awardedProb });
+    if (!probs) {
+      console.warn("[stageprob] insufficient open pipeline to calibrate; skipping");
+      return;
+    }
+    const achieved = weightedAverageProbability(probs, openCounts);
+    console.log(
+      `[stageprob] W=${winRate.toFixed(3)} (won ${won}/${closed}) ` +
+        `pPQ=${prequalProb.toFixed(3)} (won ${pqWon}/${pqClosed}) ` +
+        `pAW=${awardedProb.toFixed(3)} (won ${awWon}/${awClosed}) ` +
+        `open=${JSON.stringify(openCounts)} -> ` +
+        `prequal=${probs.prequal} planning=${probs.planning} db=${probs.db} ` +
+        `bidding=${probs.bidding} awarded=${probs.awarded} ` +
+        `(weighted avg ${achieved.toFixed(3)})`,
+    );
+
+    if (!write) {
+      console.log("[stageprob] STAGE_PROB_WRITE!=1 — log-only, not writing to HubSpot");
+      return;
+    }
+    await writeStageProbabilities(token, probs, signal);
+  } catch (e) {
+    console.error("[stageprob] refresh failed:", e);
   }
 }

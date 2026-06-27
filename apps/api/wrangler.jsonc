@@ -112,7 +112,10 @@
   },
 
   "vars": {
-    "SHORT_LINK_HOST": "https://gowac.cc"
+    "SHORT_LINK_HOST": "https://gowac.cc",
+    // Enables the weekly deal-stage probability writer (refreshStageProbabilities).
+    // Non-sensitive flag; the HUBSPOT_TOKEN private app must hold crm.pipelines.deals.
+    "STAGE_PROB_WRITE": "1"
   },
 
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:
@@ -120,8 +123,9 @@
   //   "*/30 * * * *" marketing-data Graph pull (Territory + Open Orders)
   //   "0 * * * *"    hourly SAP -> HubSpot sync heartbeat (no-data alert)
   //   "0 5 * * *"    daily refresh of cached HubSpot dropdown options (self-heal)
+  //   "30 6 * * 1"   weekly recompute of deal-stage probabilities (Mon 06:30 UTC)
   "triggers": {
-    "crons": ["0 7 * * *", "*/30 * * * *", "0 * * * *", "0 5 * * *"]
+    "crons": ["0 7 * * *", "*/30 * * * *", "0 * * * *", "0 5 * * *", "30 6 * * 1"]
   },
 
   "observability": {

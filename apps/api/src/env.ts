@@ -7,6 +7,12 @@ export interface Env {
   SUPABASE_ANON_KEY: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
   HUBSPOT_TOKEN?: string;
+  // Gate for the weekly deal-stage probability writer (refreshStageProbabilities).
+  // When != "1" the cron computes + logs the calibrated probabilities but does NOT
+  // write them to the HubSpot pipeline — lets the numbers be validated first, and the
+  // computation needs no extra scope. Set to "1" (and grant crm.pipelines.deals on the
+  // private app) to enable writes.
+  STAGE_PROB_WRITE?: string;
   // Sales Layer PIM (Phase 2), legacy Connector API (api.saleslayer.com).
   // Auth is sha256(connectorId + secretKey + time + unique). When unset
   // (dev / pre-launch) the products cache simply isn't refreshed.
