@@ -208,7 +208,7 @@ async function resolveNationalAccountLabel(token: string, dryRun: boolean): Prom
   let found = await find();
   if (found) return { typeId: found.typeId, created: false };
   if (dryRun) return { typeId: null, created: false };
-  await hs(token, "/crm/v4/associations/definitions/companies/0-3/labels", {
+  await hs(token, "/crm/v4/associations/companies/0-3/labels", {
     method: "POST",
     body: JSON.stringify({ label: NATIONAL_ACCOUNT_LABEL, name: "national_account" }),
   });
