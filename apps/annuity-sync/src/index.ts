@@ -402,7 +402,8 @@ function parseArgs(argv: string[]): Args {
   const a: Args = { dryRun: false, task: "all" };
   for (let i = 2; i < argv.length; i++) {
     const k = argv[i]!;
-    if (k === "--dry-run") a.dryRun = true;
+    if (k === "--") continue; // pnpm's arg separator, forwarded through to the script
+    else if (k === "--dry-run") a.dryRun = true;
     else if (k === "--limit") a.limit = Number(argv[++i]);
     else if (k.startsWith("--limit=")) a.limit = Number(k.slice("--limit=".length));
     else if (k.startsWith("--task=")) a.task = k.slice("--task=".length) as Args["task"];
