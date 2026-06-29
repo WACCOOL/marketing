@@ -5,6 +5,8 @@ import {
   LINE_ITEM_DATE_FIELDS,
   LINE_ITEM_FIELD_MAP,
   SPECIFIER_LABEL,
+  parseAnnuityGrid,
+  wildcardToRegExp,
   accountForms,
   companyStatusFromRiskCategory,
   computeInsideSalesFields,
@@ -28,7 +30,9 @@ import {
   type StageOpenCounts,
 } from "@wac/shared";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import * as XLSX from "xlsx";
 import type { Env } from "./env.js";
+import { downloadDriveItem, getGraphToken, getSharedItem, graphConfigured } from "./graph.js";
 import {
   loadAliases,
   loadOptions,
@@ -803,7 +807,7 @@ async function upsertDeal(
   aliasMap: Map<string, string>,
   optionsByProp: Map<string, OptionDef[]>,
   learn: LearnEntry[],
-): Promise<{ id: string; quoteNumber: string | null; isNew: boolean }> {
+): Promise<{ id: string; quoteNumber: string | null; isNew: boolean; dealname: string | null }> {
   const quoteNumber = payload.quotation_number != null ? String(payload.quotation_number).trim() : "";
   const dealIdRaw = payload.opportunity_id ?? payload.oppourtunity_id ?? null;
   const dealId = dealIdRaw != null ? String(dealIdRaw).trim() : "";
@@ -817,6 +821,7 @@ async function upsertDeal(
   for (const a of n.actions) fixActions.push(a);
   for (const e of n.learn) learn.push(e);
   const properties = n.properties;
+  const dealname = typeof properties.dealname === "string" ? properties.dealname : null;
 
   if (quoteNumber) {
     const existing = await findDealIdByQuoteNumber(token, quoteNumber, signal);
@@ -824,7 +829,7 @@ async function upsertDeal(
       await withHeal(token, signal, "deal", fixActions, properties, (props) =>
         hs(token, "POST", PATHS.dealUpdate, { inputs: [{ id: existing, properties: props }] }, signal),
       );
-      return { id: existing, quoteNumber, isNew: false };
+      return { id: existing, quoteNumber, isNew: false, dealname };
     }
   }
 
@@ -833,7 +838,7 @@ async function upsertDeal(
       await withHeal(token, signal, "deal", fixActions, properties, (props) =>
         hs(token, "POST", PATHS.dealUpdate, { inputs: [{ id: dealId, properties: props }] }, signal),
       );
-      return { id: dealId, quoteNumber: quoteNumber || null, isNew: false };
+      return { id: dealId, quoteNumber: quoteNumber || null, isNew: false, dealname };
     } catch (err) {
       const notFound =
         err instanceof HsError &&
@@ -852,7 +857,7 @@ async function upsertDeal(
   );
   const result = res.data?.results?.[0];
   if (!result?.id) throw new Error("HubSpot deal upsert response missing id");
-  return { id: String(result.id), quoteNumber, isNew: Boolean(result?.new) };
+  return { id: String(result.id), quoteNumber, isNew: Boolean(result?.new), dealname };
 }
 
 /* ------------------------------- line items -------------------------------- */
@@ -1124,6 +1129,102 @@ async function associateSpecifiersForDeal(
   }
 }
 
+/* ----------------------------- national accounts --------------------------- */
+
+// The companies→deals "National Account" USER_DEFINED label typeId, resolved by
+// display name (mirrors getSpecifierLabel). null = label not created in HubSpot
+// yet → associating no-ops. undefined = not yet resolved this worker lifetime.
+const NATIONAL_ACCOUNT_LABEL = "National Account";
+let nationalAccountLabelCache: number | null | undefined;
+async function getNationalAccountLabel(token: string, signal: AbortSignal): Promise<number | null> {
+  if (nationalAccountLabelCache !== undefined) return nationalAccountLabelCache;
+  const res = await hs(token, "GET", `/crm/v4/associations/companies/0-3/labels`, undefined, signal);
+  const match = res.ok
+    ? (res.data?.results ?? []).find(
+        (l: any) => String(l.label ?? "").trim().toLowerCase() === NATIONAL_ACCOUNT_LABEL.toLowerCase(),
+      )
+    : null;
+  nationalAccountLabelCache = match?.typeId != null ? Number(match.typeId) : null;
+  return nationalAccountLabelCache;
+}
+
+// Compiled wildcard → companyId matchers from the "Annuity Pipeline" sheet,
+// TTL-cached per worker (the sheet changes rarely; the daily reconcile is the
+// safety net). Fail-soft: any download/parse error keeps the last good map.
+interface AnnuityMatcher {
+  companyId: string;
+  regexes: RegExp[];
+}
+let annuityMatcherCache: { matchers: AnnuityMatcher[]; at: number } | null = null;
+const ANNUITY_MATCHER_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+
+async function loadAnnuityMatchers(env: Env): Promise<AnnuityMatcher[]> {
+  if (annuityMatcherCache && Date.now() - annuityMatcherCache.at < ANNUITY_MATCHER_TTL_MS) {
+    return annuityMatcherCache.matchers;
+  }
+  if (!env.ANNUITY_SHEET_URL || !graphConfigured(env)) return annuityMatcherCache?.matchers ?? [];
+  try {
+    const gtoken = await getGraphToken(env);
+    const item = await getSharedItem(gtoken, env.ANNUITY_SHEET_URL);
+    const buf = await downloadDriveItem(gtoken, env.ANNUITY_SHEET_URL, item);
+    const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+    const sheet = wb.Sheets["Annuities and Associations"] ?? wb.Sheets[wb.SheetNames[0]!];
+    const grid = sheet ? XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false }) : [];
+    const { accounts } = parseAnnuityGrid(grid);
+    const matchers = accounts
+      .filter((a) => a.wildcards.length > 0)
+      .map((a) => ({ companyId: a.companyId, regexes: a.wildcards.map(wildcardToRegExp) }));
+    annuityMatcherCache = { matchers, at: Date.now() };
+    return matchers;
+  } catch (e) {
+    console.error(`[national-account] annuity matcher load failed: ${e instanceof Error ? e.message : String(e)}`);
+    return annuityMatcherCache?.matchers ?? [];
+  }
+}
+
+/**
+ * Tag the matching national-account company(ies) onto a deal with the "National
+ * Account" label when the deal name matches that account's SAP wildcards from the
+ * Annuity Pipeline sheet — the real-time half of the labeling (the daily
+ * annuity-sync `--task=associate` run reconciles/backfills the rest). Additive +
+ * idempotent (re-creating the same labeled association is a HubSpot no-op); no-op
+ * until the label exists. Every failure is non-fatal → assocSkips.
+ */
+async function associateNationalAccountForDeal(
+  env: Env,
+  token: string,
+  dealId: string,
+  dealname: string | null,
+  signal: AbortSignal,
+  assocSkips: AssocSkip[],
+): Promise<void> {
+  if (!dealname || !env.ANNUITY_SHEET_URL) return;
+  const typeId = await getNationalAccountLabel(token, signal);
+  if (typeId == null) return; // label not set up yet → safe no-op
+  const matchers = await loadAnnuityMatchers(env);
+  if (!matchers.length) return;
+  const lower = dealname.toLowerCase();
+  const companyIds = matchers.filter((m) => m.regexes.some((re) => re.test(lower))).map((m) => m.companyId);
+  if (!companyIds.length) return;
+  try {
+    await batchAssociate(
+      token,
+      PATHS.companyToDeal,
+      typeId,
+      companyIds.map((fromId) => ({ fromId, toId: dealId })),
+      signal,
+      "USER_DEFINED",
+    );
+  } catch (e) {
+    assocSkips.push({
+      objectType: "companies",
+      property: "national_account_wildcard",
+      rawValue: dealname,
+      reason: `national account assoc error: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+}
+
 /* -------------------------------- entry points ----------------------------- */
 
 /** Push a Deals/Quotes payload: deal + line items + associations + requested_by heal. */
@@ -1211,6 +1312,10 @@ export async function pushDeal(
     // Specifier companies → deal, with the "Specifier" label (absorbs the 5
     // "Associated Specifier N to Opportunity" workflows). Non-fatal → assocSkips.
     await associateSpecifiersForDeal(token, deal.id, payload, signal, assocSkips);
+
+    // National-account company → deal, with the "National Account" label, when the
+    // deal name matches the account's wildcards (real-time; daily reconcile backfills).
+    await associateNationalAccountForDeal(env, token, deal.id, deal.dealname, signal, assocSkips);
 
     return {
       result: {

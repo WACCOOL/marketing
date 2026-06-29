@@ -117,6 +117,10 @@ export interface Env {
   MS_CLIENT_SECRET?: string;
   // The mailbox (UPN/address) the daily SAP Open Orders email lands in.
   OPEN_ORDERS_MAILBOX?: string;
+  // SharePoint sharing URL of the "Annuity Pipeline" workbook — source of the
+  // National-Account wildcard map applied to deals in pushDeal. Unset → the
+  // real-time "National Account" labeling no-ops (the daily reconcile still runs).
+  ANNUITY_SHEET_URL?: string;
 
   // Shared token for HubSpot-workflow-called endpoints: the public zip ->
   // rep-codes lookup (GET/POST /api/rep-codes/by-zip) AND the company sub-type

@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { parseWildcards, matchesAnyWildcard, parseAnnuityYearHeader } from "@wac/shared";
+import { matchesAnyWildcard, parseAnnuityGrid, type AnnuityAccount, type AnnuitySheet } from "@wac/shared";
 
 /**
  * Annuity-sync — drive HubSpot from the "Annuity Pipeline" workbook on SharePoint.
@@ -137,56 +137,14 @@ async function* iterPipelineDeals(
 }
 
 // ── Sheet parsing ────────────────────────────────────────────────────────────
-interface CompanyRow {
-  endUser: string;
-  wildcards: string[];
-  companyId: string;
-  opportunityName: string;
-  /** year → monthly $ (only years with a populated, positive amount). */
-  annualByYear: Map<number, number>;
-}
-
-function parseSheet(bytes: Uint8Array): { rows: CompanyRow[]; years: number[] } {
+// Row mapping + year-column detection live in @wac/shared (parseAnnuityGrid) so
+// the Worker's real-time labeling interprets the sheet identically.
+function parseSheet(bytes: Uint8Array): AnnuitySheet {
   const wb = XLSX.read(bytes, { type: "array" });
   const sheet = wb.Sheets[SHEET_NAME] ?? wb.Sheets[wb.SheetNames[0]!];
   if (!sheet) throw new Error("workbook has no sheets");
   const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false });
-  const header = (grid[0] ?? []).map((h) => String(h ?? "").trim());
-  const col = (name: string) => header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
-
-  const endUserCol = col("NA End User");
-  const wildcardCol = col("Wild Card SAP");
-  const idCol = col("HubSpot Record ID");
-  const nameCol = col("Opportunity Name");
-  if (wildcardCol < 0 || idCol < 0 || nameCol < 0) {
-    throw new Error(`missing required column(s); header = [${header.join(" | ")}]`);
-  }
-
-  const yearCols = new Map<number, number>(); // year → column index
-  header.forEach((h, i) => {
-    const y = parseAnnuityYearHeader(h);
-    if (y != null) yearCols.set(y, i);
-  });
-
-  const rows: CompanyRow[] = [];
-  for (const r of grid.slice(1)) {
-    const idRaw = r[idCol];
-    if (idRaw == null || String(idRaw).trim() === "") continue;
-    const annualByYear = new Map<number, number>();
-    for (const [year, ci] of yearCols) {
-      const v = r[ci];
-      const num = typeof v === "number" ? v : Number(String(v ?? "").replace(/[$,]/g, "").trim());
-      if (Number.isFinite(num) && num > 0) annualByYear.set(year, num);
-    }
-    rows.push({
-      endUser: String(r[endUserCol] ?? "").trim(),
-      wildcards: parseWildcards(r[wildcardCol]),
-      companyId: String(idRaw).trim().replace(/\.0$/, ""),
-      opportunityName: String(r[nameCol] ?? "").trim(),
-      annualByYear,
-    });
-  }
-  return { rows, years: [...yearCols.keys()].sort((a, b) => a - b) };
+  return parseAnnuityGrid(grid);
 }
 
 // ── Prerequisite resolution (fail loudly) ────────────────────────────────────
@@ -260,7 +218,7 @@ async function resolveNationalAccountLabel(token: string, dryRun: boolean): Prom
 }
 
 // ── Task 1: tag existing Universal-Pipeline deals ────────────────────────────
-async function taskAssociate(token: string, rows: CompanyRow[], labelTypeId: number | null, dryRun: boolean): Promise<void> {
+async function taskAssociate(token: string, rows: AnnuityAccount[], labelTypeId: number | null, dryRun: boolean): Promise<void> {
   const companies = rows.filter((r) => r.wildcards.length > 0);
   const nameById = new Map(companies.map((c) => [c.companyId, c.endUser || c.opportunityName]));
   const matches = new Map<string, { dealId: string; dealname: string }[]>(); // companyId → matched deals
@@ -338,7 +296,7 @@ async function loadAnnuityDeals(token: string, pipelineId: string, onsiteProp: s
   return map;
 }
 
-async function taskAnnuity(token: string, rows: CompanyRow[], ctx: AnnuityCtx, dryRun: boolean): Promise<void> {
+async function taskAnnuity(token: string, rows: AnnuityAccount[], ctx: AnnuityCtx, dryRun: boolean): Promise<void> {
   const { pipelineId, stageId, onsiteProp, ownerId } = ctx;
   const existing = await loadAnnuityDeals(token, pipelineId, onsiteProp);
 
@@ -354,7 +312,8 @@ async function taskAnnuity(token: string, rows: CompanyRow[], ctx: AnnuityCtx, d
   };
 
   for (const r of rows) {
-    if (r.annualByYear.size === 0) {
+    const yearEntries = Object.entries(r.annualByYear);
+    if (yearEntries.length === 0) {
       skippedNoYear++;
       continue;
     }
@@ -362,7 +321,8 @@ async function taskAnnuity(token: string, rows: CompanyRow[], ctx: AnnuityCtx, d
       log(`  WARN: company ${r.companyId} (${r.endUser}) has no Opportunity Name — skipping its annuity deals.`);
       continue;
     }
-    for (const [year, monthly] of r.annualByYear) {
+    for (const [yStr, monthly] of yearEntries) {
+      const year = Number(yStr);
       for (let m = 0; m < 12; m++) {
         const dealname = `${r.opportunityName} - ${MONTHS[m]} ${year}`;
         const onsite = lastDayISO(year, m);
@@ -462,7 +422,7 @@ async function main(): Promise<void> {
 
   const gtoken = await graphToken();
   const bytes = await downloadSharedFile(gtoken, sheetUrl);
-  let { rows, years } = parseSheet(bytes);
+  let { accounts: rows, years } = parseSheet(bytes);
   log(`Loaded ${bytes.length} bytes; ${rows.length} compan(ies); year columns = [${years.join(", ")}]${args.dryRun ? " (DRY RUN)" : ""}.`);
   if (args.limit != null) {
     rows = rows.slice(0, args.limit);

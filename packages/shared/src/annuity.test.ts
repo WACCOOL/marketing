@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseWildcards, wildcardToRegExp, matchesAnyWildcard, parseAnnuityYearHeader } from "./annuity.js";
+import { parseWildcards, wildcardToRegExp, matchesAnyWildcard, parseAnnuityYearHeader, parseAnnuityGrid } from "./annuity.js";
 
 describe("parseWildcards", () => {
   it("splits, trims, lowercases, drops blanks", () => {
@@ -53,5 +53,33 @@ describe("parseAnnuityYearHeader", () => {
     expect(parseAnnuityYearHeader("HubSpot Record ID")).toBeNull();
     expect(parseAnnuityYearHeader(null)).toBeNull();
     expect(parseAnnuityYearHeader("")).toBeNull();
+  });
+});
+
+describe("parseAnnuityGrid", () => {
+  const grid: unknown[][] = [
+    ["NA End User", "Wild Card SAP", "HubSpot Record ID", "Opportunity Name", "2026 Annuity", "2027 Annuity"],
+    ["Better Buzz", "*better*buzz*", 56136806766, "Better Buzz Coffee", 1393.03, null],
+    ["Clayton Tile", "*clayton*tile*", 56136807035, "Clayton Tile", 0, null], // zero → no year
+    ["Culver’s", "*culver's*, *culvers*", 50100955662, "Culver’s", 4005.9, 4200],
+    [null, "*ignored*", null, "No ID Row", 999, null], // dropped: no record id
+  ];
+
+  it("detects year columns and maps rows", () => {
+    const { accounts, years } = parseAnnuityGrid(grid);
+    expect(years).toEqual([2026, 2027]);
+    expect(accounts).toHaveLength(3); // no-id row dropped
+    const bb = accounts[0]!;
+    expect(bb.companyId).toBe("56136806766");
+    expect(bb.wildcards).toEqual(["*better*buzz*"]);
+    expect(bb.annualByYear).toEqual({ 2026: 1393.03 }); // 2027 blank → absent
+  });
+  it("omits zero/blank year amounts but keeps the account", () => {
+    const { accounts } = parseAnnuityGrid(grid);
+    expect(accounts[1]!.annualByYear).toEqual({}); // Clayton Tile, all zero/blank
+    expect(accounts[2]!.annualByYear).toEqual({ 2026: 4005.9, 2027: 4200 });
+  });
+  it("throws when a required column is missing", () => {
+    expect(() => parseAnnuityGrid([["NA End User", "Opportunity Name", "2026 Annuity"]])).toThrow(/missing required column/);
   });
 });
