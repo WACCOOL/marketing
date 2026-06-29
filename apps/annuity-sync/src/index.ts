@@ -30,7 +30,7 @@ const SEARCH_PAGE = 200; // HubSpot search max page size
 const INTER_BATCH_MS = 250;
 
 const UNIVERSAL_PIPELINE_ID = "723098519";
-const ANNUITY_PIPELINE_NAME = "National Accounts Annuity Pipeline";
+const ANNUITY_PIPELINE_NAME = "National Accounts Annuities";
 const NATIONAL_ACCOUNT_LABEL = "National Account";
 const ONSITE_PROP_LABEL = "Estimated Onsite Date";
 const OWNER_NAME = "Sara Kruid";
@@ -315,7 +315,12 @@ async function taskAssociate(token: string, rows: CompanyRow[], labelTypeId: num
 }
 
 // ── Task 2: per-year monthly annuity deals ───────────────────────────────────
-const lastDayUTC = (year: number, monthIndex: number) => Date.UTC(year, monthIndex + 1, 0);
+/** Last day of a month as a `YYYY-MM-DD` string — the form a HubSpot `date`
+ *  property is written and read back as (the API returns date props as ISO date
+ *  strings, NOT epoch ms). */
+function lastDayISO(year: number, monthIndex: number): string {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).toISOString().slice(0, 10);
+}
 
 interface AnnuityCtx {
   pipelineId: string;
@@ -360,14 +365,14 @@ async function taskAnnuity(token: string, rows: CompanyRow[], ctx: AnnuityCtx, d
     for (const [year, monthly] of r.annualByYear) {
       for (let m = 0; m < 12; m++) {
         const dealname = `${r.opportunityName} - ${MONTHS[m]} ${year}`;
-        const onsite = String(lastDayUTC(year, m));
+        const onsite = lastDayISO(year, m);
         const amount = String(monthly);
         const ex = existing.get(dealname);
         if (ex) {
           const props: Record<string, string> = {};
           if (Number(ex.amount) !== monthly) props.amount = amount;
           if ((ex.owner ?? "") !== ownerId) props.hubspot_owner_id = ownerId;
-          if (Number(ex.onsite) !== lastDayUTC(year, m)) props[onsiteProp] = onsite;
+          if ((ex.onsite ?? "") !== onsite) props[onsiteProp] = onsite;
           if (Object.keys(props).length) {
             toUpdate.push({ id: ex.id, properties: props });
             bump(year, "update");
@@ -405,7 +410,7 @@ async function taskAnnuity(token: string, rows: CompanyRow[], ctx: AnnuityCtx, d
   if (dryRun) {
     log("Task 2: DRY RUN — sample of planned creates:");
     for (const c of toCreate.slice(0, 3)) {
-      log(`    ${c.properties.dealname}  $${c.properties.amount}  onsite=${new Date(Number(c.properties[onsiteProp])).toISOString().slice(0, 10)}`);
+      log(`    ${c.properties.dealname}  $${c.properties.amount}  onsite=${c.properties[onsiteProp]}`);
     }
     return;
   }
