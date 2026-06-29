@@ -1,0 +1,50 @@
+name: Annuity Sync
+
+# Drives HubSpot from the "Annuity Pipeline" workbook (OneDrive, via Microsoft
+# Graph sharing URL). Two idempotent tasks each run:
+#   - associate: tag Universal-Pipeline deals matching a national account's SAP
+#     wildcards with the "National Account" company↔deal label (created if absent).
+#   - annuity: upsert 12 monthly deals per company per populated "{YYYY} Annuity"
+#     column into the National Accounts Annuities pipeline, owned by Sara Kruid.
+# Re-running is a sync (no dupes); editing the sheet propagates on the next run.
+on:
+  schedule:
+    - cron: "30 13 * * *" # 13:30 UTC ≈ 9:30 AM ET, daily
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (download + parse + report; no HubSpot writes)"
+        type: boolean
+        default: false
+      task:
+        description: "Which task(s) to run"
+        type: choice
+        options: ["all", "associate", "annuity"]
+        default: "all"
+
+concurrency:
+  group: annuity-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build annuity-sync
+        run: pnpm --filter @wac/annuity-sync build
+      - name: Run annuity sync
+        env:
+          MS_TENANT_ID: ${{ secrets.MS_TENANT_ID }}
+          MS_CLIENT_ID: ${{ secrets.MS_CLIENT_ID }}
+          MS_CLIENT_SECRET: ${{ secrets.MS_CLIENT_SECRET }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          ANNUITY_SHEET_URL: ${{ secrets.ANNUITY_SHEET_URL }}
+        run: pnpm --filter @wac/annuity-sync sync -- --task=${{ inputs.task || 'all' }} ${{ inputs.dry_run && '--dry-run' || '' }}

@@ -43,3 +43,69 @@ export function parseAnnuityYearHeader(header: unknown): number | null {
   const m = s.match(/\b(20\d{2})\b/);
   return m ? Number(m[1]) : null;
 }
+
+export interface AnnuityAccount {
+  endUser: string;
+  companyId: string;
+  opportunityName: string;
+  wildcards: string[];
+  /** year → monthly $ (only years with a populated, positive amount). */
+  annualByYear: Record<number, number>;
+}
+
+export interface AnnuitySheet {
+  accounts: AnnuityAccount[];
+  years: number[];
+}
+
+const ANNUITY_HEADERS = {
+  endUser: "NA End User",
+  wildcard: "Wild Card SAP",
+  id: "HubSpot Record ID",
+  name: "Opportunity Name",
+} as const;
+
+/**
+ * Parse the "Annuities and Associations" grid — an array-of-arrays as produced by
+ * `XLSX.sheet_to_json(sheet, { header: 1 })`, with row 0 the header. Year columns
+ * are detected by {@link parseAnnuityYearHeader}; rows without a HubSpot Record ID
+ * are dropped. Shared by the annuity-sync CLI and the Worker's real-time labeling
+ * so both interpret the sheet identically.
+ */
+export function parseAnnuityGrid(grid: unknown[][]): AnnuitySheet {
+  const header = (grid[0] ?? []).map((h) => String(h ?? "").trim());
+  const col = (name: string) => header.findIndex((h) => h.toLowerCase() === name.toLowerCase());
+  const idCol = col(ANNUITY_HEADERS.id);
+  const wildcardCol = col(ANNUITY_HEADERS.wildcard);
+  const nameCol = col(ANNUITY_HEADERS.name);
+  const endUserCol = col(ANNUITY_HEADERS.endUser);
+  if (idCol < 0 || wildcardCol < 0 || nameCol < 0) {
+    throw new Error(`annuity sheet missing required column(s); header = [${header.join(" | ")}]`);
+  }
+
+  const yearCols = new Map<number, number>(); // year → column index
+  header.forEach((h, i) => {
+    const y = parseAnnuityYearHeader(h);
+    if (y != null) yearCols.set(y, i);
+  });
+
+  const accounts: AnnuityAccount[] = [];
+  for (const row of grid.slice(1)) {
+    const idRaw = row[idCol];
+    if (idRaw == null || String(idRaw).trim() === "") continue;
+    const annualByYear: Record<number, number> = {};
+    for (const [year, ci] of yearCols) {
+      const v = row[ci];
+      const num = typeof v === "number" ? v : Number(String(v ?? "").replace(/[$,]/g, "").trim());
+      if (Number.isFinite(num) && num > 0) annualByYear[year] = num;
+    }
+    accounts.push({
+      endUser: endUserCol >= 0 ? String(row[endUserCol] ?? "").trim() : "",
+      companyId: String(idRaw).trim().replace(/\.0$/, ""),
+      opportunityName: String(row[nameCol] ?? "").trim(),
+      wildcards: parseWildcards(row[wildcardCol]),
+      annualByYear,
+    });
+  }
+  return { accounts, years: [...yearCols.keys()].sort((a, b) => a - b) };
+}
