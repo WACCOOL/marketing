@@ -29,3 +29,4 @@ export * from "./hubspot/repCode.js";
 export * from "./hubspot/specifier.js";
 export * from "./hubspot/companySubType.js";
 export * from "./hubspot/contactRepCode.js";
+export * from "./hubspot/leadOwnership.js";
