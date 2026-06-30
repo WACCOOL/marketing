@@ -25,6 +25,7 @@ import { hubspotSyncRoutes } from "./routes/hubspotSync.js";
 import { repCodeRoutes } from "./routes/repCodes.js";
 import { companyClassifyRoutes } from "./routes/companyClassify.js";
 import { eventLeadRoutes } from "./routes/eventLeads.js";
+import { syncNationalAccountDomains } from "./nationalAccounts.js";
 import { makeProductAdapter } from "./saleslayer.js";
 import { serviceSupabase } from "./supabase.js";
 import { updateJobStatus, type GenerationMessage } from "./generation.js";
@@ -123,6 +124,14 @@ async function scheduled(event: ScheduledController, env: Env): Promise<void> {
   }
   if (event.cron === "0 5 * * *") {
     await refreshHubspotOptions(env, serviceSupabase(env));
+    // Refresh the national-account domain mirror (fail-soft; national accounts
+    // change rarely, so daily is plenty). Drives the lead-ownership Sara override.
+    try {
+      const r = await syncNationalAccountDomains(env, AbortSignal.timeout(120_000));
+      console.log(`[cron] national-account domains: ${r.domains} domains, pruned ${r.pruned}`);
+    } catch (e) {
+      console.error("[cron] national-account domain sync failed", e);
+    }
   }
   if (event.cron === "30 6 * * 1") {
     await refreshStageProbabilities(env);
