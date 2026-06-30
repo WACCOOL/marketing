@@ -132,6 +132,9 @@ export interface Env {
   CLASSIFY_MIN_CONFIDENCE?: string;
   // Gemini model for sub-type classification. Default: gemini-2.5-flash.
   CLASSIFY_MODEL?: string;
+  // Gemini model for the interior-designer project-focus classifier. Falls back to
+  // CLASSIFY_MODEL / GEMINI_TEXT_MODEL / gemini-2.5-flash.
+  PROJECT_FOCUS_MODEL?: string;
 
   // Origin used when building public URLs (uploads / generated scenes / shot
   // previews) that the render-worker and generator fetch back over HTTP. Defaults

@@ -30,3 +30,4 @@ export * from "./hubspot/specifier.js";
 export * from "./hubspot/companySubType.js";
 export * from "./hubspot/contactRepCode.js";
 export * from "./hubspot/leadOwnership.js";
+export * from "./hubspot/projectFocus.js";
