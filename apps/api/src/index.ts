@@ -25,6 +25,7 @@ import { hubspotSyncRoutes } from "./routes/hubspotSync.js";
 import { repCodeRoutes } from "./routes/repCodes.js";
 import { companyClassifyRoutes } from "./routes/companyClassify.js";
 import { eventLeadRoutes } from "./routes/eventLeads.js";
+import { projectFocusRoutes } from "./routes/projectFocus.js";
 import { syncNationalAccountDomains } from "./nationalAccounts.js";
 import { makeProductAdapter } from "./saleslayer.js";
 import { serviceSupabase } from "./supabase.js";
@@ -96,6 +97,7 @@ app.route("/api/ingest", ingestRoutes);
 app.route("/api/hubspot-sync", hubspotSyncRoutes);
 app.route("/api/hubspot", companyClassifyRoutes);
 app.route("/api/hubspot", eventLeadRoutes);
+app.route("/api/hubspot", projectFocusRoutes);
 app.route("/api/rep-codes", repCodeRoutes);
 
 // Anything not handled by a /api/* route falls through to the SPA assets

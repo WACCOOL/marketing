@@ -16,8 +16,10 @@
  */
 import {
   evaluateLeadOwnershipAll,
+  normalizeCompanyType,
   CHANNEL_TO_CONTACT_PROP,
   CONTACT_REP_CODE_PROPS,
+  PROJECT_FOCUS_PROP,
   type LeadFacts,
   type Leaf,
   type LeadDecision,
@@ -26,6 +28,7 @@ import type { Env } from "./env.js";
 import { serviceSupabase } from "./supabase.js";
 import { hs, PATHS, REP_OBJECT, resolveOwnerByName } from "./hubspotPush.js";
 import { emailDomain, isNationalAccountDomain, NATIONAL_ACCOUNT_PROP } from "./nationalAccounts.js";
+import { classifyProjectFocus } from "./projectFocus.js";
 
 // ---------------------------------------------------------------------------
 // Config — confirmed owner ids (from HubSpot) + property names. Edit-in-one-place.
@@ -90,6 +93,8 @@ const LEAD = {
   nameProp: "hs_lead_name",
   sourceProp: "marketing_event_source",
   repCodeProp: "rep_code_routing",
+  /** Names of the other reps this event was also routed to (fan-out, brand unknown). */
+  coOwnersProp: "lead_co_owners",
   pipeline: "lead-pipeline-id",
   stage: "new-stage-id",
   contactToLeadTypeId: 578,
@@ -212,12 +217,22 @@ function brandFromScores(scores: Record<string, number>): string | null {
   return best;
 }
 
-/** Read the contact's primary associated company's sub_type + national-account flag. */
+interface CompanyFacts {
+  companyId: string;
+  subType: string;
+  nationalAccount: boolean;
+  /** Raw `project_focus` multi-select (may be blank → classify just-in-time). */
+  projectFocus: string;
+  /** Raw company props, reused to skip a refetch in the just-in-time classifier. */
+  props: Record<string, string | null>;
+}
+
+/** Read the contact's primary associated company's sub_type, NA flag, and project focus. */
 async function fetchCompany(
   token: string,
   contactId: string,
   signal: AbortSignal,
-): Promise<{ subType: string; nationalAccount: boolean } | null> {
+): Promise<CompanyFacts | null> {
   const assoc = await hs(
     token,
     "GET",
@@ -231,7 +246,7 @@ async function fetchCompany(
   const res = await hs(
     token,
     "GET",
-    `${PATHS.companyLookup}${encodeURIComponent(companyId)}?properties=company_sub_type_simplified,company_sub_type,${NATIONAL_ACCOUNT_PROP}`,
+    `${PATHS.companyLookup}${encodeURIComponent(companyId)}?properties=company_sub_type_simplified,company_sub_type,${NATIONAL_ACCOUNT_PROP},${PROJECT_FOCUS_PROP}`,
     undefined,
     signal,
   );
@@ -240,9 +255,41 @@ async function fetchCompany(
   // Prefer the clean simplified taxonomy; fall back to the legacy sub_type.
   const subType = (p.company_sub_type_simplified ?? "").trim() || (p.company_sub_type ?? "").trim();
   return {
+    companyId,
     subType,
     nationalAccount: (p[NATIONAL_ACCOUNT_PROP] ?? "").toLowerCase() === "true",
+    projectFocus: (p[PROJECT_FOCUS_PROP] ?? "").trim(),
+    props: p,
   };
+}
+
+/**
+ * The company's project focus for routing. Returns the stored value if present;
+ * otherwise, for an unclassified interior designer, classifies just-in-time (writing
+ * to the company unless dryRun). Non-designers / no company → null (→ Residential).
+ */
+async function resolveProjectFocus(
+  env: Env,
+  company: CompanyFacts | null,
+  dryRun: boolean,
+  signal: AbortSignal,
+): Promise<string | null> {
+  if (!company) return null;
+  if (company.projectFocus) return company.projectFocus;
+  if (normalizeCompanyType(company.subType) !== "Interior Designer") return null;
+  try {
+    const r = await classifyProjectFocus(env, serviceSupabase(env), {
+      companyId: company.companyId,
+      source: "event-lead",
+      signal,
+      write: !dryRun,
+      properties: company.props,
+    });
+    return r.value;
+  } catch (e) {
+    console.error("[event-lead] just-in-time project-focus classify failed:", e);
+    return null;
+  }
 }
 
 /** Map the contact's region/country props to the tree's Location bucket. */
@@ -257,6 +304,14 @@ function locationFact(c: ContactFacts): string {
 // ---------------------------------------------------------------------------
 // Leaf → owner resolution
 // ---------------------------------------------------------------------------
+
+/** A HubSpot owner's display name ("First Last", or email), by id. Best-effort. */
+async function ownerName(token: string, ownerId: string, signal: AbortSignal): Promise<string> {
+  const res = await hs(token, "GET", `${PATHS.owners}/${encodeURIComponent(ownerId)}`, undefined, signal);
+  if (!res.ok) return "";
+  const p = res.data ?? {};
+  return `${(p.firstName ?? "").trim()} ${(p.lastName ?? "").trim()}`.trim() || String(p.email ?? "");
+}
 
 /** Rep Code object record id + owner, by rep code value (one batch read). */
 async function repCodeObject(
@@ -377,6 +432,7 @@ async function createLead(
   contact: ContactFacts,
   contactId: string,
   repCode: string,
+  coOwners: string,
   signal: AbortSignal,
 ): Promise<{ leadId: string | null; contact: boolean; repCode: boolean; campaign: boolean }> {
   // Encode the event in the lead name so the source is visible at a glance.
@@ -390,6 +446,9 @@ async function createLead(
   };
   if (body.campaignName) properties[LEAD.sourceProp] = body.campaignName;
   if (repCode) properties[LEAD.repCodeProp] = repCode;
+  // HubSpot has no lead↔lead association; instead name the other routed reps here so
+  // each rep can see who else owns a sibling lead for this attendee (shared contact).
+  if (coOwners) properties[LEAD.coOwnersProp] = coOwners;
 
   // Resolve the Rep Code object + the campaign (0-35) so we can associate both at creation.
   const repObj = repCode ? await repCodeObject(token, repCode, signal) : { id: "", ownerId: "" };
@@ -452,6 +511,10 @@ export async function processEventLead(
       },
     ];
   } else {
+    // Just-in-time project-focus classify: if the company is an interior designer with
+    // no project_focus yet, classify it now (writes to the company unless dryRun) so the
+    // first attendee routes correctly instead of defaulting to Residential.
+    const projectFocus = await resolveProjectFocus(env, company, body.dryRun ?? false, signal);
     const facts: LeadFacts = {
       location: locationFact(contact),
       country: contact.country,
@@ -459,6 +522,7 @@ export async function processEventLead(
       companySubType: company?.subType ?? null,
       // Brand from the campaign; fall back to the contact's top brand lead score.
       brand: body.campaignBrand ?? brandFromScores(contact.brandScores),
+      projectFocus,
     };
     decisions = evaluateLeadOwnershipAll(facts);
   }
@@ -485,15 +549,23 @@ export async function processEventLead(
     return true;
   });
 
+  // Resolve each target owner's display name once (for the co-owners field on fan-out).
+  const ownerNames = await Promise.all(
+    targets.map((t) => (t.resolved.ownerId ? ownerName(token, t.resolved.ownerId, signal) : Promise.resolve(""))),
+  );
+
   // Create a Lead per target owner (non-fatal per lead).
   const leads: ResolvedLead[] = [];
-  for (const t of targets) {
+  for (let i = 0; i < targets.length; i++) {
+    const t = targets[i]!;
+    // The other reps this attendee was routed to (HubSpot allows no lead↔lead link).
+    const coOwners = ownerNames.filter((n, j) => j !== i && n).join(", ");
     let leadId: string | null = null;
     let leadError: string | null = null;
     let associations = { contact: false, repCode: false, campaign: false };
     if (t.resolved.ownerId && !body.dryRun) {
       try {
-        const r = await createLead(token, t.resolved.ownerId, body, contact, contactId, t.routingRepCode ?? "", signal);
+        const r = await createLead(token, t.resolved.ownerId, body, contact, contactId, t.routingRepCode ?? "", coOwners, signal);
         leadId = r.leadId;
         associations = { contact: r.contact, repCode: r.repCode, campaign: r.campaign };
       } catch (e) {

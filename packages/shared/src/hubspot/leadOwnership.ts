@@ -91,7 +91,7 @@ export type Leaf =
   | { kind: "fallback"; reason: string };
 
 /** Dimensions the tree can switch on. */
-export type SwitchKey = "location" | "brand" | "country" | "companyType" | "role";
+export type SwitchKey = "location" | "brand" | "country" | "companyType" | "role" | "projectFocus";
 
 export type LeadTreeNode =
   | { leaf: Leaf }
@@ -115,6 +115,8 @@ export interface LeadFacts {
   companySubType: string | null;
   /** Campaign brand (raw, from the payload). */
   brand: string | null;
+  /** Associated company `project_focus` (raw multi-select, e.g. "Residential;Commercial"). */
+  projectFocus: string | null;
 }
 
 export interface LeadDecision {
@@ -233,6 +235,18 @@ export function normalizeCompanyType(raw: string | null | undefined): CompanyTyp
   return SUBTYPE_TO_COMPANY_TYPE[k] ?? "Other";
 }
 
+/** Interior-designer project focus (drives the residential vs commercial split). */
+export type ProjectFocus = "Residential" | "Commercial";
+
+/**
+ * Company `project_focus` (multi-select, e.g. "Residential;Commercial") → routing
+ * bucket. Presence of Commercial wins; blank/unknown → Residential (the safe default
+ * matching the classifier's behavior).
+ */
+export function normalizeProjectFocus(raw: string | null | undefined): ProjectFocus {
+  return /commercial/i.test(raw ?? "") ? "Commercial" : "Residential";
+}
+
 // ---------------------------------------------------------------------------
 // International WAC-by-country (WAC Architectural / WAC Lighting)
 // ---------------------------------------------------------------------------
@@ -301,14 +315,41 @@ const INTERIOR_DESIGNER_BRAND_NODE: LeadTreeNode = {
 };
 
 /**
+ * Interior designer doing COMMERCIAL (or commercial + residential) work: MF & Schonbek
+ * → Hospitality (Rudy Soni); every other brand → WAC Spec.
+ */
+const COMMERCIAL_DESIGNER_NODE: LeadTreeNode = {
+  switch: "brand",
+  cases: {
+    "Modern Forms": person("Rudy Soni", "Commercial designer (MF) → Hospitality (Rudy)", "Contract MF"),
+    Schonbek: person("Rudy Soni", "Commercial designer (Schonbek) → Hospitality (Rudy)", "Contract MF"),
+    "WAC Lighting": channelOwner("WAC Spec", "Commercial designer (WAC) → WAC Spec"),
+    "WAC Architectural": channelOwner("WAC Spec", "Commercial designer (WAC Arch) → WAC Spec"),
+    "MF Fans": channelOwner("WAC Spec", "Commercial designer (MF Fans) → WAC Spec"),
+  },
+  default: channelOwner("WAC Spec", "Commercial designer → WAC Spec"),
+};
+
+/**
+ * Interior Designer → split on the company's project focus. Commercial (or both)
+ * routes to {@link COMMERCIAL_DESIGNER_NODE}; Residential (the default when unknown)
+ * keeps the existing by-brand routing.
+ */
+const INTERIOR_DESIGNER_NODE: LeadTreeNode = {
+  switch: "projectFocus",
+  cases: { Commercial: COMMERCIAL_DESIGNER_NODE },
+  default: INTERIOR_DESIGNER_BRAND_NODE,
+};
+
+/**
  * Showroom company type → switch on contact Role. Interior Designer splits by
- * brand (above); MF & Schonbek (non-designer showrooms) → the MF Showroom rep
- * code's RSM (Nick/Dhane); Contractor/Builder → Distribution.
+ * project focus then brand; MF & Schonbek (non-designer showrooms) → the MF Showroom
+ * rep code's RSM (Nick/Dhane); Contractor/Builder → Distribution.
  */
 const SHOWROOM_ROLE_NODE: LeadTreeNode = {
   switch: "role",
   cases: {
-    "Interior Designer": INTERIOR_DESIGNER_BRAND_NODE,
+    "Interior Designer": INTERIOR_DESIGNER_NODE,
     "Contractor/Builder": channelOwner("WAC Showroom", "Distribution (Contractor/Builder)"),
     // Showrooms carrying MF & Schonbek → MF Showroom rep code's Regional Manager.
     Other: channelRsm("MF Showroom", "Showroom MF&Schonbek → RSM (Nick/Dhane)"),
@@ -337,7 +378,7 @@ const NORTH_AMERICA_NODE: LeadTreeNode = {
     "E Retailer": person("Harry", "E Retailer → Harry"), // TODO(confirm) surname
     "Contractor/Builder": channelOwner("WAC Showroom", "Distribution (Contractor/Builder)"),
     Showroom: SHOWROOM_ROLE_NODE,
-    "Interior Designer": INTERIOR_DESIGNER_BRAND_NODE,
+    "Interior Designer": INTERIOR_DESIGNER_NODE,
     // Hospitality / FFE → Rudy Soni; the overseeing rep code is the Contract channel
     // for the brand (Contract WAC for WAC, Contract MF for MF/Schonbek).
     Hospitality: {
@@ -397,6 +438,8 @@ function canonicalFor(dim: SwitchKey, facts: LeadFacts): string {
       return normalizeCompanyType(facts.companySubType);
     case "role":
       return normalizeRole(facts.role);
+    case "projectFocus":
+      return normalizeProjectFocus(facts.projectFocus);
   }
 }
 
