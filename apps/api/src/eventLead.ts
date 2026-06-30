@@ -15,7 +15,7 @@
  *   - fallback / blank rep code → the global fallback owner, Lana.
  */
 import {
-  evaluateLeadOwnership,
+  evaluateLeadOwnershipAll,
   CHANNEL_TO_CONTACT_PROP,
   CONTACT_REP_CODE_PROPS,
   type LeadFacts,
@@ -54,7 +54,6 @@ const INTL_EMAIL_OWNER_ID: Record<string, string> = {
 
 /** Global fallback owner (Lana) for unresolved leaves / blank rep codes. */
 const FALLBACK_OWNER_ID = PERSON_OWNER_ID["Lana"]!;
-const SARA_KRUID_ID = PERSON_OWNER_ID["Sara Kruid"]!;
 
 /** Contact properties that drive routing. */
 const CONTACT_PROPS = {
@@ -114,9 +113,10 @@ export interface EventLeadBody {
   dryRun?: boolean;
 }
 
-export interface EventLeadResult {
-  contactId: string;
-  decision: LeadDecision;
+/** One created (or would-be) Lead — there can be several when the brand is unknown. */
+export interface ResolvedLead {
+  leafLabel: string;
+  decisionPath: string[];
   ownerId: string | null;
   ownerSource: string;
   /** The rep code overseeing the account (from the routing channel), if any. */
@@ -124,8 +124,14 @@ export interface EventLeadResult {
   leadId: string | null;
   leadError: string | null;
   associations: { contact: boolean; repCode: boolean; campaign: boolean };
-  contactOwnerAction: "set" | "skipped_existing" | "skipped_no_owner";
+}
+
+export interface EventLeadResult {
+  contactId: string;
   nationalAccount: boolean;
+  /** One per distinct owner. Multiple only when the brand was unknown (fan-out). */
+  leads: ResolvedLead[];
+  contactOwnerAction: "set" | "skipped_existing" | "skipped_no_owner" | "skipped_multiple";
 }
 
 // ---------------------------------------------------------------------------
@@ -435,14 +441,16 @@ export async function processEventLead(
   const company = await fetchCompany(token, contactId, signal);
   const nationalAccount = naByDomain.match || company?.nationalAccount === true;
 
-  let decision: LeadDecision;
-  let resolved: Resolved;
+  // Decide the leaf/leaves. National accounts → Sara (single). Otherwise evaluate the
+  // tree; with an unknown brand it FANS OUT to every brand branch (multiple owners).
+  let decisions: LeadDecision[];
   if (nationalAccount) {
-    decision = {
-      leaf: { kind: "person", name: "Sara Kruid", label: "National Account → Sara Kruid" },
-      path: [`nationalAccount:${naByDomain.match ? "domain" : "company-flag"}`],
-    };
-    resolved = { ownerId: SARA_KRUID_ID, source: "national-account" };
+    decisions = [
+      {
+        leaf: { kind: "person", name: "Sara Kruid", label: "National Account → Sara Kruid" },
+        path: [`nationalAccount:${naByDomain.match ? "domain" : "company-flag"}`],
+      },
+    ];
   } else {
     const facts: LeadFacts = {
       location: locationFact(contact),
@@ -452,61 +460,78 @@ export async function processEventLead(
       // Brand from the campaign; fall back to the contact's top brand lead score.
       brand: body.campaignBrand ?? brandFromScores(contact.brandScores),
     };
-    decision = evaluateLeadOwnership(facts);
-    resolved = await resolveLeaf(env, token, decision.leaf, contact, body.campaignChannel, signal);
+    decisions = evaluateLeadOwnershipAll(facts);
   }
 
-  const ownerId = resolved.ownerId;
+  // Resolve every leaf to an owner + its routing rep code.
+  const resolvedAll = await Promise.all(
+    decisions.map(async (d) => {
+      const resolved = await resolveLeaf(env, token, d.leaf, contact, body.campaignChannel, signal);
+      const channel = leafChannel(d.leaf);
+      const routingRepCode = channel ? contact.repCodes[channel] ?? null : null;
+      return { d, resolved, routingRepCode };
+    }),
+  );
 
-  // The rep code overseeing this account = the contact's code for the routing
-  // channel (works for channel leaves and for person leaves that name a channel,
-  // e.g. MF Designer → Kalin still surfaces the MF Designer rep code).
-  const routeChannel = leafChannel(decision.leaf);
-  const routingRepCode = routeChannel ? contact.repCodes[routeChannel] ?? null : null;
+  // Prefer real owners; drop blind fallbacks when a real owner exists. Then dedupe by
+  // (owner, rep code) so two brands that resolve to the same rep don't double up.
+  const real = resolvedAll.filter((e) => !e.resolved.source.startsWith("fallback"));
+  const pool = real.length ? real : resolvedAll.slice(0, 1);
+  const seen = new Set<string>();
+  const targets = pool.filter((e) => {
+    const k = `${e.resolved.ownerId ?? ""}|${e.routingRepCode ?? ""}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 
-  // Create the Lead assigned to the resolved owner. Non-fatal: a failure still
-  // returns the routing decision, and the contact-owner write below still runs.
-  let leadId: string | null = null;
-  let leadError: string | null = null;
-  let associations = { contact: false, repCode: false, campaign: false };
-  if (ownerId && !body.dryRun) {
-    try {
-      const r = await createLead(token, ownerId, body, contact, contactId, routingRepCode ?? "", signal);
-      leadId = r.leadId;
-      associations = { contact: r.contact, repCode: r.repCode, campaign: r.campaign };
-    } catch (e) {
-      leadError = e instanceof Error ? e.message : String(e);
-      console.error(`[event-lead] ${contactId} lead create failed:`, leadError);
+  // Create a Lead per target owner (non-fatal per lead).
+  const leads: ResolvedLead[] = [];
+  for (const t of targets) {
+    let leadId: string | null = null;
+    let leadError: string | null = null;
+    let associations = { contact: false, repCode: false, campaign: false };
+    if (t.resolved.ownerId && !body.dryRun) {
+      try {
+        const r = await createLead(token, t.resolved.ownerId, body, contact, contactId, t.routingRepCode ?? "", signal);
+        leadId = r.leadId;
+        associations = { contact: r.contact, repCode: r.repCode, campaign: r.campaign };
+      } catch (e) {
+        leadError = e instanceof Error ? e.message : String(e);
+        console.error(`[event-lead] ${contactId} lead create failed:`, leadError);
+      }
     }
+    leads.push({
+      leafLabel: t.d.leaf.kind === "fallback" ? t.d.leaf.reason : t.d.leaf.label,
+      decisionPath: t.d.path,
+      ownerId: t.resolved.ownerId,
+      ownerSource: t.resolved.source,
+      routingRepCode: t.routingRepCode,
+      leadId,
+      leadError,
+      associations,
+    });
   }
 
-  // Set the contact owner only when it's currently empty.
+  // Set the contact owner only when it's empty AND there's a single owner (an unknown-
+  // brand fan-out has several reps, so there's no one contact owner to choose).
   let contactOwnerAction: EventLeadResult["contactOwnerAction"] = "skipped_no_owner";
-  if (ownerId && !body.dryRun) {
+  if (!body.dryRun) {
     if (contact.ownerId) {
       contactOwnerAction = "skipped_existing";
-    } else {
+    } else if (targets.length > 1) {
+      contactOwnerAction = "skipped_multiple";
+    } else if (targets[0]?.resolved.ownerId) {
       const patch = await hs(
         token,
         "PATCH",
         `${PATHS.contactLookup}${encodeURIComponent(contactId)}`,
-        { properties: { hubspot_owner_id: ownerId } },
+        { properties: { hubspot_owner_id: targets[0].resolved.ownerId } },
         signal,
       );
       contactOwnerAction = patch.ok ? "set" : "skipped_no_owner";
     }
   }
 
-  return {
-    contactId,
-    decision,
-    ownerId,
-    ownerSource: resolved.source,
-    routingRepCode,
-    leadId,
-    leadError,
-    associations,
-    contactOwnerAction,
-    nationalAccount,
-  };
+  return { contactId, nationalAccount, leads, contactOwnerAction };
 }

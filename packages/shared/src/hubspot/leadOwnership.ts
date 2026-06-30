@@ -441,6 +441,59 @@ function resolveLeaf(leaf: Leaf, facts: LeadFacts): Leaf {
   return leaf;
 }
 
+/** Stable identity for a leaf, for de-duping fanned-out brand branches. */
+function leafKey(leaf: Leaf): string {
+  if (leaf.kind === "person") return `person:${(leaf.name ?? leaf.email ?? "").toLowerCase()}:${leaf.channel ?? ""}`;
+  if (leaf.kind === "repCode") return `repCode:${leaf.channel}:${leaf.resolve}`;
+  return `fallback:${leaf.reason}`;
+}
+
+/**
+ * Like {@link evaluateLeadOwnership} but FANS OUT at a brand switch when the brand
+ * is unknown: instead of the single default leaf, it returns every distinct brand
+ * branch's leaf (de-duped — e.g. Modern Forms & Schonbek both → Kalin collapses to
+ * one). With a known brand, or no brand switch on the path, it returns a single
+ * decision. The api layer assigns the lead to each resulting owner, so an unknown
+ * brand produces multiple rep-code owners instead of a blind fallback.
+ */
+export function evaluateLeadOwnershipAll(
+  facts: LeadFacts,
+  tree: LeadTreeNode = LEAD_OWNERSHIP_TREE,
+): LeadDecision[] {
+  const collect = (node: LeadTreeNode, path: string[]): LeadDecision[] => {
+    if ("leaf" in node) return [{ leaf: resolveLeaf(node.leaf, facts), path }];
+    const value = canonicalFor(node.switch, facts);
+    if (node.switch === "brand" && !value) {
+      const entries = Object.entries(node.cases);
+      if (entries.length) {
+        const out: LeadDecision[] = [];
+        const seen = new Set<string>();
+        for (const [k, child] of entries) {
+          for (const d of collect(child, [...path, `brand:${k}*`])) {
+            const key = leafKey(d.leaf);
+            if (!seen.has(key)) {
+              seen.add(key);
+              out.push(d);
+            }
+          }
+        }
+        return out;
+      }
+    }
+    const next = (value && node.cases[value]) || node.default;
+    if (!next) {
+      return [
+        {
+          leaf: { kind: "fallback", reason: `no case for ${node.switch}=${value || "∅"}` },
+          path: [...path, `${node.switch}:${value || "∅"}`],
+        },
+      ];
+    }
+    return collect(next, [...path, `${node.switch}:${value || "∅"}`]);
+  };
+  return collect(tree, []);
+}
+
 // ---------------------------------------------------------------------------
 // Self-check helpers (used by tests)
 // ---------------------------------------------------------------------------

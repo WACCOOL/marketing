@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   evaluateLeadOwnership,
+  evaluateLeadOwnershipAll,
   normalizeLocation,
   normalizeLeadBrand,
   normalizeRole,
@@ -216,6 +217,33 @@ describe("showroom / role sub-branch", () => {
       channel: "MF Showroom",
       resolve: "rsm",
     });
+  });
+});
+
+describe("unknown-brand fan-out (evaluateLeadOwnershipAll)", () => {
+  const all = (over: Partial<LeadFacts>) =>
+    evaluateLeadOwnershipAll(facts({ location: "North America", ...over })).map((d) => d.leaf);
+
+  it("Interior Designer + no brand → Kalin + WAC Showroom + WAC Fans (deduped)", () => {
+    const leaves = all({ companySubType: "Interior Designer / Decorator", brand: null });
+    expect(leaves).toHaveLength(3);
+    expect(leaves).toContainEqual(expect.objectContaining({ kind: "person", name: "Kalin Scott" }));
+    expect(leaves).toContainEqual(expect.objectContaining({ kind: "repCode", channel: "WAC Showroom" }));
+    expect(leaves).toContainEqual(expect.objectContaining({ kind: "repCode", channel: "WAC Fans" }));
+  });
+
+  it("Specifier + no brand → WAC Spec + MF Spec (deduped to 2)", () => {
+    const leaves = all({ companySubType: "Lighting Designer", brand: null });
+    expect(leaves).toHaveLength(2);
+    expect(leaves.map((l) => (l as { channel: string }).channel).sort()).toEqual(["MF Spec", "WAC Spec"]);
+  });
+
+  it("known brand → single decision", () => {
+    expect(all({ companySubType: "Lighting Designer", brand: "WAC" })).toHaveLength(1);
+  });
+
+  it("no brand switch on path → single decision (Integrator)", () => {
+    expect(all({ companySubType: "Integrators", brand: null })).toHaveLength(1);
   });
 });
 
