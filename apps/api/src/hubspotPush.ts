@@ -85,6 +85,7 @@ export const PATHS = {
   owners: "/crm/v3/owners",
   dealPipeline: `/crm/v3/pipelines/deals/${UNIVERSAL_PIPELINE_ID}`,
   dealPipelineStage: `/crm/v3/pipelines/deals/${UNIVERSAL_PIPELINE_ID}/stages`,
+  leadCreate: "/crm/v3/objects/leads",
 };
 
 const ASSOC = {
@@ -200,7 +201,7 @@ async function withHeal(
 
 /* ----------------------------- owner resolution ---------------------------- */
 
-interface OwnerRec {
+export interface OwnerRec {
   id: string;
   email: string;
   firstName: string;
@@ -244,7 +245,7 @@ async function getOwnerMaps(token: string, signal: AbortSignal): Promise<OwnerMa
 }
 
 /** Resolve a "First Last" name to a HubSpot user/owner (exact, then surname+initial). */
-async function resolveOwnerByName(
+export async function resolveOwnerByName(
   token: string,
   name: string,
   signal: AbortSignal,
@@ -975,7 +976,7 @@ async function healBatchUpsert(
 
 /* ------------------------------ associations ------------------------------- */
 
-async function batchAssociate(
+export async function batchAssociate(
   token: string,
   path: string,
   typeId: number,
@@ -1345,7 +1346,7 @@ export async function pushDeal(
 
 /* --------------------------- inside-sales (ISR) ---------------------------- */
 
-const REP_OBJECT = "2-41537429";
+export const REP_OBJECT = "2-41537429";
 let repResolverCache: { maps: InsideSalesResolvers; at: number } | null = null;
 const REP_RESOLVER_TTL_MS = 10 * 60 * 1000;
 
