@@ -31,3 +31,5 @@ export * from "./hubspot/companySubType.js";
 export * from "./hubspot/contactRepCode.js";
 export * from "./hubspot/leadOwnership.js";
 export * from "./hubspot/projectFocus.js";
+export * from "./hubspot/companyClassifyOverrides.js";
+export * from "./hubspot/productFocus.js";
