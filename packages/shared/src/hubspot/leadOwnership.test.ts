@@ -7,6 +7,7 @@ import {
   normalizeRole,
   normalizeCompanyType,
   normalizeProjectFocus,
+  projectFocusFromSubType,
   intlWacOwnerEmail,
   treeChannelsAreValid,
   type LeadFacts,
@@ -235,6 +236,27 @@ describe("Showroom / Distributor (product focus)", () => {
 
   it("Decorative + no brand → MF Showroom RSM (default)", () => {
     expect(sd({ productFocus: "Decorative", brand: null })).toMatchObject({ kind: "repCode", channel: "MF Showroom", resolve: "rsm" });
+  });
+});
+
+describe("legacy 'Interior Design Firm: …' sub-types route as designers", () => {
+  it("normalizeCompanyType maps free-text interior-design variants → Interior Designer", () => {
+    expect(normalizeCompanyType("Interior Design Firm: Residential")).toBe("Interior Designer");
+    expect(normalizeCompanyType("Interior Design Firm: Commercial")).toBe("Interior Designer");
+    expect(normalizeCompanyType("Interior Decorator - Residential")).toBe("Interior Designer");
+  });
+  it("projectFocusFromSubType reads the embedded focus", () => {
+    expect(projectFocusFromSubType("Interior Design Firm: Residential")).toBe("Residential");
+    expect(projectFocusFromSubType("Interior Design Firm: Commercial")).toBe("Commercial");
+    expect(projectFocusFromSubType("Lighting Showroom")).toBeNull();
+    expect(projectFocusFromSubType(null)).toBeNull();
+  });
+  it("a residential design firm routes down the residential-designer path (WAC + Kalin)", () => {
+    const leaves = evaluateLeadOwnershipAll(
+      facts({ location: "North America", companySubType: "Interior Design Firm: Residential", projectFocus: "Residential", brand: null }),
+    ).map((d) => d.leaf);
+    expect(leaves).toContainEqual(expect.objectContaining({ kind: "person", name: "Kalin Scott" }));
+    expect(leaves).toContainEqual(expect.objectContaining({ kind: "repCode", channel: "WAC Showroom" }));
   });
 });
 

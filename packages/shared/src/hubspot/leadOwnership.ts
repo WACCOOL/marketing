@@ -235,7 +235,25 @@ const SUBTYPE_TO_COMPANY_TYPE: Record<string, CompanyType> = {
 export function normalizeCompanyType(raw: string | null | undefined): CompanyType {
   const k = norm(raw);
   if (!k) return "Other";
-  return SUBTYPE_TO_COMPANY_TYPE[k] ?? "Other";
+  const exact = SUBTYPE_TO_COMPANY_TYPE[k];
+  if (exact) return exact;
+  // Free-text legacy variants not worth enumerating, e.g. "Interior Design Firm:
+  // Residential", "Interior Design Firm: Commercial", "Interior Decorator - Residential".
+  if (k.includes("interior design") || k.includes("interior decorat")) return "Interior Designer";
+  return "Other";
+}
+
+/**
+ * Some legacy interior-designer sub-types embed the project focus, e.g. "Interior
+ * Design Firm: Residential" / "…: Commercial". Extract it (authoritative, no crawl
+ * needed) or null when the sub-type carries no such hint.
+ */
+export function projectFocusFromSubType(raw: string | null | undefined): ProjectFocus | null {
+  const k = norm(raw);
+  if (!k) return null;
+  if (/commercial/.test(k)) return "Commercial";
+  if (/residential/.test(k)) return "Residential";
+  return null;
 }
 
 /** Interior-designer project focus (drives the residential vs commercial split). */

@@ -156,14 +156,19 @@ export async function classifyProductFocus(env: Env, sb: SupabaseClient, opts: P
   // Deterministic override (name → MF account) — skip the crawl.
   const ov = overrideFor({ name: str(props.name), accountNumber: str(props.account_number_) });
   if (ov) {
-    const value = productFocusToValue([ov]);
+    // An MF-account override says Decorative, but a company whose NAME marks it an
+    // electrical business (e.g. "Northwest Electrical Supply Co #MF01506") ALSO carries
+    // functional — pin Functional so it gets both leads, not decorative-only.
+    const ovFocus: ProductFocusValue[] = [ov];
+    if (nameIsElectricalBusiness(str(props.name)) && !ovFocus.includes("Functional")) ovFocus.unshift("Functional");
+    const value = productFocusToValue(ovFocus);
     let wrote = false;
     if (write) {
       try { await writeFocus(token, companyId, value, signal); wrote = true; }
       catch (e) { return { ...base, status: "error", reason: e instanceof Error ? e.message : String(e) }; }
     }
     await recordAttempt(sb, { company_id: companyId, result: value, confidence: null, model, source, status: "override", wrote, prompt_tokens: null, output_tokens: null, inputs_hash: null });
-    return { ...base, status: "override", focus: [ov], value, confidence: null, wrote };
+    return { ...base, status: "override", focus: ovFocus, value, confidence: null, wrote };
   }
 
   const company: CompanyForClassify = { name: str(props.name), description: str(props.description), industry: str(props.industry), domain: str(props.domain), website: str(props.website) };

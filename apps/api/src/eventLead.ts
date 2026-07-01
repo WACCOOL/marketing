@@ -17,6 +17,7 @@
 import {
   evaluateLeadOwnershipAll,
   normalizeCompanyType,
+  projectFocusFromSubType,
   CHANNEL_TO_CONTACT_PROP,
   CONTACT_REP_CODE_PROPS,
   PROJECT_FOCUS_PROP,
@@ -282,6 +283,10 @@ async function resolveProjectFocus(
   if (!company) return null;
   if (company.projectFocus) return company.projectFocus;
   if (normalizeCompanyType(company.subType) !== "Interior Designer") return null;
+  // Some legacy sub-types embed the focus ("Interior Design Firm: Residential") —
+  // authoritative, so use it instead of paying for a crawl.
+  const fromSubType = projectFocusFromSubType(company.subType);
+  if (fromSubType) return fromSubType;
   try {
     const r = await classifyProjectFocus(env, serviceSupabase(env), {
       companyId: company.companyId,
