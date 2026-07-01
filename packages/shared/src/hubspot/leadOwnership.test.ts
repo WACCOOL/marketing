@@ -286,6 +286,31 @@ describe("unknown-brand fan-out (evaluateLeadOwnershipAll)", () => {
   it("no brand switch on path → single decision (Integrator)", () => {
     expect(all({ companySubType: "Integrators", brand: null })).toHaveLength(1);
   });
+
+  it("Showroom does BOTH (Functional;Decorative) + no brand → WAC functional + decorative fan-out", () => {
+    const leaves = all({ companySubType: "Lighting Showroom", productFocus: "Functional;Decorative", brand: null });
+    // Functional branch → WAC Showroom (owner); Decorative branch (no brand) → MF Showroom RSM,
+    // WAC Fans, and WAC Showroom owner (WAC-decorative, deduped against functional).
+    expect(leaves).toContainEqual(expect.objectContaining({ kind: "repCode", channel: "WAC Showroom", resolve: "owner" }));
+    expect(leaves).toContainEqual(expect.objectContaining({ kind: "repCode", channel: "MF Showroom", resolve: "rsm" }));
+    // both channels are represented (WAC + MF)
+    const channels = new Set(leaves.map((l) => (l as { channel?: string }).channel));
+    expect(channels.has("WAC Showroom")).toBe(true);
+    expect(channels.has("MF Showroom")).toBe(true);
+  });
+
+  it("Showroom does BOTH + known brand (Schonbek) → WAC functional lead + MF decorative lead", () => {
+    const leaves = all({ companySubType: "Lighting Showroom", productFocus: "Functional;Decorative", brand: "Schonbek" });
+    expect(leaves).toHaveLength(2);
+    expect(leaves).toContainEqual(expect.objectContaining({ kind: "repCode", channel: "WAC Showroom", resolve: "owner" }));
+    expect(leaves).toContainEqual(expect.objectContaining({ kind: "repCode", channel: "MF Showroom", resolve: "rsm" }));
+  });
+
+  it("Showroom does BOTH + WAC brand → single WAC Showroom lead (functional+decorative dedupe)", () => {
+    const leaves = all({ companySubType: "Lighting Showroom", productFocus: "Functional;Decorative", brand: "WAC Lighting" });
+    expect(leaves).toHaveLength(1);
+    expect(leaves[0]).toMatchObject({ kind: "repCode", channel: "WAC Showroom", resolve: "owner" });
+  });
 });
 
 describe("fallbacks", () => {
