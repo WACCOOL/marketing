@@ -135,6 +135,9 @@ export interface Env {
   // Gemini model for the interior-designer project-focus classifier. Falls back to
   // CLASSIFY_MODEL / GEMINI_TEXT_MODEL / gemini-2.5-flash.
   PROJECT_FOCUS_MODEL?: string;
+  // Confidence bar to mark a company Commercial (default 0.8) — higher than the base
+  // threshold so commercial must be a real focus, not a passing mention.
+  PROJECT_FOCUS_COMMERCIAL_MIN?: string;
 
   // Origin used when building public URLs (uploads / generated scenes / shot
   // previews) that the render-worker and generator fetch back over HTTP. Defaults
