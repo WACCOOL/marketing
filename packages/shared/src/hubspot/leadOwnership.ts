@@ -65,7 +65,7 @@ export type CompanyType =
   | "Integrator"
   | "E Retailer"
   | "Contractor/Builder"
-  | "Showroom"
+  | "ShowroomDistributor"
   | "Interior Designer"
   | "Hospitality"
   | "Other";
@@ -91,7 +91,8 @@ export type Leaf =
   | { kind: "fallback"; reason: string };
 
 /** Dimensions the tree can switch on. */
-export type SwitchKey = "location" | "brand" | "country" | "companyType" | "role" | "projectFocus";
+export type SwitchKey =
+  | "location" | "brand" | "country" | "companyType" | "role" | "projectFocus" | "productFocus";
 
 export type LeadTreeNode =
   | { leaf: Leaf }
@@ -117,6 +118,8 @@ export interface LeadFacts {
   brand: string | null;
   /** Associated company `project_focus` (raw multi-select, e.g. "Residential;Commercial"). */
   projectFocus: string | null;
+  /** Associated company `product_focus` (raw multi-select, e.g. "Functional;Decorative"). */
+  productFocus: string | null;
 }
 
 export interface LeadDecision {
@@ -183,11 +186,11 @@ export function normalizeRole(raw: string | null | undefined): Role {
 const SUBTYPE_TO_COMPANY_TYPE: Record<string, CompanyType> = {
   // --- company_sub_type_simplified buckets ---
   "specifier (a&d / engineer / architect)": "Specifier",
-  "dealer / showroom / retail": "Showroom",
+  "dealer / showroom / retail": "ShowroomDistributor",
   "interior designer / decorator": "Interior Designer",
   "contractor / builder": "Contractor/Builder",
   integrator: "Integrator",
-  "distributor / wholesaler": "Contractor/Builder", // Distribution leaf
+  "distributor / wholesaler": "ShowroomDistributor",
   reps: "Other",
   "internal / system / other": "Other",
   competitor: "Other",
@@ -206,9 +209,9 @@ const SUBTYPE_TO_COMPANY_TYPE: Record<string, CompanyType> = {
   "egh-internet ret": "E Retailer",
   "showroom/internet": "E Retailer",
   "independent retailer": "E Retailer",
-  "lighting showroom": "Showroom",
-  "showroom-main retail": "Showroom",
-  "elec. house w/ show": "Showroom",
+  "lighting showroom": "ShowroomDistributor",
+  "showroom-main retail": "ShowroomDistributor",
+  "elec. house w/ show": "ShowroomDistributor",
   "interior designer": "Interior Designer",
   "designer/int. decor.": "Interior Designer",
   "building contractor": "Contractor/Builder",
@@ -216,11 +219,11 @@ const SUBTYPE_TO_COMPANY_TYPE: Record<string, CompanyType> = {
   contractor: "Contractor/Builder",
   construction: "Contractor/Builder",
   developer: "Contractor/Builder",
-  distributor: "Contractor/Builder",
-  dealer: "Contractor/Builder",
-  wholesale: "Contractor/Builder",
-  "lighting supplier": "Contractor/Builder",
-  "elec. house w/o show": "Contractor/Builder",
+  distributor: "ShowroomDistributor",
+  dealer: "ShowroomDistributor",
+  wholesale: "ShowroomDistributor",
+  "lighting supplier": "ShowroomDistributor",
+  "elec. house w/o show": "ShowroomDistributor",
   "hospitality channel": "Hospitality",
   "contract hospitality account": "Hospitality",
   "resort consultant": "Hospitality",
@@ -245,6 +248,16 @@ export type ProjectFocus = "Residential" | "Commercial";
  */
 export function normalizeProjectFocus(raw: string | null | undefined): ProjectFocus {
   return /commercial/i.test(raw ?? "") ? "Commercial" : "Residential";
+}
+
+/**
+ * Company `product_focus` (multi-select) → routing bucket. Decorative wins (a company
+ * that sells any decorative product routes MF/Schonbek); blank/unknown → Functional
+ * (WAC — the safe house-brand default). (Value type is {@link ProductFocus} from
+ * companyClassifyOverrides.)
+ */
+export function normalizeProductFocus(raw: string | null | undefined): "Functional" | "Decorative" {
+  return /decorative/i.test(raw ?? "") ? "Decorative" : "Functional";
 }
 
 // ---------------------------------------------------------------------------
@@ -298,25 +311,24 @@ const INTL_WAC_BY_COUNTRY: LeadTreeNode = {
 };
 
 /**
- * Interior-Designer brand split (shared by the "Interior Designer" company type
- * and the Showroom role=Interior Designer branch): MF/Schonbek → Kalin Scott
- * (MF Designer, fixed); WAC → Showroom channel owner; MF Fans → WAC Fans owner.
+ * Residential interior designer, by brand: WAC → WAC Showroom (owner); MF/Schonbek →
+ * Kalin Scott (fixed owner) on the MF Showroom rep code; MF Fans → WAC Fans (owner).
  */
-const INTERIOR_DESIGNER_BRAND_NODE: LeadTreeNode = {
+const RESIDENTIAL_DESIGNER_NODE: LeadTreeNode = {
   switch: "brand",
   cases: {
-    "Modern Forms": person("Kalin Scott", "MF Designer → Kalin Scott", "MF Designer"),
-    Schonbek: person("Kalin Scott", "MF Designer → Kalin Scott", "MF Designer"),
-    "WAC Lighting": channelOwner("WAC Showroom", "Showroom (WAC)"),
-    "WAC Architectural": channelOwner("WAC Showroom", "Showroom (WAC)"),
-    "MF Fans": channelOwner("WAC Fans", "MF Fans Showroom"),
+    "WAC Lighting": channelOwner("WAC Showroom", "Residential designer (WAC) → WAC Showroom"),
+    "WAC Architectural": channelOwner("WAC Showroom", "Residential designer (WAC Arch) → WAC Showroom"),
+    "Modern Forms": person("Kalin Scott", "Residential designer (MF) → Kalin", "MF Showroom"),
+    Schonbek: person("Kalin Scott", "Residential designer (Schonbek) → Kalin", "MF Showroom"),
+    "MF Fans": channelOwner("WAC Fans", "Residential designer (MF Fans) → WAC Fans"),
   },
-  default: { leaf: { kind: "fallback", reason: "designer brand gap" } },
+  default: { leaf: { kind: "fallback", reason: "residential designer brand gap" } },
 };
 
 /**
- * Interior designer doing COMMERCIAL (or commercial + residential) work: MF & Schonbek
- * → Hospitality (Rudy Soni); every other brand → WAC Spec.
+ * Commercial interior designer: MF/Schonbek → Hospitality (Rudy Soni, Contract MF);
+ * WAC → WAC Spec (functional); MF Fans → MF Spec (decorative).
  */
 const COMMERCIAL_DESIGNER_NODE: LeadTreeNode = {
   switch: "brand",
@@ -325,36 +337,82 @@ const COMMERCIAL_DESIGNER_NODE: LeadTreeNode = {
     Schonbek: person("Rudy Soni", "Commercial designer (Schonbek) → Hospitality (Rudy)", "Contract MF"),
     "WAC Lighting": channelOwner("WAC Spec", "Commercial designer (WAC) → WAC Spec"),
     "WAC Architectural": channelOwner("WAC Spec", "Commercial designer (WAC Arch) → WAC Spec"),
-    "MF Fans": channelOwner("WAC Spec", "Commercial designer (MF Fans) → WAC Spec"),
+    "MF Fans": channelOwner("MF Spec", "Commercial designer (MF Fans) → MF Spec"),
   },
-  default: channelOwner("WAC Spec", "Commercial designer → WAC Spec"),
+  default: { leaf: { kind: "fallback", reason: "commercial designer brand gap" } },
 };
 
-/**
- * Interior Designer → split on the company's project focus. Commercial (or both)
- * routes to {@link COMMERCIAL_DESIGNER_NODE}; Residential (the default when unknown)
- * keeps the existing by-brand routing.
- */
+/** Commercial, non-interior-designer: functional/WAC → WAC Spec; decorative → MF Spec. */
+const COMMERCIAL_SPEC_NODE: LeadTreeNode = {
+  switch: "brand",
+  cases: {
+    "WAC Lighting": channelOwner("WAC Spec", "Commercial → WAC Spec"),
+    "WAC Architectural": channelOwner("WAC Spec", "Commercial → WAC Spec"),
+    "Modern Forms": channelOwner("MF Spec", "Commercial → MF Spec"),
+    Schonbek: channelOwner("MF Spec", "Commercial → MF Spec"),
+    "MF Fans": channelOwner("MF Spec", "Commercial → MF Spec"),
+  },
+  default: { leaf: { kind: "fallback", reason: "commercial spec brand gap" } },
+};
+
+/** Interior Designer (company or role) → project focus → brand. */
 const INTERIOR_DESIGNER_NODE: LeadTreeNode = {
   switch: "projectFocus",
   cases: { Commercial: COMMERCIAL_DESIGNER_NODE },
-  default: INTERIOR_DESIGNER_BRAND_NODE,
+  default: RESIDENTIAL_DESIGNER_NODE,
+};
+
+/** Contractor/Builder company → residential = WAC Showroom; commercial = spec by brand. */
+const CONTRACTOR_NODE: LeadTreeNode = {
+  switch: "projectFocus",
+  cases: { Commercial: COMMERCIAL_SPEC_NODE },
+  default: channelOwner("WAC Showroom", "Contractor/Builder (residential) → WAC Showroom"),
+};
+
+/** "Other" company type → project focus, then the contact's role. Unmatched → Lana. */
+const OTHER_NODE: LeadTreeNode = {
+  switch: "projectFocus",
+  cases: {
+    Commercial: {
+      switch: "role",
+      cases: { "Interior Designer": COMMERCIAL_DESIGNER_NODE },
+      default: COMMERCIAL_SPEC_NODE,
+    },
+  },
+  default: {
+    switch: "role", // residential
+    cases: {
+      "Contractor/Builder": channelOwner("WAC Showroom", "Other residential contractor → WAC Showroom"),
+      "Interior Designer": RESIDENTIAL_DESIGNER_NODE,
+    },
+    default: { leaf: { kind: "fallback", reason: "other residential, non-designer/contractor role → Lana" } },
+  },
+};
+
+/** Decorative showroom/distributor → by brand (campaign, else MF from product focus). */
+const DECORATIVE_BRAND_NODE: LeadTreeNode = {
+  switch: "brand",
+  cases: {
+    "WAC Lighting": channelOwner("WAC Showroom", "Decorative (WAC) → WAC Showroom"),
+    "WAC Architectural": channelOwner("WAC Showroom", "Decorative (WAC Arch) → WAC Showroom"),
+    "Modern Forms": channelRsm("MF Showroom", "Decorative (MF) → MF Showroom RSM (Nick/Dhane)"),
+    Schonbek: channelRsm("MF Showroom", "Decorative (Schonbek) → MF Showroom RSM (Nick/Dhane)"),
+    "MF Fans": channelOwner("WAC Fans", "Decorative (MF Fans) → WAC Fans"),
+  },
+  default: channelRsm("MF Showroom", "Decorative → MF Showroom RSM (Nick/Dhane)"),
 };
 
 /**
- * Showroom company type → switch on contact Role. Interior Designer splits by
- * project focus then brand; MF & Schonbek (non-designer showrooms) → the MF Showroom
- * rep code's RSM (Nick/Dhane); Contractor/Builder → Distribution.
+ * Showroom / Distributor company → by product focus. Functional → WAC Showroom;
+ * Decorative → by brand. (product focus is set by the product-focus classifier.)
  */
-const SHOWROOM_ROLE_NODE: LeadTreeNode = {
-  switch: "role",
+const SHOWROOM_DISTRIBUTOR_NODE: LeadTreeNode = {
+  switch: "productFocus",
   cases: {
-    "Interior Designer": INTERIOR_DESIGNER_NODE,
-    "Contractor/Builder": channelOwner("WAC Showroom", "Distribution (Contractor/Builder)"),
-    // Showrooms carrying MF & Schonbek → MF Showroom rep code's Regional Manager.
-    Other: channelRsm("MF Showroom", "Showroom MF&Schonbek → RSM (Nick/Dhane)"),
+    Functional: channelOwner("WAC Showroom", "Functional showroom/distributor → WAC Showroom"),
+    Decorative: DECORATIVE_BRAND_NODE,
   },
-  default: channelRsm("MF Showroom", "Showroom MF&Schonbek → RSM (Nick/Dhane)"),
+  default: channelOwner("WAC Showroom", "Showroom/distributor (no product focus) → WAC Showroom"),
 };
 
 /** North America → company-type switch. */
@@ -371,16 +429,14 @@ const NORTH_AMERICA_NODE: LeadTreeNode = {
         Schonbek: channelOwner("MF Spec", "MF Spec"),
         "MF Fans": channelOwner("MF Spec", "MF Spec"),
       },
-      default: channelOwner("MF Spec", "MF Spec"), // TODO(confirm) default brand
+      default: channelOwner("MF Spec", "MF Spec"),
     },
     Landscape: channelOwner("WAC Landscape", "Green (Landscape)"),
     Integrator: channelOwner("Integration", "Integrator"),
-    "E Retailer": person("Harry", "E Retailer → Harry"), // TODO(confirm) surname
-    "Contractor/Builder": channelOwner("WAC Showroom", "Distribution (Contractor/Builder)"),
-    Showroom: SHOWROOM_ROLE_NODE,
+    "E Retailer": person("Harry", "E Retailer → Harry"),
+    ShowroomDistributor: SHOWROOM_DISTRIBUTOR_NODE,
     "Interior Designer": INTERIOR_DESIGNER_NODE,
-    // Hospitality / FFE → Rudy Soni; the overseeing rep code is the Contract channel
-    // for the brand (Contract WAC for WAC, Contract MF for MF/Schonbek).
+    "Contractor/Builder": CONTRACTOR_NODE,
     Hospitality: {
       switch: "brand",
       cases: {
@@ -392,8 +448,9 @@ const NORTH_AMERICA_NODE: LeadTreeNode = {
       },
       default: person("Rudy Soni", "Hospitality → Rudy Soni", "Contract WAC"),
     },
+    Other: OTHER_NODE,
   },
-  default: { leaf: { kind: "fallback", reason: "unmapped company type" } },
+  default: OTHER_NODE,
 };
 
 /** International → brand switch. */
@@ -440,6 +497,8 @@ function canonicalFor(dim: SwitchKey, facts: LeadFacts): string {
       return normalizeRole(facts.role);
     case "projectFocus":
       return normalizeProjectFocus(facts.projectFocus);
+    case "productFocus":
+      return normalizeProductFocus(facts.productFocus);
   }
 }
 

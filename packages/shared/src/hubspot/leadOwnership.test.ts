@@ -21,6 +21,7 @@ const facts = (over: Partial<LeadFacts>): LeadFacts => ({
   companySubType: null,
   brand: null,
   projectFocus: null,
+  productFocus: null,
   ...over,
 });
 
@@ -64,11 +65,11 @@ describe("normalizers", () => {
 
   it("simplified company sub-type maps to company-type branches", () => {
     expect(normalizeCompanyType("Specifier (A&D / Engineer / Architect)")).toBe("Specifier");
-    expect(normalizeCompanyType("Dealer / Showroom / Retail")).toBe("Showroom");
+    expect(normalizeCompanyType("Dealer / Showroom / Retail")).toBe("ShowroomDistributor");
     expect(normalizeCompanyType("Interior Designer / Decorator")).toBe("Interior Designer");
     expect(normalizeCompanyType("Contractor / Builder")).toBe("Contractor/Builder");
     expect(normalizeCompanyType("Integrator")).toBe("Integrator");
-    expect(normalizeCompanyType("Distributor / Wholesaler")).toBe("Contractor/Builder");
+    expect(normalizeCompanyType("Distributor / Wholesaler")).toBe("ShowroomDistributor");
     expect(normalizeCompanyType("Reps")).toBe("Other");
   });
 
@@ -76,7 +77,7 @@ describe("normalizers", () => {
     expect(normalizeCompanyType("Lighting Designer")).toBe("Specifier");
     expect(normalizeCompanyType("Integrators")).toBe("Integrator");
     expect(normalizeCompanyType("Internet Retailer")).toBe("E Retailer");
-    expect(normalizeCompanyType("Lighting Showroom")).toBe("Showroom");
+    expect(normalizeCompanyType("Lighting Showroom")).toBe("ShowroomDistributor");
     expect(normalizeCompanyType("Building Contractor")).toBe("Contractor/Builder");
     expect(normalizeCompanyType("Hospitality Channel")).toBe("Hospitality");
     expect(normalizeCompanyType("National Accounts")).toBe("National Accounts");
@@ -162,7 +163,7 @@ describe("north america → company type", () => {
     expect(id({ brand: "Modern Forms" })).toMatchObject({ kind: "person", name: "Rudy Soni" });
     expect(id({ brand: "Schonbek" })).toMatchObject({ kind: "person", name: "Rudy Soni" });
     expect(id({ brand: "WAC Lighting" })).toMatchObject({ kind: "repCode", channel: "WAC Spec" });
-    expect(id({ brand: "Modern Forms Fans" })).toMatchObject({ kind: "repCode", channel: "WAC Spec" });
+    expect(id({ brand: "Modern Forms Fans" })).toMatchObject({ kind: "repCode", channel: "MF Spec" });
     // "both" (multi-select) routes commercial too
     expect(id({ brand: "WAC", projectFocus: "Residential;Commercial" })).toMatchObject({
       kind: "repCode",
@@ -208,38 +209,46 @@ describe("north america → company type", () => {
   });
 });
 
-describe("showroom / role sub-branch", () => {
-  const sr = (over: Partial<LeadFacts>) =>
+describe("Showroom / Distributor (product focus)", () => {
+  const sd = (over: Partial<LeadFacts>) =>
     leaf({ location: "North America", companySubType: "Lighting Showroom", ...over });
 
-  it("Interior Designer + MF/Schonbek → Kalin Scott (fixed)", () => {
-    expect(sr({ role: "Interior Designer", brand: "Modern Forms" })).toMatchObject({
-      kind: "person",
-      name: "Kalin Scott",
+  it("Functional → WAC Showroom owner (brand ignored)", () => {
+    expect(sd({ productFocus: "Functional", brand: "Modern Forms" })).toMatchObject({
+      kind: "repCode",
+      channel: "WAC Showroom",
+      resolve: "owner",
+    });
+    // distributor sub-type too
+    expect(leaf({ location: "North America", companySubType: "Distributor / Wholesaler", productFocus: "Functional" })).toMatchObject({
+      kind: "repCode",
+      channel: "WAC Showroom",
     });
   });
 
-  it("Interior Designer + WAC → Showroom (WAC Showroom owner)", () => {
-    expect(sr({ role: "Interior Designer", brand: "WAC Lighting" })).toMatchObject({
+  it("Decorative → by brand (MF/Schonbek → MF Showroom RSM; WAC → WAC Showroom; MF Fans → WAC Fans)", () => {
+    expect(sd({ productFocus: "Decorative", brand: "Modern Forms" })).toMatchObject({ kind: "repCode", channel: "MF Showroom", resolve: "rsm" });
+    expect(sd({ productFocus: "Decorative", brand: "Schonbek" })).toMatchObject({ kind: "repCode", channel: "MF Showroom", resolve: "rsm" });
+    expect(sd({ productFocus: "Decorative", brand: "WAC Lighting" })).toMatchObject({ kind: "repCode", channel: "WAC Showroom", resolve: "owner" });
+    expect(sd({ productFocus: "Decorative", brand: "MF Fans" })).toMatchObject({ kind: "repCode", channel: "WAC Fans", resolve: "owner" });
+  });
+
+  it("Decorative + no brand → MF Showroom RSM (default)", () => {
+    expect(sd({ productFocus: "Decorative", brand: null })).toMatchObject({ kind: "repCode", channel: "MF Showroom", resolve: "rsm" });
+  });
+});
+
+describe("residential contractor / other-role fallback", () => {
+  it("Contractor company residential → WAC Showroom owner", () => {
+    expect(leaf({ location: "North America", companySubType: "Building Contractor" })).toMatchObject({
       kind: "repCode",
       channel: "WAC Showroom",
       resolve: "owner",
     });
   });
-
-  it("Interior Designer + MF Fans → WAC Fans owner", () => {
-    expect(sr({ role: "Interior Designer", brand: "MF Fans" })).toMatchObject({
-      kind: "repCode",
-      channel: "WAC Fans",
-      resolve: "owner",
-    });
-  });
-
-  it("non-designer showroom → MF Showroom RSM (Nick/Dhane)", () => {
-    expect(sr({ role: "Architect", brand: "Modern Forms" })).toMatchObject({
-      kind: "repCode",
-      channel: "MF Showroom",
-      resolve: "rsm",
+  it("Other company + residential + non-designer/contractor role → Lana fallback", () => {
+    expect(leaf({ location: "North America", companySubType: "Reps", role: "Architect", projectFocus: "Residential" })).toMatchObject({
+      kind: "fallback",
     });
   });
 });
@@ -266,11 +275,12 @@ describe("unknown-brand fan-out (evaluateLeadOwnershipAll)", () => {
     expect(all({ companySubType: "Lighting Designer", brand: "WAC" })).toHaveLength(1);
   });
 
-  it("Commercial designer + no brand → Rudy (Hospitality) + WAC Spec", () => {
+  it("Commercial designer + no brand → Rudy + WAC Spec + MF Spec", () => {
     const leaves = all({ companySubType: "Interior Designer / Decorator", projectFocus: "Commercial", brand: null });
-    expect(leaves).toHaveLength(2);
+    expect(leaves).toHaveLength(3);
     expect(leaves).toContainEqual(expect.objectContaining({ kind: "person", name: "Rudy Soni" }));
     expect(leaves).toContainEqual(expect.objectContaining({ kind: "repCode", channel: "WAC Spec" }));
+    expect(leaves).toContainEqual(expect.objectContaining({ kind: "repCode", channel: "MF Spec" }));
   });
 
   it("no brand switch on path → single decision (Integrator)", () => {
