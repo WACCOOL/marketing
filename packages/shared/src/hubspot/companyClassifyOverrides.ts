@@ -26,23 +26,31 @@ export function mfAccount(accountNumber: string | null | undefined): boolean {
 }
 
 /**
- * True when a company's NAME clearly marks it an electrical supply house / distributor
- * (e.g. "… Electric Supply", "Electrical Distributors", "Wholesale Electric"). Such a
- * company ALWAYS carries functional product, so the classifier pins Functional and only
- * asks the AI whether it ALSO carries decorative.
+ * True when a company's NAME marks it an electrical business — an electrical supply
+ * house / distributor / contractor / "… Electric Co." (e.g. "City Electric Supply",
+ * "Electrical Distributors", "Wholesale Electric", "Stokes Electric Company", "ABC
+ * Electric"). Such a company ALWAYS carries functional product, so the classifier pins
+ * Functional and only asks the AI whether it ALSO carries decorative.
  *
  * Deliberately NAME-based, not sub-type-based: the legacy `company_sub_type` (Distributor
  * / Dealer / …) is the polluted field product_focus exists to bypass — e.g. "Lighting
- * Incorporated" is tagged "Distributor" but is a decorative showroom. A decorative-only
- * showroom must stay decorative, so we pin only on an unambiguous electrical-supply name.
+ * Incorporated" is tagged "Distributor" but is a decorative showroom. Decorative
+ * showrooms are named "… Lighting / Gallery / Illumination", not "… Electric", so
+ * matching the "Electric(al)" business token stays clear of them. The pin is additive
+ * (it only guarantees Functional), so a rare decorative shop named "… Electric" just also
+ * gets a WAC lead — it never loses its decorative one.
  */
-export function nameIsElectricalSupply(name: string | null | undefined): boolean {
-  const n = (name ?? "").toLowerCase();
+export function nameIsElectricalBusiness(name: string | null | undefined): boolean {
+  const n = (name ?? "").toLowerCase().trim();
   if (!n) return false;
   return (
+    // "Electric(al) Supply / Distributors / Wholesale", "Wholesale Electric"
     /\belectric(al)?\s+(supply|supplies|distribut|wholesale)/.test(n) ||
     /\bwholesale\s+electric(al)?\b/.test(n) ||
-    /\belectric(al)?\s+supply\b/.test(n)
+    // "… Electric(al) Co./Company/Corp/Inc/Contractor(s)/Service(s)"
+    /\belectric(al)?\s+(co\b|co\.|company|corp|corporation|inc\b|incorporated|contractor|contractors|service|services)/.test(n) ||
+    // trailing "… Electric" / "… Electrical" (e.g. "Stokes Electric", "ABC Electrical")
+    /\belectric(al)?\s*$/.test(n)
   );
 }
 

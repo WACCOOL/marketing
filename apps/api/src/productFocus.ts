@@ -8,7 +8,7 @@ import {
   inputsHash,
   siteLikelyUnrelated,
   normalizeCompanyType,
-  nameIsElectricalSupply,
+  nameIsElectricalBusiness,
   PRODUCT_FOCUS_PROP,
   type CompanyForClassify,
   type ProductFocusValue,
@@ -200,7 +200,7 @@ export async function classifyProductFocus(env: Env, sb: SupabaseClient, opts: P
   // functional product, so pin Functional regardless of AI wobble — the AI's real job for
   // these is whether they ALSO carry decorative. (Name-based, not sub-type-based, so a
   // decorative showroom mislabeled "Distributor" is not forced functional.)
-  if (nameIsElectricalSupply(company.name) && !focus.includes("Functional")) {
+  if (nameIsElectricalBusiness(company.name) && !focus.includes("Functional")) {
     focus.unshift("Functional");
   }
   const value = productFocusToValue(focus);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { overrideFor, mfAccount, nameIsElectricalSupply } from "./companyClassifyOverrides.js";
+import { overrideFor, mfAccount, nameIsElectricalBusiness } from "./companyClassifyOverrides.js";
 
 describe("overrideFor", () => {
   it("name overrides win (Graybar/CED→Functional, Ferguson→Decorative)", () => {
@@ -14,20 +14,22 @@ describe("overrideFor", () => {
   });
 });
 
-describe("nameIsElectricalSupply", () => {
-  it("electrical-supply / distributor names → true", () => {
+describe("nameIsElectricalBusiness", () => {
+  it("electrical business names → true (supply, distributor, co., contractor, trailing Electric)", () => {
     for (const n of ["HERMITAGE ELECTRIC SUPPLY", "City Electric Supply", "A&S ELECTRICAL SUPPLY",
-      "Consolidated Electrical Distributors", "Wholesale Electric Supply Co"]) {
-      expect(nameIsElectricalSupply(n)).toBe(true);
+      "Consolidated Electrical Distributors", "Wholesale Electric Supply Co", "Stokes Electric Company",
+      "STOKES ELECTRIC", "ABC Electrical", "Wilcox Electric Co.", "Metro Electrical Contractors"]) {
+      expect(nameIsElectricalBusiness(n)).toBe(true);
     }
   });
-  it("decorative showrooms mislabeled 'Distributor' are NOT pinned by name", () => {
-    // The polluted sub_type says Distributor, but the NAME carries no electrical-supply
-    // signal, so we don't force Functional — the AI's decorative call stands.
-    expect(nameIsElectricalSupply("LIGHTING INCORPORATED")).toBe(false);
-    expect(nameIsElectricalSupply("Reflections L&M")).toBe(false);
-    expect(nameIsElectricalSupply("Stokes Electric Company")).toBe(false); // "electric company", not supply/distribution
-    expect(nameIsElectricalSupply("")).toBe(false);
-    expect(nameIsElectricalSupply(null)).toBe(false);
+  it("decorative 'Lighting' names (incl. those mislabeled 'Distributor') are NOT pinned", () => {
+    // The NAME carries no "Electric(al)" business token, so we don't force Functional —
+    // the AI's decorative call stands.
+    expect(nameIsElectricalBusiness("LIGHTING INCORPORATED")).toBe(false);
+    expect(nameIsElectricalBusiness("Reflections L&M")).toBe(false);
+    expect(nameIsElectricalBusiness("Hermitage Lighting Gallery")).toBe(false);
+    expect(nameIsElectricalBusiness("Electric Avenue Lighting")).toBe(false); // "electric" mid-name, not a business token
+    expect(nameIsElectricalBusiness("")).toBe(false);
+    expect(nameIsElectricalBusiness(null)).toBe(false);
   });
 });
