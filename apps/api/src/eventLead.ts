@@ -17,6 +17,7 @@
 import {
   evaluateLeadOwnershipAll,
   normalizeCompanyType,
+  projectFocusFromSubType,
   CHANNEL_TO_CONTACT_PROP,
   CONTACT_REP_CODE_PROPS,
   PROJECT_FOCUS_PROP,
@@ -69,6 +70,10 @@ const CONTACT_PROPS = {
   country: "country",
   /** Persona enum (Interior Designer / Architect / Contractor / …). */
   role: "your_role",
+  /** Contact-level type (Interior Designer / Distributor / Lighting Showroom / Interior
+   *  Design Firm: … / …) — the contact's own classification, used as the company sub-type
+   *  fallback when the contact has no associated company. */
+  leadType: "lead_type",
 } as const;
 
 /**
@@ -153,6 +158,8 @@ interface ContactFacts {
   countryCode: string;
   country: string;
   role: string;
+  /** Contact-level type (`lead_type`) — company sub-type fallback when no company. */
+  leadType: string;
   /** channel name → rep code value (only non-blank ones). */
   repCodes: Record<string, string>;
   /** canonical brand → lead score (number). */
@@ -169,6 +176,7 @@ async function fetchContact(token: string, contactId: string, signal: AbortSigna
     CONTACT_PROPS.countryCode,
     CONTACT_PROPS.country,
     CONTACT_PROPS.role,
+    CONTACT_PROPS.leadType,
     ...Object.values(BRAND_SCORE_PROP),
     ...CONTACT_REP_CODE_PROPS,
   ];
@@ -201,6 +209,7 @@ async function fetchContact(token: string, contactId: string, signal: AbortSigna
     countryCode: (p[CONTACT_PROPS.countryCode] ?? "").trim(),
     country: (p[CONTACT_PROPS.country] ?? "").trim(),
     role: (p[CONTACT_PROPS.role] ?? "").trim(),
+    leadType: (p[CONTACT_PROPS.leadType] ?? "").trim(),
     repCodes,
     brandScores,
   };
@@ -282,6 +291,10 @@ async function resolveProjectFocus(
   if (!company) return null;
   if (company.projectFocus) return company.projectFocus;
   if (normalizeCompanyType(company.subType) !== "Interior Designer") return null;
+  // Some legacy sub-types embed the focus ("Interior Design Firm: Residential") —
+  // authoritative, so use it instead of paying for a crawl.
+  const fromSubType = projectFocusFromSubType(company.subType);
+  if (fromSubType) return fromSubType;
   try {
     const r = await classifyProjectFocus(env, serviceSupabase(env), {
       companyId: company.companyId,
@@ -557,12 +570,19 @@ export async function processEventLead(
     // routes correctly: project_focus for interior designers, product_focus for
     // showroom/distributor companies.
     const dry = body.dryRun ?? false;
-    const projectFocus = await resolveProjectFocus(env, company, dry, signal);
+    // Sub-type for routing: the associated company's when present, else the contact's own
+    // "Contact Type" (`lead_type`) — so a designer/distributor/showroom contact with no
+    // company (e.g. a solo interior designer on gmail) still routes by what they are.
+    const companySubType = (company?.subType && company.subType.trim()) || contact.leadType || null;
+    // Project focus: the classifier/stored value, else the focus embedded in the sub-type
+    // ("Interior Design Firm: Commercial") — authoritative and works without a company.
+    const projectFocus =
+      (await resolveProjectFocus(env, company, dry, signal)) ?? projectFocusFromSubType(companySubType);
     const productFocus = await resolveProductFocus(env, company, dry, signal);
     // Brand: campaign first. For showroom/distributor, fall back to the company's
     // decorative/functional (Decorative→Modern Forms, Functional→WAC); otherwise to the
     // contact's top brand lead score.
-    const isShowroomDistributor = normalizeCompanyType(company?.subType ?? null) === "ShowroomDistributor";
+    const isShowroomDistributor = normalizeCompanyType(companySubType) === "ShowroomDistributor";
     const brand =
       body.campaignBrand ??
       (isShowroomDistributor ? productFocusBrand(productFocus) : brandFromScores(contact.brandScores));
@@ -570,7 +590,7 @@ export async function processEventLead(
       location: locationFact(contact),
       country: contact.country,
       role: contact.role,
-      companySubType: company?.subType ?? null,
+      companySubType,
       brand,
       projectFocus,
       productFocus,

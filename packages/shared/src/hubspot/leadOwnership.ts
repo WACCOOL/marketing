@@ -235,7 +235,25 @@ const SUBTYPE_TO_COMPANY_TYPE: Record<string, CompanyType> = {
 export function normalizeCompanyType(raw: string | null | undefined): CompanyType {
   const k = norm(raw);
   if (!k) return "Other";
-  return SUBTYPE_TO_COMPANY_TYPE[k] ?? "Other";
+  const exact = SUBTYPE_TO_COMPANY_TYPE[k];
+  if (exact) return exact;
+  // Free-text legacy variants not worth enumerating, e.g. "Interior Design Firm:
+  // Residential", "Interior Design Firm: Commercial", "Interior Decorator - Residential".
+  if (k.includes("interior design") || k.includes("interior decorat")) return "Interior Designer";
+  return "Other";
+}
+
+/**
+ * Some legacy interior-designer sub-types embed the project focus, e.g. "Interior
+ * Design Firm: Residential" / "…: Commercial". Extract it (authoritative, no crawl
+ * needed) or null when the sub-type carries no such hint.
+ */
+export function projectFocusFromSubType(raw: string | null | undefined): ProjectFocus | null {
+  const k = norm(raw);
+  if (!k) return null;
+  if (/commercial/.test(k)) return "Commercial";
+  if (/residential/.test(k)) return "Residential";
+  return null;
 }
 
 /** Interior-designer project focus (drives the residential vs commercial split). */
@@ -258,6 +276,17 @@ export function normalizeProjectFocus(raw: string | null | undefined): ProjectFo
  */
 export function normalizeProductFocus(raw: string | null | undefined): "Functional" | "Decorative" {
   return /decorative/i.test(raw ?? "") ? "Decorative" : "Functional";
+}
+
+/**
+ * True when a company's `product_focus` names BOTH functional and decorative — it
+ * genuinely sells both, so it should be routed down BOTH branches (a WAC functional
+ * lead AND a decorative/brand lead) rather than collapsing to one. Used by the
+ * {@link evaluateLeadOwnershipAll} fan-out.
+ */
+export function productFocusIsBoth(raw: string | null | undefined): boolean {
+  const s = raw ?? "";
+  return /decorative/i.test(s) && /functional/i.test(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -565,6 +594,24 @@ export function evaluateLeadOwnershipAll(
   const collect = (node: LeadTreeNode, path: string[]): LeadDecision[] => {
     if ("leaf" in node) return [{ leaf: resolveLeaf(node.leaf, facts), path }];
     const value = canonicalFor(node.switch, facts);
+    // Product-focus fan-out: a company that sells BOTH functional and decorative gets
+    // a lead down each branch (WAC functional + decorative/brand), de-duped.
+    if (node.switch === "productFocus" && productFocusIsBoth(facts.productFocus)) {
+      const out: LeadDecision[] = [];
+      const seen = new Set<string>();
+      for (const k of ["Functional", "Decorative"]) {
+        const child = node.cases[k] ?? node.default;
+        if (!child) continue;
+        for (const d of collect(child, [...path, `productFocus:${k}*`])) {
+          const key = leafKey(d.leaf);
+          if (!seen.has(key)) {
+            seen.add(key);
+            out.push(d);
+          }
+        }
+      }
+      if (out.length) return out;
+    }
     if (node.switch === "brand" && !value) {
       const entries = Object.entries(node.cases);
       if (entries.length) {

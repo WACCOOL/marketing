@@ -7,6 +7,8 @@ import {
   extractSiteSummary,
   inputsHash,
   siteLikelyUnrelated,
+  normalizeCompanyType,
+  nameIsElectricalBusiness,
   PRODUCT_FOCUS_PROP,
   type CompanyForClassify,
   type ProductFocusValue,
@@ -130,11 +132,19 @@ export async function classifyProductFocus(env: Env, sb: SupabaseClient, opts: P
     if (props === null) return { ...base, status: "skipped", reason: "company not found" };
   }
 
-  // Gate: Showroom/Distributor companies only.
+  // Gate: Showroom/Distributor companies only. Use the SAME resolution the routing uses
+  // (`normalizeCompanyType`, which understands both simplified buckets and legacy sub-types)
+  // so the classifier and the event-lead routing never disagree — many real showroom/
+  // distributor companies have a blank `company_sub_type_simplified` and are only
+  // identifiable via the legacy `company_sub_type` ("Lighting Showroom", "Distributor", …).
   const simplified = str(props.company_sub_type_simplified);
   const subType = str(props.company_sub_type);
-  if (!(simplified && APPLICABLE_SIMPLIFIED.has(simplified))) {
-    return { ...base, status: "skipped_not_applicable", reason: `simplified=${simplified ?? "∅"}` };
+  const isShowroomDistributor =
+    (!!simplified && APPLICABLE_SIMPLIFIED.has(simplified)) ||
+    normalizeCompanyType(simplified) === "ShowroomDistributor" ||
+    normalizeCompanyType(subType) === "ShowroomDistributor";
+  if (!isShowroomDistributor) {
+    return { ...base, status: "skipped_not_applicable", reason: `simplified=${simplified ?? "∅"} subType=${subType ?? "∅"}` };
   }
   // Never overwrite an existing value.
   const current = str(props[PRODUCT_FOCUS_PROP]);
@@ -146,14 +156,19 @@ export async function classifyProductFocus(env: Env, sb: SupabaseClient, opts: P
   // Deterministic override (name → MF account) — skip the crawl.
   const ov = overrideFor({ name: str(props.name), accountNumber: str(props.account_number_) });
   if (ov) {
-    const value = productFocusToValue([ov]);
+    // An MF-account override says Decorative, but a company whose NAME marks it an
+    // electrical business (e.g. "Northwest Electrical Supply Co #MF01506") ALSO carries
+    // functional — pin Functional so it gets both leads, not decorative-only.
+    const ovFocus: ProductFocusValue[] = [ov];
+    if (nameIsElectricalBusiness(str(props.name)) && !ovFocus.includes("Functional")) ovFocus.unshift("Functional");
+    const value = productFocusToValue(ovFocus);
     let wrote = false;
     if (write) {
       try { await writeFocus(token, companyId, value, signal); wrote = true; }
       catch (e) { return { ...base, status: "error", reason: e instanceof Error ? e.message : String(e) }; }
     }
     await recordAttempt(sb, { company_id: companyId, result: value, confidence: null, model, source, status: "override", wrote, prompt_tokens: null, output_tokens: null, inputs_hash: null });
-    return { ...base, status: "override", focus: [ov], value, confidence: null, wrote };
+    return { ...base, status: "override", focus: ovFocus, value, confidence: null, wrote };
   }
 
   const company: CompanyForClassify = { name: str(props.name), description: str(props.description), industry: str(props.industry), domain: str(props.domain), website: str(props.website) };
@@ -186,6 +201,13 @@ export async function classifyProductFocus(env: Env, sb: SupabaseClient, opts: P
   const hash = inputsHash(company, websiteText);
   const confident = !!parsed && parsed.confidence >= minConf;
   const focus: ProductFocusValue[] = confident ? parsed!.focus : [defaultFocus(subType)];
+  // A company whose NAME marks it an electrical supply house / distributor ALWAYS carries
+  // functional product, so pin Functional regardless of AI wobble — the AI's real job for
+  // these is whether they ALSO carry decorative. (Name-based, not sub-type-based, so a
+  // decorative showroom mislabeled "Distributor" is not forced functional.)
+  if (nameIsElectricalBusiness(company.name) && !focus.includes("Functional")) {
+    focus.unshift("Functional");
+  }
   const value = productFocusToValue(focus);
   const confidence = parsed?.confidence ?? null;
 
