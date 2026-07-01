@@ -44,6 +44,7 @@ export type ProjectFocusStatus =
   | "defaulted"
   | "already_set"
   | "skipped_not_designer"
+  | "skipped_no_domain"
   | "skipped"
   | "error";
 
@@ -209,23 +210,16 @@ export async function classifyProjectFocus(
   const minConf = minConfidence(env);
   const allowScrape = opts.scrapeWebsite ?? true;
 
-  // No site, or a site that looks unrelated to the name → default Residential (no Gemini).
-  if (!site || siteLikelyUnrelated(company.name ?? "", site)) {
-    const value = projectFocusToValue(["Residential"]);
-    let wrote = false;
-    if (write) {
-      try {
-        await writeFocus(token, companyId, value, signal);
-        wrote = true;
-      } catch (e) {
-        return { ...base, status: "error", reason: e instanceof Error ? e.message : String(e) };
-      }
-    }
-    await recordAttempt(sb, { company_id: companyId, result: value, confidence: null, model, source, status: "defaulted", wrote, prompt_tokens: null, output_tokens: null, inputs_hash: null });
-    return { ...base, status: "defaulted", focus: ["Residential"], value, confidence: null, wrote };
+  // No domain/website → assign nothing (leave project_focus blank). Routing treats a
+  // blank value as Residential at event time, so nothing is lost by not guessing here.
+  if (!site) {
+    await recordAttempt(sb, { company_id: companyId, result: null, confidence: null, model, source, status: "skipped_no_domain", wrote: false, prompt_tokens: null, output_tokens: null, inputs_hash: null });
+    return { ...base, status: "skipped_no_domain", reason: "no domain" };
   }
+  // A domain that looks unrelated to the name (bad CRM data) → don't scrape that site.
+  const siteSuspect = siteLikelyUnrelated(company.name ?? "", site);
 
-  // Pass 1 (fields). Pass 2 (scrape) only if pass 1 wasn't confident.
+  // Pass 1 (fields). Pass 2 (scrape) only if pass 1 wasn't confident and the site looks trustworthy.
   let promptTokens = 0;
   let outputTokens = 0;
   let websiteText: string | null = null;
@@ -238,7 +232,7 @@ export async function classifyProjectFocus(
   } catch (e) {
     return { ...base, status: "error", reason: e instanceof Error ? e.message : String(e), promptTokens, outputTokens };
   }
-  if (!(parsed && parsed.confidence >= minConf) && allowScrape) {
+  if (!(parsed && parsed.confidence >= minConf) && allowScrape && !siteSuspect) {
     websiteText = await fetchWebsiteText(site);
     if (websiteText) {
       try {
