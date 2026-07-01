@@ -26,6 +26,27 @@ export function mfAccount(accountNumber: string | null | undefined): boolean {
 }
 
 /**
+ * True when a company's NAME clearly marks it an electrical supply house / distributor
+ * (e.g. "… Electric Supply", "Electrical Distributors", "Wholesale Electric"). Such a
+ * company ALWAYS carries functional product, so the classifier pins Functional and only
+ * asks the AI whether it ALSO carries decorative.
+ *
+ * Deliberately NAME-based, not sub-type-based: the legacy `company_sub_type` (Distributor
+ * / Dealer / …) is the polluted field product_focus exists to bypass — e.g. "Lighting
+ * Incorporated" is tagged "Distributor" but is a decorative showroom. A decorative-only
+ * showroom must stay decorative, so we pin only on an unambiguous electrical-supply name.
+ */
+export function nameIsElectricalSupply(name: string | null | undefined): boolean {
+  const n = (name ?? "").toLowerCase();
+  if (!n) return false;
+  return (
+    /\belectric(al)?\s+(supply|supplies|distribut|wholesale)/.test(n) ||
+    /\bwholesale\s+electric(al)?\b/.test(n) ||
+    /\belectric(al)?\s+supply\b/.test(n)
+  );
+}
+
+/**
  * Deterministic product focus for a company, or null if no override applies (→ crawl).
  * Name overrides win; then the MF-account rule.
  */
