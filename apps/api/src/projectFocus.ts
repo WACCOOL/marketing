@@ -32,6 +32,8 @@ import { hs, PATHS } from "./hubspotPush.js";
 const WEBSITE_FETCH_TIMEOUT_MS = 8_000;
 const WEBSITE_USER_AGENT = "WAC-Marketing-App/1.0 (+project-focus-classifier)";
 const DEFAULT_MIN_CONFIDENCE = 0.6;
+/** Commercial needs to be a real focus, so it's held to a higher bar than Residential. */
+const DEFAULT_COMMERCIAL_MIN_CONFIDENCE = 0.8;
 const DEDUP_WINDOW_MS = 2 * 60 * 1000;
 
 const FETCH_PROPS =
@@ -73,6 +75,12 @@ export interface ProjectFocusOptions {
 function minConfidence(env: Env): number {
   const v = Number(env.CLASSIFY_MIN_CONFIDENCE);
   return Number.isFinite(v) && v > 0 && v <= 1 ? v : DEFAULT_MIN_CONFIDENCE;
+}
+
+/** Higher bar to mark a company Commercial — commercial must be a real focus, not a mention. */
+function commercialMinConfidence(env: Env): number {
+  const v = Number(env.PROJECT_FOCUS_COMMERCIAL_MIN);
+  return Number.isFinite(v) && v > 0 && v <= 1 ? v : DEFAULT_COMMERCIAL_MIN_CONFIDENCE;
 }
 
 function str(v: unknown): string | null {
@@ -248,8 +256,13 @@ export async function classifyProjectFocus(
 
   const hash = inputsHash(company, websiteText);
   const confident = !!parsed && parsed.confidence >= minConf;
-  // Always at least Residential; include Commercial only when the model is confident.
-  const focus: ProjectFocusValue[] = confident ? parsed!.focus : ["Residential"];
+  // Commercial must be a REAL FOCUS: mark it only at a higher confidence bar, so a
+  // borderline description mention (e.g. "boutique commercial") stays Residential.
+  const commMin = commercialMinConfidence(env);
+  const modelFocus = confident ? parsed!.focus : [];
+  const focus: ProjectFocusValue[] = [];
+  if (modelFocus.includes("Commercial") && parsed!.confidence >= commMin) focus.push("Commercial");
+  if (modelFocus.includes("Residential") || !focus.length) focus.unshift("Residential");
   const value = projectFocusToValue(focus);
   const confidence = parsed?.confidence ?? null;
 
