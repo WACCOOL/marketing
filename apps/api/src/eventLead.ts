@@ -20,6 +20,7 @@ import {
   CHANNEL_TO_CONTACT_PROP,
   CONTACT_REP_CODE_PROPS,
   PROJECT_FOCUS_PROP,
+  PRODUCT_FOCUS_PROP,
   type LeadFacts,
   type Leaf,
   type LeadDecision,
@@ -29,6 +30,7 @@ import { serviceSupabase } from "./supabase.js";
 import { hs, PATHS, REP_OBJECT, resolveOwnerByName } from "./hubspotPush.js";
 import { emailDomain, isNationalAccountDomain, NATIONAL_ACCOUNT_PROP } from "./nationalAccounts.js";
 import { classifyProjectFocus } from "./projectFocus.js";
+import { classifyProductFocus } from "./productFocus.js";
 
 // ---------------------------------------------------------------------------
 // Config — confirmed owner ids (from HubSpot) + property names. Edit-in-one-place.
@@ -223,6 +225,8 @@ interface CompanyFacts {
   nationalAccount: boolean;
   /** Raw `project_focus` multi-select (may be blank → classify just-in-time). */
   projectFocus: string;
+  /** Raw `product_focus` multi-select (may be blank → classify just-in-time). */
+  productFocus: string;
   /** Raw company props, reused to skip a refetch in the just-in-time classifier. */
   props: Record<string, string | null>;
 }
@@ -246,7 +250,7 @@ async function fetchCompany(
   const res = await hs(
     token,
     "GET",
-    `${PATHS.companyLookup}${encodeURIComponent(companyId)}?properties=company_sub_type_simplified,company_sub_type,${NATIONAL_ACCOUNT_PROP},${PROJECT_FOCUS_PROP}`,
+    `${PATHS.companyLookup}${encodeURIComponent(companyId)}?properties=company_sub_type_simplified,company_sub_type,${NATIONAL_ACCOUNT_PROP},${PROJECT_FOCUS_PROP},${PRODUCT_FOCUS_PROP}`,
     undefined,
     signal,
   );
@@ -259,6 +263,7 @@ async function fetchCompany(
     subType,
     nationalAccount: (p[NATIONAL_ACCOUNT_PROP] ?? "").toLowerCase() === "true",
     projectFocus: (p[PROJECT_FOCUS_PROP] ?? "").trim(),
+    productFocus: (p[PRODUCT_FOCUS_PROP] ?? "").trim(),
     props: p,
   };
 }
@@ -283,13 +288,50 @@ async function resolveProjectFocus(
       source: "event-lead",
       signal,
       write: !dryRun,
-      properties: company.props,
+      // Let the classifier fetch its own complete prop set (name, account_number_,
+      // website, etc.) — our company.props is only the routing subset.
     });
     return r.value;
   } catch (e) {
     console.error("[event-lead] just-in-time project-focus classify failed:", e);
     return null;
   }
+}
+
+/**
+ * The company's product focus (decorative/functional) for routing. Stored value if
+ * present; otherwise, for an unclassified Showroom/Distributor, classifies just-in-time
+ * (writes unless dryRun). Non-showroom/distributor / no company → null (→ Functional).
+ */
+async function resolveProductFocus(
+  env: Env,
+  company: CompanyFacts | null,
+  dryRun: boolean,
+  signal: AbortSignal,
+): Promise<string | null> {
+  if (!company) return null;
+  if (company.productFocus) return company.productFocus;
+  if (normalizeCompanyType(company.subType) !== "ShowroomDistributor") return null;
+  try {
+    const r = await classifyProductFocus(env, serviceSupabase(env), {
+      companyId: company.companyId,
+      source: "event-lead",
+      signal,
+      write: !dryRun,
+      // Let the classifier fetch its own complete prop set (name, account_number_,
+      // website, etc.) — our company.props is only the routing subset.
+    });
+    return r.value;
+  } catch (e) {
+    console.error("[event-lead] just-in-time product-focus classify failed:", e);
+    return null;
+  }
+}
+
+/** Company-level brand fallback for Showroom/Distributor: Decorative→Modern Forms, else WAC Lighting. */
+function productFocusBrand(productFocus: string | null): string | null {
+  if (!productFocus) return null;
+  return /decorative/i.test(productFocus) ? "Modern Forms" : "WAC Lighting";
 }
 
 /** Map the contact's region/country props to the tree's Location bucket. */
@@ -511,18 +553,27 @@ export async function processEventLead(
       },
     ];
   } else {
-    // Just-in-time project-focus classify: if the company is an interior designer with
-    // no project_focus yet, classify it now (writes to the company unless dryRun) so the
-    // first attendee routes correctly instead of defaulting to Residential.
-    const projectFocus = await resolveProjectFocus(env, company, body.dryRun ?? false, signal);
+    // Just-in-time classify (writes to the company unless dryRun) so the first attendee
+    // routes correctly: project_focus for interior designers, product_focus for
+    // showroom/distributor companies.
+    const dry = body.dryRun ?? false;
+    const projectFocus = await resolveProjectFocus(env, company, dry, signal);
+    const productFocus = await resolveProductFocus(env, company, dry, signal);
+    // Brand: campaign first. For showroom/distributor, fall back to the company's
+    // decorative/functional (Decorative→Modern Forms, Functional→WAC); otherwise to the
+    // contact's top brand lead score.
+    const isShowroomDistributor = normalizeCompanyType(company?.subType ?? null) === "ShowroomDistributor";
+    const brand =
+      body.campaignBrand ??
+      (isShowroomDistributor ? productFocusBrand(productFocus) : brandFromScores(contact.brandScores));
     const facts: LeadFacts = {
       location: locationFact(contact),
       country: contact.country,
       role: contact.role,
       companySubType: company?.subType ?? null,
-      // Brand from the campaign; fall back to the contact's top brand lead score.
-      brand: body.campaignBrand ?? brandFromScores(contact.brandScores),
+      brand,
       projectFocus,
+      productFocus,
     };
     decisions = evaluateLeadOwnershipAll(facts);
   }
@@ -548,6 +599,16 @@ export async function processEventLead(
     seen.add(k);
     return true;
   });
+
+  // Contact-owner rule: if the contact already has a known owner (and it isn't the Lana
+  // fallback), that owner also gets a lead — they're notified alongside the routed rep.
+  if (contact.ownerId && contact.ownerId !== FALLBACK_OWNER_ID && !targets.some((t) => t.resolved.ownerId === contact.ownerId)) {
+    targets.push({
+      d: { leaf: { kind: "person", name: "", label: "Existing contact owner (notified)" }, path: ["contact-owner"] },
+      resolved: { ownerId: contact.ownerId, source: "contact-owner" },
+      routingRepCode: targets[0]?.routingRepCode ?? null,
+    });
+  }
 
   // Resolve each target owner's display name once (for the co-owners field on fan-out).
   const ownerNames = await Promise.all(
