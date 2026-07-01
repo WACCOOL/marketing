@@ -7,6 +7,7 @@ import {
   extractSiteSummary,
   inputsHash,
   siteLikelyUnrelated,
+  normalizeCompanyType,
   PRODUCT_FOCUS_PROP,
   type CompanyForClassify,
   type ProductFocusValue,
@@ -130,11 +131,19 @@ export async function classifyProductFocus(env: Env, sb: SupabaseClient, opts: P
     if (props === null) return { ...base, status: "skipped", reason: "company not found" };
   }
 
-  // Gate: Showroom/Distributor companies only.
+  // Gate: Showroom/Distributor companies only. Use the SAME resolution the routing uses
+  // (`normalizeCompanyType`, which understands both simplified buckets and legacy sub-types)
+  // so the classifier and the event-lead routing never disagree — many real showroom/
+  // distributor companies have a blank `company_sub_type_simplified` and are only
+  // identifiable via the legacy `company_sub_type` ("Lighting Showroom", "Distributor", …).
   const simplified = str(props.company_sub_type_simplified);
   const subType = str(props.company_sub_type);
-  if (!(simplified && APPLICABLE_SIMPLIFIED.has(simplified))) {
-    return { ...base, status: "skipped_not_applicable", reason: `simplified=${simplified ?? "∅"}` };
+  const isShowroomDistributor =
+    (!!simplified && APPLICABLE_SIMPLIFIED.has(simplified)) ||
+    normalizeCompanyType(simplified) === "ShowroomDistributor" ||
+    normalizeCompanyType(subType) === "ShowroomDistributor";
+  if (!isShowroomDistributor) {
+    return { ...base, status: "skipped_not_applicable", reason: `simplified=${simplified ?? "∅"} subType=${subType ?? "∅"}` };
   }
   // Never overwrite an existing value.
   const current = str(props[PRODUCT_FOCUS_PROP]);
