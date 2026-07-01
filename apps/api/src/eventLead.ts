@@ -141,6 +141,8 @@ export interface ResolvedLead {
 export interface EventLeadResult {
   contactId: string;
   nationalAccount: boolean;
+  /** The campaign used (passed by the workflow, or auto-resolved from marketing events). */
+  campaignName: string | null;
   /** One per distinct owner. Multiple only when the brand was unknown (fan-out). */
   leads: ResolvedLead[];
   contactOwnerAction: "set" | "skipped_existing" | "skipped_no_owner" | "skipped_multiple";
@@ -410,6 +412,58 @@ async function campaignId(token: string, body: EventLeadBody, signal: AbortSigna
   return res.ok ? String(res.data?.results?.[0]?.id ?? "") : "";
 }
 
+/** A marketing event's (0-54) associated campaign (0-35), or null. */
+async function eventCampaign(
+  token: string,
+  eventId: string,
+  signal: AbortSignal,
+): Promise<{ id: string; name: string } | null> {
+  const a = await hs(token, "GET", `/crm/v4/objects/0-54/${encodeURIComponent(eventId)}/associations/0-35`, undefined, signal);
+  const campId = a.ok ? String(a.data?.results?.[0]?.toObjectId ?? "") : "";
+  if (!campId) return null;
+  const c = await hs(token, "GET", `/crm/v3/objects/${LEAD.campaignObjectType}/${campId}?properties=hs_name`, undefined, signal);
+  return { id: campId, name: c.ok ? String(c.data?.properties?.hs_name ?? "").trim() : "" };
+}
+
+/**
+ * Auto-resolve the campaign from the contact's marketing-event history: the MOST RECENT
+ * event (by occurrence) that maps to a campaign. Uses the marketing-events participations
+ * API (attendance) + the native event→campaign association — no name-matching, and it
+ * covers both list-enrolled and individually-enrolled attendees. Null when the contact
+ * has no campaign-linked event.
+ */
+async function campaignFromEvents(
+  token: string,
+  contactId: string,
+  signal: AbortSignal,
+): Promise<{ id: string; name: string } | null> {
+  const res = await hs(
+    token,
+    "GET",
+    `/marketing/v3/marketing-events/participations/contacts/${encodeURIComponent(contactId)}/breakdown`,
+    undefined,
+    signal,
+  );
+  if (!res.ok) return null;
+  const parts = ((res.data?.results ?? []) as Array<Record<string, any>>)
+    .filter((p) => (p?.properties?.attendanceState ?? "") !== "CANCELLED")
+    .map((p) => ({
+      evId: String(p?.associations?.marketingEvent?.marketingEventId ?? ""),
+      occurredAt: Number(p?.properties?.occurredAt ?? 0),
+      createdAt: Date.parse(p?.createdAt ?? "") || 0,
+    }))
+    .filter((p) => p.evId)
+    .sort((a, b) => b.occurredAt - a.occurredAt || b.createdAt - a.createdAt);
+  const seen = new Set<string>();
+  for (const p of parts) {
+    if (seen.has(p.evId)) continue;
+    seen.add(p.evId);
+    const camp = await eventCampaign(token, p.evId, signal);
+    if (camp?.name) return camp;
+  }
+  return null;
+}
+
 /** Regional Manager (RSM/TSM) owner for a rep code, via rep_codes.rsm_tsm → owner. */
 async function repCodeRsmOwnerId(
   env: Env,
@@ -547,6 +601,14 @@ export async function processEventLead(
   const token = env.HUBSPOT_TOKEN;
   if (!token) throw new Error("HUBSPOT_TOKEN not configured");
   const { contactId } = body;
+
+  // Campaign: honor an explicit one from the workflow; otherwise auto-resolve from the
+  // contact's most recent campaign-linked marketing event (so the workflow never has to
+  // pass — or be updated per event). Drives the lead name, source, and campaign assoc.
+  if (!body.campaignName && !body.campaignId) {
+    const ev = await campaignFromEvents(token, contactId, signal);
+    if (ev?.name) body = { ...body, campaignName: ev.name, campaignId: ev.id };
+  }
 
   const contact = await fetchContact(token, contactId, signal);
 
@@ -686,5 +748,5 @@ export async function processEventLead(
     }
   }
 
-  return { contactId, nationalAccount, leads, contactOwnerAction };
+  return { contactId, nationalAccount, campaignName: body.campaignName ?? null, leads, contactOwnerAction };
 }
