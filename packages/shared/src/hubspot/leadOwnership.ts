@@ -39,7 +39,7 @@ import { normalizeBrand } from "../productinfo.js";
 // ---------------------------------------------------------------------------
 
 /** Where the contact is, from the contact Location property. */
-export type Location = "Canada" | "International" | "North America" | "Unknown";
+export type Location = "Canada" | "International" | "Latin America" | "North America" | "Unknown";
 
 /**
  * Lead-routing brand. Unlike {@link normalizeBrand} (which folds "Modern Forms
@@ -140,6 +140,7 @@ export function normalizeLocation(raw: string | null | undefined): Location {
   if (!k) return "Unknown";
   // TODO(confirm): exact Location property option values.
   if (/(^|\b)(ca|canada)(\b|$)/.test(k)) return "Canada";
+  if (/latin america/.test(k) || LATIN_AMERICA_COUNTRIES.has(k)) return "Latin America";
   if (/(north america|united states|^us$|^usa$|america|domestic)/.test(k)) {
     return "North America";
   }
@@ -149,6 +150,53 @@ export function normalizeLocation(raw: string | null | undefined): Location {
   if (/(unknown|n\/a|none)/.test(k)) return "Unknown";
   // A bare country name that isn't US/Canada is treated as International.
   return "International";
+}
+
+/**
+ * Countries in the Americas outside the US/Canada (Mexico, Central America, the
+ * Caribbean, South America) — the international team only covers OUTSIDE North and
+ * South America, so these route to Lana for manual routing instead of the
+ * international node. Keyed by normalized country name AND ISO-2 code.
+ */
+const LATIN_AMERICA_COUNTRIES = new Set([
+  // North/Central America (non-US/CA)
+  "mexico", "mx", "guatemala", "gt", "belize", "bz", "honduras", "hn",
+  "el salvador", "sv", "nicaragua", "ni", "costa rica", "cr", "panama", "pa",
+  // Caribbean
+  "cuba", "cu", "dominican republic", "do", "haiti", "ht", "jamaica", "jm",
+  "puerto rico", "pr", "bahamas", "bs", "barbados", "bb", "trinidad and tobago", "tt",
+  "aruba", "aw", "curacao", "curaçao", "cw", "cayman islands", "ky", "bermuda", "bm",
+  "saint lucia", "lc", "antigua and barbuda", "ag", "grenada", "gd",
+  "saint kitts and nevis", "kn", "saint vincent and the grenadines", "vc",
+  "dominica", "dm", "turks and caicos islands", "tc", "british virgin islands", "vg",
+  "us virgin islands", "virgin islands", "vi",
+  // South America
+  "brazil", "brasil", "br", "argentina", "ar", "chile", "cl", "colombia", "co",
+  "peru", "pe", "venezuela", "ve", "ecuador", "ec", "bolivia", "bo",
+  "paraguay", "py", "uruguay", "uy", "guyana", "gy", "suriname", "sr",
+  "french guiana", "gf",
+]);
+
+/** True when the country (name or ISO code) is in the Americas outside the US/Canada. */
+export function isLatinAmerica(country: string | null | undefined): boolean {
+  return LATIN_AMERICA_COUNTRIES.has(norm(country));
+}
+
+/**
+ * Detect a brand ask in free-text lead notes (taken at the show). Returns the
+ * canonical brand ONLY when exactly one brand family is mentioned — an ambiguous
+ * note (several brands) returns null and routing falls back to the usual brand
+ * resolution. Used to focus routing/ISR selection for this request.
+ */
+export function brandFromNotes(notes: string | null | undefined): LeadBrand | null {
+  const k = norm(notes);
+  if (!k) return null;
+  const hits: LeadBrand[] = [];
+  if (/schonbek/.test(k)) hits.push("Schonbek");
+  if (/\bfans?\b/.test(k) && /(modern\s*forms|\bmf\b)/.test(k)) hits.push("MF Fans");
+  else if (/modern\s*forms|\bmf\b/.test(k)) hits.push("Modern Forms");
+  if (/\bwac\b/.test(k)) hits.push("WAC Lighting");
+  return hits.length === 1 ? hits[0]! : null;
 }
 
 /**
@@ -501,6 +549,9 @@ export const LEAD_OWNERSHIP_TREE: LeadTreeNode = {
   cases: {
     Canada: person("Lana", "Canada → Lana"),
     Unknown: person("Lana", "Unknown → Lana"),
+    // The international team only covers OUTSIDE North + South America; the rest of
+    // the Americas (Mexico, Central/South America, Caribbean) → Lana for manual routing.
+    "Latin America": person("Lana", "Latin America → Lana (manual routing)"),
     International: INTERNATIONAL_NODE,
     "North America": NORTH_AMERICA_NODE,
   },

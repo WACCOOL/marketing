@@ -17,7 +17,11 @@
 import {
   evaluateLeadOwnershipAll,
   normalizeCompanyType,
+  normalizeLeadBrand,
   projectFocusFromSubType,
+  isLatinAmerica,
+  brandFromNotes,
+  mfAccount,
   CHANNEL_TO_CONTACT_PROP,
   CONTACT_REP_CODE_PROPS,
   PROJECT_FOCUS_PROP,
@@ -61,6 +65,18 @@ const INTL_EMAIL_OWNER_ID: Record<string, string> = {
 /** Global fallback owner (Lana) for unresolved leaves / blank rep codes. */
 const FALLBACK_OWNER_ID = PERSON_OWNER_ID["Lana"]!;
 
+/**
+ * Dynamic list "Competitor Contacts Based on Domain". Members get NO lead — unless
+ * they're associated with a company that has an account number (a real customer).
+ */
+const COMPETITOR_LIST_ID = "1966";
+
+/**
+ * How close to the event a `lead_notes` update must be to count as taken AT the show
+ * (older notes are from previous shows and must not leak onto this lead).
+ */
+const NOTES_FRESH_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
 /** Contact properties that drive routing. */
 const CONTACT_PROPS = {
   /** Canada / International / North America bucket. `global_region` is NA-vs-Intl. */
@@ -102,6 +118,8 @@ const LEAD = {
   repCodeProp: "rep_code_routing",
   /** Names of the other reps this event was also routed to (fan-out, brand unknown). */
   coOwnersProp: "lead_co_owners",
+  /** Fresh at-show notes copied from the contact's `lead_notes` (timestamp-stamped). */
+  notesProp: "lead_notes",
   pipeline: "lead-pipeline-id",
   stage: "new-stage-id",
   contactToLeadTypeId: 578,
@@ -143,9 +161,13 @@ export interface EventLeadResult {
   nationalAccount: boolean;
   /** The campaign used (passed by the workflow, or auto-resolved from marketing events). */
   campaignName: string | null;
+  /** Fresh at-show notes copied onto the lead(s) (date-stamped), or null. */
+  leadNotes: string | null;
   /** One per distinct owner. Multiple only when the brand was unknown (fan-out). */
   leads: ResolvedLead[];
   contactOwnerAction: "set" | "skipped_existing" | "skipped_no_owner" | "skipped_multiple";
+  /** Set when NO leads were created on purpose (e.g. a competitor-domain contact). */
+  skippedReason?: "competitor";
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +184,9 @@ interface ContactFacts {
   role: string;
   /** Contact-level type (`lead_type`) — company sub-type fallback when no company. */
   leadType: string;
+  /** At-show notes (`lead_notes`) + when they were last written (ms epoch, 0 = never). */
+  leadNotes: string;
+  leadNotesUpdatedAt: number;
   /** channel name → rep code value (only non-blank ones). */
   repCodes: Record<string, string>;
   /** canonical brand → lead score (number). */
@@ -179,13 +204,16 @@ async function fetchContact(token: string, contactId: string, signal: AbortSigna
     CONTACT_PROPS.country,
     CONTACT_PROPS.role,
     CONTACT_PROPS.leadType,
+    "lead_notes",
     ...Object.values(BRAND_SCORE_PROP),
     ...CONTACT_REP_CODE_PROPS,
   ];
   const res = await hs(
     token,
     "GET",
-    `${PATHS.contactLookup}${encodeURIComponent(contactId)}?properties=${props.join(",")}`,
+    // propertiesWithHistory gives lead_notes' last-write timestamp, so we can tell an
+    // at-show note from one left over from a previous show.
+    `${PATHS.contactLookup}${encodeURIComponent(contactId)}?properties=${props.join(",")}&propertiesWithHistory=lead_notes`,
     undefined,
     signal,
   );
@@ -212,6 +240,10 @@ async function fetchContact(token: string, contactId: string, signal: AbortSigna
     country: (p[CONTACT_PROPS.country] ?? "").trim(),
     role: (p[CONTACT_PROPS.role] ?? "").trim(),
     leadType: (p[CONTACT_PROPS.leadType] ?? "").trim(),
+    leadNotes: (p.lead_notes ?? "").trim(),
+    leadNotesUpdatedAt: Date.parse(
+      (res.data?.propertiesWithHistory?.lead_notes?.[0]?.timestamp as string | undefined) ?? "",
+    ) || 0,
     repCodes,
     brandScores,
   };
@@ -242,41 +274,105 @@ interface CompanyFacts {
   props: Record<string, string | null>;
 }
 
-/** Read the contact's primary associated company's sub_type, NA flag, and project focus. */
-async function fetchCompany(
+/** An associated company with an account number, plus its inside sales person(s). */
+interface IsrCompany {
+  companyId: string;
+  accountNumber: string;
+  /** MF-prefixed account (Modern Forms family — can usually sell Schonbek too). */
+  mf: boolean;
+  /** `inside_sales_rep_from_sap`, else `inside_sales_manager_1` + `_2`. */
+  isrOwnerIds: string[];
+}
+
+interface ContactCompanies {
+  /** The primary associated company (routing facts), or null. */
+  primary: CompanyFacts | null;
+  /** Every associated company with an account number AND an inside sales person. */
+  isrCompanies: IsrCompany[];
+  /** Any associated company has an account number (competitor-skip exemption). */
+  hasAccountCompany: boolean;
+}
+
+const COMPANY_FETCH_PROPS = [
+  "company_sub_type_simplified",
+  "company_sub_type",
+  NATIONAL_ACCOUNT_PROP,
+  PROJECT_FOCUS_PROP,
+  PRODUCT_FOCUS_PROP,
+  "account_number_",
+  "inside_sales_rep_from_sap",
+  "inside_sales_manager_1",
+  "inside_sales_manager_2",
+];
+
+/** Read ALL the contact's associated companies: primary routing facts + ISR accounts. */
+async function fetchCompanies(
   token: string,
   contactId: string,
   signal: AbortSignal,
-): Promise<CompanyFacts | null> {
+): Promise<ContactCompanies> {
+  const none: ContactCompanies = { primary: null, isrCompanies: [], hasAccountCompany: false };
   const assoc = await hs(
     token,
     "GET",
-    `/crm/v4/objects/contacts/${encodeURIComponent(contactId)}/associations/companies?limit=10`,
+    `/crm/v4/objects/contacts/${encodeURIComponent(contactId)}/associations/companies?limit=25`,
     undefined,
     signal,
   );
-  if (!assoc.ok) return null;
-  const companyId = String(assoc.data?.results?.[0]?.toObjectId ?? assoc.data?.results?.[0]?.id ?? "");
-  if (!companyId) return null;
+  if (!assoc.ok) return none;
+  const ids = [
+    ...new Set(
+      ((assoc.data?.results ?? []) as Array<Record<string, unknown>>)
+        .map((r) => String(r.toObjectId ?? r.id ?? ""))
+        .filter(Boolean),
+    ),
+  ];
+  if (!ids.length) return none;
   const res = await hs(
     token,
-    "GET",
-    `${PATHS.companyLookup}${encodeURIComponent(companyId)}?properties=company_sub_type_simplified,company_sub_type,${NATIONAL_ACCOUNT_PROP},${PROJECT_FOCUS_PROP},${PRODUCT_FOCUS_PROP}`,
-    undefined,
+    "POST",
+    "/crm/v3/objects/companies/batch/read",
+    { properties: COMPANY_FETCH_PROPS, inputs: ids.map((id) => ({ id })) },
     signal,
   );
-  if (!res.ok) return null;
-  const p = (res.data?.properties ?? {}) as Record<string, string | null>;
-  // Prefer the clean simplified taxonomy; fall back to the legacy sub_type.
-  const subType = (p.company_sub_type_simplified ?? "").trim() || (p.company_sub_type ?? "").trim();
-  return {
-    companyId,
-    subType,
-    nationalAccount: (p[NATIONAL_ACCOUNT_PROP] ?? "").toLowerCase() === "true",
-    projectFocus: (p[PROJECT_FOCUS_PROP] ?? "").trim(),
-    productFocus: (p[PRODUCT_FOCUS_PROP] ?? "").trim(),
-    props: p,
-  };
+  if (!res.ok) return none;
+  const byId = new Map<string, Record<string, string | null>>();
+  for (const r of (res.data?.results ?? []) as Array<Record<string, any>>) {
+    byId.set(String(r.id), (r.properties ?? {}) as Record<string, string | null>);
+  }
+
+  // Primary = the first association (HubSpot lists the primary company first).
+  let primary: CompanyFacts | null = null;
+  const p0 = byId.get(ids[0]!);
+  if (p0) {
+    const subType = (p0.company_sub_type_simplified ?? "").trim() || (p0.company_sub_type ?? "").trim();
+    primary = {
+      companyId: ids[0]!,
+      subType,
+      nationalAccount: (p0[NATIONAL_ACCOUNT_PROP] ?? "").toLowerCase() === "true",
+      projectFocus: (p0[PROJECT_FOCUS_PROP] ?? "").trim(),
+      productFocus: (p0[PRODUCT_FOCUS_PROP] ?? "").trim(),
+      props: p0,
+    };
+  }
+
+  const isrCompanies: IsrCompany[] = [];
+  let hasAccountCompany = false;
+  for (const id of ids) {
+    const p = byId.get(id);
+    if (!p) continue;
+    const accountNumber = (p.account_number_ ?? "").trim();
+    if (!accountNumber) continue;
+    hasAccountCompany = true;
+    const fromSap = (p.inside_sales_rep_from_sap ?? "").trim();
+    const isrOwnerIds = fromSap
+      ? [fromSap]
+      : [(p.inside_sales_manager_1 ?? "").trim(), (p.inside_sales_manager_2 ?? "").trim()].filter(Boolean);
+    if (isrOwnerIds.length) {
+      isrCompanies.push({ companyId: id, accountNumber, mf: mfAccount(accountNumber), isrOwnerIds });
+    }
+  }
+  return { primary, isrCompanies, hasAccountCompany };
 }
 
 /**
@@ -352,10 +448,33 @@ function productFocusBrand(productFocus: string | null): string | null {
 /** Map the contact's region/country props to the tree's Location bucket. */
 function locationFact(c: ContactFacts): string {
   if (c.countryCode.toUpperCase() === "CA" || /\bcanada\b/i.test(c.country)) return "Canada";
+  // Americas outside the US/Canada → Lana for manual routing (the international team
+  // only covers OUTSIDE North + South America) — regardless of what global_region says.
+  if (isLatinAmerica(c.countryCode) || isLatinAmerica(c.country)) return "Latin America";
   // global_region is "North America" / "International"; normalizeLocation handles it.
   if (c.region) return c.region;
   if (c.countryCode.toUpperCase() === "US") return "North America";
   return c.country || "";
+}
+
+/** Is the contact in the competitor-domains list? (Dynamic list — self-updating.) */
+async function inCompetitorList(token: string, contactId: string, signal: AbortSignal): Promise<boolean> {
+  let after = "";
+  for (let page = 0; page < 10; page++) {
+    const res = await hs(
+      token,
+      "GET",
+      `/crm/v3/lists/records/0-1/${encodeURIComponent(contactId)}/memberships${after ? `?after=${encodeURIComponent(after)}` : ""}`,
+      undefined,
+      signal,
+    );
+    if (!res.ok) return false; // fail open: a lists-API hiccup must not drop real leads
+    const results = (res.data?.results ?? []) as Array<Record<string, unknown>>;
+    if (results.some((r) => String(r.listId) === COMPETITOR_LIST_ID)) return true;
+    after = String(res.data?.paging?.next?.after ?? "");
+    if (!after) return false;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -436,7 +555,7 @@ async function campaignFromEvents(
   token: string,
   contactId: string,
   signal: AbortSignal,
-): Promise<{ id: string; name: string } | null> {
+): Promise<{ id: string; name: string; occurredAt: number } | null> {
   const res = await hs(
     token,
     "GET",
@@ -459,7 +578,7 @@ async function campaignFromEvents(
     if (seen.has(p.evId)) continue;
     seen.add(p.evId);
     const camp = await eventCampaign(token, p.evId, signal);
-    if (camp?.name) return camp;
+    if (camp?.name) return { ...camp, occurredAt: p.occurredAt };
   }
   return null;
 }
@@ -542,6 +661,7 @@ async function createLead(
   contactId: string,
   repCode: string,
   coOwners: string,
+  notes: string,
   signal: AbortSignal,
 ): Promise<{ leadId: string | null; contact: boolean; repCode: boolean; campaign: boolean }> {
   // Encode the event in the lead name so the source is visible at a glance.
@@ -555,6 +675,7 @@ async function createLead(
   };
   if (body.campaignName) properties[LEAD.sourceProp] = body.campaignName;
   if (repCode) properties[LEAD.repCodeProp] = repCode;
+  if (notes) properties[LEAD.notesProp] = notes;
   // HubSpot has no lead↔lead association; instead name the other routed reps here so
   // each rep can see who else owns a sibling lead for this attendee (shared contact).
   if (coOwners) properties[LEAD.coOwnersProp] = coOwners;
@@ -605,18 +726,101 @@ export async function processEventLead(
   // Campaign: honor an explicit one from the workflow; otherwise auto-resolve from the
   // contact's most recent campaign-linked marketing event (so the workflow never has to
   // pass — or be updated per event). Drives the lead name, source, and campaign assoc.
+  let eventDate: number | null = null;
   if (!body.campaignName && !body.campaignId) {
     const ev = await campaignFromEvents(token, contactId, signal);
-    if (ev?.name) body = { ...body, campaignName: ev.name, campaignId: ev.id };
+    if (ev?.name) {
+      body = { ...body, campaignName: ev.name, campaignId: ev.id };
+      eventDate = ev.occurredAt || null;
+    }
   }
 
   const contact = await fetchContact(token, contactId, signal);
 
-  // National-account override (checked first): email domain OR associated company flag.
+  // National-account override: email domain OR associated company flag.
   const naByDomain = await isNationalAccountDomain(env, emailDomain(contact.email));
-  const company = await fetchCompany(token, contactId, signal);
+  const { primary: company, isrCompanies, hasAccountCompany } = await fetchCompanies(token, contactId, signal);
   const nationalAccount = naByDomain.match || company?.nationalAccount === true;
 
+  // Competitor gate: contacts on the competitor-domains list get NO lead — unless
+  // they're associated with an account-numbered company (a real customer).
+  if (!hasAccountCompany && (await inCompetitorList(token, contactId, signal))) {
+    return {
+      contactId,
+      nationalAccount,
+      campaignName: body.campaignName ?? null,
+      leadNotes: null,
+      leads: [],
+      contactOwnerAction: "skipped_no_owner",
+      skippedReason: "competitor",
+    };
+  }
+
+  // At-show notes: only when `lead_notes` was written within the freshness window of
+  // the event (else it's a leftover from a previous show). Stamped with its write date
+  // so reps know when the note was taken; a brand ask in the note focuses routing.
+  const notesAnchor = eventDate ?? Date.now();
+  const notesFresh =
+    !!contact.leadNotes &&
+    !!contact.leadNotesUpdatedAt &&
+    Math.abs(contact.leadNotesUpdatedAt - notesAnchor) <= NOTES_FRESH_WINDOW_MS;
+  const leadNotesText = notesFresh
+    ? `[${new Date(contact.leadNotesUpdatedAt).toISOString().slice(0, 10)}] ${contact.leadNotes}`
+    : "";
+  const notesBrand = notesFresh ? brandFromNotes(contact.leadNotes) : null;
+
+  type Target = {
+    d: LeadDecision;
+    resolved: { ownerId: string | null; source: string };
+    routingRepCode: string | null;
+  };
+  let targets: Target[];
+
+  // Inside-sales override (beats national account + tree): companies with an account
+  // number that already have an inside sales person route straight to them. A brand ask
+  // (campaign, else fresh notes) narrows multiple accounts to the matching family —
+  // MF-prefixed = Modern Forms/Schonbek side, the rest = WAC side.
+  let isrPool = isrCompanies;
+  const isrHintBrand = normalizeLeadBrand(body.campaignBrand ?? null) ?? notesBrand;
+  if (isrHintBrand && isrPool.length > 1) {
+    const mfFamily = isrHintBrand === "Modern Forms" || isrHintBrand === "Schonbek";
+    const wacFamily = isrHintBrand === "WAC Lighting" || isrHintBrand === "WAC Architectural";
+    const filtered = mfFamily ? isrPool.filter((c) => c.mf) : wacFamily ? isrPool.filter((c) => !c.mf) : isrPool;
+    if (filtered.length) isrPool = filtered;
+  }
+
+  if (isrPool.length) {
+    // One lead per DISTINCT inside sales person (same ISR on several accounts → one
+    // lead, accounts merged). The co-owners field tells each ISR who else got one.
+    const byOwner = new Map<string, string[]>();
+    for (const c of isrPool) {
+      for (const oid of c.isrOwnerIds) {
+        const accts = byOwner.get(oid) ?? [];
+        if (!accts.includes(c.accountNumber)) accts.push(c.accountNumber);
+        byOwner.set(oid, accts);
+      }
+    }
+    targets = [...byOwner.entries()].map(([ownerId, accts]) => ({
+      d: {
+        leaf: { kind: "person", name: "", label: `Inside sales (acct ${accts.join(", ")})` },
+        path: [`isr:${accts.join("+")}`],
+      },
+      resolved: { ownerId, source: `isr:${accts.join("+")}` },
+      routingRepCode: null,
+    }));
+    // National account routed to an ISR: Sara still gets her own lead so she's aware.
+    const sara = PERSON_OWNER_ID["Sara Kruid"]!;
+    if (nationalAccount && !targets.some((t) => t.resolved.ownerId === sara)) {
+      targets.push({
+        d: {
+          leaf: { kind: "person", name: "Sara Kruid", label: "National account (notified)" },
+          path: ["national-account-notify"],
+        },
+        resolved: { ownerId: sara, source: "national-account-notify" },
+        routingRepCode: null,
+      });
+    }
+  } else {
   // Decide the leaf/leaves. National accounts → Sara (single). Otherwise evaluate the
   // tree; with an unknown brand it FANS OUT to every brand branch (multiple owners).
   let decisions: LeadDecision[];
@@ -641,12 +845,13 @@ export async function processEventLead(
     const projectFocus =
       (await resolveProjectFocus(env, company, dry, signal)) ?? projectFocusFromSubType(companySubType);
     const productFocus = await resolveProductFocus(env, company, dry, signal);
-    // Brand: campaign first. For showroom/distributor, fall back to the company's
-    // decorative/functional (Decorative→Modern Forms, Functional→WAC); otherwise to the
-    // contact's top brand lead score.
+    // Brand: campaign first, then a brand ask in fresh at-show notes. For showroom/
+    // distributor, fall back to the company's decorative/functional (Decorative→Modern
+    // Forms, Functional→WAC); otherwise to the contact's top brand lead score.
     const isShowroomDistributor = normalizeCompanyType(companySubType) === "ShowroomDistributor";
     const brand =
       body.campaignBrand ??
+      notesBrand ??
       (isShowroomDistributor ? productFocusBrand(productFocus) : brandFromScores(contact.brandScores));
     const facts: LeadFacts = {
       location: locationFact(contact),
@@ -675,12 +880,13 @@ export async function processEventLead(
   const real = resolvedAll.filter((e) => !e.resolved.source.startsWith("fallback"));
   const pool = real.length ? real : resolvedAll.slice(0, 1);
   const seen = new Set<string>();
-  const targets = pool.filter((e) => {
+  targets = pool.filter((e) => {
     const k = `${e.resolved.ownerId ?? ""}|${e.routingRepCode ?? ""}`;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
   });
+  }
 
   // Contact-owner rule: if the contact already has a known owner (and it isn't the Lana
   // fallback), that owner also gets a lead — they're notified alongside the routed rep.
@@ -708,7 +914,7 @@ export async function processEventLead(
     let associations = { contact: false, repCode: false, campaign: false };
     if (t.resolved.ownerId && !body.dryRun) {
       try {
-        const r = await createLead(token, t.resolved.ownerId, body, contact, contactId, t.routingRepCode ?? "", coOwners, signal);
+        const r = await createLead(token, t.resolved.ownerId, body, contact, contactId, t.routingRepCode ?? "", coOwners, leadNotesText, signal);
         leadId = r.leadId;
         associations = { contact: r.contact, repCode: r.repCode, campaign: r.campaign };
       } catch (e) {
@@ -748,5 +954,12 @@ export async function processEventLead(
     }
   }
 
-  return { contactId, nationalAccount, campaignName: body.campaignName ?? null, leads, contactOwnerAction };
+  return {
+    contactId,
+    nationalAccount,
+    campaignName: body.campaignName ?? null,
+    leadNotes: leadNotesText || null,
+    leads,
+    contactOwnerAction,
+  };
 }
