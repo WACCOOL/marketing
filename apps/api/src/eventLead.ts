@@ -291,6 +291,8 @@ interface IsrCompany {
   accountNumber: string;
   /** MF-prefixed account (Modern Forms family — can usually sell Schonbek too). */
   mf: boolean;
+  /** The account's overseeing rep code (company `sales_rep_code`), if set. */
+  repCode: string;
   /** `inside_sales_rep_from_sap`, else `inside_sales_manager_1` + `_2`. */
   isrOwnerIds: string[];
 }
@@ -311,6 +313,7 @@ const COMPANY_FETCH_PROPS = [
   PROJECT_FOCUS_PROP,
   PRODUCT_FOCUS_PROP,
   "account_number_",
+  "sales_rep_code",
   "inside_sales_rep_from_sap",
   "inside_sales_manager_1",
   "inside_sales_manager_2",
@@ -380,7 +383,13 @@ async function fetchCompanies(
       ? [fromSap]
       : [(p.inside_sales_manager_1 ?? "").trim(), (p.inside_sales_manager_2 ?? "").trim()].filter(Boolean);
     if (isrOwnerIds.length) {
-      isrCompanies.push({ companyId: id, accountNumber, mf: mfAccount(accountNumber), isrOwnerIds });
+      isrCompanies.push({
+        companyId: id,
+        accountNumber,
+        mf: mfAccount(accountNumber),
+        repCode: (p.sales_rep_code ?? "").trim(),
+        isrOwnerIds,
+      });
     }
   }
   return { primary, isrCompanies, hasAccountCompany };
@@ -896,21 +905,24 @@ export async function processEventLead(
   if (isrPool.length) {
     // One lead per DISTINCT inside sales person (same ISR on several accounts → one
     // lead, accounts merged). The co-owners field tells each ISR who else got one.
-    const byOwner = new Map<string, string[]>();
+    const byOwner = new Map<string, { accts: string[]; repCode: string }>();
     for (const c of isrPool) {
       for (const oid of c.isrOwnerIds) {
-        const accts = byOwner.get(oid) ?? [];
-        if (!accts.includes(c.accountNumber)) accts.push(c.accountNumber);
-        byOwner.set(oid, accts);
+        const e = byOwner.get(oid) ?? { accts: [], repCode: "" };
+        if (!e.accts.includes(c.accountNumber)) e.accts.push(c.accountNumber);
+        if (!e.repCode && c.repCode) e.repCode = c.repCode; // first non-blank account code
+        byOwner.set(oid, e);
       }
     }
-    targets = [...byOwner.entries()].map(([ownerId, accts]) => ({
+    targets = [...byOwner.entries()].map(([ownerId, e]) => ({
       d: {
-        leaf: { kind: "person", name: "", label: `Inside sales (acct ${accts.join(", ")})` },
-        path: [`isr:${accts.join("+")}`],
+        leaf: { kind: "person", name: "", label: `Inside sales (acct ${e.accts.join(", ")})` },
+        path: [`isr:${e.accts.join("+")}`],
       },
-      resolved: { ownerId, source: `isr:${accts.join("+")}` },
-      routingRepCode: null,
+      resolved: { ownerId, source: `isr:${e.accts.join("+")}` },
+      // The ACCOUNT's overseeing rep code (company sales_rep_code) — surfaces on the
+      // lead and associates it to the Rep Code object, same as tree-routed leads.
+      routingRepCode: e.repCode || null,
     }));
     // National account routed to an ISR: Sara still gets her own lead so she's aware.
     const sara = PERSON_OWNER_ID["Sara Kruid"]!;
