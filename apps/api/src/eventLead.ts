@@ -127,6 +127,13 @@ const LEAD = {
   /** Campaign CRM object (0-35) + native lead→campaign association (HUBSPOT_DEFINED). */
   campaignObjectType: "0-35",
   campaignAssocTypeId: 2741,
+  /** Marketing Events object (0-54) + native lead→event association (HUBSPOT_DEFINED). */
+  marketingEventObjectType: "0-54",
+  marketingEventAssocTypeId: 1391,
+  /** Note engagement → contact association (HUBSPOT_DEFINED). Leads can't hold their
+   *  own engagements — a lead record surfaces its CONTACT's timeline, so the routing
+   *  note goes on the contact and shows on every lead created for them. */
+  noteToContactTypeId: 202,
 };
 
 // ---------------------------------------------------------------------------
@@ -163,6 +170,8 @@ export interface EventLeadResult {
   campaignName: string | null;
   /** Fresh at-show notes copied onto the lead(s) (date-stamped), or null. */
   leadNotes: string | null;
+  /** Account-numbered associated company → Re-attempting; none → New business. */
+  leadType: "NEW_BUSINESS" | "RE_ATTEMPTING" | null;
   /** One per distinct owner. Multiple only when the brand was unknown (fan-out). */
   leads: ResolvedLead[];
   contactOwnerAction: "set" | "skipped_existing" | "skipped_no_owner" | "skipped_multiple";
@@ -555,7 +564,7 @@ async function campaignFromEvents(
   token: string,
   contactId: string,
   signal: AbortSignal,
-): Promise<{ id: string; name: string; occurredAt: number } | null> {
+): Promise<{ id: string; name: string; eventId: string; occurredAt: number } | null> {
   const res = await hs(
     token,
     "GET",
@@ -578,7 +587,7 @@ async function campaignFromEvents(
     if (seen.has(p.evId)) continue;
     seen.add(p.evId);
     const camp = await eventCampaign(token, p.evId, signal);
-    if (camp?.name) return { ...camp, occurredAt: p.occurredAt };
+    if (camp?.name) return { ...camp, eventId: p.evId, occurredAt: p.occurredAt };
   }
   return null;
 }
@@ -662,6 +671,8 @@ async function createLead(
   repCode: string,
   coOwners: string,
   notes: string,
+  marketingEventId: string,
+  leadType: string,
   signal: AbortSignal,
 ): Promise<{ leadId: string | null; contact: boolean; repCode: boolean; campaign: boolean }> {
   // Encode the event in the lead name so the source is visible at a glance.
@@ -676,6 +687,7 @@ async function createLead(
   if (body.campaignName) properties[LEAD.sourceProp] = body.campaignName;
   if (repCode) properties[LEAD.repCodeProp] = repCode;
   if (notes) properties[LEAD.notesProp] = notes;
+  if (leadType) properties.hs_lead_type = leadType;
   // HubSpot has no lead↔lead association; instead name the other routed reps here so
   // each rep can see who else owns a sibling lead for this attendee (shared contact).
   if (coOwners) properties[LEAD.coOwnersProp] = coOwners;
@@ -701,6 +713,12 @@ async function createLead(
       types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: LEAD.campaignAssocTypeId }],
     });
   }
+  if (marketingEventId) {
+    associations.push({
+      to: { id: marketingEventId },
+      types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: LEAD.marketingEventAssocTypeId }],
+    });
+  }
 
   const create = await hs(token, "POST", PATHS.leadCreate, { properties, associations }, signal);
   if (!create.ok) {
@@ -708,6 +726,36 @@ async function createLead(
   }
   const leadId = String(create.data?.id ?? "") || null;
   return { leadId, contact: !!leadId, repCode: !!(leadId && repObj.id), campaign: !!(leadId && campId) };
+}
+
+/**
+ * Attach a timeline Note to the CONTACT — the visible "leads created for …" /
+ * at-show-notes artifact. Leads can't hold their own engagements (the API rejects
+ * note↔lead associations); a lead record surfaces its contact's activity, so a
+ * contact note shows up on every lead created for this attendee.
+ */
+async function attachRoutingNote(
+  token: string,
+  contactId: string,
+  bodyHtml: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const res = await hs(
+    token,
+    "POST",
+    "/crm/v3/objects/notes",
+    {
+      properties: { hs_note_body: bodyHtml, hs_timestamp: new Date().toISOString() },
+      associations: [
+        {
+          to: { id: contactId },
+          types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: LEAD.noteToContactTypeId }],
+        },
+      ],
+    },
+    signal,
+  );
+  return res.ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -727,11 +775,15 @@ export async function processEventLead(
   // contact's most recent campaign-linked marketing event (so the workflow never has to
   // pass — or be updated per event). Drives the lead name, source, and campaign assoc.
   let eventDate: number | null = null;
-  if (!body.campaignName && !body.campaignId) {
-    const ev = await campaignFromEvents(token, contactId, signal);
-    if (ev?.name) {
+  let marketingEventId = "";
+  const ev = await campaignFromEvents(token, contactId, signal);
+  if (ev) {
+    marketingEventId = ev.eventId;
+    eventDate = ev.occurredAt || null;
+    // An explicit campaign from the workflow still wins; the event is used regardless
+    // (lead→marketing-event association + the notes freshness anchor).
+    if (!body.campaignName && !body.campaignId) {
       body = { ...body, campaignName: ev.name, campaignId: ev.id };
-      eventDate = ev.occurredAt || null;
     }
   }
 
@@ -750,6 +802,7 @@ export async function processEventLead(
       nationalAccount,
       campaignName: body.campaignName ?? null,
       leadNotes: null,
+      leadType: null,
       leads: [],
       contactOwnerAction: "skipped_no_owner",
       skippedReason: "competitor",
@@ -764,6 +817,10 @@ export async function processEventLead(
     !!contact.leadNotes &&
     !!contact.leadNotesUpdatedAt &&
     Math.abs(contact.leadNotesUpdatedAt - notesAnchor) <= NOTES_FRESH_WINDOW_MS;
+
+  // Lead type: an associated company with an account number (an existing customer) →
+  // Re-attempting; no account number anywhere → New business.
+  const leadType: "NEW_BUSINESS" | "RE_ATTEMPTING" = hasAccountCompany ? "RE_ATTEMPTING" : "NEW_BUSINESS";
   const leadNotesText = notesFresh
     ? `[${new Date(contact.leadNotesUpdatedAt).toISOString().slice(0, 10)}] ${contact.leadNotes}`
     : "";
@@ -914,7 +971,7 @@ export async function processEventLead(
     let associations = { contact: false, repCode: false, campaign: false };
     if (t.resolved.ownerId && !body.dryRun) {
       try {
-        const r = await createLead(token, t.resolved.ownerId, body, contact, contactId, t.routingRepCode ?? "", coOwners, leadNotesText, signal);
+        const r = await createLead(token, t.resolved.ownerId, body, contact, contactId, t.routingRepCode ?? "", coOwners, leadNotesText, marketingEventId, leadType, signal);
         leadId = r.leadId;
         associations = { contact: r.contact, repCode: r.repCode, campaign: r.campaign };
       } catch (e) {
@@ -932,6 +989,28 @@ export async function processEventLead(
       leadError,
       associations,
     });
+  }
+
+  // Visible timeline note (on the contact — every lead record surfaces it): who got a
+  // lead when it was shared across owners, plus the fresh at-show notes. Non-fatal.
+  if (!body.dryRun && leads.some((l) => l.leadId) && (targets.length > 1 || leadNotesText)) {
+    const title = body.campaignName ? `Event lead routing — ${body.campaignName}` : "Event lead routing";
+    const who = targets
+      .map((t, j) =>
+        ownerNames[j]
+          ? `${ownerNames[j]} — ${t.d.leaf.kind === "fallback" ? t.d.leaf.reason : t.d.leaf.label}`
+          : null,
+      )
+      .filter(Boolean) as string[];
+    const parts: string[] = [];
+    parts.push(
+      targets.length > 1
+        ? `<strong>${title}</strong><br>Leads created for:<br>• ${who.join("<br>• ")}`
+        : `<strong>${title}</strong>`,
+    );
+    if (leadNotesText) parts.push(`<strong>At-show notes</strong> ${leadNotesText}`);
+    const noted = await attachRoutingNote(token, contactId, parts.join("<br><br>"), signal).catch(() => false);
+    if (!noted) console.error(`[event-lead] ${contactId}: routing note failed`);
   }
 
   // Set the contact owner only when it's empty AND there's a single owner (an unknown-
@@ -959,6 +1038,7 @@ export async function processEventLead(
     nationalAccount,
     campaignName: body.campaignName ?? null,
     leadNotes: leadNotesText || null,
+    leadType,
     leads,
     contactOwnerAction,
   };
