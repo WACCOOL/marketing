@@ -11,7 +11,7 @@ import type { Env } from "./env.js";
  * Phase 2 will add DLQ landings / held-needs-decision / failure spikes).
  */
 
-export type SevereKind = "heartbeat" | "dlq" | "held" | "spike";
+export type SevereKind = "heartbeat" | "dlq" | "held" | "spike" | "showroom";
 
 export interface SevereAlert {
   kind: SevereKind;

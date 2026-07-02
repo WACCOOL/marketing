@@ -1017,7 +1017,7 @@ export async function batchAssociate(
   }
 }
 
-async function lookupCompanyId(
+export async function lookupCompanyId(
   token: string,
   accountNumber: unknown,
   signal: AbortSignal,

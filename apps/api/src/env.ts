@@ -108,6 +108,19 @@ export interface Env {
   // admin routes. When unset, the capture endpoint is closed.
   SAP_SYNC_TOKEN?: string;
 
+  // Full Google Cloud service-account JSON key for the Showroom PO Orders
+  // sync (showroomOrders.ts) — Sheets API read-only. Each agency sheet must be
+  // shared (Viewer) with the key's client_email. When unset, the sync is
+  // skipped (cron) / errors clearly (manual route).
+  GOOGLE_SA_KEY?: string;
+  // Gate for the half-hourly showroom-orders cron. Deploy dark first (unset),
+  // backfill via the manual route, then set to "1" to enable the schedule.
+  SHOWROOM_SYNC_ENABLED?: string;
+  // Per-source sync state (content markers + last-run summaries) so the
+  // half-hourly polls skip unchanged sheets. Separate namespace from
+  // SHORT_LINKS so sync bookkeeping can never collide with live redirects.
+  SYNC_STATE: KVNamespace;
+
   // Slack incoming-webhook URL for severe HubSpot-sync alerts (heartbeat
   // no-data; Phase 2: DLQ / held-needs-decision / failure spikes). Best-effort —
   // when unset, alerts are logged only.
