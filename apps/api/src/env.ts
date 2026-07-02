@@ -1,6 +1,7 @@
 import type { GenerationMessage } from "./generation.js";
 import type { GenerationContainer } from "./container.js";
 import type { IngestMessage } from "./ingest.js";
+import type { EventLeadBody } from "./eventLead.js";
 
 export interface Env {
   SUPABASE_URL: string;
@@ -58,6 +59,11 @@ export interface Env {
   // producer; the consumer is the wac-ingest config in wrangler.jsonc, handled
   // by the queue() export in index.ts (branches to ingestQueue.ts).
   INGEST_QUEUE: Queue<IngestMessage>;
+
+  // Marketing-event lead routing. The webhook enqueues one message per enrolled
+  // contact; the wac-event-leads consumer (max_concurrency 1 → serial, rate-limit
+  // friendly) processes them via eventLeadQueue.ts.
+  EVENT_LEAD_QUEUE: Queue<EventLeadBody>;
   // R2 S3-API credentials forwarded into the generation Container so it can
   // write generated assets directly. These never live in the image — they are
   // injected via the container's envVars at start (see container.ts).

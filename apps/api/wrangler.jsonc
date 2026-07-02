@@ -93,7 +93,8 @@
   "queues": {
     "producers": [
       { "binding": "GENERATION_QUEUE", "queue": "wac-generation" },
-      { "binding": "INGEST_QUEUE", "queue": "wac-ingest" }
+      { "binding": "INGEST_QUEUE", "queue": "wac-ingest" },
+      { "binding": "EVENT_LEAD_QUEUE", "queue": "wac-event-leads" }
     ],
     "consumers": [
       {
@@ -107,6 +108,18 @@
         "max_batch_size": 1,
         "max_retries": 3,
         "dead_letter_queue": "wac-ingest-dlq"
+      },
+      // Event-lead routing: SERIAL consumer (max_concurrency 1) so a whole-list
+      // enrollment drains within HubSpot's API rate limit instead of stampeding.
+      // Create with: npx wrangler queues create wac-event-leads
+      //         and: npx wrangler queues create wac-event-leads-dlq
+      {
+        "queue": "wac-event-leads",
+        "max_batch_size": 5,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "max_concurrency": 1,
+        "dead_letter_queue": "wac-event-leads-dlq"
       }
     ]
   },
