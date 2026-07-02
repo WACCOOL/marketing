@@ -130,6 +130,10 @@ const LEAD = {
   /** Marketing Events object (0-54) + native lead→event association (HUBSPOT_DEFINED). */
   marketingEventObjectType: "0-54",
   marketingEventAssocTypeId: 1391,
+  /** Note engagement → contact association (HUBSPOT_DEFINED). Leads can't hold their
+   *  own engagements — a lead record surfaces its CONTACT's timeline, so the routing
+   *  note goes on the contact and shows on every lead created for them. */
+  noteToContactTypeId: 202,
 };
 
 // ---------------------------------------------------------------------------
@@ -720,6 +724,36 @@ async function createLead(
   return { leadId, contact: !!leadId, repCode: !!(leadId && repObj.id), campaign: !!(leadId && campId) };
 }
 
+/**
+ * Attach a timeline Note to the CONTACT — the visible "leads created for …" /
+ * at-show-notes artifact. Leads can't hold their own engagements (the API rejects
+ * note↔lead associations); a lead record surfaces its contact's activity, so a
+ * contact note shows up on every lead created for this attendee.
+ */
+async function attachRoutingNote(
+  token: string,
+  contactId: string,
+  bodyHtml: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const res = await hs(
+    token,
+    "POST",
+    "/crm/v3/objects/notes",
+    {
+      properties: { hs_note_body: bodyHtml, hs_timestamp: new Date().toISOString() },
+      associations: [
+        {
+          to: { id: contactId },
+          types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: LEAD.noteToContactTypeId }],
+        },
+      ],
+    },
+    signal,
+  );
+  return res.ok;
+}
+
 // ---------------------------------------------------------------------------
 // Orchestrator
 // ---------------------------------------------------------------------------
@@ -946,6 +980,28 @@ export async function processEventLead(
       leadError,
       associations,
     });
+  }
+
+  // Visible timeline note (on the contact — every lead record surfaces it): who got a
+  // lead when it was shared across owners, plus the fresh at-show notes. Non-fatal.
+  if (!body.dryRun && leads.some((l) => l.leadId) && (targets.length > 1 || leadNotesText)) {
+    const title = body.campaignName ? `Event lead routing — ${body.campaignName}` : "Event lead routing";
+    const who = targets
+      .map((t, j) =>
+        ownerNames[j]
+          ? `${ownerNames[j]} — ${t.d.leaf.kind === "fallback" ? t.d.leaf.reason : t.d.leaf.label}`
+          : null,
+      )
+      .filter(Boolean) as string[];
+    const parts: string[] = [];
+    parts.push(
+      targets.length > 1
+        ? `<strong>${title}</strong><br>Leads created for:<br>• ${who.join("<br>• ")}`
+        : `<strong>${title}</strong>`,
+    );
+    if (leadNotesText) parts.push(`<strong>At-show notes</strong> ${leadNotesText}`);
+    const noted = await attachRoutingNote(token, contactId, parts.join("<br><br>"), signal).catch(() => false);
+    if (!noted) console.error(`[event-lead] ${contactId}: routing note failed`);
   }
 
   // Set the contact owner only when it's empty AND there's a single owner (an unknown-
