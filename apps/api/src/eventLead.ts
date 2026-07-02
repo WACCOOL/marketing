@@ -77,14 +77,6 @@ const COMPETITOR_LIST_ID = "1966";
  */
 const NOTES_FRESH_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
-/**
- * A contact created within this window before the event (or later) is a NEW contact —
- * i.e. created by the show's attendee import, not someone we already knew. Drives
- * hs_lead_type: new contact OR no account number → New business; existing contact with
- * an account → Re-attempting.
- */
-const NEW_CONTACT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
-
 /** Contact properties that drive routing. */
 const CONTACT_PROPS = {
   /** Canada / International / North America bucket. `global_region` is NA-vs-Intl. */
@@ -178,7 +170,7 @@ export interface EventLeadResult {
   campaignName: string | null;
   /** Fresh at-show notes copied onto the lead(s) (date-stamped), or null. */
   leadNotes: string | null;
-  /** New contact / no account → New business; existing contact on an account → Re-attempting. */
+  /** Account-numbered associated company → Re-attempting; none → New business. */
   leadType: "NEW_BUSINESS" | "RE_ATTEMPTING" | null;
   /** One per distinct owner. Multiple only when the brand was unknown (fan-out). */
   leads: ResolvedLead[];
@@ -204,8 +196,6 @@ interface ContactFacts {
   /** At-show notes (`lead_notes`) + when they were last written (ms epoch, 0 = never). */
   leadNotes: string;
   leadNotesUpdatedAt: number;
-  /** When the contact record was created (ms epoch, 0 = unknown) — new-vs-existing. */
-  createdAt: number;
   /** channel name → rep code value (only non-blank ones). */
   repCodes: Record<string, string>;
   /** canonical brand → lead score (number). */
@@ -224,7 +214,6 @@ async function fetchContact(token: string, contactId: string, signal: AbortSigna
     CONTACT_PROPS.role,
     CONTACT_PROPS.leadType,
     "lead_notes",
-    "createdate",
     ...Object.values(BRAND_SCORE_PROP),
     ...CONTACT_REP_CODE_PROPS,
   ];
@@ -264,7 +253,6 @@ async function fetchContact(token: string, contactId: string, signal: AbortSigna
     leadNotesUpdatedAt: Date.parse(
       (res.data?.propertiesWithHistory?.lead_notes?.[0]?.timestamp as string | undefined) ?? "",
     ) || 0,
-    createdAt: Date.parse(p.createdate ?? "") || 0,
     repCodes,
     brandScores,
   };
@@ -830,12 +818,9 @@ export async function processEventLead(
     !!contact.leadNotesUpdatedAt &&
     Math.abs(contact.leadNotesUpdatedAt - notesAnchor) <= NOTES_FRESH_WINDOW_MS;
 
-  // Lead type: a NEW contact (created by the show's import, i.e. within the window
-  // before the event or later) OR one with no account-numbered company → New business;
-  // an existing contact on a real account → Re-attempting.
-  const isNewContact = !contact.createdAt || contact.createdAt >= notesAnchor - NEW_CONTACT_WINDOW_MS;
-  const leadType: "NEW_BUSINESS" | "RE_ATTEMPTING" =
-    isNewContact || !hasAccountCompany ? "NEW_BUSINESS" : "RE_ATTEMPTING";
+  // Lead type: an associated company with an account number (an existing customer) →
+  // Re-attempting; no account number anywhere → New business.
+  const leadType: "NEW_BUSINESS" | "RE_ATTEMPTING" = hasAccountCompany ? "RE_ATTEMPTING" : "NEW_BUSINESS";
   const leadNotesText = notesFresh
     ? `[${new Date(contact.leadNotesUpdatedAt).toISOString().slice(0, 10)}] ${contact.leadNotes}`
     : "";
