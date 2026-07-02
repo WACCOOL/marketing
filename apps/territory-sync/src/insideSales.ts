@@ -26,7 +26,7 @@ import {
 import type { OwnerResolver } from "./hubspot.js";
 
 const BASE = "https://api.hubapi.com";
-const REP_OBJECT = "2-41537429";
+export const REP_OBJECT = "2-41537429";
 const UPDATE_BATCH = 100;
 
 /** Minimal rep-code row needed to build the resolvers (from the parse or the table). */
@@ -48,7 +48,7 @@ interface HsRes {
   data: any;
 }
 
-async function hs(token: string, method: string, path: string, body?: unknown): Promise<HsRes> {
+export async function hs(token: string, method: string, path: string, body?: unknown): Promise<HsRes> {
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(`${BASE}${path}`, {
       method,
@@ -500,7 +500,7 @@ async function resolveInactiveLabel(token: string, target: "deals" | "companies"
 }
 
 /** Read a rep code's associated deal/company ids + present association typeIds. */
-async function readRepAssociations(
+export async function readRepAssociations(
   token: string,
   repId: string,
   target: "deals" | "companies",

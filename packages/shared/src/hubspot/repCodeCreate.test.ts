@@ -67,6 +67,18 @@ describe("buildRepCodeTaskContent", () => {
     expect(body).toContain("owner (ISR) was resolved");
   });
 
+  it("describes the backfill scan for backfill-created codes", () => {
+    const { subject, body } = buildRepCodeTaskContent({
+      repCode: "ZZQ",
+      sourceType: "backfill",
+      sourceLabel: "3 companies and 7 deals",
+      ownerSet: false,
+    });
+    expect(subject).toContain('"ZZQ"');
+    expect(body).toContain("backfill scan found 3 companies and 7 deals");
+    expect(body).toContain("No owner (ISR) could be resolved");
+  });
+
   it("names the triggering quote and flags a missing owner", () => {
     const { subject, body } = buildRepCodeTaskContent({
       repCode: "ZZQ2",

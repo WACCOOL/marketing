@@ -44,9 +44,9 @@ export function buildRepCodeCreateProperties(
 
 export interface RepCodeTaskInput {
   repCode: string;
-  /** What kind of SAP push triggered the create. */
-  sourceType: "company" | "deal";
-  /** Human-readable handle for the source record (account # or quote #/name). */
+  /** What triggered the create: a SAP company/deal push, or the backfill scan. */
+  sourceType: "company" | "deal" | "backfill";
+  /** Human-readable handle: account # / quote # — or, for backfill, the usage summary. */
   sourceLabel: string;
   /** Whether an ISR owner was resolved and set on the new record. */
   ownerSet: boolean;
@@ -54,15 +54,19 @@ export interface RepCodeTaskInput {
 
 /** Subject + body for the review task attached to an auto-created Rep Code. */
 export function buildRepCodeTaskContent(input: RepCodeTaskInput): { subject: string; body: string } {
-  const source =
-    input.sourceType === "company"
-      ? `account ${input.sourceLabel}`
-      : `quote ${input.sourceLabel}`;
   const subject = `Review auto-created Rep Code "${input.repCode}" (SAP sync)`;
+  const trigger =
+    input.sourceType === "backfill"
+      ? `A backfill scan found ${input.sourceLabel} referencing rep code "${input.repCode}", ` +
+        `which had no Rep Code record in HubSpot. The record was created automatically and ` +
+        `the referencing records were associated.`
+      : `The SAP → HubSpot sync received ${
+          input.sourceType === "company" ? `account ${input.sourceLabel}` : `quote ${input.sourceLabel}`
+        } referencing rep code "${input.repCode}", ` +
+        `which had no Rep Code record in HubSpot. The record was created automatically and ` +
+        `associated to the triggering ${input.sourceType}.`;
   const body = [
-    `The SAP → HubSpot sync received ${source} referencing rep code "${input.repCode}", ` +
-      `which had no Rep Code record in HubSpot. The record was created automatically and ` +
-      `associated to the triggering ${input.sourceType}.`,
+    trigger,
     input.ownerSet
       ? "An owner (ISR) was resolved from the territory mapping and set on the record."
       : "No owner (ISR) could be resolved — the record is unowned.",

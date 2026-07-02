@@ -28,6 +28,7 @@ import {
   type AmtIsrRow,
   type RepIsrRow,
 } from "./insideSales.js";
+import { backfillRepCodes } from "./repCodeBackfill.js";
 
 /**
  * Territory sync — out-of-band parser for the Territory workbook.
@@ -215,6 +216,64 @@ async function main(): Promise<void> {
     console.log(
       `[managers-rollup] scanned=${r.scanned} ${dryRun ? "would-update" : "updated"}=${r.updated}`,
     );
+    return;
+  }
+
+  // One-time backfill for the missing-Rep-Code auto-create feature: create a Rep
+  // Code record for every SAP-referenced code HubSpot lacks (companies'
+  // sales_rep_code + deals' sales_group) and associate every referencing record
+  // that has no association — pre-existing codes included. One review task per
+  // created code. Run --dry-run first for the counts; --limit=N to sample scans.
+  if (process.argv.includes("--backfill-rep-codes")) {
+    const token = process.env.HUBSPOT_TOKEN;
+    if (!token) {
+      console.log("[rep-backfill] HUBSPOT_TOKEN unset; nothing to do.");
+      return;
+    }
+    const r = await backfillRepCodes({
+      sb,
+      token,
+      dryRun,
+      limit,
+      alertOwnerEmail: process.env.REP_CODE_ALERT_OWNER_EMAIL,
+    });
+    const verb = dryRun ? "would-" : "";
+    console.log(
+      `[rep-backfill] scanned companies=${r.companiesScanned} deals=${r.dealsScanned} | ` +
+        `rep codes existing=${r.repCodesExisting} referenced=${r.codesReferenced}`,
+    );
+    console.log(
+      `[rep-backfill] ${verb}create=${r.created.length} invalid-skipped=${r.invalid.length} | ` +
+        `assoc gaps companies=${r.companyAssocsMissing} deals=${r.dealAssocsMissing}` +
+        (dryRun
+          ? ""
+          : ` | created assocs companies=${r.companyAssocsCreated} deals=${r.dealAssocsCreated} tasks=${r.tasksCreated}`),
+    );
+    if (r.created.length) {
+      console.log(
+        `[rep-backfill] ${verb}created codes:\n  ` +
+          r.created.map((c) => `${c.code}${c.owner ? " (owner resolved)" : ""}`).join("\n  "),
+      );
+    }
+    if (r.invalid.length) {
+      console.log(
+        "[rep-backfill] invalid values skipped (companies/deals referencing):\n  " +
+          r.invalid.map((v) => `"${v.value}" (${v.companies}/${v.deals})`).join("\n  "),
+      );
+    }
+    if (r.gapByCode.length) {
+      console.log(
+        "[rep-backfill] association gaps by code (companies/deals, top 40):\n  " +
+          r.gapByCode
+            .sort((a, b) => b.companies + b.deals - (a.companies + a.deals))
+            .slice(0, 40)
+            .map((g) => `${g.code}${g.exists ? "" : " [new]"} (${g.companies}/${g.deals})`)
+            .join("\n  "),
+      );
+    }
+    for (const f of [...r.createFailures, ...r.assocFailures, ...r.taskFailures]) {
+      console.warn(`[rep-backfill] WARN: ${f}`);
+    }
     return;
   }
 
