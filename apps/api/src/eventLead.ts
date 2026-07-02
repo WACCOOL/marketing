@@ -127,6 +127,9 @@ const LEAD = {
   /** Campaign CRM object (0-35) + native lead→campaign association (HUBSPOT_DEFINED). */
   campaignObjectType: "0-35",
   campaignAssocTypeId: 2741,
+  /** Marketing Events object (0-54) + native lead→event association (HUBSPOT_DEFINED). */
+  marketingEventObjectType: "0-54",
+  marketingEventAssocTypeId: 1391,
 };
 
 // ---------------------------------------------------------------------------
@@ -555,7 +558,7 @@ async function campaignFromEvents(
   token: string,
   contactId: string,
   signal: AbortSignal,
-): Promise<{ id: string; name: string; occurredAt: number } | null> {
+): Promise<{ id: string; name: string; eventId: string; occurredAt: number } | null> {
   const res = await hs(
     token,
     "GET",
@@ -578,7 +581,7 @@ async function campaignFromEvents(
     if (seen.has(p.evId)) continue;
     seen.add(p.evId);
     const camp = await eventCampaign(token, p.evId, signal);
-    if (camp?.name) return { ...camp, occurredAt: p.occurredAt };
+    if (camp?.name) return { ...camp, eventId: p.evId, occurredAt: p.occurredAt };
   }
   return null;
 }
@@ -662,6 +665,7 @@ async function createLead(
   repCode: string,
   coOwners: string,
   notes: string,
+  marketingEventId: string,
   signal: AbortSignal,
 ): Promise<{ leadId: string | null; contact: boolean; repCode: boolean; campaign: boolean }> {
   // Encode the event in the lead name so the source is visible at a glance.
@@ -701,6 +705,12 @@ async function createLead(
       types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: LEAD.campaignAssocTypeId }],
     });
   }
+  if (marketingEventId) {
+    associations.push({
+      to: { id: marketingEventId },
+      types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: LEAD.marketingEventAssocTypeId }],
+    });
+  }
 
   const create = await hs(token, "POST", PATHS.leadCreate, { properties, associations }, signal);
   if (!create.ok) {
@@ -727,11 +737,15 @@ export async function processEventLead(
   // contact's most recent campaign-linked marketing event (so the workflow never has to
   // pass — or be updated per event). Drives the lead name, source, and campaign assoc.
   let eventDate: number | null = null;
-  if (!body.campaignName && !body.campaignId) {
-    const ev = await campaignFromEvents(token, contactId, signal);
-    if (ev?.name) {
+  let marketingEventId = "";
+  const ev = await campaignFromEvents(token, contactId, signal);
+  if (ev) {
+    marketingEventId = ev.eventId;
+    eventDate = ev.occurredAt || null;
+    // An explicit campaign from the workflow still wins; the event is used regardless
+    // (lead→marketing-event association + the notes freshness anchor).
+    if (!body.campaignName && !body.campaignId) {
       body = { ...body, campaignName: ev.name, campaignId: ev.id };
-      eventDate = ev.occurredAt || null;
     }
   }
 
@@ -914,7 +928,7 @@ export async function processEventLead(
     let associations = { contact: false, repCode: false, campaign: false };
     if (t.resolved.ownerId && !body.dryRun) {
       try {
-        const r = await createLead(token, t.resolved.ownerId, body, contact, contactId, t.routingRepCode ?? "", coOwners, leadNotesText, signal);
+        const r = await createLead(token, t.resolved.ownerId, body, contact, contactId, t.routingRepCode ?? "", coOwners, leadNotesText, marketingEventId, signal);
         leadId = r.leadId;
         associations = { contact: r.contact, repCode: r.repCode, campaign: r.campaign };
       } catch (e) {
