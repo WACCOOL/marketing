@@ -49,6 +49,8 @@ export interface ShowroomAgencySummary {
   companyMatched: number;
   /** Orders whose matched company carries a sales_rep_code (-> deal sales_group). */
   repCodeMatched: number;
+  /** Companies auto-created from sheet name + account # (dry run: would-create). */
+  companiesCreated: number;
   companyMisses: ShowroomCompanyMiss[];
   warnings: string[];
   errors: string[];
@@ -220,43 +222,141 @@ async function resolveCompanies(
   return byAccount;
 }
 
+/**
+ * Create companies for account numbers HubSpot doesn't know (the sheets carry
+ * both the showroom's name and account number). Batch upsert keyed on
+ * account_number_ (idempotent — a concurrent create just updates the name),
+ * named "{Account Name} #{ACCT}" to match the portal's convention for
+ * SAP-imported dealers. Created companies are merged into the resolution map
+ * so the deal association + summary treat them as matched (repCode empty —
+ * the sheets don't carry one).
+ */
+async function createMissingCompanies(
+  token: string,
+  orders: ShowroomOrder[],
+  companies: Map<string, CompanyHit | null>,
+  signal: AbortSignal,
+  errors: string[],
+): Promise<number> {
+  const toCreate = new Map<string, string>(); // account number -> showroom name
+  for (const o of orders) {
+    if (!o.accountNumber || companies.get(o.accountNumber)) continue;
+    if (!o.accountName) continue; // nothing to name it with — stays a miss
+    if (!toCreate.has(o.accountNumber)) toCreate.set(o.accountNumber, o.accountName);
+  }
+  let created = 0;
+  const entries = [...toCreate.entries()];
+  for (let i = 0; i < entries.length; i += BATCH_SIZE) {
+    const slice = entries.slice(i, i + BATCH_SIZE);
+    const res = await hs(
+      token,
+      "POST",
+      PATHS.companyUpsert,
+      {
+        inputs: slice.map(([acct, name]) => ({
+          idProperty: "account_number_",
+          id: acct,
+          properties: { account_number_: acct, name: `${name} #${acct}` },
+        })),
+      },
+      signal,
+    );
+    if (!res.ok) {
+      errors.push(
+        `company create batch failed (${res.status}): ${JSON.stringify(res.data?.message ?? res.data).slice(0, 200)}`,
+      );
+      continue;
+    }
+    for (const r of (res.data?.results ?? []) as {
+      id?: string;
+      new?: boolean;
+      properties?: { account_number_?: string };
+    }[]) {
+      const acct = String(r.properties?.account_number_ ?? "").trim();
+      if (acct && r.id) {
+        companies.set(acct, { id: String(r.id), repCode: "" });
+        if (r.new) {
+          created++;
+          console.log(`[showroom-sync] created company ${acct} (${toCreate.get(acct)})`);
+        }
+      }
+    }
+  }
+  return created;
+}
+
 /* --------------------------- rep-code association --------------------------- */
 
 /**
- * The deal <-> Rep Code (2-41537429) association type, resolved once per worker
- * lifetime; created (label "Rep Code") if the portal doesn't have one yet, the
- * same bootstrap open-orders-sync used for orders<->rep-code. null = unavailable
- * (schema scope missing) -> rep-code association silently skips, everything else
- * still syncs.
+ * The deal -> Rep Code (2-41537429) association types: the unlabeled base pair
+ * PLUS the "Current" label (the portal labels rep-code associations
+ * Current/Previous/Inactive). Both must be sent together — creating with only
+ * the labeled type returns 201 but attaches nothing (verified live 2026-07-02).
+ * Resolved once per worker lifetime; null = unavailable -> rep-code
+ * association skips, everything else still syncs.
  */
-let dealRepCodeAssoc: { typeId: number; category: "HUBSPOT_DEFINED" | "USER_DEFINED" } | null | undefined;
-async function getDealRepCodeAssocType(
+interface AssocTypeRef {
+  typeId: number;
+  category: "HUBSPOT_DEFINED" | "USER_DEFINED";
+}
+let dealRepCodeTypes: AssocTypeRef[] | null | undefined;
+async function getDealRepCodeAssocTypes(
   token: string,
   signal: AbortSignal,
-): Promise<{ typeId: number; category: "HUBSPOT_DEFINED" | "USER_DEFINED" } | null> {
-  if (dealRepCodeAssoc !== undefined) return dealRepCodeAssoc;
-  const labelsPath = `/crm/v4/associations/0-3/${REP_OBJECT}/labels`;
-  const existing = await hs(token, "GET", labelsPath, undefined, signal);
-  const first = existing.ok ? existing.data?.results?.[0] : null;
-  if (first?.typeId != null) {
-    dealRepCodeAssoc = {
-      typeId: Number(first.typeId),
-      category: first.category === "HUBSPOT_DEFINED" ? "HUBSPOT_DEFINED" : "USER_DEFINED",
-    };
-    return dealRepCodeAssoc;
+): Promise<AssocTypeRef[] | null> {
+  if (dealRepCodeTypes !== undefined) return dealRepCodeTypes;
+  const res = await hs(token, "GET", `/crm/v4/associations/0-3/${REP_OBJECT}/labels`, undefined, signal);
+  const all = ((res.ok ? res.data?.results : null) ?? []) as {
+    typeId?: number;
+    label?: string | null;
+    category?: string;
+  }[];
+  const ref = (t: { typeId?: number; category?: string }): AssocTypeRef => ({
+    typeId: Number(t.typeId),
+    category: t.category === "HUBSPOT_DEFINED" ? "HUBSPOT_DEFINED" : "USER_DEFINED",
+  });
+  const unlabeled = all.find((t) => t.typeId != null && t.label == null);
+  const current = all.find((t) => String(t.label ?? "").trim().toLowerCase() === "current");
+  const picked = [unlabeled, current].filter((t) => t != null).map(ref);
+  dealRepCodeTypes = picked.length ? picked : null;
+  if (!dealRepCodeTypes) {
+    console.warn(`[showroom-sync] no deal<->rep-code association types found (${res.status}) — skipping`);
   }
-  const created = await hs(
-    token,
-    "POST",
-    labelsPath,
-    { label: "Rep Code", name: "deal_to_rep_code" },
-    signal,
-  );
-  const t = created.ok ? created.data?.results?.[0]?.typeId : null;
-  dealRepCodeAssoc = t != null ? { typeId: Number(t), category: "USER_DEFINED" } : null;
-  if (dealRepCodeAssoc) console.log(`[showroom-sync] created deal<->rep-code association type ${t}`);
-  else console.warn(`[showroom-sync] deal<->rep-code association unavailable (${created.status}) — skipping`);
-  return dealRepCodeAssoc;
+  return dealRepCodeTypes;
+}
+
+/** Associate deals to Rep Code objects (base + "Current" label), verifying results. */
+async function associateRepCodes(
+  token: string,
+  pairs: { dealId: string; repCodeId: string }[],
+  signal: AbortSignal,
+  warnings: string[],
+): Promise<void> {
+  const types = await getDealRepCodeAssocTypes(token, signal);
+  if (!types) return;
+  for (let i = 0; i < pairs.length; i += BATCH_SIZE) {
+    const slice = pairs.slice(i, i + BATCH_SIZE);
+    const res = await hs(
+      token,
+      "POST",
+      `/crm/v4/associations/0-3/${REP_OBJECT}/batch/create`,
+      {
+        inputs: slice.map((p) => ({
+          types: types.map((t) => ({ associationCategory: t.category, associationTypeId: t.typeId })),
+          from: { id: p.dealId },
+          to: { id: p.repCodeId },
+        })),
+      },
+      signal,
+    );
+    const createdCount = ((res.ok ? res.data?.results : null) ?? []).length;
+    // A 201 with an empty results array is a silent no-op (seen live) — surface it.
+    if (!res.ok || createdCount < slice.length) {
+      warnings.push(
+        `rep-code association batch: expected ${slice.length}, created ${createdCount} (status ${res.status})`,
+      );
+    }
+  }
 }
 
 /** Resolve rep codes ("DDM") to Rep Code object ids, cached per worker lifetime. */
@@ -305,6 +405,7 @@ async function syncSheet(
     updated: 0,
     companyMatched: 0,
     repCodeMatched: 0,
+    companiesCreated: 0,
     companyMisses: [],
     warnings: [],
     errors: [],
@@ -334,6 +435,27 @@ async function syncSheet(
   // sales_group (same field the SAP deal sync uses for rep codes), so it must
   // ride along in the upsert payload.
   const companies = await resolveCompanies(token.hubspot, parsed.orders, signal);
+
+  // Unknown account numbers become NEW companies (name + account # from the
+  // sheet). Dry runs only count what would be created.
+  if (opts.dryRun) {
+    const wouldCreate = new Set<string>();
+    for (const o of parsed.orders) {
+      if (o.accountNumber && o.accountName && !companies.get(o.accountNumber)) {
+        wouldCreate.add(o.accountNumber);
+      }
+    }
+    summary.companiesCreated = wouldCreate.size;
+  } else {
+    summary.companiesCreated = await createMissingCompanies(
+      token.hubspot,
+      parsed.orders,
+      companies,
+      signal,
+      summary.errors,
+    );
+  }
+
   const companyFor = (o: ShowroomOrder): CompanyHit | null =>
     o.accountNumber ? (companies.get(o.accountNumber) ?? null) : null;
   const buildProps = (o: ShowroomOrder): Record<string, string> => {
@@ -387,30 +509,20 @@ async function syncSheet(
     signal,
   );
   const companyPairs: { fromId: string; toId: string }[] = [];
-  const repCodePairs: { fromId: string; toId: string }[] = [];
+  const repCodePairs: { dealId: string; repCodeId: string }[] = [];
   for (const o of parsed.orders) {
     const dealId = dealIdByKey.get(o.orderKey);
     const company = companyFor(o);
     if (!dealId || !company) continue;
     companyPairs.push({ fromId: company.id, toId: dealId });
     const repCodeId = company.repCode ? repCodeIds.get(company.repCode) : null;
-    if (repCodeId) repCodePairs.push({ fromId: dealId, toId: repCodeId });
+    if (repCodeId) repCodePairs.push({ dealId, repCodeId });
   }
   if (companyPairs.length) {
     await batchAssociate(token.hubspot, PATHS.companyToDeal, COMPANY_TO_DEAL_ASSOC, companyPairs, signal);
   }
   if (repCodePairs.length) {
-    const assocType = await getDealRepCodeAssocType(token.hubspot, signal);
-    if (assocType) {
-      await batchAssociate(
-        token.hubspot,
-        `/crm/v4/associations/0-3/${REP_OBJECT}/batch/create`,
-        assocType.typeId,
-        repCodePairs,
-        signal,
-        assocType.category,
-      );
-    }
+    await associateRepCodes(token.hubspot, repCodePairs, signal, summary.warnings);
   }
 
   // Only mark the sheet done when every row landed.
@@ -448,7 +560,8 @@ export async function runShowroomOrdersSync(
       if (!s.skippedUnchanged) {
         console.log(
           `[showroom-sync] ${s.agencyKey}: ${s.rows} rows, ${s.created} created, ${s.updated} updated, ` +
-            `${s.companyMatched} matched (${s.repCodeMatched} w/ rep code), ${s.companyMisses.length} company misses, ${s.errors.length} errors`,
+            `${s.companyMatched} matched (${s.repCodeMatched} w/ rep code), ${s.companiesCreated} companies created, ` +
+            `${s.companyMisses.length} company misses, ${s.errors.length} errors`,
         );
       }
     } catch (e) {
@@ -463,6 +576,7 @@ export async function runShowroomOrdersSync(
         updated: 0,
         companyMatched: 0,
         repCodeMatched: 0,
+        companiesCreated: 0,
         companyMisses: [],
         warnings: [],
         errors: [msg],
