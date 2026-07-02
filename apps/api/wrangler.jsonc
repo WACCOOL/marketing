@@ -109,8 +109,10 @@
         "max_retries": 3,
         "dead_letter_queue": "wac-ingest-dlq"
       },
-      // Event-lead routing: SERIAL consumer (max_concurrency 1) so a whole-list
-      // enrollment drains within HubSpot's API rate limit instead of stampeding.
+      // Event-lead routing: low-concurrency consumer so a whole-list enrollment
+      // drains within HubSpot's API rate limit instead of stampeding. 3 concurrent
+      // invocations ≈ 8-10 contacts/min ≈ ~10-15 req/s, well under the ~19 req/s
+      // private-app budget shared with the SAP/territory syncs.
       // Create with: npx wrangler queues create wac-event-leads
       //         and: npx wrangler queues create wac-event-leads-dlq
       {
@@ -118,7 +120,7 @@
         "max_batch_size": 5,
         "max_batch_timeout": 5,
         "max_retries": 3,
-        "max_concurrency": 1,
+        "max_concurrency": 3,
         "dead_letter_queue": "wac-event-leads-dlq"
       }
     ]
