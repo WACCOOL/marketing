@@ -27,6 +27,12 @@
       // Created with: npx wrangler kv namespace create SHORT_LINKS
       "binding": "SHORT_LINKS",
       "id": "c23faa7c4acd44cf9835bc94a492397d"
+    },
+    {
+      // Per-source sync state (showroom-orders sheet markers + last-run
+      // summaries). Created with: npx wrangler kv namespace create SYNC_STATE
+      "binding": "SYNC_STATE",
+      "id": "abd7ef1403734aab81e2c80aaec54695"
     }
   ],
 
@@ -139,8 +145,10 @@
   //   "0 * * * *"    hourly SAP -> HubSpot sync heartbeat (no-data alert)
   //   "0 5 * * *"    daily refresh of cached HubSpot dropdown options (self-heal)
   //   "30 6 * * 1"   weekly recompute of deal-stage probabilities (Mon 06:30 UTC)
+  //   "15,45 * * * *" showroom PO orders sheets -> HubSpot deals (staggered off
+  //                  the :00/:30 Graph pull; gated on SHOWROOM_SYNC_ENABLED)
   "triggers": {
-    "crons": ["0 7 * * *", "*/30 * * * *", "0 * * * *", "0 5 * * *", "30 6 * * 1"]
+    "crons": ["0 7 * * *", "*/30 * * * *", "0 * * * *", "0 5 * * *", "30 6 * * 1", "15,45 * * * *"]
   },
 
   "observability": {

@@ -33,3 +33,6 @@ export * from "./hubspot/leadOwnership.js";
 export * from "./hubspot/projectFocus.js";
 export * from "./hubspot/companyClassifyOverrides.js";
 export * from "./hubspot/productFocus.js";
+export * from "./showroom/registry.js";
+export * from "./showroom/parse.js";
+export * from "./showroom/map.js";

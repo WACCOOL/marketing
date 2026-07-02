@@ -27,6 +27,8 @@ import { companyClassifyRoutes } from "./routes/companyClassify.js";
 import { eventLeadRoutes } from "./routes/eventLeads.js";
 import { projectFocusRoutes } from "./routes/projectFocus.js";
 import { productFocusRoutes } from "./routes/productFocus.js";
+import { showroomOrderRoutes } from "./routes/showroomOrders.js";
+import { runShowroomOrdersSync } from "./showroomOrders.js";
 import { syncNationalAccountDomains } from "./nationalAccounts.js";
 import { makeProductAdapter } from "./saleslayer.js";
 import { serviceSupabase } from "./supabase.js";
@@ -102,6 +104,7 @@ app.route("/api/hubspot", companyClassifyRoutes);
 app.route("/api/hubspot", eventLeadRoutes);
 app.route("/api/hubspot", projectFocusRoutes);
 app.route("/api/hubspot", productFocusRoutes);
+app.route("/api/hubspot", showroomOrderRoutes);
 app.route("/api/rep-codes", repCodeRoutes);
 
 // Anything not handled by a /api/* route falls through to the SPA assets
@@ -115,6 +118,8 @@ app.all("*", async (c) => c.env.ASSETS.fetch(c.req.raw));
  *   - hourly — SAP -> HubSpot sync heartbeat (alert if the feed goes quiet)
  *   - daily 05:00 UTC — refresh cached HubSpot dropdown options (self-heal)
  *   - weekly Mon 06:30 UTC — recompute deal-stage probabilities (weighted pipeline)
+ *   - every 30 minutes at :15/:45 — showroom PO orders sheets -> HubSpot deals
+ *     (staggered off the :00/:30 Graph pull; gated on SHOWROOM_SYNC_ENABLED)
  * Each branch is best-effort and logs rather than throwing so one blip doesn't
  * fail the invocation.
  */
@@ -141,6 +146,14 @@ async function scheduled(event: ScheduledController, env: Env): Promise<void> {
   }
   if (event.cron === "30 6 * * 1") {
     await refreshStageProbabilities(env);
+  }
+  if (event.cron === "15,45 * * * *") {
+    if (env.SHOWROOM_SYNC_ENABLED !== "1" || !env.GOOGLE_SA_KEY || !env.HUBSPOT_TOKEN) return;
+    try {
+      await runShowroomOrdersSync(env, {}, AbortSignal.timeout(300_000));
+    } catch (e) {
+      console.error("[cron] showroom-orders sync failed", e);
+    }
   }
 }
 

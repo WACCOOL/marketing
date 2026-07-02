@@ -42,9 +42,14 @@ describe("toHubspotDate", () => {
     expect(toHubspotDate("2026-07-01")).toBe(Date.UTC(2026, 6, 1));
     expect(toHubspotDate("2099-01-01")).toBe(Date.UTC(2099, 0, 1)); // SAP far-future sentinel passes through
   });
+  it("converts SAP compact YYYYMMDD (seen on follow-up dates)", () => {
+    expect(toHubspotDate("20260522")).toBe(Date.UTC(2026, 4, 22));
+  });
   it("returns null for SAP's null sentinels", () => {
     expect(toHubspotDate("00/00/0000")).toBeNull();
     expect(toHubspotDate("0000-00-00")).toBeNull();
+    expect(toHubspotDate("00000000")).toBeNull();
+    expect(toHubspotDate("--")).toBeNull();
   });
   it("returns null for empty/invalid/non-date input", () => {
     expect(toHubspotDate("")).toBeNull();

@@ -805,7 +805,8 @@ function coerceDates(
     const d = toHubspotDate(bag[f]);
     if (d === null) {
       const raw = String(bag[f] ?? "").trim();
-      if (raw && !/^0+\/0+\/0+$|^0+-0+-0+$/.test(raw)) {
+      // Null sentinels SAP actually sends: 00/00/0000, 0000-00-00, 00000000, `--`.
+      if (raw && !/^0+\/0+\/0+$|^0+-0+-0+$|^0+$|^-+$/.test(raw)) {
         fixActions.push({
           property: f,
           from: raw,
@@ -1017,7 +1018,7 @@ export async function batchAssociate(
   }
 }
 
-async function lookupCompanyId(
+export async function lookupCompanyId(
   token: string,
   accountNumber: unknown,
   signal: AbortSignal,

@@ -330,7 +330,8 @@ export function toHubspotDate(v: unknown): number | null {
     dd = Number(us[2]);
     yyyy = Number(us[3]);
   } else {
-    const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    // ISO `2026-07-23` or SAP compact `20260723` (seen on follow-up dates).
+    const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/) ?? s.match(/^(\d{4})(\d{2})(\d{2})$/);
     if (!iso) return null;
     yyyy = Number(iso[1]);
     mm = Number(iso[2]);
