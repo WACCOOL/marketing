@@ -322,6 +322,20 @@ function fixActionToIssue(
       reason: a.reason ?? `dropped — unparseable date "${a.from ?? ""}"`,
     };
   }
+  if (a.action === "auto_created") {
+    // Informational: a missing record (e.g. an unknown SAP rep code) was created
+    // automatically. Not a HARD_ISSUE_ACTION — the push still counts as succeeded;
+    // this row is the reviewable dashboard trail.
+    return {
+      object_type: objectType,
+      property: a.property,
+      raw_value: a.from ?? null,
+      category: "other",
+      action: "auto_created",
+      mapped_to: a.to ?? null,
+      reason: a.reason ?? "record auto-created",
+    };
+  }
   if (a.action === "duplicate_ids_unresolved") {
     return {
       object_type: objectType,

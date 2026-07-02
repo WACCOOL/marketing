@@ -169,7 +169,7 @@ export interface FixAction {
   property: string;
   from?: string;
   to?: string;
-  action: "normalized" | "dropped" | "invalid_date";
+  action: "normalized" | "dropped" | "invalid_date" | "auto_created";
   reason?: string;
 }
 
