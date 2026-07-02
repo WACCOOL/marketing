@@ -785,17 +785,39 @@ async function findDealIdByQuoteNumber(
 }
 
 /**
- * Convert SAP `MM/DD/YYYY` date strings to HubSpot's date format (midnight-UTC
- * ms) for the given target properties; drop null/invalid (e.g. `00/00/0000`) so a
- * bad value is never sent. These properties are date-typed with no options, so
- * they must not pass through the enum heal (kept out of the options map).
+ * Convert SAP date strings (`MM/DD/YYYY` or ISO `YYYY-MM-DD`) to HubSpot's date
+ * format (midnight-UTC ms) for the given target properties; drop null/invalid so
+ * a bad value is never sent. Empty values are dropped silently (normal SAP
+ * blanks / `00/00/0000` sentinels), but a NON-empty value that fails to parse is
+ * recorded as a field issue — a silent drop here is how the 2026-06-26 feed
+ * format change went unnoticed while every date field quietly stopped syncing.
+ * These properties are date-typed with no options, so they must not pass through
+ * the enum heal (kept out of the options map).
  */
-function coerceDates(bag: Record<string, unknown>, fields: readonly string[]): void {
+function coerceDates(
+  bag: Record<string, unknown>,
+  fields: readonly string[],
+  fixActions: (FixAction & { scope?: string })[],
+  scope?: string,
+): void {
   for (const f of fields) {
     if (bag[f] === undefined) continue;
     const d = toHubspotDate(bag[f]);
-    if (d === null) delete bag[f];
-    else bag[f] = d;
+    if (d === null) {
+      const raw = String(bag[f] ?? "").trim();
+      if (raw && !/^0+\/0+\/0+$|^0+-0+-0+$/.test(raw)) {
+        fixActions.push({
+          property: f,
+          from: raw,
+          action: "invalid_date",
+          reason: `dropped — unparseable date "${raw}" (expected MM/DD/YYYY or YYYY-MM-DD)`,
+          ...(scope ? { scope } : {}),
+        });
+      }
+      delete bag[f];
+    } else {
+      bag[f] = d;
+    }
   }
 }
 
@@ -816,7 +838,7 @@ async function upsertDeal(
 
   const mapped = mapFields(payload, DEAL_FIELD_MAP);
   if (poc.email) mapped.requested_by = poc.email; // self-heal SAP's truncated/name value
-  coerceDates(mapped, DEAL_DATE_FIELDS); // MM/DD/YYYY -> HubSpot date (ms); drop 00/00/0000
+  coerceDates(mapped, DEAL_DATE_FIELDS, fixActions); // SAP date string -> HubSpot date (ms); drop blanks/sentinels
   // Proactive: apply learned aliases + validate/auto-correct dropdowns before pushing.
   const n = normalizeWithLearning("deals", "deal", mapped, optionsByProp, aliasMap);
   for (const a of n.actions) fixActions.push(a);
@@ -903,7 +925,7 @@ async function upsertLineItems(
       if (mapped.hs_discount_percentage !== undefined) {
         mapped.hs_discount_percentage = toDecimalPercent(mapped.hs_discount_percentage);
       }
-      coerceDates(mapped, LINE_ITEM_DATE_FIELDS); // MM/DD/YYYY -> HubSpot date (ms)
+      coerceDates(mapped, LINE_ITEM_DATE_FIELDS, fixActions, "line_item"); // SAP date string -> HubSpot date (ms)
       if (p.doc__currency) {
         mapped.currency = p.doc__currency;
         mapped.doc__currency = p.doc__currency;

@@ -311,6 +311,17 @@ function fixActionToIssue(
       reason: a.reason ?? `normalized "${a.from ?? ""}" → "${a.to ?? ""}"`,
     };
   }
+  if (a.action === "invalid_date") {
+    return {
+      object_type: objectType,
+      property: a.property,
+      raw_value: a.from ?? null,
+      category: "other",
+      action: "dropped",
+      mapped_to: null,
+      reason: a.reason ?? `dropped — unparseable date "${a.from ?? ""}"`,
+    };
+  }
   if (a.action === "duplicate_ids_unresolved") {
     return {
       object_type: objectType,
@@ -506,30 +517,52 @@ export async function replayRecord(
   return { ok: true, status: patched.row.status };
 }
 
-/** Bulk replay records matching a status/object filter (inline; for the current backlog). */
+/**
+ * Bulk replay records matching a status/object filter, a `created_at` window,
+ * or an explicit id list (inline; for backlogs and targeted backfills). Always
+ * replays in `created_at` ascending order so multi-event quotes re-apply their
+ * payloads in the order they arrived (there is no out-of-order guard on push —
+ * `sap_changed_at` is audit-only). `lastCreatedAt` lets a caller batch a large
+ * window: pass it back as the next call's `from` (records already replayed
+ * simply re-run — the push is an idempotent upsert).
+ */
 export async function replayRecords(
   env: Env,
   serviceSb: SupabaseClient,
-  opts: { status?: string; objectType?: string; limit?: number } = {},
-): Promise<{ total: number; counts: Record<string, number> }> {
+  opts: {
+    status?: string;
+    objectType?: string;
+    limit?: number;
+    from?: string;
+    to?: string;
+    ids?: string[];
+  } = {},
+): Promise<{ total: number; counts: Record<string, number>; lastCreatedAt: string | null }> {
   let q = serviceSb
     .from("hubspot_sync_records")
-    .select("id")
+    .select("id, created_at")
     .order("created_at", { ascending: true })
     .limit(opts.limit ?? 500);
   if (opts.status) q = q.eq("status", opts.status);
   if (opts.objectType) q = q.eq("object_type", opts.objectType);
+  if (opts.from) q = q.gt("created_at", opts.from);
+  if (opts.to) q = q.lte("created_at", opts.to);
+  if (opts.ids?.length) q = q.in("id", opts.ids);
   const { data, error } = await q;
   if (error) throw new Error(`replay query failed: ${error.message}`);
-  const ids = ((data as { id: string }[] | null) ?? []).map((r) => r.id);
+  const rows = (data as { id: string; created_at: string }[] | null) ?? [];
 
   const counts: Record<string, number> = {};
-  for (const id of ids) {
-    const r = await replayRecord(env, serviceSb, id);
+  for (const row of rows) {
+    const r = await replayRecord(env, serviceSb, row.id);
     const key = r.ok ? r.status : "error";
     counts[key] = (counts[key] ?? 0) + 1;
   }
-  return { total: ids.length, counts };
+  return {
+    total: rows.length,
+    counts,
+    lastCreatedAt: rows.at(-1)?.created_at ?? null,
+  };
 }
 
 /**
