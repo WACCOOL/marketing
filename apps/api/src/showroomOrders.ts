@@ -225,11 +225,12 @@ async function resolveCompanies(
 /**
  * Create companies for account numbers HubSpot doesn't know (the sheets carry
  * both the showroom's name and account number). Batch upsert keyed on
- * account_number_ (idempotent — a concurrent create just updates the name),
- * named "{Account Name} #{ACCT}" to match the portal's convention for
- * SAP-imported dealers. Created companies are merged into the resolution map
- * so the deal association + summary treat them as matched (repCode empty —
- * the sheets don't carry one).
+ * account_number_ (idempotent — a concurrent create just updates the name).
+ * The raw name goes to sap_company_name (NOT `name`): Davis's HubSpot
+ * workflow composes the display name by appending the account number to the
+ * SAP company name, so writing `name` here would fight it. Created companies
+ * are merged into the resolution map so the deal association + summary treat
+ * them as matched (repCode empty — the sheets don't carry one).
  */
 async function createMissingCompanies(
   token: string,
@@ -256,7 +257,7 @@ async function createMissingCompanies(
         inputs: slice.map(([acct, name]) => ({
           idProperty: "account_number_",
           id: acct,
-          properties: { account_number_: acct, name: `${name} #${acct}` },
+          properties: { account_number_: acct, sap_company_name: name },
         })),
       },
       signal,
