@@ -189,22 +189,45 @@ hubspotSyncRoutes.post("/push/:object", requireSapSyncAuth, async (c) => {
   return c.json({ recordId: res.recordId, status: res.status });
 });
 
-/** Bulk replay records (default: all `partial`) — re-push + self-heal in place. */
+/**
+ * Bulk replay records — re-push + self-heal in place. Default: all `partial`.
+ * Also accepts `ids` (exact records) or a `from`/`to` created_at window for
+ * targeted backfills; those replay records of ANY status unless `status` is
+ * given explicitly. `from` is exclusive — pass the response's `lastCreatedAt`
+ * back as the next call's `from` to batch through a large window.
+ */
 hubspotSyncRoutes.post("/replay", requireSapSyncAuth, async (c) => {
   const user = c.get("user");
   if (user.id !== SAP_SYNC_TOKEN_USER_ID && !canAccessData(user)) {
     return c.json({ error: "internal access required" }, 403);
   }
-  let body: { status?: string; objectType?: string; limit?: number } = {};
+  let body: {
+    status?: string;
+    objectType?: string;
+    limit?: number;
+    from?: string;
+    to?: string;
+    ids?: string[];
+  } = {};
   try {
     body = await c.req.json();
   } catch {
     /* empty body → defaults */
   }
+  const targeted = Boolean(body.ids?.length || body.from || body.to);
+  if (body.from && Number.isNaN(new Date(body.from).getTime())) {
+    return c.json({ error: "invalid `from` timestamp" }, 400);
+  }
+  if (body.to && Number.isNaN(new Date(body.to).getTime())) {
+    return c.json({ error: "invalid `to` timestamp" }, 400);
+  }
   const res = await replayRecords(c.env, serviceSupabase(c.env), {
-    status: body.status ?? "partial",
+    status: body.status ?? (targeted ? undefined : "partial"),
     objectType: body.objectType,
     limit: body.limit,
+    from: body.from,
+    to: body.to,
+    ids: body.ids,
   });
   return c.json(res);
 });

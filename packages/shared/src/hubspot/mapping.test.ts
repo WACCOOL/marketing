@@ -37,8 +37,14 @@ describe("toHubspotDate", () => {
     expect(toHubspotDate("04/18/2024")).toBe(Date.UTC(2024, 3, 18));
     expect(toHubspotDate("12/17/2024")).toBe(Date.UTC(2024, 11, 17));
   });
-  it("returns null for SAP's 00/00/0000 null sentinel", () => {
+  it("converts ISO YYYY-MM-DD (the feed's format since 2026-06-26) to a midnight-UTC ms timestamp", () => {
+    expect(toHubspotDate("2026-07-23")).toBe(Date.UTC(2026, 6, 23));
+    expect(toHubspotDate("2026-07-01")).toBe(Date.UTC(2026, 6, 1));
+    expect(toHubspotDate("2099-01-01")).toBe(Date.UTC(2099, 0, 1)); // SAP far-future sentinel passes through
+  });
+  it("returns null for SAP's null sentinels", () => {
     expect(toHubspotDate("00/00/0000")).toBeNull();
+    expect(toHubspotDate("0000-00-00")).toBeNull();
   });
   it("returns null for empty/invalid/non-date input", () => {
     expect(toHubspotDate("")).toBeNull();
@@ -46,6 +52,8 @@ describe("toHubspotDate", () => {
     expect(toHubspotDate(undefined)).toBeNull();
     expect(toHubspotDate("not a date")).toBeNull();
     expect(toHubspotDate("13/01/2024")).toBeNull(); // month out of range
+    expect(toHubspotDate("2026-13-01")).toBeNull(); // ISO month out of range
+    expect(toHubspotDate("2026-07-32")).toBeNull(); // ISO day out of range
   });
 });
 

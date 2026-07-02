@@ -310,28 +310,41 @@ export function toDecimalPercent(v: unknown): unknown {
 }
 
 /**
- * Convert a SAP date string (`MM/DD/YYYY`) to the value a HubSpot DATE property
- * accepts: a midnight-UTC UNIX timestamp in milliseconds. SAP's null sentinel
- * `00/00/0000` (and anything unparseable) returns null so the caller omits it.
- * Without this, raw `MM/DD/YYYY` strings hit the enum self-heal and get dropped
- * as "no allowed option matched" (these properties are date-typed, no options).
+ * Convert a SAP date string to the value a HubSpot DATE property accepts: a
+ * midnight-UTC UNIX timestamp in milliseconds. The feed has delivered both
+ * `MM/DD/YYYY` (through 2026-06-25) and ISO `YYYY-MM-DD` (since 2026-06-26),
+ * so both are accepted. SAP's null sentinels `00/00/0000` / `0000-00-00` (and
+ * anything unparseable) return null so the caller omits the property.
+ * Without this, raw date strings hit the enum self-heal and get dropped as
+ * "no allowed option matched" (these properties are date-typed, no options).
  */
 export function toHubspotDate(v: unknown): number | null {
   if (v === null || v === undefined || v === "") return null;
-  const m = String(v).trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (!m) return null;
-  const mm = Number(m[1]);
-  const dd = Number(m[2]);
-  const yyyy = Number(m[3]);
+  const s = String(v).trim();
+  let mm: number;
+  let dd: number;
+  let yyyy: number;
+  const us = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (us) {
+    mm = Number(us[1]);
+    dd = Number(us[2]);
+    yyyy = Number(us[3]);
+  } else {
+    const iso = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (!iso) return null;
+    yyyy = Number(iso[1]);
+    mm = Number(iso[2]);
+    dd = Number(iso[3]);
+  }
   if (mm < 1 || mm > 12 || dd < 1 || dd > 31 || yyyy < 1900) return null; // e.g. 00/00/0000
   const ms = Date.UTC(yyyy, mm - 1, dd);
   return Number.isNaN(ms) ? null : ms;
 }
 
 /**
- * HubSpot DATE-typed properties (target names) that receive SAP `MM/DD/YYYY`
- * values and must be converted via toHubspotDate before push. Their HubSpot
- * type is `date` with no options, so they must NOT go through the enum heal.
+ * HubSpot DATE-typed properties (target names) that receive SAP date strings
+ * and must be converted via toHubspotDate before push. Their HubSpot type is
+ * `date` with no options, so they must NOT go through the enum heal.
  */
 export const DEAL_DATE_FIELDS: readonly string[] = [
   "quote_follow_up_1",

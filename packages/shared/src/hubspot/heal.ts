@@ -169,7 +169,8 @@ export interface FixAction {
   property: string;
   from?: string;
   to?: string;
-  action: "normalized" | "dropped";
+  action: "normalized" | "dropped" | "invalid_date";
+  reason?: string;
 }
 
 export interface HealResult {
