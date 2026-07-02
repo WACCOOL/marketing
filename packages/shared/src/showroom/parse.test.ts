@@ -49,6 +49,13 @@ describe("normalizePo", () => {
     expect(normalizePo(null)).toBe("");
     expect(normalizePo(undefined)).toBe("");
   });
+  it("treats placeholder values as blank so they key off the timestamp", () => {
+    for (const v of ["NA", "n/a", "N/A", "none", "TBD", "-", "?", "pending"]) {
+      expect(normalizePo(v), v).toBe("");
+    }
+    // ...but real POs containing those substrings pass through untouched.
+    expect(normalizePo("NA-1234")).toBe("NA-1234");
+  });
 });
 
 describe("parseAmount", () => {
@@ -189,5 +196,54 @@ describe("parseShowroomRows", () => {
   it("keys blank-PO rows off the immutable timestamp", () => {
     const { orders } = parseShowroomRows([HEADER, row({ 8: "" })], SHEET);
     expect(orders[0]!.orderKey).toBe(`williams:ts${orders[0]!.timestampMs}:schonbek`);
+  });
+
+  // The 21 live agency forms are NOT uniform — variants verified 2026-07-02.
+  it("handles agency-specific header variants (KTR/Enlightening/Fletcher-style)", () => {
+    const header = [
+      "Timestamp",
+      "Email Address",
+      "KTR Lighting Representative",
+      "Showroom Account Name: ",
+      "Showroom Account Number: ",
+      "Brand: ",
+      "Internal Invoice (PO) Number:",
+      "Amount (enter exact amount including dollar sign): ",
+      "Where did this designer sale come from?",
+      "Designer's Name or Company",
+    ];
+    const dataRow = [
+      SERIAL,
+      "ktr@example.com",
+      "Jane Doe",
+      "Lights R Us",
+      "12345",
+      "WAC",
+      "555001",
+      "$1,000.00",
+      "Material Bank",
+      "Studio McGee",
+    ];
+    const { orders, warnings } = parseShowroomRows([header, dataRow], SHEET);
+    expect(warnings).toEqual([]);
+    expect(orders[0]).toMatchObject({
+      salesRep: "Jane Doe",
+      orderSource: "Material Bank",
+      designer: "Studio McGee",
+      brand: "WAC",
+      po: "555001",
+      amount: 1000,
+    });
+  });
+
+  it("does not warn when a form simply lacks the optional columns", () => {
+    // Many live forms have only the 8 core columns.
+    const header = HEADER.filter((_, i) => ![5, 6].includes(i));
+    const dataRow = row().filter((_, i) => ![5, 6].includes(i));
+    const { orders, warnings } = parseShowroomRows([header, dataRow], SHEET);
+    expect(warnings).toEqual([]);
+    expect(orders[0]!.orderSource).toBe("");
+    expect(orders[0]!.tradeShow).toBe("");
+    expect(orders[0]!.po).toBe("1734954");
   });
 });

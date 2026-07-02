@@ -21,6 +21,7 @@ const ORDER: ShowroomOrder = {
   accountNumber: "BY171664",
   orderSource: "Existing Designer",
   tradeShow: "",
+  designer: "",
   brand: "Schonbek",
   po: "1734954",
   amount: 1797.75,
@@ -67,7 +68,13 @@ describe("showroomDealProperties", () => {
     expect(props).not.toHaveProperty("amount");
     expect(props).not.toHaveProperty("closedate");
     expect(props).not.toHaveProperty("showroom_trade_show");
+    expect(props).not.toHaveProperty("showroom_designer");
     expect(props).not.toHaveProperty("account_number");
+  });
+
+  it("maps the designer column when the form has one", () => {
+    const props = showroomDealProperties({ ...ORDER, designer: "Studio McGee" });
+    expect(props.showroom_designer).toBe("Studio McGee");
   });
 
   it("declares the dedupe key property as unique", () => {

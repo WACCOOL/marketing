@@ -22,6 +22,8 @@ export interface ShowroomOrder {
   accountNumber: string;
   orderSource: string;
   tradeShow: string;
+  /** "Designer's Name or Company" — only some agencies' forms ask this. */
+  designer: string;
   brand: string;
   /** Normalized PO/invoice number ("" when blank). */
   po: string;
@@ -38,17 +40,31 @@ export interface ParsedShowroomSheet {
 /**
  * Expected columns, located by fuzzy header match (lowercased, non-alphanumerics
  * stripped, `matches` tested with String.includes) so column reordering or minor
- * label edits in the form don't silently misparse — a column that can't be found
- * yields a warning and blank values instead.
+ * label edits in the form don't silently misparse — a required column that can't
+ * be found yields a warning and blank values instead. The agencies' forms are
+ * NOT uniform (verified across all 21 live sheets 2026-07-02): the rep column
+ * is often prefixed with the agency name ("KTR Lighting Representative"), the
+ * order-source question has ≥4 wordings, and orderSource/tradeShow/designer
+ * exist only on some forms — hence `optional` (absence is normal, not a warning).
  */
 const COLUMNS = [
   { key: "timestamp", matches: ["timestamp"] },
   { key: "email", matches: ["emailaddress"] },
-  { key: "salesRep", matches: ["salesrepresentative"] },
+  // "Sales Representative", "Enlightening Sales Representative",
+  // "KTR Lighting Representative", "Glass Representative", ...
+  { key: "salesRep", matches: ["representative"] },
   { key: "accountName", matches: ["showroomaccountname"] },
   { key: "accountNumber", matches: ["showroomaccountnumber"] },
-  { key: "orderSource", matches: ["howthisordercameabout", "canyouclarify"] },
-  { key: "tradeShow", matches: ["tradeshow"] },
+  // "Can you clarify how this order came about?", "Where did this order
+  // originate from?", "Where did this designer sale come from?", "Origin of
+  // this order" ("origin" also covers "originate").
+  {
+    key: "orderSource",
+    matches: ["howthisordercameabout", "canyouclarify", "origin", "salecomefrom"],
+    optional: true,
+  },
+  { key: "tradeShow", matches: ["tradeshow"], optional: true },
+  { key: "designer", matches: ["designersname"], optional: true },
   { key: "brand", matches: ["brand"] },
   { key: "po", matches: ["invoiceponumber", "internalinvoice", "ponumber"] },
   { key: "amount", matches: ["amount"] },
@@ -82,6 +98,10 @@ export function normalizePo(v: unknown): string {
   let s = String(v).trim();
   const floatArtifact = s.match(/^(\d+)\.0+$/);
   if (floatArtifact) s = floatArtifact[1]!;
+  // Placeholder "PO"s (live Dunn sheet has two DIFFERENT orders both marked
+  // "NA") must be treated as blank so the key falls back to the unique
+  // timestamp instead of colliding and silently dropping an order.
+  if (/^(n\/?a|none|tbd|pending|unknown|-+|\?+)$/i.test(s)) return "";
   return s.toUpperCase();
 }
 
@@ -156,7 +176,9 @@ export function parseShowroomRows(
   for (const c of COLUMNS) {
     const idx = header.findIndex((h) => h && c.matches.some((m) => h.includes(m)));
     if (idx === -1) {
-      warnings.push(`${label}: column "${c.key}" not found in header row`);
+      if (!("optional" in c && c.optional)) {
+        warnings.push(`${label}: column "${c.key}" not found in header row`);
+      }
     } else {
       col.set(c.key, idx);
     }
@@ -203,6 +225,7 @@ export function parseShowroomRows(
       accountNumber: normalizePo(get(row, "accountNumber")),
       orderSource: cellText(get(row, "orderSource")),
       tradeShow: cellText(get(row, "tradeShow")),
+      designer: cellText(get(row, "designer")),
       brand,
       po,
       amount,

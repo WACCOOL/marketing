@@ -29,6 +29,7 @@ export const SHOWROOM_DEAL_PROPERTY_DEFS: {
   { name: "showroom_submitted_by", label: "Showroom Submitted By" },
   { name: "showroom_order_source", label: "Showroom Order Source" },
   { name: "showroom_trade_show", label: "Showroom Trade Show" },
+  { name: "showroom_designer", label: "Showroom Designer" },
   { name: "showroom_brand", label: "Showroom Brand" },
 ];
 
@@ -63,6 +64,7 @@ export function showroomDealProperties(order: ShowroomOrder): Record<string, str
   if (order.submittedBy) props.showroom_submitted_by = order.submittedBy;
   if (order.orderSource) props.showroom_order_source = order.orderSource;
   if (order.tradeShow) props.showroom_trade_show = order.tradeShow;
+  if (order.designer) props.showroom_designer = order.designer;
   if (order.brand) props.showroom_brand = order.brand;
   return props;
 }
