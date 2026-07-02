@@ -50,15 +50,27 @@ interface HsRes {
 
 export async function hs(token: string, method: string, path: string, body?: unknown): Promise<HsRes> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`${BASE}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        accept: "application/json",
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}${path}`, {
+        method,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch (e) {
+      // Network-level throw (ETIMEDOUT/ECONNRESET mid-read) — not an HTTP status,
+      // so the response-based retry below never sees it. Hours-long scans WILL hit
+      // one eventually; retry with the same backoff instead of killing the run.
+      if (attempt < 6) {
+        await new Promise((r) => setTimeout(r, Math.min(10_000, 500 * 2 ** attempt)));
+        continue;
+      }
+      throw e;
+    }
     // Retry on rate-limit AND transient 5xx (502/503/504) — long paginated scans
     // occasionally hit a Cloudflare/HubSpot bad-gateway; don't abort the whole run.
     if ((res.status === 429 || res.status >= 500) && attempt < 6) {
