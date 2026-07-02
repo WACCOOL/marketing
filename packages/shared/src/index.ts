@@ -26,6 +26,7 @@ export * from "./hubspot/heal.js";
 export * from "./hubspot/insideSales.js";
 export * from "./hubspot/state.js";
 export * from "./hubspot/repCode.js";
+export * from "./hubspot/repCodeCreate.js";
 export * from "./hubspot/specifier.js";
 export * from "./hubspot/companySubType.js";
 export * from "./hubspot/contactRepCode.js";

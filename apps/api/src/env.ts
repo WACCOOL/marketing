@@ -126,6 +126,12 @@ export interface Env {
   // when unset, alerts are logged only.
   ALERT_SLACK_WEBHOOK?: string;
 
+  // HubSpot owner (by email) who receives the review TASK when the SAP push
+  // auto-creates a Rep Code record for an unknown rep code (hubspotPush.ts).
+  // Defaults in code to davis.rothenberg@waclighting.com; unresolvable email →
+  // the task is created unassigned.
+  REP_CODE_ALERT_OWNER_EMAIL?: string;
+
   // Microsoft Graph app-only (client-credentials) creds for the scheduled
   // ingestion pullers (graphPull.ts): pull the Territory file from SharePoint
   // and the Open Orders attachment from a mailbox. Requires admin-consented

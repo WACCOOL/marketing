@@ -8,12 +8,16 @@ import {
   parseAnnuityGrid,
   wildcardToRegExp,
   accountForms,
+  buildRepCodeCreateProperties,
+  buildRepCodeTaskContent,
   companyStatusFromRiskCategory,
   computeInsideSalesFields,
   extractInvalidPropertyItems,
   healProperties,
   isValidationError,
   mapFields,
+  normalizeRepCodeForCreate,
+  parseRepCodes,
   repCodeInactiveFromCompanyStatus,
   repCodeSyncProperties,
   resolveRepCodeSchema,
@@ -1341,6 +1345,25 @@ export async function pushDeal(
     // deal name matches the account's wildcards (real-time; daily reconcile backfills).
     await associateNationalAccountForDeal(env, token, deal.id, deal.dealname, signal, assocSkips);
 
+    // The quote's rep code (sales_group) — auto-create the Rep Code record +
+    // association + review task when SAP references a code HubSpot lacks.
+    await ensureServicingRepCodes({
+      env,
+      sb,
+      token,
+      rawValue: payload.sales_group,
+      property: "sales_group",
+      source: {
+        type: "deal",
+        objectType: "deals",
+        id: deal.id,
+        label: deal.quoteNumber ?? deal.dealname ?? deal.id,
+      },
+      fixActions,
+      assocSkips,
+      signal,
+    });
+
     return {
       result: {
         hs_record_id: deal.id,
@@ -1783,6 +1806,292 @@ async function syncRepCodesForCompany(opts: {
   return skips;
 }
 
+// --- Missing Rep Code auto-create (servicing rep code from the SAP payload) ---
+// Distinct from syncRepCodesForCompany above: that path matches companies that ARE
+// rep agencies (Rep Code `account` = company account number). This one handles the
+// SERVICING rep code every customer account/quote carries (company `sales_rep_code`,
+// deal `sales_group`). When that code has no Rep Code record, the HubSpot workflows
+// keyed on the property miss their trigger and the record ends up unassociated — so
+// the Worker creates the record, links it, and opens a review task.
+
+/** Fallback recipient of the review task when REP_CODE_ALERT_OWNER_EMAIL is unset. */
+const REP_CODE_ALERT_OWNER_DEFAULT = "davis.rothenberg@waclighting.com";
+
+/** rep_code (UPPERCASE) -> record id, per-isolate — skips re-reads for codes already seen. */
+const ensuredRepCodeIds = new Map<string, string>();
+
+/**
+ * Ensure a Rep Code record exists for `code`. Read-by-code first; on miss, batch
+ * UPSERT by `rep_code` — race-safe under queue concurrency: two racing upserts both
+ * succeed and exactly one response carries `new: true`, so only the winner triggers
+ * the association/task follow-ups. Returns null on HubSpot failure.
+ */
+async function ensureRepCodeRecord(
+  token: string,
+  code: string,
+  ownerId: string | undefined,
+  signal: AbortSignal,
+): Promise<{ id: string; created: boolean } | null> {
+  const cached = ensuredRepCodeIds.get(code);
+  if (cached) return { id: cached, created: false };
+
+  const read = await hs(
+    token,
+    "POST",
+    `/crm/v3/objects/${REP_OBJECT}/batch/read`,
+    { idProperty: "rep_code", properties: ["rep_code"], inputs: [{ id: code }] },
+    signal,
+  );
+  const existing = read.ok ? read.data?.results?.[0] : null;
+  if (existing?.id) {
+    ensuredRepCodeIds.set(code, String(existing.id));
+    return { id: String(existing.id), created: false };
+  }
+
+  const up = await hs(
+    token,
+    "POST",
+    `/crm/v3/objects/${REP_OBJECT}/batch/upsert`,
+    { inputs: [{ idProperty: "rep_code", id: code, properties: buildRepCodeCreateProperties(code, ownerId) }] },
+    signal,
+  );
+  const result = up.ok ? up.data?.results?.[0] : null;
+  if (!result?.id) return null;
+  ensuredRepCodeIds.set(code, String(result.id));
+  return { id: String(result.id), created: Boolean(result?.new) };
+}
+
+/** The typeId+category to link a deal/company to a Rep Code, resolved once per isolate.
+ * Deals prefer the "Current" label (what the sales_group workflow applies); otherwise
+ * the unlabeled entry. null = nothing resolvable → caller falls back to the default
+ * association endpoint. */
+interface RepLinkType {
+  typeId: number;
+  category: "HUBSPOT_DEFINED" | "USER_DEFINED";
+}
+const repLinkTypeCache = new Map<string, RepLinkType | null>();
+async function getRepCodeLinkType(
+  token: string,
+  from: "deals" | "companies",
+  signal: AbortSignal,
+): Promise<RepLinkType | null> {
+  if (repLinkTypeCache.has(from)) return repLinkTypeCache.get(from)!;
+  const res = await hs(token, "GET", `/crm/v4/associations/${from}/${REP_OBJECT}/labels`, undefined, signal);
+  const rows: any[] = res.ok ? res.data?.results ?? [] : [];
+  let pick =
+    from === "deals"
+      ? rows.find((l) => String(l.label ?? "").trim().toLowerCase() === "current")
+      : undefined;
+  if (!pick) pick = rows.find((l) => l.label == null);
+  const result: RepLinkType | null =
+    pick?.typeId != null
+      ? {
+          typeId: Number(pick.typeId),
+          category: pick.category === "USER_DEFINED" ? "USER_DEFINED" : "HUBSPOT_DEFINED",
+        }
+      : null;
+  repLinkTypeCache.set(from, result);
+  return result;
+}
+
+/** Associate a deal/company to a Rep Code record. Returns a failure reason or null. */
+async function associateRepCode(
+  token: string,
+  from: "deals" | "companies",
+  fromId: string,
+  repId: string,
+  signal: AbortSignal,
+): Promise<string | null> {
+  try {
+    const link = await getRepCodeLinkType(token, from, signal);
+    if (link) {
+      await batchAssociate(
+        token,
+        `/crm/v4/associations/${from}/${REP_OBJECT}/batch/create`,
+        link.typeId,
+        [{ fromId, toId: repId }],
+        signal,
+        link.category,
+      );
+      return null;
+    }
+    const res = await hs(
+      token,
+      "PUT",
+      `/crm/v4/objects/${from}/${fromId}/associations/default/${REP_OBJECT}/${repId}`,
+      undefined,
+      signal,
+    );
+    return res.ok ? null : `rep-code association ${from} ${fromId} -> ${repId} failed (${res.status})`;
+  } catch (e) {
+    return `rep-code association ${from} ${fromId} -> ${repId} failed: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+/** Owner id for the review task, from REP_CODE_ALERT_OWNER_EMAIL (TTL-cached). */
+const ALERT_OWNER_TTL_MS = 10 * 60 * 1000;
+let alertOwnerCache: { id: string | null; at: number } | null = null;
+async function getRepCodeAlertOwnerId(env: Env, token: string, signal: AbortSignal): Promise<string | null> {
+  if (alertOwnerCache && Date.now() - alertOwnerCache.at < ALERT_OWNER_TTL_MS) return alertOwnerCache.id;
+  const email = (env.REP_CODE_ALERT_OWNER_EMAIL || REP_CODE_ALERT_OWNER_DEFAULT).trim();
+  const res = await hs(token, "GET", `${PATHS.owners}/?email=${encodeURIComponent(email)}&limit=1`, undefined, signal);
+  const oid = res.ok ? res.data?.results?.[0]?.id : null;
+  const id = oid != null ? String(oid) : null;
+  alertOwnerCache = { id, at: Date.now() };
+  return id;
+}
+
+/** Open the review TASK for an auto-created Rep Code, associated to the new record
+ * and the triggering company/deal. Unresolvable owner → task created unassigned.
+ * Returns failure reasons (surfaced as assocSkips). */
+async function createRepCodeAlertTask(opts: {
+  env: Env;
+  token: string;
+  repId: string;
+  code: string;
+  source: { type: "company" | "deal"; objectType: "companies" | "deals"; id: string; label: string };
+  ownerSet: boolean;
+  signal: AbortSignal;
+}): Promise<string[]> {
+  const { env, token, repId, code, source, ownerSet, signal } = opts;
+  const failures: string[] = [];
+  const { subject, body } = buildRepCodeTaskContent({
+    repCode: code,
+    sourceType: source.type,
+    sourceLabel: source.label,
+    ownerSet,
+  });
+  const ownerId = await getRepCodeAlertOwnerId(env, token, signal);
+  const res = await hs(
+    token,
+    "POST",
+    "/crm/v3/objects/tasks",
+    {
+      properties: {
+        hs_task_subject: subject,
+        hs_task_body: body,
+        hs_timestamp: String(Date.now()),
+        hs_task_status: "NOT_STARTED",
+        hs_task_type: "TODO",
+        ...(ownerId ? { hubspot_owner_id: ownerId } : {}),
+      },
+    },
+    signal,
+  );
+  const taskId = res.ok && res.data?.id != null ? String(res.data.id) : "";
+  if (!taskId) {
+    failures.push(`review task for auto-created rep code "${code}" failed (${res.status})`);
+    return failures;
+  }
+  for (const target of [
+    { type: REP_OBJECT, id: repId },
+    { type: source.objectType as string, id: source.id },
+  ]) {
+    const ar = await hs(
+      token,
+      "PUT",
+      `/crm/v4/objects/tasks/${taskId}/associations/default/${target.type}/${target.id}`,
+      undefined,
+      signal,
+    );
+    if (!ar.ok) failures.push(`task ${taskId} -> ${target.type} ${target.id} association failed (${ar.status})`);
+  }
+  return failures;
+}
+
+/**
+ * For each rep code on the pushed payload with NO Rep Code record in HubSpot:
+ * create the record (owner: the company's AMT-resolved ISR, or for deals the
+ * territory sheet's rep_code -> ISR map), associate the triggering company/deal,
+ * open the review task, and log an `auto_created` fixAction for the dashboard.
+ * Codes that already exist are untouched (association stays the workflows' job).
+ * Fully fail-soft: every failure lands in assocSkips, never in the push outcome.
+ */
+async function ensureServicingRepCodes(opts: {
+  env: Env;
+  sb: SupabaseClient;
+  token: string;
+  rawValue: unknown;
+  property: "sales_rep_code" | "sales_group";
+  source: { type: "company" | "deal"; objectType: "companies" | "deals"; id: string; label: string };
+  companyIsrOwner?: string;
+  fixActions: (FixAction & { scope?: string })[];
+  assocSkips: AssocSkip[];
+  signal: AbortSignal;
+}): Promise<void> {
+  const { env, sb, token, rawValue, property, source, companyIsrOwner, fixActions, assocSkips, signal } = opts;
+  const raw = rawValue == null ? "" : String(rawValue).trim();
+  if (!raw) return;
+
+  for (const part of parseRepCodes(raw)) {
+    try {
+      const code = normalizeRepCodeForCreate(part);
+      if (!code) {
+        assocSkips.push({
+          objectType: REP_OBJECT,
+          property,
+          rawValue: part,
+          reason: `rep code auto-create skipped — "${part}" fails validation`,
+        });
+        continue;
+      }
+
+      let ownerId = companyIsrOwner ?? "";
+      if (!ownerId && source.type === "deal" && !ensuredRepCodeIds.has(code)) {
+        const resolvers = await loadRepResolvers(sb, token, signal);
+        ownerId = resolvers.repCodeToOwner.get(code) ?? "";
+      }
+
+      const ensured = await ensureRepCodeRecord(token, code, ownerId || undefined, signal);
+      if (!ensured) {
+        assocSkips.push({
+          objectType: REP_OBJECT,
+          property,
+          rawValue: code,
+          reason: `rep code "${code}" lookup/create failed`,
+        });
+        continue;
+      }
+      if (!ensured.created) continue; // existed already, or a racing push won
+
+      fixActions.push({
+        scope: source.type,
+        property,
+        from: code,
+        to: ensured.id,
+        action: "auto_created",
+        reason:
+          `Rep Code "${code}" not in HubSpot — record created` +
+          `${ownerId ? " with ISR owner" : ""} and associated to ${source.type} ${source.label}`,
+      });
+
+      const assocFail = await associateRepCode(token, source.objectType, source.id, ensured.id, signal);
+      if (assocFail) {
+        assocSkips.push({ objectType: source.objectType, property, rawValue: code, reason: assocFail });
+      }
+
+      for (const reason of await createRepCodeAlertTask({
+        env,
+        token,
+        repId: ensured.id,
+        code,
+        source,
+        ownerSet: Boolean(ownerId),
+        signal,
+      })) {
+        assocSkips.push({ objectType: REP_OBJECT, property, rawValue: code, reason });
+      }
+    } catch (e) {
+      assocSkips.push({
+        objectType: REP_OBJECT,
+        property,
+        rawValue: part,
+        reason: `rep code auto-create error: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  }
+}
+
 /** Push a Companies payload: upsert by account_number_ with heal. */
 export async function pushCompany(
   env: Env,
@@ -1886,6 +2195,21 @@ export async function pushCompany(
         reason: `rep-code sync error: ${e instanceof Error ? e.message : String(e)}`,
       });
     }
+
+    // The account's SERVICING rep code (sales_rep_code) — auto-create the Rep Code
+    // record + association + review task when SAP references a code HubSpot lacks.
+    await ensureServicingRepCodes({
+      env,
+      sb,
+      token,
+      rawValue: payload.sales_rep_code,
+      property: "sales_rep_code",
+      source: { type: "company", objectType: "companies", id: String(result.id), label: accountNumber },
+      companyIsrOwner: isrOwner,
+      fixActions,
+      assocSkips,
+      signal,
+    });
 
     return {
       result: { hs_record_id: String(result.id), account_number_: accountNumber, new: Boolean(result?.new) },
