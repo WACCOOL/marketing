@@ -1861,36 +1861,36 @@ async function ensureRepCodeRecord(
   return { id: String(result.id), created: Boolean(result?.new) };
 }
 
-/** The typeId+category to link a deal/company to a Rep Code, resolved once per isolate.
- * Deals prefer the "Current" label (what the sales_group workflow applies); otherwise
- * the unlabeled entry. null = nothing resolvable → caller falls back to the default
- * association endpoint. */
+/** The association types to link a deal/company to a Rep Code: the unlabeled base
+ * pair PLUS, for deals, the "Current" label (the portal labels rep-code associations
+ * Current/Previous/Inactive). Both must be sent together — creating with ONLY the
+ * labeled type returns 201 but attaches nothing (verified live 2026-07-02 in the
+ * showroom-orders sync). null = none resolvable → default-association PUT fallback. */
 interface RepLinkType {
   typeId: number;
   category: "HUBSPOT_DEFINED" | "USER_DEFINED";
 }
-const repLinkTypeCache = new Map<string, RepLinkType | null>();
-async function getRepCodeLinkType(
+const repLinkTypesCache = new Map<string, RepLinkType[] | null>();
+async function getRepCodeLinkTypes(
   token: string,
   from: "deals" | "companies",
   signal: AbortSignal,
-): Promise<RepLinkType | null> {
-  if (repLinkTypeCache.has(from)) return repLinkTypeCache.get(from)!;
+): Promise<RepLinkType[] | null> {
+  if (repLinkTypesCache.has(from)) return repLinkTypesCache.get(from)!;
   const res = await hs(token, "GET", `/crm/v4/associations/${from}/${REP_OBJECT}/labels`, undefined, signal);
   const rows: any[] = res.ok ? res.data?.results ?? [] : [];
-  let pick =
+  const ref = (t: any): RepLinkType => ({
+    typeId: Number(t.typeId),
+    category: t.category === "HUBSPOT_DEFINED" ? "HUBSPOT_DEFINED" : "USER_DEFINED",
+  });
+  const unlabeled = rows.find((l) => l.typeId != null && l.label == null);
+  const current =
     from === "deals"
-      ? rows.find((l) => String(l.label ?? "").trim().toLowerCase() === "current")
+      ? rows.find((l) => l.typeId != null && String(l.label ?? "").trim().toLowerCase() === "current")
       : undefined;
-  if (!pick) pick = rows.find((l) => l.label == null);
-  const result: RepLinkType | null =
-    pick?.typeId != null
-      ? {
-          typeId: Number(pick.typeId),
-          category: pick.category === "USER_DEFINED" ? "USER_DEFINED" : "HUBSPOT_DEFINED",
-        }
-      : null;
-  repLinkTypeCache.set(from, result);
+  const picked = [unlabeled, current].filter((t) => t != null).map(ref);
+  const result = picked.length ? picked : null;
+  repLinkTypesCache.set(from, result);
   return result;
 }
 
@@ -1903,17 +1903,28 @@ async function associateRepCode(
   signal: AbortSignal,
 ): Promise<string | null> {
   try {
-    const link = await getRepCodeLinkType(token, from, signal);
-    if (link) {
-      await batchAssociate(
+    const types = await getRepCodeLinkTypes(token, from, signal);
+    if (types) {
+      const res = await hs(
         token,
+        "POST",
         `/crm/v4/associations/${from}/${REP_OBJECT}/batch/create`,
-        link.typeId,
-        [{ fromId, toId: repId }],
+        {
+          inputs: [
+            {
+              types: types.map((t) => ({ associationCategory: t.category, associationTypeId: t.typeId })),
+              from: { id: fromId },
+              to: { id: repId },
+            },
+          ],
+        },
         signal,
-        link.category,
       );
-      return null;
+      // A 201 with an empty results array is a silent no-op (seen live) — treat as failure.
+      const created = ((res.ok ? res.data?.results : null) ?? []).length;
+      return res.ok && created > 0
+        ? null
+        : `rep-code association ${from} ${fromId} -> ${repId} attached nothing (status ${res.status})`;
     }
     const res = await hs(
       token,
