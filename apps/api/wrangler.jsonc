@@ -136,7 +136,10 @@
     "SHORT_LINK_HOST": "https://gowac.cc",
     // Enables the weekly deal-stage probability writer (refreshStageProbabilities).
     // Non-sensitive flag; the HUBSPOT_TOKEN private app must hold crm.pipelines.deals.
-    "STAGE_PROB_WRITE": "1"
+    "STAGE_PROB_WRITE": "1",
+    // Enables the half-hourly showroom-orders sheets -> HubSpot deals cron
+    // (showroomOrders.ts). Backfill completed + verified 2026-07-02.
+    "SHOWROOM_SYNC_ENABLED": "1"
   },
 
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:
