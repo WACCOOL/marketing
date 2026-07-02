@@ -8,6 +8,8 @@ import {
   normalizeCompanyType,
   normalizeProjectFocus,
   projectFocusFromSubType,
+  isLatinAmerica,
+  brandFromNotes,
   intlWacOwnerEmail,
   treeChannelsAreValid,
   type LeadFacts,
@@ -236,6 +238,43 @@ describe("Showroom / Distributor (product focus)", () => {
 
   it("Decorative + no brand → MF Showroom RSM (default)", () => {
     expect(sd({ productFocus: "Decorative", brand: null })).toMatchObject({ kind: "repCode", channel: "MF Showroom", resolve: "rsm" });
+  });
+});
+
+describe("Latin America → Lana (manual routing)", () => {
+  it("isLatinAmerica: Americas outside US/Canada by name or ISO code", () => {
+    for (const c of ["Mexico", "MEXICO", "MX", "Brazil", "brasil", "BR", "Costa Rica", "Puerto Rico", "Argentina"]) {
+      expect(isLatinAmerica(c)).toBe(true);
+    }
+    for (const c of ["United States", "US", "Canada", "CA", "Germany", "Australia", "", null]) {
+      expect(isLatinAmerica(c)).toBe(false);
+    }
+  });
+  it("normalizeLocation buckets a Latin American country as Latin America", () => {
+    expect(normalizeLocation("Mexico")).toBe("Latin America");
+    expect(normalizeLocation("Brazil")).toBe("Latin America");
+    expect(normalizeLocation("Germany")).toBe("International");
+  });
+  it("tree: Latin America → Lana fixed person (never the international node)", () => {
+    expect(leaf({ location: "Mexico", brand: "Modern Forms" })).toMatchObject({
+      kind: "person",
+      name: "Lana",
+    });
+  });
+});
+
+describe("brandFromNotes", () => {
+  it("single brand mention → canonical brand", () => {
+    expect(brandFromNotes("Asked about Schonbek crystal for a hotel lobby")).toBe("Schonbek");
+    expect(brandFromNotes("interested in modern forms pendants")).toBe("Modern Forms");
+    expect(brandFromNotes("Wants MF fans pricing")).toBe("MF Fans");
+    expect(brandFromNotes("needs WAC track heads")).toBe("WAC Lighting");
+  });
+  it("ambiguous / empty notes → null", () => {
+    expect(brandFromNotes("Compared WAC track vs Modern Forms pendants")).toBeNull();
+    expect(brandFromNotes("nice chat, send catalog")).toBeNull();
+    expect(brandFromNotes("")).toBeNull();
+    expect(brandFromNotes(null)).toBeNull();
   });
 });
 
