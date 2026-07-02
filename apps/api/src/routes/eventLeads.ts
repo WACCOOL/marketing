@@ -6,7 +6,7 @@ import { syncNationalAccountDomains } from "../nationalAccounts.js";
 /**
  * Marketing-event lead-ownership webhook + the national-account domain sync.
  *
- *   POST /api/hubspot/event-lead         — webhook: ack fast, process in background
+ *   POST /api/hubspot/event-lead         — webhook: enqueue onto wac-event-leads, ack
  *   POST /api/hubspot/event-lead/sync    — inline (testing / backfill): returns the outcome
  *   POST /api/hubspot/sync-national-domains — refresh the national-account domain mirror
  *
@@ -59,19 +59,27 @@ function bodyToPayload(body: Record<string, unknown>, contactId: string): EventL
   };
 }
 
-/** Webhook: ack immediately, resolve ownership + create the Lead in the background. */
+/**
+ * Webhook: enqueue and ack. Processing happens on the wac-event-leads queue —
+ * SERIAL (max_concurrency 1) with retries — so a whole-list enrollment (hundreds of
+ * near-simultaneous calls) drains at a pace HubSpot's API rate limit can absorb,
+ * instead of parallel invocations starving each other into timeouts (2026-07-02
+ * Lightovation: 217 enrollments → only 62 leads).
+ */
 eventLeadRoutes.post("/event-lead", async (c) => {
   if (!authorized(c)) return c.json({ error: "unauthorized" }, 401);
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const contactId = contactIdFrom(body, c.req.query("contactId"));
   if (!contactId) return c.json({ error: "missing contact id" }, 400);
 
-  c.executionCtx.waitUntil(
-    processEventLead(c.env, bodyToPayload(body, contactId), AbortSignal.timeout(40_000)).catch((e) =>
-      console.error(`[event-lead] ${contactId} failed:`, e),
-    ),
-  );
-  return c.json({ accepted: true, contactId });
+  const payload = bodyToPayload(body, contactId);
+  if (payload.dryRun) {
+    // Dry runs answer inline — nothing to queue, no writes happen.
+    const res = await processEventLead(c.env, payload, AbortSignal.timeout(45_000));
+    return c.json(res);
+  }
+  await c.env.EVENT_LEAD_QUEUE.send(payload);
+  return c.json({ queued: true, contactId });
 });
 
 /** Inline variant: process and return the full outcome (testing / backfill). */

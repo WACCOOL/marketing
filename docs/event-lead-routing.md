@@ -207,13 +207,26 @@ therefore shows on the contact record **and on every lead record** for that atte
 
 ## 9. Ops notes
 
+- **Queue-based processing:** the webhook only *enqueues* (onto the Cloudflare Queue
+  `wac-event-leads`) and acks — so enrolling an entire attendee list at once is safe.
+  A **serial** consumer (`max_concurrency: 1`) drains contacts one at a time within
+  HubSpot's API rate limit, retrying failures up to 3× with delays. Expect a large
+  list to finish over ~10–30 minutes, not instantly.
+- **Idempotent:** an owner who already has a lead for this contact + campaign is
+  skipped, so retries and workflow re-enrollments never create duplicates — they only
+  fill in what's missing.
+- **Outcome audit:** every processed contact gets a row in the Supabase table
+  `event_lead_outcomes` (status: `done` / `skipped_competitor` / `skipped_existing` /
+  `no_owner` / `error`, plus the created leads, lead type, and any error). "Why didn't
+  X get a lead?" is a query against that table.
 - **Testing:** `POST /api/hubspot/event-lead/sync` with `{"contactId": "...", "dryRun": true}`
   returns the full decision (owners, paths, campaign, lead type, notes) without
   creating anything.
-- The webhook acks immediately and processes in the background; failures are logged,
-  not retried. HubSpot workflow re-enrollment must be enabled for repeat attendees.
+- HubSpot workflow: re-enrollment must be enabled for repeat attendees; **no workflow
+  rate limit needed** (the queue does the pacing).
 - Required private-app scopes: CRM objects (contacts/companies/leads/notes read+write),
   **lists read**, **marketing-events read**.
 - Owner ids, channel names, association type ids, windows (±14d notes) live at the
   top of `apps/api/src/eventLead.ts`; the routing tree lives in
-  `packages/shared/src/hubspot/leadOwnership.ts` (unit-tested — `pnpm test`).
+  `packages/shared/src/hubspot/leadOwnership.ts` (unit-tested — `pnpm test`); the
+  queue consumer is `apps/api/src/eventLeadQueue.ts`.

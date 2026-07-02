@@ -172,6 +172,8 @@ export interface EventLeadResult {
   leadNotes: string | null;
   /** Account-numbered associated company → Re-attempting; none → New business. */
   leadType: "NEW_BUSINESS" | "RE_ATTEMPTING" | null;
+  /** Owners skipped because they already had a lead for this campaign (idempotency). */
+  dedupedExisting: number;
   /** One per distinct owner. Multiple only when the brand was unknown (fan-out). */
   leads: ResolvedLead[];
   contactOwnerAction: "set" | "skipped_existing" | "skipped_no_owner" | "skipped_multiple";
@@ -464,6 +466,50 @@ function locationFact(c: ContactFacts): string {
   if (c.region) return c.region;
   if (c.countryCode.toUpperCase() === "US") return "North America";
   return c.country || "";
+}
+
+/**
+ * Owners who ALREADY have a lead for this contact + campaign. Makes processing
+ * idempotent: queue retries and workflow re-enrollments never duplicate a lead —
+ * they only fill in owners that are still missing one.
+ */
+async function existingCampaignLeadOwners(
+  token: string,
+  contactId: string,
+  campaignName: string,
+  signal: AbortSignal,
+): Promise<Set<string>> {
+  const owners = new Set<string>();
+  if (!campaignName) return owners;
+  const assoc = await hs(
+    token,
+    "GET",
+    `/crm/v4/objects/contacts/${encodeURIComponent(contactId)}/associations/leads`,
+    undefined,
+    signal,
+  );
+  const ids = [
+    ...new Set(
+      ((assoc.data?.results ?? []) as Array<Record<string, unknown>>)
+        .map((r) => String(r.toObjectId ?? ""))
+        .filter(Boolean),
+    ),
+  ];
+  if (!ids.length) return owners;
+  const res = await hs(
+    token,
+    "POST",
+    "/crm/v3/objects/0-136/batch/read",
+    { properties: ["hubspot_owner_id", LEAD.sourceProp], inputs: ids.map((id) => ({ id })) },
+    signal,
+  );
+  for (const r of (res.data?.results ?? []) as Array<Record<string, any>>) {
+    const p = r.properties ?? {};
+    if ((p[LEAD.sourceProp] ?? "") === campaignName && p.hubspot_owner_id) {
+      owners.add(String(p.hubspot_owner_id));
+    }
+  }
+  return owners;
 }
 
 /** Is the contact in the competitor-domains list? (Dynamic list — self-updating.) */
@@ -803,6 +849,7 @@ export async function processEventLead(
       campaignName: body.campaignName ?? null,
       leadNotes: null,
       leadType: null,
+      dedupedExisting: 0,
       leads: [],
       contactOwnerAction: "skipped_no_owner",
       skippedReason: "competitor",
@@ -955,6 +1002,16 @@ export async function processEventLead(
     });
   }
 
+  // Idempotency: owners who already have a lead for this contact + campaign are
+  // skipped, so queue retries / workflow re-enrollments only fill in what's missing.
+  let dedupedExisting = 0;
+  const already = await existingCampaignLeadOwners(token, contactId, body.campaignName ?? "", signal);
+  if (already.size) {
+    const before = targets.length;
+    targets = targets.filter((t) => !(t.resolved.ownerId && already.has(t.resolved.ownerId)));
+    dedupedExisting = before - targets.length;
+  }
+
   // Resolve each target owner's display name once (for the co-owners field on fan-out).
   const ownerNames = await Promise.all(
     targets.map((t) => (t.resolved.ownerId ? ownerName(token, t.resolved.ownerId, signal) : Promise.resolve(""))),
@@ -1039,6 +1096,7 @@ export async function processEventLead(
     campaignName: body.campaignName ?? null,
     leadNotes: leadNotesText || null,
     leadType,
+    dedupedExisting,
     leads,
     contactOwnerAction,
   };

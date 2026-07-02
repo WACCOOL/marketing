@@ -32,7 +32,9 @@ import { makeProductAdapter } from "./saleslayer.js";
 import { serviceSupabase } from "./supabase.js";
 import { updateJobStatus, type GenerationMessage } from "./generation.js";
 import { handleIngestBatch } from "./ingestQueue.js";
+import { handleEventLeadBatch } from "./eventLeadQueue.js";
 import type { IngestMessage } from "./ingest.js";
+import type { EventLeadBody } from "./eventLead.js";
 import { runGraphPull } from "./graphPull.js";
 import { runHubspotHeartbeat } from "./alerts.js";
 import { refreshHubspotOptions, refreshStageProbabilities } from "./hubspotPush.js";
@@ -186,13 +188,17 @@ const CONTAINER_TIMEOUT_MS = 150_000;
 const SHOT3D_CONTAINER_TIMEOUT_MS_DEFAULT = 4_200_000;
 
 async function queue(
-  batch: MessageBatch<GenerationMessage | IngestMessage>,
+  batch: MessageBatch<GenerationMessage | IngestMessage | EventLeadBody>,
   env: Env,
 ): Promise<void> {
   // Marketing data ingestion runs on its own queue with independent retry/DLQ
   // policy — dispatch by queue name so the generation path below is untouched.
   if (batch.queue === "wac-ingest") {
     await handleIngestBatch(batch as MessageBatch<IngestMessage>, env);
+    return;
+  }
+  if (batch.queue === "wac-event-leads") {
+    await handleEventLeadBatch(batch as MessageBatch<EventLeadBody>, env);
     return;
   }
 
