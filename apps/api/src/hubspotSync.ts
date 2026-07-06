@@ -336,6 +336,21 @@ function fixActionToIssue(
       reason: a.reason ?? "record auto-created",
     };
   }
+  if (a.action === "derived") {
+    // Informational: the push derived a property from SAP data (dealstage from
+    // stage_of_project, closedate from line-item conversion dates — the absorbed
+    // HubSpot workflows). Not a HARD_ISSUE_ACTION — the push still counts as
+    // succeeded; this row is the reviewable dashboard trail.
+    return {
+      object_type: objectType,
+      property: a.property,
+      raw_value: a.from ?? null,
+      category: "other",
+      action: "derived",
+      mapped_to: a.to ?? null,
+      reason: a.reason ?? "derived from SAP data",
+    };
+  }
   if (a.action === "duplicate_ids_unresolved") {
     return {
       object_type: objectType,

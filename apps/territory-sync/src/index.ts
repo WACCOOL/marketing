@@ -29,6 +29,7 @@ import {
   type RepIsrRow,
 } from "./insideSales.js";
 import { backfillRepCodes } from "./repCodeBackfill.js";
+import { reconcileDealCloseDates } from "./dealCloseDates.js";
 
 /**
  * Territory sync — out-of-band parser for the Territory workbook.
@@ -291,6 +292,38 @@ async function main(): Promise<void> {
       `[specifier-assoc] deals: scanned=${r.scanned} ${dryRun ? "would-associate" : "associated"}=${r.associated} ` +
         `unresolved=${r.unresolved}${r.labelMissing ? " [Specifier label not set up — labeling skipped]" : ""}`,
     );
+    return;
+  }
+
+  // Deal stage + close-date reconcile (the backfill/audit companion of the absorbed
+  // stage-mapping + close-date HubSpot workflows): promote stuck Awarded deals whose
+  // line items converted, and set/correct closedate to the oldest quote_conversion_date.
+  // ALWAYS run --dry-run (with --csv=path) and review before applying; --include-lost
+  // additionally applies the Closed-Lost close-date rule (proposals are reported either way).
+  if (process.argv.includes("--reconcile-deal-close-dates")) {
+    const token = process.env.HUBSPOT_TOKEN;
+    if (!token) {
+      console.log("[close-dates] HUBSPOT_TOKEN unset; nothing to do.");
+      return;
+    }
+    const csvArg = process.argv.find((a) => a.startsWith("--csv="));
+    const r = await reconcileDealCloseDates({
+      token,
+      dryRun,
+      limit,
+      includeLost: process.argv.includes("--include-lost"),
+      csvPath: csvArg ? csvArg.split("=")[1] : undefined,
+    });
+    const verb = dryRun ? "would-" : "";
+    console.log(
+      `[close-dates] scanned=${r.scanned} candidates=${r.candidates} withLineDates=${r.withLineDates}`,
+    );
+    console.log(
+      `[close-dates] ${verb}promote awarded→closed-won=${r.stagePromotions} | closedate ${verb}set=${r.closedatesSet} ${verb}corrected=${r.closedatesCorrected} | ` +
+        `lost proposals=${r.lostProposals}${process.argv.includes("--include-lost") ? " (applied)" : " (REPORT ONLY — apply with --include-lost)"}`,
+    );
+    console.log(`[close-dates] ${verb}updated deals=${r.updated}`);
+    for (const f of r.failures) console.warn(`[close-dates] WARN: ${f}`);
     return;
   }
 
