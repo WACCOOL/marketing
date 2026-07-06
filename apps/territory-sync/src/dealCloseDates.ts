@@ -19,6 +19,9 @@ import { hs } from "./insideSales.js";
  *   - Awarded → Closed Won promotions (deals the broken workflow left stuck),
  *   - closedate set/corrected to the oldest line-item quote_conversion_date
  *     (won deals; repairs closedates stamped at stage-move/backfill time),
+ *   - deal-level quote_conversion_date set/corrected to the oldest line-item
+ *     conversion date on EVERY SAP deal (ungated by stage — this is why the
+ *     sweep considers all Universal Pipeline SAP deals, not just closed ones),
  *   - optionally (--include-lost) closedate on Closed Lost deals from the
  *     newest rejection_date, fallback quote_last_changed_date. Lost proposals
  *     are always REPORTED; they're only APPLIED with the flag.
@@ -36,14 +39,8 @@ const SCAN_PROPS = [
   "closedate",
   "pipeline",
   "quote_last_changed_date",
+  "quote_conversion_date",
 ].join(",");
-
-const LOST_PROJECT_STAGES = new Set(["REJECTED", "COVID-19 HOLD"]);
-const CANDIDATE_STAGES = new Set<string>([
-  DEAL_STAGE_IDS.awarded,
-  DEAL_STAGE_IDS.closedWon,
-  DEAL_STAGE_IDS.closedLost,
-]);
 
 const ASSOC_BATCH = 500; // v4 associations batch/read input cap headroom
 const LINE_BATCH = 100;
@@ -57,6 +54,7 @@ interface CandidateDeal {
   dealstage: string | null;
   closedateRaw: string | null;
   quoteLastChangedRaw: string | null;
+  quoteConversionRaw: string | null;
 }
 
 export interface CloseDateChange {
@@ -68,6 +66,8 @@ export interface CloseDateChange {
   dealstageAfter: string;
   closedateBefore: string;
   closedateAfter: string;
+  conversionBefore: string;
+  conversionAfter: string;
   deltaDays: number | null;
   rule: "won" | "lost";
   source: string;
@@ -81,6 +81,8 @@ export interface DealCloseDateReconcileResult {
   stagePromotions: number;
   closedatesSet: number;
   closedatesCorrected: number;
+  conversionDatesSet: number;
+  conversionDatesCorrected: number;
   lostProposals: number;
   updated: number;
   changes: CloseDateChange[];
@@ -190,9 +192,9 @@ export async function reconcileDealCloseDates(opts: {
       if (String(p.pipeline ?? "") !== UNIVERSAL_PIPELINE_ID) continue;
       const quote = String(p.sap_quote_number ?? "").trim();
       if (!quote) continue; // SAP deals only — showroom/manual deals are out of scope
-      const sop = String(p.stage_of_project ?? "").trim().toUpperCase();
-      const stage = String(p.dealstage ?? "");
-      if (sop !== "AWARDED" && !LOST_PROJECT_STAGES.has(sop) && !CANDIDATE_STAGES.has(stage)) continue;
+      // Every SAP deal is a candidate: the conversion-date mirror applies to all
+      // stages, and the shared derivation's own gates keep stage/closedate
+      // writes confined to the closed/awarded cases exactly as before.
       candidates.push({
         id: String(d.id),
         quote,
@@ -201,6 +203,7 @@ export async function reconcileDealCloseDates(opts: {
         dealstage: p.dealstage != null ? String(p.dealstage) : null,
         closedateRaw: p.closedate != null ? String(p.closedate) : null,
         quoteLastChangedRaw: p.quote_last_changed_date != null ? String(p.quote_last_changed_date) : null,
+        quoteConversionRaw: p.quote_conversion_date != null ? String(p.quote_conversion_date) : null,
       });
     }
     if (scanned % 10_000 < 100) console.log(`[close-dates] scanned ${scanned} deals, candidates so far ${candidates.length}`);
@@ -222,6 +225,8 @@ export async function reconcileDealCloseDates(opts: {
   let stagePromotions = 0;
   let closedatesSet = 0;
   let closedatesCorrected = 0;
+  let conversionDatesSet = 0;
+  let conversionDatesCorrected = 0;
   let lostProposals = 0;
   let updated = 0;
 
@@ -247,6 +252,7 @@ export async function reconcileDealCloseDates(opts: {
     if (lineItems.some((l) => l.conversionMs !== null || l.rejectionMs !== null)) withLineDates++;
 
     const closedateMs = toEpochMs(c.closedateRaw);
+    const conversionMs = toEpochMs(c.quoteConversionRaw);
     // Lost proposals are always computed (audit visibility); applied only with --include-lost.
     const derived = deriveDealStageAndCloseDate({
       stageOfProject: c.stageOfProject, // = stored value → the stage gate self-blocks; only promotions pass
@@ -255,6 +261,7 @@ export async function reconcileDealCloseDates(opts: {
         dealstage: c.dealstage,
         closedateMs,
         pipeline: UNIVERSAL_PIPELINE_ID,
+        quoteConversionDateMs: conversionMs,
       },
       lineItems,
       quoteLastChangedMs: toEpochMs(c.quoteLastChangedRaw),
@@ -264,16 +271,26 @@ export async function reconcileDealCloseDates(opts: {
 
     // The gate self-blocks mapping writes and promotion needs dealstage=Awarded,
     // so a closedate on a Closed Lost deal is exactly "the lost rule fired".
+    // The lost gate covers ONLY closedate — the conversion-date mirror is
+    // stage-agnostic and applies to lost deals too.
     const isLost = c.dealstage === DEAL_STAGE_IDS.closedLost;
-    const apply = !isLost || includeLost;
+    const applyProps = { ...derived.properties };
+    if (isLost && !includeLost) delete applyProps.closedate;
+    const apply = Object.keys(applyProps).length > 0;
 
     if (derived.properties.dealstage) stagePromotions++;
     const cdAction = derived.actions.find((a) => a.property === "closedate");
-    if (isLost) lostProposals++;
+    if (cdAction && isLost) lostProposals++;
     else if (cdAction?.reason?.startsWith("closedate_set")) closedatesSet++;
     else if (cdAction?.reason?.startsWith("closedate_corrected")) closedatesCorrected++;
+    const convAction = derived.actions.find((a) => a.property === "quote_conversion_date");
+    if (convAction?.reason?.startsWith("conversion_date_set")) conversionDatesSet++;
+    else if (convAction?.reason?.startsWith("conversion_date_corrected")) conversionDatesCorrected++;
 
     const afterMs = derived.properties.closedate ? Number(derived.properties.closedate) : closedateMs;
+    const conversionAfterMs = derived.properties.quote_conversion_date
+      ? Number(derived.properties.quote_conversion_date)
+      : conversionMs;
     changes.push({
       dealId: c.id,
       quote: c.quote,
@@ -283,6 +300,8 @@ export async function reconcileDealCloseDates(opts: {
       dealstageAfter: derived.properties.dealstage ?? c.dealstage ?? "",
       closedateBefore: isoDay(closedateMs),
       closedateAfter: isoDay(afterMs),
+      conversionBefore: isoDay(conversionMs),
+      conversionAfter: isoDay(conversionAfterMs),
       deltaDays:
         closedateMs !== null && afterMs !== null && derived.properties.closedate
           ? Math.round((afterMs - closedateMs) / 86_400_000)
@@ -293,7 +312,7 @@ export async function reconcileDealCloseDates(opts: {
     });
 
     if (apply) {
-      pending.push({ id: c.id, properties: derived.properties });
+      pending.push({ id: c.id, properties: applyProps });
       if (pending.length >= UPDATE_BATCH) await flush();
     }
   }
@@ -302,7 +321,7 @@ export async function reconcileDealCloseDates(opts: {
   // ---- 4. report ------------------------------------------------------------
   if (csvPath) {
     const header =
-      "dealId,sap_quote_number,dealname,stage_of_project,dealstage_before,dealstage_after,closedate_before,closedate_after,delta_days,rule,source,applied";
+      "dealId,sap_quote_number,dealname,stage_of_project,dealstage_before,dealstage_after,closedate_before,closedate_after,conversion_before,conversion_after,delta_days,rule,source,applied";
     const rows = changes.map((ch) =>
       [
         ch.dealId,
@@ -313,6 +332,8 @@ export async function reconcileDealCloseDates(opts: {
         ch.dealstageAfter,
         ch.closedateBefore,
         ch.closedateAfter,
+        ch.conversionBefore,
+        ch.conversionAfter,
         ch.deltaDays ?? "",
         ch.rule,
         csvEscape(ch.source),
@@ -330,6 +351,8 @@ export async function reconcileDealCloseDates(opts: {
     stagePromotions,
     closedatesSet,
     closedatesCorrected,
+    conversionDatesSet,
+    conversionDatesCorrected,
     lostProposals,
     updated,
     changes,

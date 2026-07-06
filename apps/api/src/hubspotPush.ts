@@ -775,6 +775,7 @@ const DEAL_STATE_PROPS = [
   "pipeline",
   "createdate",
   "quote_creation_date",
+  "quote_conversion_date",
 ];
 
 interface ExistingDealHit {
@@ -829,6 +830,7 @@ function toExistingDealState(p: Record<string, unknown>): ExistingDealState {
     dealstage: p.dealstage != null ? String(p.dealstage) : null,
     closedateMs: toEpochMs(p.closedate),
     pipeline: p.pipeline != null ? String(p.pipeline) : null,
+    quoteConversionDateMs: toEpochMs(p.quote_conversion_date),
   };
 }
 

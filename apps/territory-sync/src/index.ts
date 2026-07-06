@@ -323,6 +323,9 @@ async function main(): Promise<void> {
       `[close-dates] ${verb}promote awarded→closed-won=${r.stagePromotions} | closedate ${verb}set=${r.closedatesSet} ${verb}corrected=${r.closedatesCorrected} | ` +
         `lost proposals=${r.lostProposals}${process.argv.includes("--include-lost") ? " (applied)" : " (REPORT ONLY — apply with --include-lost)"}`,
     );
+    console.log(
+      `[close-dates] quote_conversion_date ${verb}set=${r.conversionDatesSet} ${verb}corrected=${r.conversionDatesCorrected}`,
+    );
     console.log(`[close-dates] ${verb}updated deals=${r.updated}`);
     for (const f of r.failures) console.warn(`[close-dates] WARN: ${f}`);
     return;

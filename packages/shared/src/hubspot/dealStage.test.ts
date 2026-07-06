@@ -18,6 +18,7 @@ function existing(over: Partial<ExistingDealState> = {}): ExistingDealState {
     dealstage: DEAL_STAGE_IDS.awarded,
     closedateMs: null,
     pipeline: UNIVERSAL_PIPELINE_ID,
+    quoteConversionDateMs: null,
     ...over,
   };
 }
@@ -90,8 +91,9 @@ describe("deriveDealStageAndCloseDate — stage mapping (wf 1741406037)", () => 
       dealstage: DEAL_STAGE_IDS.closedWon,
       pipeline: UNIVERSAL_PIPELINE_ID,
       closedate: String(MS_2024_05_01), // oldest
+      quote_conversion_date: String(MS_2024_05_01),
     });
-    expect(r.actions.map((a) => a.property).sort()).toEqual(["closedate", "dealstage"]);
+    expect(r.actions.map((a) => a.property).sort()).toEqual(["closedate", "dealstage", "quote_conversion_date"]);
     expect(r.actions.find((a) => a.property === "closedate")?.reason).toContain("closedate_set");
   });
 
@@ -135,13 +137,13 @@ describe("deriveDealStageAndCloseDate — stage-write gate (manual moves survive
     expect(r.properties).toEqual({});
   });
 
-  it("manual move to an open stage while SAP stays AWARDED → zero writes (incl. closedate)", () => {
+  it("manual move to an open stage while SAP stays AWARDED → no stage/closedate writes (conversion mirror still runs)", () => {
     const r = deriveDealStageAndCloseDate({
       stageOfProject: "AWARDED",
       existing: existing({ stageOfProject: "AWARDED", dealstage: DEAL_STAGE_IDS.bidding }),
       lineItems: [{ conversionMs: MS_2024_05_01, rejectionMs: null }],
     });
-    expect(r.properties).toEqual({});
+    expect(r.properties).toEqual({ quote_conversion_date: String(MS_2024_05_01) });
   });
 });
 
@@ -153,7 +155,11 @@ describe("deriveDealStageAndCloseDate — Awarded→ClosedWon promotion (wf 1765
       existing: existing(),
       lineItems: [{ conversionMs: MS_2024_05_01, rejectionMs: null }],
     });
-    expect(r.properties).toEqual({ dealstage: DEAL_STAGE_IDS.closedWon, closedate: String(MS_2024_05_01) });
+    expect(r.properties).toEqual({
+      dealstage: DEAL_STAGE_IDS.closedWon,
+      closedate: String(MS_2024_05_01),
+      quote_conversion_date: String(MS_2024_05_01),
+    });
     expect(r.actions.find((a) => a.property === "dealstage")?.reason).toContain("promotion");
   });
 
@@ -180,14 +186,21 @@ describe("deriveDealStageAndCloseDate — close-date maintenance", () => {
       existing: existing({ dealstage: DEAL_STAGE_IDS.closedWon, closedateMs: stamped }),
       lineItems: [{ conversionMs: MS_2024_05_01, rejectionMs: null }],
     });
-    expect(r.properties).toEqual({ closedate: String(MS_2024_05_01) });
+    expect(r.properties).toEqual({
+      closedate: String(MS_2024_05_01),
+      quote_conversion_date: String(MS_2024_05_01),
+    });
     expect(r.actions[0]?.reason).toContain("closedate_corrected");
   });
 
   it("exact match → no-op (idempotent)", () => {
     const r = deriveDealStageAndCloseDate({
       stageOfProject: "AWARDED",
-      existing: existing({ dealstage: DEAL_STAGE_IDS.closedWon, closedateMs: MS_2024_05_01 }),
+      existing: existing({
+        dealstage: DEAL_STAGE_IDS.closedWon,
+        closedateMs: MS_2024_05_01,
+        quoteConversionDateMs: MS_2024_05_01,
+      }),
       lineItems: [{ conversionMs: MS_2024_05_01, rejectionMs: null }],
     });
     expect(r.properties).toEqual({});
@@ -293,6 +306,8 @@ describe("deriveDealStageAndCloseDate — pipeline guard", () => {
     expect(r.properties.dealstage).toBeUndefined();
     // effective stage is the foreign-pipeline stage — not awarded/closedWon → no closedate write either
     expect(r.properties.closedate).toBeUndefined();
+    // the conversion mirror is pipeline-agnostic
+    expect(r.properties.quote_conversion_date).toBe(String(MS_2024_05_01));
   });
 
   it("maintains closedate on a foreign-pipeline deal whose stage matches awarded semantics is NOT attempted (stage ids are pipeline-specific)", () => {
@@ -304,5 +319,64 @@ describe("deriveDealStageAndCloseDate — pipeline guard", () => {
     // promotion blocked by pipeline guard; closedate: effective stage IS the awarded id → maintained
     expect(r.properties.dealstage).toBeUndefined();
     expect(r.properties.closedate).toBe(String(MS_2024_05_01));
+  });
+});
+
+describe("deriveDealStageAndCloseDate — quote_conversion_date mirror (stage-agnostic)", () => {
+  const openStage = existing({ stageOfProject: "BUDGETING", dealstage: DEAL_STAGE_IDS.db });
+
+  it("sets the oldest conversion date on an open-stage deal without touching stage/closedate", () => {
+    const r = deriveDealStageAndCloseDate({
+      stageOfProject: "BUDGETING", // unchanged → stage gate blocks
+      existing: openStage,
+      lineItems: [
+        { conversionMs: MS_2024_06_15, rejectionMs: null },
+        { conversionMs: MS_2024_05_01, rejectionMs: null },
+        { conversionMs: null, rejectionMs: null },
+      ],
+    });
+    expect(r.properties).toEqual({ quote_conversion_date: String(MS_2024_05_01) });
+    expect(r.actions[0]?.reason).toContain("conversion_date_set");
+  });
+
+  it("corrects drift from the stored value", () => {
+    const r = deriveDealStageAndCloseDate({
+      stageOfProject: "BUDGETING",
+      existing: existing({ ...openStage, quoteConversionDateMs: MS_2024_06_15 }),
+      lineItems: [{ conversionMs: MS_2024_05_01, rejectionMs: null }],
+    });
+    expect(r.properties).toEqual({ quote_conversion_date: String(MS_2024_05_01) });
+    expect(r.actions[0]?.reason).toContain("conversion_date_corrected");
+  });
+
+  it("exact match → no write (idempotent)", () => {
+    const r = deriveDealStageAndCloseDate({
+      stageOfProject: "BUDGETING",
+      existing: existing({ ...openStage, quoteConversionDateMs: MS_2024_05_01 }),
+      lineItems: [{ conversionMs: MS_2024_05_01, rejectionMs: null }],
+    });
+    expect(r.properties).toEqual({});
+  });
+
+  it("no conversion dates → never written, never cleared", () => {
+    const r = deriveDealStageAndCloseDate({
+      stageOfProject: "BUDGETING",
+      existing: existing({ ...openStage, quoteConversionDateMs: MS_2024_05_01 }),
+      lineItems: [{ conversionMs: null, rejectionMs: MS_2026_02_05 }],
+    });
+    expect(r.properties).toEqual({});
+  });
+
+  it("written on new deals (alongside stage/pipeline)", () => {
+    const r = deriveDealStageAndCloseDate({
+      stageOfProject: "BUDGETING",
+      existing: null,
+      lineItems: [{ conversionMs: MS_2024_05_01, rejectionMs: null }],
+    });
+    expect(r.properties).toEqual({
+      dealstage: DEAL_STAGE_IDS.db,
+      pipeline: UNIVERSAL_PIPELINE_ID,
+      quote_conversion_date: String(MS_2024_05_01),
+    });
   });
 });
