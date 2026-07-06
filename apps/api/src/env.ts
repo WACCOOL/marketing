@@ -14,6 +14,17 @@ export interface Env {
   // computation needs no extra scope. Set to "1" (and grant crm.pipelines.deals on the
   // private app) to enable writes.
   STAGE_PROB_WRITE?: string;
+  // Gate for the derived dealstage/closedate writes in the SAP deal push
+  // (absorbs HubSpot workflows 1741406037 + 1765878069, see @wac/shared
+  // deriveDealStageAndCloseDate). When != "1" the push computes + logs what it
+  // WOULD write ("[dealstage] would write ...") but writes nothing — dark
+  // launch while the workflows still own these properties. Set to "1" after
+  // the close-date backfill has run and the logged values check out.
+  DEAL_STAGE_DERIVE_WRITE?: string;
+  // Sub-gate: also maintain closedate on Closed Lost deals (newest line-item
+  // rejection_date, fallback quote_last_changed_date). The HubSpot workflows
+  // never did this — enable only if the lost-date rule is approved.
+  DEAL_LOST_CLOSEDATE_WRITE?: string;
   // Sales Layer PIM (Phase 2), legacy Connector API (api.saleslayer.com).
   // Auth is sha256(connectorId + secretKey + time + unique). When unset
   // (dev / pre-launch) the products cache simply isn't refreshed.

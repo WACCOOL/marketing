@@ -383,7 +383,7 @@ function ErrorsTab() {
         <Select label="Category" value={category} onChange={setCategory}
           options={[["", "All"], ["enum_mismatch", "Dropdown mismatch"], ["unmapped_field", "Unmapped field"], ["assoc_not_found", "Association missing"], ["missing_required", "Missing required"], ["other", "Other"]]} />
         <Select label="Action" value={action} onChange={setAction}
-          options={[["", "All"], ["dropped", "Dropped (needs review)"], ["normalized", "Auto-fixed"], ["unmapped", "Unmapped"], ["assoc_missing", "Assoc missing"], ["auto_created", "Rep code auto-created"]]} />
+          options={[["", "All"], ["dropped", "Dropped (needs review)"], ["normalized", "Auto-fixed"], ["unmapped", "Unmapped"], ["assoc_missing", "Assoc missing"], ["auto_created", "Rep code auto-created"], ["derived", "Stage/close date derived"]]} />
         <form
           onSubmit={(e) => { e.preventDefault(); void load(); }}
           className="row"
@@ -497,7 +497,7 @@ function CategoryTag({ category, action }: { category: string; action: string | 
       ? "var(--muted)"
       : category === "assoc_not_found"
         ? "var(--warn)"
-        : action === "normalized" || action === "auto_created"
+        : action === "normalized" || action === "auto_created" || action === "derived"
           ? "var(--good)"
           : "var(--bad)";
   return (

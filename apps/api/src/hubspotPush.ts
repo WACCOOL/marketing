@@ -2,9 +2,14 @@ import {
   COMPANY_FIELD_MAP,
   DEAL_DATE_FIELDS,
   DEAL_FIELD_MAP,
+  DEAL_STAGE_IDS,
   LINE_ITEM_DATE_FIELDS,
   LINE_ITEM_FIELD_MAP,
   SPECIFIER_LABEL,
+  UNIVERSAL_PIPELINE_ID,
+  deriveDealStageAndCloseDate,
+  lineItemDates,
+  toEpochMs,
   parseAnnuityGrid,
   wildcardToRegExp,
   accountForms,
@@ -28,6 +33,7 @@ import {
   toHubspotDate,
   toNumber,
   weightedAverageProbability,
+  type ExistingDealState,
   type FixAction,
   type InsideSalesResolvers,
   type RepCodeSchema,
@@ -59,19 +65,13 @@ import {
 const HS_BASE = "https://api.hubapi.com";
 
 /**
- * Universal Pipeline (deals) + the stages whose probability we calibrate. Pre-Qualified
- * and Awarded are pinned to their own observed win rates (round to ~0% / ~100%); the
- * three middle stages are calibrated. Closed Won/Lost are fixed by HubSpot (100% / 0%)
- * and untouched.
+ * Universal Pipeline (deals) + its stages — canonical ids live in
+ * @wac/shared/hubspot/dealStage.ts (shared with the territory-sync close-date
+ * reconcile). The probability calibration touches prequal..awarded only;
+ * Closed Won/Lost are fixed by HubSpot (100% / 0%) and untouched.
  */
-export const UNIVERSAL_PIPELINE_ID = "723098519";
-export const DEAL_STAGES = {
-  prequal: "1054295849",
-  planning: "1054295850",
-  db: "1054295851",
-  bidding: "1054295852",
-  awarded: "1240424232",
-} as const;
+export { UNIVERSAL_PIPELINE_ID } from "@wac/shared";
+export const DEAL_STAGES = DEAL_STAGE_IDS;
 
 export const PATHS = {
   dealSearch: "/crm/v3/objects/0-3/search",
@@ -765,11 +765,20 @@ async function resolvePointOfContact(
 
 /* ------------------------------- deal upsert ------------------------------- */
 
-async function findDealIdByQuoteNumber(
+/** Existing-deal properties the stage/close-date derivation needs (fetched in the
+ *  same lookup we already do — zero extra API calls). */
+const DEAL_STATE_PROPS = ["stage_of_project", "dealstage", "closedate", "pipeline"];
+
+interface ExistingDealHit {
+  id: string;
+  properties: Record<string, unknown>;
+}
+
+async function findDealByQuoteNumber(
   token: string,
   quoteNumber: string,
   signal: AbortSignal,
-): Promise<string | null> {
+): Promise<ExistingDealHit | null> {
   const res = await hs(
     token,
     "POST",
@@ -779,13 +788,40 @@ async function findDealIdByQuoteNumber(
         { filters: [{ propertyName: "sap_quote_number", operator: "EQ", value: quoteNumber }] },
       ],
       limit: 1,
-      properties: ["sap_quote_number"],
+      properties: ["sap_quote_number", ...DEAL_STATE_PROPS],
     },
     signal,
   );
   if (!res.ok) throw new HsError(res);
   const hit = res.data?.results?.[0];
-  return hit?.id ? String(hit.id) : null;
+  return hit?.id ? { id: String(hit.id), properties: hit.properties ?? {} } : null;
+}
+
+/** Fetch a deal by record id (the opportunity_id path); null when it doesn't exist. */
+async function getDealById(
+  token: string,
+  id: string,
+  signal: AbortSignal,
+): Promise<ExistingDealHit | null> {
+  const res = await hs(
+    token,
+    "GET",
+    `/crm/v3/objects/0-3/${id}?properties=${DEAL_STATE_PROPS.join(",")}`,
+    undefined,
+    signal,
+  );
+  if (res.status === 404 || res.data?.category === "OBJECT_NOT_FOUND") return null;
+  if (!res.ok) throw new HsError(res);
+  return { id: String(res.data?.id ?? id), properties: res.data?.properties ?? {} };
+}
+
+function toExistingDealState(p: Record<string, unknown>): ExistingDealState {
+  return {
+    stageOfProject: p.stage_of_project != null ? String(p.stage_of_project) : null,
+    dealstage: p.dealstage != null ? String(p.dealstage) : null,
+    closedateMs: toEpochMs(p.closedate),
+    pipeline: p.pipeline != null ? String(p.pipeline) : null,
+  };
 }
 
 /**
@@ -827,6 +863,7 @@ function coerceDates(
 }
 
 async function upsertDeal(
+  env: Env,
   token: string,
   payload: Record<string, unknown>,
   poc: ResolvedPoc,
@@ -851,30 +888,43 @@ async function upsertDeal(
   const properties = n.properties;
   const dealname = typeof properties.dealname === "string" ? properties.dealname : null;
 
-  if (quoteNumber) {
-    const existing = await findDealIdByQuoteNumber(token, quoteNumber, signal);
-    if (existing) {
-      await withHeal(token, signal, "deal", fixActions, properties, (props) =>
-        hs(token, "POST", PATHS.dealUpdate, { inputs: [{ id: existing, properties: props }] }, signal),
-      );
-      return { id: existing, quoteNumber, isNew: false, dealname };
-    }
+  // Resolve the existing deal (and its stage/close-date state) up front —
+  // quote number first, then opportunity_id (null when it doesn't exist,
+  // replacing the old try/404 dance).
+  let existing: ExistingDealHit | null = null;
+  if (quoteNumber) existing = await findDealByQuoteNumber(token, quoteNumber, signal);
+  if (!existing && hasDealId) existing = await getDealById(token, dealId, signal);
+
+  // Derived dealstage/closedate — absorbs the "Update Deal Stage based on
+  // Project Stage changes" (1741406037) and "Set Close Date for Deal based on
+  // Line Item Conversion Date" (1765878069) HubSpot workflows; rules live in
+  // @wac/shared deriveDealStageAndCloseDate. Merged AFTER normalizeWithLearning
+  // so the derived props never pass through the enum heal (dealstage is
+  // pipeline-stage typed, closedate is a datetime — same reasoning as coerceDates).
+  const derived = deriveDealStageAndCloseDate({
+    stageOfProject: payload.stage_of_project != null ? String(payload.stage_of_project) : null,
+    existing: existing ? toExistingDealState(existing.properties) : null,
+    lineItems: lineItemDates(Array.isArray(payload.products) ? (payload.products as Record<string, unknown>[]) : []),
+    quoteLastChangedMs: toHubspotDate(payload.quote_last_changed_date),
+    options: { lostCloseDates: env.DEAL_LOST_CLOSEDATE_WRITE === "1", clearCloseDateOnReopen: true },
+  });
+  if (env.DEAL_STAGE_DERIVE_WRITE === "1") {
+    Object.assign(properties, derived.properties);
+    for (const a of derived.actions) fixActions.push({ ...a, scope: "deal" });
+  } else if (Object.keys(derived.properties).length) {
+    // Dark launch: compute + log only, so `wrangler tail` shows what WOULD be
+    // written while the HubSpot workflows still own these properties.
+    console.log(
+      `[dealstage] DEAL_STAGE_DERIVE_WRITE!=1 — would write ${JSON.stringify(derived.properties)} for deal ${existing?.id ?? "(new)"} quote ${quoteNumber || dealId}`,
+    );
   }
 
-  if (hasDealId) {
-    try {
-      await withHeal(token, signal, "deal", fixActions, properties, (props) =>
-        hs(token, "POST", PATHS.dealUpdate, { inputs: [{ id: dealId, properties: props }] }, signal),
-      );
-      return { id: dealId, quoteNumber: quoteNumber || null, isNew: false, dealname };
-    } catch (err) {
-      const notFound =
-        err instanceof HsError &&
-        (err.status === 404 ||
-          err.data?.category === "OBJECT_NOT_FOUND" ||
-          String(err.message).toLowerCase().includes("not exist"));
-      if (!notFound) throw err;
-    }
+  if (existing) {
+    const id = existing.id;
+    await withHeal(token, signal, "deal", fixActions, properties, (props) =>
+      hs(token, "POST", PATHS.dealUpdate, { inputs: [{ id, properties: props }] }, signal),
+    );
+    return { id, quoteNumber: quoteNumber || null, isNew: false, dealname };
   }
 
   if (!quoteNumber) throw new Error("Missing quotation_number and no valid opportunity_id provided.");
@@ -1279,7 +1329,7 @@ export async function pushDeal(
 
   try {
     const poc = await resolvePointOfContact(token, payload, signal);
-    const deal = await upsertDeal(token, payload, poc, signal, fixActions, dealAliases, dealOptions, learn);
+    const deal = await upsertDeal(env, token, payload, poc, signal, fixActions, dealAliases, dealOptions, learn);
 
     const products = Array.isArray(payload.products) ? payload.products : [];
     const lineItems = products.length
