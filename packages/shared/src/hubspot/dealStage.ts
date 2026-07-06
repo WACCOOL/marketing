@@ -22,6 +22,12 @@
  *     Awarded -> Closed Won promotion which is ungated (wf B parity — this is
  *     what un-sticks deals the broken workflow missed).
  *
+ * Third derived output (no workflow ancestry): deal-level quote_conversion_date
+ * mirrors the OLDEST line-item quote_conversion_date on every deal — ungated by
+ * stage, stage_of_project, or pipeline (pure SAP-data mirror, unlike closedate
+ * which carries won/lost semantics). Diff-only, maintained like closedate,
+ * never cleared when no line carries a conversion date.
+ *
  * Pure: no I/O. The Worker feeds it raw SAP payload values; the reconcile feeds
  * it HubSpot property values (toEpochMs accepts both).
  */
@@ -114,6 +120,8 @@ export interface ExistingDealState {
   /** Parse the HubSpot closedate value via toEpochMs before passing. */
   closedateMs: number | null;
   pipeline: string | null;
+  /** Deal-level quote_conversion_date via toEpochMs; optional for older callers. */
+  quoteConversionDateMs?: number | null;
 }
 
 export interface DeriveDealStageOptions {
@@ -135,7 +143,7 @@ export interface DeriveDealStageInput {
 }
 
 export interface DeriveDealStageResult {
-  /** dealstage? closedate? ("" = clear) pipeline? (new deals only) — diff-only, {} = nothing to write. */
+  /** dealstage? closedate? ("" = clear) pipeline? (new deals only) quote_conversion_date? — diff-only, {} = nothing to write. */
   properties: Record<string, string>;
   actions: FixAction[];
 }
@@ -264,6 +272,24 @@ export function deriveDealStageAndCloseDate(i: DeriveDealStageInput): DeriveDeal
       to: "",
       action: "derived",
       reason: `closedate_cleared — reopened (${existingSop || "?"} → ${sop || "?"})`,
+    });
+  }
+
+  // ---- deal-level quote_conversion_date mirror ------------------------------
+  // Ungated: unlike closedate this carries no won/lost meaning, it just surfaces
+  // the oldest line-item conversion date on the deal for reporting/filters.
+  const existingConversionMs = existing?.quoteConversionDateMs ?? null;
+  if (oldestConversionMs !== null && oldestConversionMs !== existingConversionMs) {
+    properties.quote_conversion_date = String(oldestConversionMs);
+    actions.push({
+      property: "quote_conversion_date",
+      from: existingConversionMs !== null ? String(existingConversionMs) : undefined,
+      to: String(oldestConversionMs),
+      action: "derived",
+      reason:
+        existingConversionMs === null
+          ? `conversion_date_set — oldest quote_conversion_date ${isoDay(oldestConversionMs)}`
+          : `conversion_date_corrected — ${isoDay(existingConversionMs)} → ${isoDay(oldestConversionMs)}`,
     });
   }
 
