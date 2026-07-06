@@ -17,8 +17,8 @@
  */
 
 export const ROLLUP_PROP_YTD = "ytd_won_deals";
-export const ROLLUP_PROP_PRIOR_YTD = "ytd_prior_year_deals";
-export const ROLLUP_PROP_PRIOR_YEAR = "prior_year_deals";
+export const ROLLUP_PROP_PRIOR_YTD = "ytd_prior_year_won_deals";
+export const ROLLUP_PROP_PRIOR_YEAR = "prior_year_won_deals";
 
 export const DEAL_ROLLUP_PROPS: { name: string; label: string }[] = [
   { name: ROLLUP_PROP_YTD, label: "YTD Won Deals" },
