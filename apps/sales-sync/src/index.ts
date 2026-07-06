@@ -1,5 +1,7 @@
 import * as XLSX from "xlsx";
 import { parseSalesPivot, sumThroughMonth, type SalesParseResult } from "@wac/shared";
+import { BATCH, ensureProperties, hs, updateCompanies } from "./hubspot.js";
+import { runDealRollups } from "./dealRollups.js";
 
 /**
  * Sales sync — push YTD sales ($) per customer account onto HubSpot Companies.
@@ -16,11 +18,14 @@ import { parseSalesPivot, sumThroughMonth, type SalesParseResult } from "@wac/sh
  *
  * Env: MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET, HUBSPOT_TOKEN,
  *      SALES_WAC_URL, SALES_SCHONBEK_URL (omit a URL to skip that brand).
+ *
+ * --deal-rollups runs a second, independent mode (HUBSPOT_TOKEN only — no
+ * Graph/workbook env): closed-won deal value rolled up onto Companies as
+ * YTD Won Deals / YTD Prior Year Deals / Prior Year Deals. See dealRollups.ts.
+ * Flags: --dry-run, --limit=N (deals sampled).
  */
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
-const HS = "https://api.hubapi.com";
-const BATCH = 100;
 
 interface Brand {
   key: string;
@@ -84,28 +89,8 @@ function parseWorkbook(bytes: Uint8Array): SalesParseResult {
 }
 
 // ── HubSpot ─────────────────────────────────────────────────
-async function hs<T>(token: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${HS}${path}`, {
-    ...init,
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json", ...(init?.headers ?? {}) },
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`HubSpot ${init?.method ?? "GET"} ${path} -> ${res.status}: ${text.slice(0, 300)}`);
-  return text ? (JSON.parse(text) as T) : ({} as T);
-}
-
-async function ensureProperties(token: string, defs: { name: string; label: string }[]): Promise<void> {
-  const existing = await hs<{ results: { name: string }[] }>(token, "/crm/v3/properties/companies");
-  const have = new Set(existing.results.map((p) => p.name));
-  for (const d of defs) {
-    if (have.has(d.name)) continue;
-    await hs(token, "/crm/v3/properties/companies", {
-      method: "POST",
-      body: JSON.stringify({ name: d.name, label: d.label, type: "number", fieldType: "number", groupName: "companyinformation" }),
-    });
-    console.log(`[sales-sync] created company property ${d.name}`);
-  }
-}
+// hs / ensureProperties / updateCompanies live in hubspot.ts (shared with the
+// --deal-rollups mode).
 
 const strip = (a: string) => a.replace(/^0+/, "") || a;
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -139,23 +124,17 @@ async function resolveCompanies(token: string, accounts: string[]): Promise<Map<
   return map;
 }
 
-async function updateCompanies(token: string, byId: Map<string, Record<string, number>>): Promise<number> {
-  const inputs = [...byId.entries()].map(([id, properties]) => ({ id, properties }));
-  let ok = 0;
-  for (let i = 0; i < inputs.length; i += BATCH) {
-    const batch = inputs.slice(i, i + BATCH);
-    const r = await hs<{ results?: unknown[] }>(token, "/crm/v3/objects/companies/batch/update", {
-      method: "POST",
-      body: JSON.stringify({ inputs: batch }),
-    });
-    ok += r.results?.length ?? batch.length;
-  }
-  return ok;
-}
-
 async function main(): Promise<void> {
   const dryRun = process.argv.includes("--dry-run");
   const token = env("HUBSPOT_TOKEN");
+
+  if (process.argv.includes("--deal-rollups")) {
+    const limitArg = process.argv.find((a) => a.startsWith("--limit="));
+    const limit = limitArg ? Number(limitArg.slice("--limit=".length)) : undefined;
+    await runDealRollups({ token, dryRun, limit: Number.isFinite(limit) && limit! > 0 ? limit : undefined });
+    return;
+  }
+
   const brands = BRANDS.filter((b) => b.url);
   if (brands.length === 0) throw new Error("no sales file URLs configured (SALES_WAC_URL / SALES_SCHONBEK_URL)");
 
