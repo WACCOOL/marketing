@@ -7,6 +7,7 @@ import {
   LINE_ITEM_FIELD_MAP,
   SPECIFIER_LABEL,
   UNIVERSAL_PIPELINE_ID,
+  deriveCreateDate,
   deriveDealStageAndCloseDate,
   lineItemDates,
   toEpochMs,
@@ -765,9 +766,16 @@ async function resolvePointOfContact(
 
 /* ------------------------------- deal upsert ------------------------------- */
 
-/** Existing-deal properties the stage/close-date derivation needs (fetched in the
- *  same lookup we already do — zero extra API calls). */
-const DEAL_STATE_PROPS = ["stage_of_project", "dealstage", "closedate", "pipeline"];
+/** Existing-deal properties the stage/close-date/create-date derivations need
+ *  (fetched in the same lookup we already do — zero extra API calls). */
+const DEAL_STATE_PROPS = [
+  "stage_of_project",
+  "dealstage",
+  "closedate",
+  "pipeline",
+  "createdate",
+  "quote_creation_date",
+];
 
 interface ExistingDealHit {
   id: string;
@@ -917,6 +925,28 @@ async function upsertDeal(
     console.log(
       `[dealstage] DEAL_STAGE_DERIVE_WRITE!=1 — would write ${JSON.stringify(derived.properties)} for deal ${existing?.id ?? "(new)"} quote ${quoteNumber || dealId}`,
     );
+  }
+
+  // Derived createdate — backdates HubSpot's system createdate to the SAP quote
+  // day when the quote is older (bulk-imported deals carry their import date).
+  // Same merged-after-normalizeWithLearning placement: createdate is a datetime
+  // and must never pass through the enum heal. Diff-only, so no-op pushes never
+  // touch it; the payload's quote_creation_date (already midnight-UTC ms via
+  // coerceDates) is preferred, falling back to the value stored on the deal.
+  const createDate = deriveCreateDate({
+    quoteCreationMs: toEpochMs(properties.quote_creation_date ?? existing?.properties.quote_creation_date),
+    existingCreateDateMs: existing ? toEpochMs(existing.properties.createdate) : null,
+    nowMs: Date.now(),
+  });
+  if (Object.keys(createDate.properties).length) {
+    if (env.DEAL_CREATEDATE_WRITE === "1") {
+      Object.assign(properties, createDate.properties);
+      for (const a of createDate.actions) fixActions.push({ ...a, scope: "deal" });
+    } else {
+      console.log(
+        `[createdate] DEAL_CREATEDATE_WRITE!=1 — would write ${JSON.stringify(createDate.properties)} for deal ${existing?.id ?? "(new)"} quote ${quoteNumber || dealId}`,
+      );
+    }
   }
 
   if (existing) {

@@ -25,6 +25,15 @@ export interface Env {
   // rejection_date, fallback quote_last_changed_date). The HubSpot workflows
   // never did this — enable only if the lost-date rule is approved.
   DEAL_LOST_CLOSEDATE_WRITE?: string;
+  // Gate for the derived createdate writes in the SAP deal push (@wac/shared
+  // deriveCreateDate): backdate HubSpot's system createdate to the SAP quote
+  // day (noon UTC) when quote_creation_date is on an earlier calendar day —
+  // bulk-imported deals carry their import date, not the real quote date.
+  // When != "1" the push computes + logs what it WOULD write ("[createdate]
+  // would write ..."). Deals are the one HubSpot object whose createdate the
+  // API accepts; the territory-sync --reconcile-deal-create-dates backfill
+  // probe proves it against the live portal before this goes on.
+  DEAL_CREATEDATE_WRITE?: string;
   // Sales Layer PIM (Phase 2), legacy Connector API (api.saleslayer.com).
   // Auth is sha256(connectorId + secretKey + time + unique). When unset
   // (dev / pre-launch) the products cache simply isn't refreshed.
