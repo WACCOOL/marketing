@@ -5,6 +5,10 @@ name: Sales Sync
 # (sharing URL, app-only), reads the displayed pivot, and updates a per-brand
 # sales property on the matching Company (by account number). Daily, after the
 # workbooks' morning refresh.
+#
+# A second, independent job rolls closed-won deal value up onto Companies
+# (YTD Won Deals / YTD Prior Year Deals / Prior Year Deals) — HubSpot only,
+# so a workbook/Graph failure never blocks it and vice versa.
 on:
   schedule:
     - cron: "0 13 * * *" # 13:00 UTC ≈ 9:00 AM ET
@@ -42,3 +46,21 @@ jobs:
           SALES_WAC_URL: ${{ secrets.SALES_WAC_URL }}
           SALES_SCHONBEK_URL: ${{ secrets.SALES_SCHONBEK_URL }}
         run: pnpm --filter @wac/sales-sync sync ${{ inputs.dry_run && '-- --dry-run' || '' }}
+
+  deal-rollups:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build sales-sync
+        run: pnpm --filter @wac/sales-sync build
+      - name: Run deal rollups
+        env:
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        run: pnpm --filter @wac/sales-sync sync -- --deal-rollups${{ inputs.dry_run && ' --dry-run' || '' }}
