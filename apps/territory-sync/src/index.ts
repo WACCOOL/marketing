@@ -30,6 +30,7 @@ import {
 } from "./insideSales.js";
 import { backfillRepCodes } from "./repCodeBackfill.js";
 import { reconcileDealCloseDates } from "./dealCloseDates.js";
+import { reconcileDealCreateDates } from "./dealCreateDates.js";
 
 /**
  * Territory sync — out-of-band parser for the Territory workbook.
@@ -324,6 +325,39 @@ async function main(): Promise<void> {
     );
     console.log(`[close-dates] ${verb}updated deals=${r.updated}`);
     for (const f of r.failures) console.warn(`[close-dates] WARN: ${f}`);
+    return;
+  }
+
+  // Deal create-date reconcile (the backfill companion of the derived-createdate
+  // write, DEAL_CREATEDATE_WRITE): backdate HubSpot's system createdate to the
+  // SAP quote day (noon UTC) wherever quote_creation_date is on an earlier
+  // calendar day — bulk-imported deals carry their import date. ALWAYS run
+  // --dry-run (with --csv=path) and review before applying; the first real write
+  // is a self-probing batch of 1 that read-back-verifies HubSpot persisted the
+  // value and hard-aborts otherwise. --max-apply=N caps applied updates (sample
+  // stage). Verify by re-running --dry-run until corrections=0.
+  if (process.argv.includes("--reconcile-deal-create-dates")) {
+    const token = process.env.HUBSPOT_TOKEN;
+    if (!token) {
+      console.log("[create-dates] HUBSPOT_TOKEN unset; nothing to do.");
+      return;
+    }
+    const csvArg = process.argv.find((a) => a.startsWith("--csv="));
+    const maxApplyArg = process.argv.find((a) => a.startsWith("--max-apply="));
+    const r = await reconcileDealCreateDates({
+      token,
+      dryRun,
+      limit,
+      maxApply: maxApplyArg ? Number(maxApplyArg.split("=")[1]) || undefined : undefined,
+      csvPath: csvArg ? csvArg.split("=")[1] : undefined,
+    });
+    const verb = dryRun ? "would-" : "";
+    console.log(
+      `[create-dates] scanned=${r.scanned} candidates=${r.candidates} | ` +
+        `${verb}backdate=${r.corrections} quote-after-createdate (untouched)=${r.quoteAfterCreate}`,
+    );
+    console.log(`[create-dates] ${verb}updated deals=${r.updated}`);
+    for (const f of r.failures) console.warn(`[create-dates] WARN: ${f}`);
     return;
   }
 

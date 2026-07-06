@@ -150,7 +150,12 @@
     "DEAL_STAGE_DERIVE_WRITE": "1",
     // Also maintain closedate on Closed Lost deals (newest line-item
     // rejection_date, fallback quote_last_changed_date) — approved 2026-07-06.
-    "DEAL_LOST_CLOSEDATE_WRITE": "1"
+    "DEAL_LOST_CLOSEDATE_WRITE": "1",
+    // Backdate deal createdate to the SAP quote day (noon UTC) when
+    // quote_creation_date is on an earlier calendar day (@wac/shared
+    // deriveCreateDate; backfill via territory-sync --reconcile-deal-create-dates).
+    // Unset to fall back to compute+log-only ("[createdate] would write ...").
+    "DEAL_CREATEDATE_WRITE": "1"
   },
 
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:
