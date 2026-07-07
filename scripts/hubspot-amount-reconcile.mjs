@@ -69,7 +69,7 @@ function parseArgs(argv) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function hs(method, path, body) {
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 8; attempt++) {
     let res;
     try {
       res = await fetch(`${API}${path}`, {
@@ -84,7 +84,7 @@ async function hs(method, path, body) {
     }
     if (res.status === 429 || res.status >= 500) {
       const ra = Number(res.headers.get("retry-after"));
-      await sleep(Number.isFinite(ra) && ra > 0 ? ra * 1000 : 1000 * 2 ** attempt);
+      await sleep(Number.isFinite(ra) && ra > 0 ? ra * 1000 : Math.min(1000 * 2 ** attempt, 30_000));
       continue;
     }
     if (res.status === 204) return {};
@@ -177,6 +177,7 @@ async function main() {
   const byStage = new Map(); // stage -> {n, delta}
 
   let stop = false;
+  const failed = [];
   const processDeal = async (deal) => {
     const total = await lineTotal(deal.id);
     if (total === null) {
@@ -217,6 +218,7 @@ async function main() {
 
     let p;
     p = processDeal(deal)
+      .catch((e) => failed.push({ deal, err: e.message })) // one bad deal must not kill the scan
       .then(() => (args.delayMs ? sleep(args.delayMs) : undefined))
       .finally(() => inflight.delete(p));
     inflight.add(p);
@@ -228,6 +230,20 @@ async function main() {
   }
   await Promise.all(inflight);
 
+  // Serial second chance for deals that errored mid-scan (post-burst calm).
+  if (failed.length) {
+    console.error(`retrying ${failed.length} failed deals serially…`);
+    const retries = failed.splice(0);
+    for (const { deal } of retries) {
+      try {
+        await processDeal(deal);
+      } catch (e) {
+        failed.push({ deal, err: e.message });
+      }
+      await sleep(250);
+    }
+  }
+
   const rows = ["deal_id,dealname,stage,amount,line_total,delta,url"];
   for (const d of diffs.sort((a, b) => Math.abs(b.total - (b.amount ?? 0)) - Math.abs(a.total - (a.amount ?? 0)))) {
     rows.push(
@@ -237,6 +253,10 @@ async function main() {
   writeFileSync(args.out, rows.join("\n") + "\n");
 
   console.error(`\nFINISHED: ${scanned} scanned · ${matches} already correct · ${skippedNoLines} skipped (no SAP lines) · ${diffs.length} diffs${args.write ? ` · ${written} corrected` : " (dry run — nothing written)"}`);
+  if (failed.length) {
+    console.error(`  UNRESOLVED after retry — rerun for these ${failed.length} deals:`);
+    for (const f of failed) console.error(`    ${f.deal.id}: ${f.err}`);
+  }
   for (const [stage, s] of byStage) {
     console.error(`  ${stage}: ${s.n} diffs, Σdelta ${s.delta.toFixed(2)}`);
   }
