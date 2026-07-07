@@ -176,8 +176,30 @@ export const SOURCES: Record<string, SourceDescriptor> = {
     ingestable: false,
   },
 
-  // FUTURE: an invoiced-orders feed (the second HubSpot Orders pipeline) and any
-  // other source become a new descriptor here when their source/delivery firm up.
+  // Pulled from the ExaVault SFTP by apps/turnover-sync (no `/api/ingest`
+  // inbox), like sales-layer it is listed for the source list / destination
+  // map. TURNOVER files arrive ad hoc under Integrations/Inbound; the customer
+  // parent-child files (CUSTOMERS/PARENTS) live under Imports on the same
+  // server and stage into company_parents.
+  turnover: {
+    key: "turnover",
+    label: "Invoiced Orders / Turnover (SAP)",
+    description:
+      "Ad-hoc SAP invoiced-order lines from the ExaVault SFTP; one HubSpot Order per billing document (invoice), in the Invoiced Orders pipeline.",
+    authMode: "automated",
+    r2Prefix: "turnover",
+    acceptedContentTypes: ["text/csv"],
+    defaultExt: "csv",
+    maxBytes: 50 * MB,
+    reconciliation: "append",
+    parserKey: "turnover",
+    stagingTables: ["turnover_orders", "company_parents"],
+    hubspot: {
+      object: "orders",
+      note: "Orders + Line Items (Invoiced Orders pipeline) grouped by billing document; plus Company parent-child associations from the customers feed.",
+    },
+    ingestable: false,
+  },
 };
 
 export type SourceKey = keyof typeof SOURCES;
