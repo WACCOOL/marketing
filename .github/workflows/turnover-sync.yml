@@ -1,0 +1,74 @@
+name: Turnover Sync
+
+# SAP invoiced-order TURNOVER files (plus CUSTOMERS/PARENTS for company
+# parent-child) land AD HOC on the ExaVault SFTP — only when there are updates.
+# This job pulls anything new, archives it to R2, stages it in Supabase, and
+# pushes to HubSpot Orders (Invoiced Orders pipeline). Files are processed
+# exactly once (data_ingestions ledger), so the frequent cron is a cheap no-op
+# when nothing new landed.
+on:
+  schedule:
+    - cron: "7 */3 * * *" # every 3 hours — catch new files soon after they land
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: "SFTP inventory + header introspection only (no writes)"
+        type: boolean
+        default: false
+      force:
+        description: "Reprocess files even if already recorded"
+        type: boolean
+        default: false
+      dry_run_push:
+        description: "Preview the HubSpot push from current staging (no writes)"
+        type: boolean
+        default: false
+      push_only:
+        description: "Skip SFTP/staging; push ALL staging to HubSpot (repair/backfill)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: turnover-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build turnover-sync
+        run: pnpm --filter @wac/turnover-sync build
+      - name: Run turnover sync
+        env:
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ secrets.SFTP_PORT }}
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+          SFTP_INBOUND_PATH: ${{ secrets.SFTP_INBOUND_PATH }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: wac-marketing-assets
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        # Default: pull + stage anything new AND push it. Dispatch inputs give
+        # the preview/repair variants.
+        run: |
+          if [ "${{ inputs.sample }}" = "true" ]; then
+            pnpm --filter @wac/turnover-sync sync -- --sample
+          elif [ "${{ inputs.push_only }}" = "true" ]; then
+            pnpm --filter @wac/turnover-sync sync -- --push-only ${{ inputs.dry_run_push && '--dry-run' || '' }}
+          elif [ "${{ inputs.dry_run_push }}" = "true" ]; then
+            pnpm --filter @wac/turnover-sync sync -- --push-only --dry-run
+          else
+            pnpm --filter @wac/turnover-sync sync -- --push ${{ inputs.force && '--force' || '' }}
+          fi

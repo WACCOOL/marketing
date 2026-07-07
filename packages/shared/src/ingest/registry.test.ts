@@ -21,12 +21,14 @@ describe("ingest source registry", () => {
     expect(getSource("nope")).toBeUndefined();
   });
 
-  it("lists the four initial sources, three of them ingestable", () => {
-    expect(listSources()).toHaveLength(4);
+  it("lists the five sources, three of them ingestable", () => {
+    expect(listSources()).toHaveLength(5);
     const ingestable = listIngestableSources().map((s) => s.key);
     expect(ingestable).toEqual(["open-orders", "territory", "pricing"]);
     // Sales Layer is cron-driven — present in the destination map, not the inbox.
     expect(getSource("sales-layer")?.ingestable).toBe(false);
+    // Turnover is pulled from SFTP by apps/turnover-sync — no inbox either.
+    expect(getSource("turnover")?.ingestable).toBe(false);
   });
 
   it("ingestable sources accept Excel and carry a real size cap", () => {
