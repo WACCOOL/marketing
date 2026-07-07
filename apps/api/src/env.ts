@@ -34,6 +34,13 @@ export interface Env {
   // API accepts; the territory-sync --reconcile-deal-create-dates backfill
   // probe proves it against the live portal before this goes on.
   DEAL_CREATEDATE_WRITE?: string;
+  // Gate for the derived amount writes in the SAP deal push (@wac/shared
+  // deriveDealAmount): amount = Σ line quantity × unit_price. SAP's
+  // quote_net_value header tracks OPEN value — it hits 0.00 when a quote fully
+  // converts (exactly when the deal goes Closed Won), so the pass-through
+  // zeroes/understates converted deals. When != "1" the push computes + logs
+  // what it WOULD write ("[dealamount] would write ...").
+  DEAL_AMOUNT_DERIVE_WRITE?: string;
   // Sales Layer PIM (Phase 2), legacy Connector API (api.saleslayer.com).
   // Auth is sha256(connectorId + secretKey + time + unique). When unset
   // (dev / pre-launch) the products cache simply isn't refreshed.

@@ -8,6 +8,7 @@ import {
   SPECIFIER_LABEL,
   UNIVERSAL_PIPELINE_ID,
   deriveCreateDate,
+  deriveDealAmount,
   deriveDealStageAndCloseDate,
   lineItemDates,
   toEpochMs,
@@ -776,6 +777,7 @@ const DEAL_STATE_PROPS = [
   "createdate",
   "quote_creation_date",
   "quote_conversion_date",
+  "amount",
 ];
 
 interface ExistingDealHit {
@@ -926,6 +928,32 @@ async function upsertDeal(
     // written while the HubSpot workflows still own these properties.
     console.log(
       `[dealstage] DEAL_STAGE_DERIVE_WRITE!=1 — would write ${JSON.stringify(derived.properties)} for deal ${existing?.id ?? "(new)"} quote ${quoteNumber || dealId}`,
+    );
+  }
+
+  // Derived amount — SAP's quote_net_value header tracks the quote's OPEN value
+  // (0.00 once fully converted, i.e. exactly when a deal goes Closed Won), so the
+  // straight pass-through zeroes/understates converted deals. Recompute from the
+  // payload's line items (Σ quantity × unit_price reproduces the header exactly
+  // while the quote is untouched); rules live in @wac/shared deriveDealAmount.
+  // Same merged-after-normalizeWithLearning placement: amount is number-typed and
+  // must never pass through the enum heal.
+  const products = Array.isArray(payload.products) ? (payload.products as Record<string, unknown>[]) : [];
+  const derivedAmount = deriveDealAmount({
+    headerAmount: properties.amount,
+    lines: products.map((p) => ({ quantity: p.item_quantity, unitPrice: p.unit_price })),
+    existingAmount:
+      existing && existing.properties.amount != null && existing.properties.amount !== ""
+        ? Number(existing.properties.amount)
+        : null,
+  });
+  if (env.DEAL_AMOUNT_DERIVE_WRITE === "1") {
+    if (derivedAmount.dropAmount) delete properties.amount;
+    Object.assign(properties, derivedAmount.properties);
+    for (const a of derivedAmount.actions) fixActions.push({ ...a, scope: "deal" });
+  } else if (derivedAmount.actions.length) {
+    console.log(
+      `[dealamount] DEAL_AMOUNT_DERIVE_WRITE!=1 — would ${derivedAmount.dropAmount ? "drop amount" : `write ${JSON.stringify(derivedAmount.properties)}`} for deal ${existing?.id ?? "(new)"} quote ${quoteNumber || dealId}`,
     );
   }
 
