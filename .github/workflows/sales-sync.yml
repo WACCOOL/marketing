@@ -18,6 +18,10 @@ on:
         description: "Dry run (download + parse, print sample; no HubSpot writes)"
         type: boolean
         default: false
+      inspect:
+        description: "Dump the SALES_YTD_URL workbook structure (no HubSpot writes)"
+        type: boolean
+        default: false
 
 concurrency:
   group: sales-sync
@@ -45,9 +49,12 @@ jobs:
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
           SALES_WAC_URL: ${{ secrets.SALES_WAC_URL }}
           SALES_SCHONBEK_URL: ${{ secrets.SALES_SCHONBEK_URL }}
-        run: pnpm --filter @wac/sales-sync sync ${{ inputs.dry_run && '-- --dry-run' || '' }}
+          SALES_YTD_URL: ${{ secrets.SALES_YTD_URL }}
+          SALES_STALE_HOURS: ${{ vars.SALES_STALE_HOURS }}
+        run: pnpm --filter @wac/sales-sync sync ${{ inputs.inspect && '-- --inspect' || inputs.dry_run && '-- --dry-run' || '' }}
 
   deal-rollups:
+    if: ${{ !inputs.inspect }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

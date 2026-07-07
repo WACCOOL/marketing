@@ -70,6 +70,19 @@ function shareId(url: string): string {
   return "u!" + Buffer.from(url).toString("base64").replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
 }
 
+interface DriveItemMeta {
+  name?: string;
+  lastModifiedDateTime?: string;
+}
+
+async function driveItemMeta(token: string, url: string): Promise<DriveItemMeta> {
+  const r = await fetch(`${GRAPH}/shares/${shareId(url)}/driveItem?$select=name,lastModifiedDateTime`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!r.ok) throw new Error(`graph metadata ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  return (await r.json()) as DriveItemMeta;
+}
+
 async function downloadSharedFile(token: string, url: string): Promise<Uint8Array> {
   // /driveItem/content 302-redirects to a pre-authed CDN URL; fetch follows it
   // (undici drops the Authorization header on the cross-origin hop).
@@ -127,6 +140,22 @@ async function resolveCompanies(token: string, accounts: string[]): Promise<Map<
 async function main(): Promise<void> {
   const dryRun = process.argv.includes("--dry-run");
   const token = env("HUBSPOT_TOKEN");
+
+  // One-off structure dump for a new source workbook (no HubSpot writes):
+  // sheet names + leading rows so a parser can be written against the real shape.
+  if (process.argv.includes("--inspect")) {
+    const url = env("SALES_YTD_URL");
+    const gtoken = await graphToken();
+    const meta = await driveItemMeta(gtoken, url);
+    console.log(`[inspect] ${meta.name ?? "?"} lastModified ${meta.lastModifiedDateTime ?? "?"}`);
+    const wb = XLSX.read(await downloadSharedFile(gtoken, url), { type: "array", dense: true });
+    for (const name of wb.SheetNames) {
+      const grid = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name]!, { header: 1, blankrows: false });
+      console.log(`[inspect] sheet "${name}": ${grid.length} rows`);
+      for (const row of grid.slice(0, 15)) console.log("[inspect]", JSON.stringify(row));
+    }
+    return;
+  }
 
   if (process.argv.includes("--deal-rollups")) {
     const limitArg = process.argv.find((a) => a.startsWith("--limit="));
