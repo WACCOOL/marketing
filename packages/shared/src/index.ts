@@ -25,6 +25,7 @@ export * from "./hubspot/mapping.js";
 export * from "./hubspot/heal.js";
 export * from "./hubspot/dealStage.js";
 export * from "./hubspot/dealCreateDate.js";
+export * from "./hubspot/dealAmount.js";
 export * from "./hubspot/dealRollups.js";
 export * from "./hubspot/insideSales.js";
 export * from "./hubspot/state.js";
