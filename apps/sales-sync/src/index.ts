@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { parseSalesPivot, sumThroughMonth, type SalesParseResult } from "@wac/shared";
+import { computeSalesMetrics, lastFullMonth, parseSalesPivot, parseYtdReport } from "@wac/shared";
 import { BATCH, ensureProperties, hs, updateCompanies } from "./hubspot.js";
 import { runDealRollups } from "./dealRollups.js";
 
@@ -16,8 +16,23 @@ import { runDealRollups } from "./dealRollups.js";
  * NOT order data — this is aggregated sales, so it enriches Companies, not the
  * Orders object. Existing Companies only: no company is created from sales data.
  *
+ * Sources, in precedence order:
+ *   1. SALES_YTD_URL — the "YTD" report: EXACT same-period numbers per account
+ *      (Sales / Sales PYTD per year), day-accurate. Preferred when present.
+ *   2. SALES_WAC_URL / SALES_SCHONBEK_URL — month-bucket pivots, used only for
+ *      accounts the YTD report doesn't cover. Growth here is measured on
+ *      complete months only (the bucket containing the refresh date is partial).
+ *
+ * Freshness: these workbooks only change when their pivots are refreshed and
+ * saved (see README.md for the scheduled Power Automate refresh). Each file's
+ * OneDrive lastModifiedDateTime is checked; a file older than SALES_STALE_HOURS
+ * (default 30) is skipped and the run exits non-zero so the failure is visible.
+ *
  * Env: MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET, HUBSPOT_TOKEN,
- *      SALES_WAC_URL, SALES_SCHONBEK_URL (omit a URL to skip that brand).
+ *      SALES_YTD_URL, SALES_WAC_URL, SALES_SCHONBEK_URL (omit to skip),
+ *      SALES_STALE_HOURS (optional).
+ *
+ * --inspect dumps SALES_YTD_URL's sheet structure (no HubSpot writes).
  *
  * --deal-rollups runs a second, independent mode (HUBSPOT_TOKEN only — no
  * Graph/workbook env): closed-won deal value rolled up onto Companies as
@@ -93,12 +108,17 @@ async function downloadSharedFile(token: string, url: string): Promise<Uint8Arra
   return new Uint8Array(await content.arrayBuffer());
 }
 
-function parseWorkbook(bytes: Uint8Array): SalesParseResult {
+function readGrid(bytes: Uint8Array): unknown[][] {
   const wb = XLSX.read(bytes, { type: "array", dense: true });
   const sheet = wb.Sheets[wb.SheetNames[0]!];
-  if (!sheet) return { accounts: [], years: [], monthsByYear: {} };
-  const grid = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false });
-  return parseSalesPivot(grid);
+  return sheet ? XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, blankrows: false }) : [];
+}
+
+/** The data is only as fresh as the workbook's last refresh+save — date it in ET. */
+function etYearMonth(d: Date): { year: number; month: number } {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", year: "numeric", month: "numeric" }).formatToParts(d);
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  return { year: get("year"), month: get("month") };
 }
 
 // ── HubSpot ─────────────────────────────────────────────────
@@ -164,57 +184,45 @@ async function main(): Promise<void> {
     return;
   }
 
+  const ytdUrl = process.env.SALES_YTD_URL;
   const brands = BRANDS.filter((b) => b.url);
-  if (brands.length === 0) throw new Error("no sales file URLs configured (SALES_WAC_URL / SALES_SCHONBEK_URL)");
+  if (!ytdUrl && brands.length === 0)
+    throw new Error("no sales file URLs configured (SALES_YTD_URL / SALES_WAC_URL / SALES_SCHONBEK_URL)");
 
+  const staleHours = Number(process.env.SALES_STALE_HOURS || 30);
   const gtoken = await graphToken();
-  for (const b of brands) {
-    const bytes = await downloadSharedFile(gtoken, b.url!);
-    const { accounts, years, monthsByYear } = parseWorkbook(bytes);
-    const cur = years[years.length - 1];
-    const prev = cur ? String(Number(cur) - 1) : undefined;
-    const latestMonth = cur ? Math.max(0, ...(monthsByYear[cur] ?? [])) : 0;
-    const hasPrev = !!prev && years.includes(prev) && latestMonth > 0;
+  const staleFiles: string[] = [];
+
+  /** Download a source workbook — unless its last OneDrive save is too old to trust. */
+  async function fetchFresh(label: string, url: string): Promise<{ grid: unknown[][]; asOf: Date } | null> {
+    let meta: DriveItemMeta = {};
+    try {
+      meta = await driveItemMeta(gtoken, url);
+    } catch (e) {
+      console.warn(`[sales-sync] ${label}: metadata fetch failed (${String(e).slice(0, 120)}) — proceeding without a freshness check`);
+    }
+    const modified = meta.lastModifiedDateTime ? new Date(meta.lastModifiedDateTime) : undefined;
+    const ageH = modified ? (Date.now() - modified.getTime()) / 3_600_000 : undefined;
     console.log(
-      `[sales-sync] ${b.key}: ${bytes.length} bytes, ${accounts.length} accounts, current ${cur ?? "?"} through M${latestMonth}, years [${years.join(", ")}]` +
-        (hasPrev ? "" : " — no prior year, YTD only"),
+      `[sales-sync] ${label} (${meta.name ?? "?"}): last refreshed ${meta.lastModifiedDateTime ?? "unknown"}` +
+        (ageH != null ? ` (${ageH.toFixed(1)}h ago)` : ""),
     );
-    if (accounts.length === 0 || !cur || latestMonth === 0) {
-      console.warn(`[sales-sync] ${b.key}: no account/month data — the file may not have its pivot saved; skipping.`);
-      continue;
-    }
-
-    // YTD = current year through latest month; Prior YTD = prior year SAME
-    // period; Previous Year = full prior year; YoY % = (YTD − Prior YTD)/Prior.
-    const metricsByAccount = new Map<string, Record<string, number>>();
-    for (const a of accounts) {
-      const props: Record<string, number> = {};
-      const ytd = sumThroughMonth(a.byYear[cur], latestMonth);
-      if (ytd != null) props[PROP_YTD] = round2(ytd);
-      if (hasPrev) {
-        const priorYtd = sumThroughMonth(a.byYear[prev!], latestMonth);
-        const priorFull = sumThroughMonth(a.byYear[prev!], 12);
-        if (priorFull != null) props[PROP_PREV] = round2(priorFull);
-        if (priorYtd != null) {
-          props[PROP_PRIOR_YTD] = round2(priorYtd);
-          if (ytd != null && priorYtd !== 0) props[PROP_YOY] = round1(((ytd - priorYtd) / priorYtd) * 100);
-        }
-      }
-      if (Object.keys(props).length) metricsByAccount.set(a.account, props);
-    }
-
-    if (dryRun) {
-      console.log(`[sales-sync] ${b.key} DRY RUN sample:`, [...metricsByAccount.entries()].slice(0, 3));
-      continue;
-    }
-
-    const defs = [{ name: PROP_YTD, label: "YTD Sales" }];
-    if (hasPrev) {
-      defs.push(
-        { name: PROP_PREV, label: "Previous Year Sales" },
-        { name: PROP_PRIOR_YTD, label: "Prior YTD Sales" },
-        { name: PROP_YOY, label: "YTD Sales YoY %" },
+    if (ageH != null && ageH > staleHours) {
+      console.error(
+        `[sales-sync] ${label}: STALE — last refreshed ${ageH.toFixed(1)}h ago (limit ${staleHours}h). ` +
+          `Skipping so stale numbers aren't pushed as fresh; check the scheduled refresh (apps/sales-sync/README.md).`,
       );
+      staleFiles.push(label);
+      return null;
+    }
+    return { grid: readGrid(await downloadSharedFile(gtoken, url)), asOf: modified ?? new Date() };
+  }
+
+  /** Ensure props exist, resolve accounts to companies, batch-update. */
+  async function push(label: string, metricsByAccount: Map<string, Record<string, number>>, defs: { name: string; label: string }[]): Promise<void> {
+    if (dryRun) {
+      console.log(`[sales-sync] ${label} DRY RUN sample:`, [...metricsByAccount.entries()].slice(0, 3));
+      return;
     }
     await ensureProperties(token, defs);
     const idByAccount = await resolveCompanies(token, [...metricsByAccount.keys()]);
@@ -225,9 +233,96 @@ async function main(): Promise<void> {
     }
     const updated = await updateCompanies(token, byId);
     console.log(
-      `[sales-sync] ${b.key}: matched ${idByAccount.size}/${metricsByAccount.size} accounts, updated ${updated} ` +
+      `[sales-sync] ${label}: matched ${idByAccount.size}/${metricsByAccount.size} accounts, updated ${updated} ` +
         `(${defs.map((d) => d.name).join(", ")}).`,
     );
+  }
+
+  const ALL_DEFS = [
+    { name: PROP_YTD, label: "YTD Sales" },
+    { name: PROP_PREV, label: "Previous Year Sales" },
+    { name: PROP_PRIOR_YTD, label: "Prior YTD Sales" },
+    { name: PROP_YOY, label: "YTD Sales YoY %" },
+  ];
+
+  // 1) YTD report — exact same-period numbers; its accounts win over the pivots.
+  const covered = new Set<string>();
+  if (ytdUrl) {
+    const f = await fetchFresh("YTD report", ytdUrl);
+    if (f) {
+      const { accounts, year, priorYear } = parseYtdReport(f.grid);
+      console.log(`[sales-sync] YTD report: ${accounts.length} accounts, ${year ?? "?"} vs prior ${priorYear ?? "—"} (exact same-period numbers)`);
+      if (accounts.length === 0 || !year) {
+        console.warn("[sales-sync] YTD report: no account data — the pivot may not be saved; falling back to month pivots only.");
+      } else {
+        const metricsByAccount = new Map<string, Record<string, number>>();
+        for (const a of accounts) {
+          const props: Record<string, number> = { [PROP_YTD]: round2(a.ytd) };
+          if (a.priorFull != null) props[PROP_PREV] = round2(a.priorFull);
+          if (a.priorYtd != null) {
+            props[PROP_PRIOR_YTD] = round2(a.priorYtd);
+            if (a.priorYtd !== 0) props[PROP_YOY] = round1(((a.ytd - a.priorYtd) / a.priorYtd) * 100);
+          }
+          metricsByAccount.set(a.account, props);
+          covered.add(a.account);
+          covered.add(strip(a.account));
+        }
+        await push("YTD report", metricsByAccount, ALL_DEFS);
+      }
+    }
+  }
+
+  // 2) Month pivots — remaining accounts only. True YTD includes the latest
+  // (possibly partial) bucket, but Prior YTD + YoY compare complete months
+  // only, so a 3-day July never gets measured against a full prior July.
+  for (const b of brands) {
+    const f = await fetchFresh(b.key, b.url!);
+    if (!f) continue;
+    const { accounts, years, monthsByYear } = parseSalesPivot(f.grid);
+    const cur = years[years.length - 1];
+    const prev = cur ? String(Number(cur) - 1) : undefined;
+    const latestMonth = cur ? Math.max(0, ...(monthsByYear[cur] ?? [])) : 0;
+    const hasPrev = !!prev && years.includes(prev) && latestMonth > 0;
+    const fullMonths = cur ? lastFullMonth(latestMonth, cur, etYearMonth(f.asOf)) : 0;
+    console.log(
+      `[sales-sync] ${b.key}: ${accounts.length} accounts, current ${cur ?? "?"} through M${latestMonth} ` +
+        `(comparing through M${fullMonths}), years [${years.join(", ")}]` +
+        (hasPrev ? "" : " — no prior year, YTD only"),
+    );
+    if (accounts.length === 0 || !cur || latestMonth === 0) {
+      console.warn(`[sales-sync] ${b.key}: no account/month data — the file may not have its pivot saved; skipping.`);
+      continue;
+    }
+
+    const metricsByAccount = new Map<string, Record<string, number>>();
+    let alreadyCovered = 0;
+    for (const a of accounts) {
+      if (covered.has(a.account) || covered.has(strip(a.account))) {
+        alreadyCovered++;
+        continue;
+      }
+      const m = computeSalesMetrics(a.byYear, cur, hasPrev ? prev : undefined, latestMonth, fullMonths);
+      const props: Record<string, number> = {};
+      if (m.ytd != null) props[PROP_YTD] = m.ytd;
+      if (m.priorFull != null) props[PROP_PREV] = m.priorFull;
+      if (m.priorYtd != null) props[PROP_PRIOR_YTD] = m.priorYtd;
+      if (m.yoyPct != null) props[PROP_YOY] = m.yoyPct;
+      if (Object.keys(props).length) metricsByAccount.set(a.account, props);
+    }
+    if (alreadyCovered) console.log(`[sales-sync] ${b.key}: ${alreadyCovered} accounts already covered by the YTD report — skipped.`);
+    if (metricsByAccount.size === 0) {
+      console.log(`[sales-sync] ${b.key}: nothing left to update.`);
+      continue;
+    }
+    await push(b.key, metricsByAccount, hasPrev ? ALL_DEFS : ALL_DEFS.slice(0, 1));
+  }
+
+  if (staleFiles.length) {
+    console.error(
+      `[sales-sync] FAILED: stale source file(s): ${staleFiles.join(", ")}. ` +
+        `Refresh the pivot(s) in Excel (or fix the scheduled refresh) and re-run.`,
+    );
+    process.exitCode = 1;
   }
 }
 
