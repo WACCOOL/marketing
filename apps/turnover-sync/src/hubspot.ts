@@ -37,19 +37,45 @@ const ORDER_TO_COMPANY_TYPE = 934; // HUBSPOT_DEFINED orders -> companies
 const BATCH = 100;
 const GROUP = "invoiced_orders";
 
+const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 6;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** HubSpot fetch with retry — transient 5xx/429 (and network drops) are
+ * inevitable across the tens of thousands of calls a backfill makes, and one
+ * must not kill a multi-hour run. Exponential backoff, honoring Retry-After. */
 async function hs<T>(token: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${HS}${path}`, {
-    ...init,
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-      accept: "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`HubSpot ${init?.method ?? "GET"} ${path} -> ${res.status}: ${text.slice(0, 300)}`);
-  return text ? (JSON.parse(text) as T) : ({} as T);
+  for (let attempt = 1; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${HS}${path}`, {
+        ...init,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json",
+          ...(init?.headers ?? {}),
+        },
+      });
+    } catch (e) {
+      if (attempt >= MAX_ATTEMPTS) throw e;
+      console.warn(`[turnover-sync] ${path} network error (attempt ${attempt}/${MAX_ATTEMPTS}), retrying: ${String(e).slice(0, 120)}`);
+      await sleep(1000 * 2 ** (attempt - 1));
+      continue;
+    }
+    const text = await res.text();
+    if (!res.ok) {
+      if (RETRY_STATUSES.has(res.status) && attempt < MAX_ATTEMPTS) {
+        const after = Number(res.headers.get("retry-after"));
+        const wait = after > 0 ? after * 1000 : 1000 * 2 ** (attempt - 1);
+        console.warn(`[turnover-sync] ${path} -> ${res.status} (attempt ${attempt}/${MAX_ATTEMPTS}), retrying in ${wait}ms`);
+        await sleep(wait);
+        continue;
+      }
+      throw new Error(`HubSpot ${init?.method ?? "GET"} ${path} -> ${res.status}: ${text.slice(0, 300)}`);
+    }
+    return text ? (JSON.parse(text) as T) : ({} as T);
+  }
 }
 
 export interface TurnoverDbRow {
@@ -64,7 +90,8 @@ export interface TurnoverDbRow {
   quantity: number | null;
   ytd_total: number | null;
   discounted_sales: number | null;
-  raw_json: Record<string, unknown>;
+  /** Present in the table but not fetched by the push (unused, heavy). */
+  raw_json?: Record<string, unknown>;
 }
 
 interface CompanyParentDbRow {
@@ -232,7 +259,7 @@ async function createCompanies(token: string, accounts: string[], nameByAccount:
 async function loadCustomerNames(sb: SupabaseClient): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("company_parents").select("account, customer_name").range(from, from + 999);
+    const { data, error } = await sb.from("company_parents").select("account, customer_name").order("account").range(from, from + 999);
     if (error) {
       console.warn(`[turnover-sync] customer names load failed (continuing): ${error.message}`);
       return map;
@@ -385,18 +412,24 @@ export async function pushTurnoverToHubspot(
   opts: { dryRun?: boolean; billingDocs?: Set<string> } = {},
 ): Promise<void> {
   // Load staging (optionally scoped to this run's touched billing documents).
-  // A small scope reads server-side with chunked .in() — the table holds every
-  // invoice line ever staged (millions after the 2024+ backfill), so the daily
-  // push must not page the whole thing to find a few hundred docs.
+  // Pagination MUST be ordered: separate unordered OFFSET queries do not see
+  // stable page boundaries (synchronized seq scans), which silently drops and
+  // duplicates rows once the table is big — caught during the 2024+ backfill
+  // (74,871 of 111,578 docs loaded). Ordering by the unique staging key
+  // (billing_document, material, rep_code) rides its index. A scoped push
+  // reads server-side with chunked .in() so the daily run never pages the
+  // whole table (millions of rows post-backfill).
+  const COLS =
+    "billing_document, material, rep_code, sold_to, billing_date, currency, quotation_ref, brand, quantity, ytd_total, discounted_sales";
   const rows: TurnoverDbRow[] = [];
   const scope = opts.billingDocs ? [...opts.billingDocs] : null;
-  if (scope && scope.length <= 10_000) {
+  if (scope) {
     for (let i = 0; i < scope.length; i += 200) {
       const chunk = scope.slice(i, i + 200);
       for (let from = 0; ; from += 1000) {
         const { data, error } = await sb
           .from("turnover_orders")
-          .select("*")
+          .select(COLS)
           .in("billing_document", chunk)
           .order("billing_document")
           .order("material")
@@ -410,10 +443,16 @@ export async function pushTurnoverToHubspot(
     }
   } else {
     for (let from = 0; ; from += 1000) {
-      const { data, error } = await sb.from("turnover_orders").select("*").range(from, from + 999);
+      const { data, error } = await sb
+        .from("turnover_orders")
+        .select(COLS)
+        .order("billing_document")
+        .order("material")
+        .order("rep_code")
+        .range(from, from + 999);
       if (error) throw new Error(`turnover_orders read failed: ${error.message}`);
       const page = (data ?? []) as TurnoverDbRow[];
-      rows.push(...page.filter((r) => !opts.billingDocs || opts.billingDocs.has(r.billing_document)));
+      rows.push(...page);
       if (page.length < 1000) break;
     }
   }
@@ -588,7 +627,7 @@ export async function pushCompanyParents(
 ): Promise<void> {
   const rows: CompanyParentDbRow[] = [];
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("company_parents").select("account, customer_name, parent_account, parent_name").range(from, from + 999);
+    const { data, error } = await sb.from("company_parents").select("account, customer_name, parent_account, parent_name").order("account").range(from, from + 999);
     if (error) throw new Error(`company_parents read failed: ${error.message}`);
     const page = (data ?? []) as CompanyParentDbRow[];
     rows.push(...page);
@@ -645,7 +684,7 @@ export async function verifyCoverage(sb: SupabaseClient, token: string): Promise
   const soldTo = new Set<string>();
   const materials = new Set<string>();
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("turnover_orders").select("sold_to, material").range(from, from + 999);
+    const { data, error } = await sb.from("turnover_orders").select("sold_to, material").order("billing_document").order("material").order("rep_code").range(from, from + 999);
     if (error) throw new Error(`turnover_orders read failed: ${error.message}`);
     const page = (data ?? []) as { sold_to: string | null; material: string }[];
     for (const r of page) {
@@ -656,7 +695,7 @@ export async function verifyCoverage(sb: SupabaseClient, token: string): Promise
   }
   const parentAccounts = new Set<string>();
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("company_parents").select("account, parent_account").range(from, from + 999);
+    const { data, error } = await sb.from("company_parents").select("account, parent_account").order("account").range(from, from + 999);
     if (error) throw new Error(`company_parents read failed: ${error.message}`);
     const page = (data ?? []) as { account: string; parent_account: string | null }[];
     for (const r of page) {
