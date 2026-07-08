@@ -18,11 +18,13 @@ import { turnoverLineKey } from "@wac/shared";
  *
  * Associations: Line→Order (513), Order→Company by Sold-to account (934),
  * Order→Rep Code labeled Primary/Secondary, Order→Deal by Quotation Ref →
- * sap_quote_number (type discovered/created at runtime).
+ * sap_quote_number (type discovered/created at runtime). Sold-to accounts with
+ * no HubSpot company get one CREATED (bare account number, name when known) so
+ * no order is left unassociated — per Davis 2026-07-08.
  *
  * Also here: the customer parent-child push (native company parent/child
  * associations from company_parents staging; missing companies are CREATED
- * with name + account per Davis 2026-07-07) and --verify-coverage reporting.
+ * the same way per Davis 2026-07-07) and --verify-coverage reporting.
  *
  * Machinery (hs/coerce/batchUpsert/batchAssociate/resolveIds) follows
  * apps/open-orders-sync/src/hubspot.ts.
@@ -198,6 +200,34 @@ async function resolveCompanies(token: string, accounts: string[]): Promise<Map<
   return map;
 }
 
+/** Create companies for SAP accounts missing in HubSpot — a bare company with
+ * just the account number beats an unassociated order (per Davis 2026-07-08);
+ * a name is set when one is known. Returns account → created company id. */
+async function createCompanies(token: string, accounts: string[], nameByAccount: Map<string, string>): Promise<Map<string, string>> {
+  const createdByAccount = new Map<string, string>();
+  const uniq = [...new Set(accounts.filter(Boolean))];
+  for (let i = 0; i < uniq.length; i += BATCH) {
+    const inputs = uniq.slice(i, i + BATCH).map((a) => {
+      const name = nameByAccount.get(a);
+      return { properties: { account_number_: a, ...(name ? { name } : {}) } };
+    });
+    try {
+      const res = await hs<{ results: { id: string; properties: Record<string, string> }[] }>(
+        token,
+        "/crm/v3/objects/companies/batch/create",
+        { method: "POST", body: JSON.stringify({ inputs }) },
+      );
+      for (const r of res.results) {
+        const acct = r.properties["account_number_"];
+        if (acct) createdByAccount.set(acct, r.id);
+      }
+    } catch (e) {
+      console.warn(`[turnover-sync] company create batch failed: ${String(e).slice(0, 160)}`);
+    }
+  }
+  return createdByAccount;
+}
+
 /** account → customer display name, from the staged CUSTOMERS file. */
 async function loadCustomerNames(sb: SupabaseClient): Promise<Map<string, string>> {
   const map = new Map<string, string>();
@@ -355,14 +385,37 @@ export async function pushTurnoverToHubspot(
   opts: { dryRun?: boolean; billingDocs?: Set<string> } = {},
 ): Promise<void> {
   // Load staging (optionally scoped to this run's touched billing documents).
+  // A small scope reads server-side with chunked .in() — the table holds every
+  // invoice line ever staged (millions after the 2024+ backfill), so the daily
+  // push must not page the whole thing to find a few hundred docs.
   const rows: TurnoverDbRow[] = [];
-  for (let from = 0; ; from += 1000) {
-    let q = sb.from("turnover_orders").select("*").range(from, from + 999);
-    const { data, error } = await q;
-    if (error) throw new Error(`turnover_orders read failed: ${error.message}`);
-    const page = (data ?? []) as TurnoverDbRow[];
-    rows.push(...page.filter((r) => !opts.billingDocs || opts.billingDocs.has(r.billing_document)));
-    if (page.length < 1000) break;
+  const scope = opts.billingDocs ? [...opts.billingDocs] : null;
+  if (scope && scope.length <= 10_000) {
+    for (let i = 0; i < scope.length; i += 200) {
+      const chunk = scope.slice(i, i + 200);
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await sb
+          .from("turnover_orders")
+          .select("*")
+          .in("billing_document", chunk)
+          .order("billing_document")
+          .order("material")
+          .order("rep_code")
+          .range(from, from + 999);
+        if (error) throw new Error(`turnover_orders read failed: ${error.message}`);
+        const page = (data ?? []) as TurnoverDbRow[];
+        rows.push(...page);
+        if (page.length < 1000) break;
+      }
+    }
+  } else {
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await sb.from("turnover_orders").select("*").range(from, from + 999);
+      if (error) throw new Error(`turnover_orders read failed: ${error.message}`);
+      const page = (data ?? []) as TurnoverDbRow[];
+      rows.push(...page.filter((r) => !opts.billingDocs || opts.billingDocs.has(r.billing_document)));
+      if (page.length < 1000) break;
+    }
   }
   console.log(`[turnover-sync] HubSpot push: ${rows.length} staged lines${opts.billingDocs ? ` (scoped to ${opts.billingDocs.size} billing docs)` : ""}`);
   if (rows.length === 0) return;
@@ -380,6 +433,7 @@ export async function pushTurnoverToHubspot(
   const customerNames = await loadCustomerNames(sb);
   const accounts = [...new Set(orders.map((o) => o.lines[0]!.sold_to).filter(Boolean) as string[])];
   const companyByAccount = await resolveCompanies(token, accounts);
+  const missingAccounts = accounts.filter((a) => !companyByAccount.has(a));
 
   // Order payloads.
   const orderInputs = orders.map((o) => {
@@ -441,6 +495,7 @@ export async function pushTurnoverToHubspot(
     console.log("[turnover-sync] DRY RUN — sample line:", JSON.stringify(lineInputs[0], null, 1));
     const multiRep = orders.filter((o) => o.secondaryReps.length > 0);
     console.log(`[turnover-sync] DRY RUN — ${multiRep.length} split-rep orders, e.g.:`, multiRep.slice(0, 3).map((o) => ({ doc: o.billingDocument, primary: o.primaryRep, secondary: o.secondaryReps })));
+    console.log(`[turnover-sync] DRY RUN — ${missingAccounts.length}/${accounts.length} Sold-to accounts missing in HubSpot (would be created), sample:`, missingAccounts.slice(0, 10));
     return;
   }
 
@@ -469,6 +524,15 @@ export async function pushTurnoverToHubspot(
     .map((l) => ({ from: orderIdByDoc.get(l._doc), to: lineIdByKey.get(l.id) }))
     .filter((p): p is { from: string; to: string } => !!p.from && !!p.to);
   await batchAssociate(token, "orders", "line_items", [{ typeId: ORDER_TO_LINE_ITEM_TYPE, category: "HUBSPOT_DEFINED" }], liPairs);
+
+  // Sold-to accounts with no HubSpot company get one created (bare account
+  // number, name when the customers feed knows it) so no order is orphaned —
+  // per Davis 2026-07-08, deliberate for the daily sync and backfill alike.
+  if (missingAccounts.length > 0) {
+    const created = await createCompanies(token, missingAccounts, customerNames);
+    for (const [a, id] of created) companyByAccount.set(a, { id });
+    console.log(`[turnover-sync] created ${created.size}/${missingAccounts.length} missing Sold-to companies`);
+  }
 
   // Order → Company (Sold-to; companyByAccount resolved above).
   const companyPairs = orders
@@ -545,33 +609,19 @@ export async function pushCompanyParents(
     if (r.customer_name) nameByAccount.set(r.account, r.customer_name);
     if (r.parent_account && r.parent_name && !nameByAccount.has(r.parent_account)) nameByAccount.set(r.parent_account, r.parent_name);
   }
-  const creatable = missing.filter((a) => nameByAccount.has(a));
-
   if (opts.dryRun) {
-    console.log(`[turnover-sync] DRY RUN parent-child: ${missing.length} accounts missing in HubSpot (${creatable.length} creatable with names), sample:`, missing.slice(0, 10));
+    const named = missing.filter((a) => nameByAccount.has(a));
+    console.log(`[turnover-sync] DRY RUN parent-child: ${missing.length} accounts missing in HubSpot (${named.length} with names, rest created bare), sample:`, missing.slice(0, 10));
     return;
   }
 
-  // Create missing companies (name + account) — per Davis 2026-07-07.
-  for (let i = 0; i < creatable.length; i += BATCH) {
-    const inputs = creatable.slice(i, i + BATCH).map((a) => ({
-      properties: { name: nameByAccount.get(a)!, account_number_: a },
-    }));
-    try {
-      const res = await hs<{ results: { id: string; properties: Record<string, string> }[] }>(
-        token,
-        "/crm/v3/objects/companies/batch/create",
-        { method: "POST", body: JSON.stringify({ inputs }) },
-      );
-      for (const r of res.results) {
-        const acct = r.properties["account_number_"];
-        if (acct) companyByAccount.set(acct, { id: r.id });
-      }
-    } catch (e) {
-      console.warn(`[turnover-sync] company create batch failed: ${String(e).slice(0, 160)}`);
-    }
+  // Create ALL missing companies (name when known, else bare account number) —
+  // per Davis 2026-07-07/08.
+  if (missing.length > 0) {
+    const created = await createCompanies(token, missing, nameByAccount);
+    for (const [a, id] of created) companyByAccount.set(a, { id });
+    console.log(`[turnover-sync] created ${created.size}/${missing.length} missing companies`);
   }
-  if (creatable.length > 0) console.log(`[turnover-sync] created ${creatable.length} missing companies (of ${missing.length} unmatched accounts)`);
 
   // Native parent/child company association types, discovered not hardcoded.
   const labels = await assocLabels(token, "companies", "companies");
@@ -585,8 +635,7 @@ export async function pushCompanyParents(
     .filter((p): p is { from: string; to: string } => !!p.from && !!p.to && p.from !== p.to);
   await batchAssociate(token, "companies", "companies", [{ typeId: childToParent.typeId, category: childToParent.category }], pairs);
   console.log(
-    `[turnover-sync] parent-child: ${pairs.length}/${links.length} associations created (child→parent type ${childToParent.typeId} "${childToParent.label}"); ` +
-      `${missing.length - creatable.length} accounts still unresolved (no name to create with)`,
+    `[turnover-sync] parent-child: ${pairs.length}/${links.length} associations created (child→parent type ${childToParent.typeId} "${childToParent.label}")`,
   );
 }
 

@@ -9,6 +9,7 @@
   "scripts": {
     "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --external:cpu-features \"--external:./crypto/build/Release/sshcrypto.node\" --outfile=dist/index.js --banner:js=\"import{createRequire as __cr}from'module';const require=__cr(import.meta.url);import{fileURLToPath as __futp}from'url';import{dirname as __pdn}from'path';const __filename=__futp(import.meta.url);const __dirname=__pdn(__filename);\"",
     "sync": "node --env-file-if-exists=.env dist/index.js",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "@types/ssh2-sftp-client": "^9.0.4",
     "@wac/shared": "workspace:*",
     "esbuild": "^0.28.0",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
   }
 }

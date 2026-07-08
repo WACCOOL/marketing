@@ -8,7 +8,9 @@ import {
   parseTurnover,
   type ParentRefRow,
 } from "@wac/shared";
+import { readFile } from "node:fs/promises";
 import { connect, download, listInbound, type FileKind, type InboundFile } from "./sftp.js";
+import { listLocal, type LocalFile } from "./local.js";
 import { pushCompanyParents, pushTurnoverToHubspot, verifyCoverage } from "./hubspot.js";
 
 /**
@@ -32,6 +34,9 @@ import { pushCompanyParents, pushTurnoverToHubspot, verifyCoverage } from "./hub
  *   --verify-coverage  report staged accounts/materials missing in HubSpot
  *   --force            reprocess files even if already recorded
  *   --file <name>      restrict to one file (also how a big backfill file runs)
+ *   --local <path>     ingest from a local file/directory instead of SFTP —
+ *                      names must match the canonical patterns; everything
+ *                      downstream (ledger, staging, push) is identical
  *
  * Env: SFTP_HOST/PORT/USER/PASSWORD/SFTP_INBOUND_PATH,
  *      R2_ENDPOINT/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET,
@@ -259,11 +264,13 @@ async function runSample(): Promise<void> {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const has = (f: string) => argv.includes(f);
-  const fileArg = (() => {
-    const i = argv.findIndex((a) => a === "--file");
+  const stringArg = (flag: string) => {
+    const i = argv.findIndex((a) => a === flag);
     if (i >= 0) return argv[i + 1];
-    return argv.find((a) => a.startsWith("--file="))?.slice("--file=".length);
-  })();
+    return argv.find((a) => a.startsWith(`${flag}=`))?.slice(flag.length + 1);
+  };
+  const fileArg = stringArg("--file");
+  const localArg = stringArg("--local");
   const dryRun = has("--dry-run");
 
   if (has("--sample")) {
@@ -303,12 +310,13 @@ async function main(): Promise<void> {
   });
   const bucket = env("R2_BUCKET");
 
-  const client = await connect();
+  const client = localArg ? null : await connect();
+  const read = (f: InboundFile) => (localArg ? readFile((f as LocalFile).absPath) : download(client!, f.path));
   let touchedDocs = new Set<string>();
   let customersStaged = false;
   let failures = 0;
   try {
-    const all = await listInbound(client);
+    const all = localArg ? await listLocal(localArg) : await listInbound(client!);
     const done = await processedNames(sb);
     const workKinds: FileKind[] = ["turnover", "customers", "parents"];
     const work = all.filter(
@@ -317,7 +325,7 @@ async function main(): Promise<void> {
         (!fileArg || f.name === fileArg) &&
         (has("--force") || !done.has(f.name)),
     );
-    console.log(`[turnover-sync] ${all.length} files on server, ${work.length} to process${fileArg ? ` (--file ${fileArg})` : ""}`);
+    console.log(`[turnover-sync] ${all.length} files ${localArg ? `under ${localArg}` : "on server"}, ${work.length} to process${fileArg ? ` (--file ${fileArg})` : ""}`);
     if (work.length === 0) return;
 
     // Parents legend: newest parents file on the server (fresh each run — it's
@@ -326,7 +334,7 @@ async function main(): Promise<void> {
     const newestParents = [...all].reverse().find((f) => f.kind === "parents");
     if (newestParents) {
       try {
-        const { rows } = parseCsv(await download(client, newestParents.path));
+        const { rows } = parseCsv(await read(newestParents));
         const { valid } = parseParentRefs(rows);
         for (const p of valid as ParentRefRow[]) if (p.name) parentNames.set(p.account, p.name);
         console.log(`[turnover-sync] parents legend: ${parentNames.size} names (${newestParents.name})`);
@@ -337,7 +345,7 @@ async function main(): Promise<void> {
 
     for (const f of work) {
       console.log(`[turnover-sync] processing ${f.path} (${f.kind}, ${f.brand})`);
-      const buf = await download(client, f.path);
+      const buf = await read(f);
 
       if (dryRun) {
         const { rows } = parseCsv(buf);
@@ -357,7 +365,7 @@ async function main(): Promise<void> {
           original_name: f.name,
           content_type: "text/csv",
           byte_size: f.size,
-          delivered_by: "sftp",
+          delivered_by: localArg ? "local" : "sftp",
           started_at: iso(),
         })
         .select("id")
@@ -404,7 +412,7 @@ async function main(): Promise<void> {
       }
     }
   } finally {
-    await client.end();
+    if (client) await client.end();
   }
 
   if (has("--push") && !dryRun) {
