@@ -57,7 +57,16 @@ export function showroomDealProperties(order: ShowroomOrder): Record<string, str
     showroom_agency: order.agencyName,
   };
   if (order.amount !== null) props.amount = String(order.amount);
-  if (order.timestampMs !== null) props.closedate = String(order.timestampMs);
+  // closedate AND createdate both anchor to the form-submission timestamp: the
+  // deal records an order already placed, so its real-world creation IS the
+  // submission moment. Deals accept createdate on create and update (see
+  // deriveCreateDate), so the every-run upsert also repairs backfilled orders
+  // whose createdate was stamped at first-sync time — months after their
+  // closedate, which read as negative days-to-close.
+  if (order.timestampMs !== null) {
+    props.closedate = String(order.timestampMs);
+    props.createdate = String(order.timestampMs);
+  }
   if (order.po) props.po_number = order.po;
   if (order.accountNumber) props.account_number = order.accountNumber;
   if (order.salesRep) props.showroom_sales_rep = order.salesRep;

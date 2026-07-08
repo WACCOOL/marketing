@@ -48,6 +48,7 @@ describe("showroomDealProperties", () => {
       showroom_agency: "Williams Lighting Supply",
       amount: "1797.75",
       closedate: String(ORDER.timestampMs),
+      createdate: String(ORDER.timestampMs),
       po_number: "1734954",
       account_number: "BY171664",
       showroom_sales_rep: "Carter Likes",
@@ -67,6 +68,7 @@ describe("showroomDealProperties", () => {
     });
     expect(props).not.toHaveProperty("amount");
     expect(props).not.toHaveProperty("closedate");
+    expect(props).not.toHaveProperty("createdate");
     expect(props).not.toHaveProperty("showroom_trade_show");
     expect(props).not.toHaveProperty("showroom_designer");
     expect(props).not.toHaveProperty("account_number");

@@ -13,10 +13,20 @@
  * conversion date, no closedate). Closed Won = an order was actually received
  * (a quote line converted to a sales order); closedate = the first order date.
  *
+ * closedate is written as NOON UTC on the source day (see closeDateNoonUtcMs),
+ * mirroring deriveCreateDate: closedate is a datetime rendered in the portal
+ * timezone (ET), so midnight UTC displays as the PREVIOUS evening — and sorts
+ * before the noon-UTC backdated createdate on same-day deals, turning
+ * days-to-close math negative. The source dates (line-item
+ * quote_conversion_date etc.) stay date-typed midnight-UTC values; only the
+ * closedate written from them gets the noon anchor.
+ *
  * Two deliberate strengthenings over the workflows:
  *   - closedate is MAINTAINED, not set-once: corrected whenever it drifts from
  *     the oldest conversion date (repairs backfilled deals whose closedate was
- *     stamped at stage-move time).
+ *     stamped at stage-move time). The noon anchor rides this: legacy
+ *     midnight-UTC closedates read as drift and get normalized on the next
+ *     push/reconcile touch.
  *   - stage writes are gated on stage_of_project actually CHANGING (mirrors the
  *     workflow trigger, so manual stage moves in HubSpot survive), EXCEPT the
  *     Awarded -> Closed Won promotion which is ungated (wf B parity — this is
@@ -95,6 +105,19 @@ export function toEpochMs(v: unknown): number | null {
   }
   const t = Date.parse(s);
   return Number.isFinite(t) ? t : null;
+}
+
+const DAY_MS = 86_400_000;
+const NOON_MS = DAY_MS / 2;
+
+/**
+ * Noon UTC on the given instant's UTC day — the anchor every derived closedate
+ * is written at. Same convention (and reasoning) as deriveCreateDate: noon UTC
+ * shows the same calendar day in every US zone, and keeps a same-day
+ * close >= the noon-UTC backdated createdate (non-negative days-to-close).
+ */
+export function closeDateNoonUtcMs(ms: number): number {
+  return Math.floor(ms / DAY_MS) * DAY_MS + NOON_MS;
 }
 
 export interface DealLineDates {
@@ -227,7 +250,8 @@ export function deriveDealStageAndCloseDate(i: DeriveDealStageInput): DeriveDeal
   // dragged to an open stage gets no closedate writes even while SAP says AWARDED.
   const effectiveStage = properties.dealstage ?? existing?.dealstage ?? null;
 
-  const writeClosedate = (desiredMs: number, source: string) => {
+  const writeClosedate = (sourceMs: number, source: string) => {
+    const desiredMs = closeDateNoonUtcMs(sourceMs);
     if (existingClosedateMs === null) {
       properties.closedate = String(desiredMs);
       actions.push({
