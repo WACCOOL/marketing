@@ -126,12 +126,15 @@ function etYearMonth(d: Date): { year: number; month: number } {
 // --deal-rollups mode).
 
 const strip = (a: string) => a.replace(/^0+/, "") || a;
+// SAP digit accounts are 10 chars zero-padded ("0002009614"); the CSV export
+// loses the padding, and HubSpot account_number_ exists in BOTH forms.
+const pad = (a: string) => (/^\d+$/.test(a) && a.length < 10 ? a.padStart(10, "0") : a);
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
-/** Resolve account numbers (padded + stripped) to company ids. */
+/** Resolve account numbers (as-given + stripped + padded) to company ids. */
 async function resolveCompanies(token: string, accounts: string[]): Promise<Map<string, string>> {
-  const candidates = [...new Set(accounts.flatMap((a) => [a, strip(a)]))];
+  const candidates = [...new Set(accounts.flatMap((a) => [a, strip(a), pad(a)]))];
   const byCandidate = new Map<string, string>();
   for (let i = 0; i < candidates.length; i += BATCH) {
     const inputs = candidates.slice(i, i + BATCH).map((id) => ({ id }));
@@ -151,7 +154,7 @@ async function resolveCompanies(token: string, accounts: string[]): Promise<Map<
   }
   const map = new Map<string, string>();
   for (const a of accounts) {
-    const id = byCandidate.get(a) ?? byCandidate.get(strip(a));
+    const id = byCandidate.get(a) ?? byCandidate.get(strip(a)) ?? byCandidate.get(pad(a));
     if (id) map.set(a, id);
   }
   return map;
@@ -221,12 +224,15 @@ async function main(): Promise<void> {
 
   /** Ensure props exist, resolve accounts to companies, batch-update. */
   async function push(label: string, metricsByAccount: Map<string, Record<string, number>>, defs: { name: string; label: string }[]): Promise<void> {
+    const idByAccount = await resolveCompanies(token, [...metricsByAccount.keys()]);
     if (dryRun) {
-      console.log(`[sales-sync] ${label} DRY RUN sample:`, [...metricsByAccount.entries()].slice(0, 3));
+      console.log(
+        `[sales-sync] ${label} DRY RUN: matched ${idByAccount.size}/${metricsByAccount.size} accounts; sample:`,
+        [...metricsByAccount.entries()].slice(0, 3),
+      );
       return;
     }
     await ensureProperties(token, defs);
-    const idByAccount = await resolveCompanies(token, [...metricsByAccount.keys()]);
     const byId = new Map<string, Record<string, number>>();
     for (const [acct, props] of metricsByAccount) {
       const id = idByAccount.get(acct);
