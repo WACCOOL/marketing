@@ -133,6 +133,49 @@ export interface YtdReportResult {
   priorYear: string | null;
 }
 
+/**
+ * Flat-table variant of the YTD data — the output of a Power Automate
+ * "Run a query against a dataset" flow saved as CSV (see apps/sales-sync
+ * README). One header row, then one row per account. Header names may be
+ * DAX-style (`Customer[Account]`, `[ytd]`) or plain (`account`, `ytd`);
+ * matching strips any table prefix/brackets and is case-insensitive.
+ * Required: account, ytd. Optional: pytd, prior_full.
+ * Returns null if the grid isn't this shape (caller falls back to the pivot).
+ */
+export function parseYtdFlat(grid: unknown[][]): YtdReportResult | null {
+  const headerRow = grid[0];
+  if (!headerRow) return null;
+  // "Customer[Account]" → "account"; "[ytd]" → "ytd"; strip BOM from cell 0.
+  const norm = (v: unknown) =>
+    String(v ?? "")
+      .replace(/^\uFEFF/, "")
+      .trim()
+      .replace(/^.*\[/, "")
+      .replace(/\]$/, "")
+      .toLowerCase();
+  const header = headerRow.map(norm);
+  const cAcct = header.indexOf("account");
+  const cYtd = header.indexOf("ytd");
+  if (cAcct < 0 || cYtd < 0) return null;
+  const cPytd = header.indexOf("pytd");
+  const cPrior = header.indexOf("prior_full");
+
+  const accounts: YtdAccount[] = [];
+  const seen = new Set<string>();
+  for (const row of grid.slice(1)) {
+    const acct = String(row[cAcct] ?? "").trim();
+    if (!acct || seen.has(acct)) continue; // flat export: every non-empty row is an account (named ones too)
+    seen.add(acct);
+    accounts.push({
+      account: acct,
+      ytd: asNum(row[cYtd]) ?? 0,
+      priorYtd: cPytd >= 0 ? (asNum(row[cPytd]) ?? 0) : null,
+      priorFull: cPrior >= 0 ? (asNum(row[cPrior]) ?? 0) : null,
+    });
+  }
+  return { accounts, year: null, priorYear: null };
+}
+
 export function parseYtdReport(grid: unknown[][]): YtdReportResult {
   const empty: YtdReportResult = { accounts: [], year: null, priorYear: null };
 

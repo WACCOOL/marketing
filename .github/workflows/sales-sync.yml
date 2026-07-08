@@ -22,6 +22,10 @@ on:
         description: "Dump the SALES_YTD_URL workbook structure (no HubSpot writes)"
         type: boolean
         default: false
+      inspect_url:
+        description: "Optional sharing URL to inspect instead of SALES_YTD_URL"
+        type: string
+        required: false
 
 concurrency:
   group: sales-sync
@@ -50,6 +54,7 @@ jobs:
           SALES_WAC_URL: ${{ secrets.SALES_WAC_URL }}
           SALES_SCHONBEK_URL: ${{ secrets.SALES_SCHONBEK_URL }}
           SALES_YTD_URL: ${{ secrets.SALES_YTD_URL }}
+          SALES_INSPECT_URL: ${{ inputs.inspect_url }}
           SALES_STALE_HOURS: ${{ vars.SALES_STALE_HOURS }}
         run: pnpm --filter @wac/sales-sync sync ${{ inputs.inspect && '-- --inspect' || inputs.dry_run && '-- --dry-run' || '' }}
 

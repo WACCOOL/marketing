@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { computeSalesMetrics, lastFullMonth, parseSalesPivot, parseYtdReport } from "@wac/shared";
+import { computeSalesMetrics, lastFullMonth, parseSalesPivot, parseYtdFlat, parseYtdReport } from "@wac/shared";
 import { BATCH, ensureProperties, hs, updateCompanies } from "./hubspot.js";
 import { runDealRollups } from "./dealRollups.js";
 
@@ -126,12 +126,15 @@ function etYearMonth(d: Date): { year: number; month: number } {
 // --deal-rollups mode).
 
 const strip = (a: string) => a.replace(/^0+/, "") || a;
+// SAP digit accounts are 10 chars zero-padded ("0002009614"); the CSV export
+// loses the padding, and HubSpot account_number_ exists in BOTH forms.
+const pad = (a: string) => (/^\d+$/.test(a) && a.length < 10 ? a.padStart(10, "0") : a);
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
-/** Resolve account numbers (padded + stripped) to company ids. */
+/** Resolve account numbers (as-given + stripped + padded) to company ids. */
 async function resolveCompanies(token: string, accounts: string[]): Promise<Map<string, string>> {
-  const candidates = [...new Set(accounts.flatMap((a) => [a, strip(a)]))];
+  const candidates = [...new Set(accounts.flatMap((a) => [a, strip(a), pad(a)]))];
   const byCandidate = new Map<string, string>();
   for (let i = 0; i < candidates.length; i += BATCH) {
     const inputs = candidates.slice(i, i + BATCH).map((id) => ({ id }));
@@ -151,7 +154,7 @@ async function resolveCompanies(token: string, accounts: string[]): Promise<Map<
   }
   const map = new Map<string, string>();
   for (const a of accounts) {
-    const id = byCandidate.get(a) ?? byCandidate.get(strip(a));
+    const id = byCandidate.get(a) ?? byCandidate.get(strip(a)) ?? byCandidate.get(pad(a));
     if (id) map.set(a, id);
   }
   return map;
@@ -161,10 +164,11 @@ async function main(): Promise<void> {
   const dryRun = process.argv.includes("--dry-run");
   const token = env("HUBSPOT_TOKEN");
 
-  // One-off structure dump for a new source workbook (no HubSpot writes):
-  // sheet names + leading rows so a parser can be written against the real shape.
+  // One-off structure dump for a new source file (no HubSpot writes): sheet
+  // names + leading rows so a parser can be written against the real shape.
+  // SALES_INSPECT_URL overrides the target (e.g. a candidate CSV).
   if (process.argv.includes("--inspect")) {
-    const url = env("SALES_YTD_URL");
+    const url = process.env.SALES_INSPECT_URL || env("SALES_YTD_URL");
     const gtoken = await graphToken();
     const meta = await driveItemMeta(gtoken, url);
     console.log(`[inspect] ${meta.name ?? "?"} lastModified ${meta.lastModifiedDateTime ?? "?"}`);
@@ -220,12 +224,15 @@ async function main(): Promise<void> {
 
   /** Ensure props exist, resolve accounts to companies, batch-update. */
   async function push(label: string, metricsByAccount: Map<string, Record<string, number>>, defs: { name: string; label: string }[]): Promise<void> {
+    const idByAccount = await resolveCompanies(token, [...metricsByAccount.keys()]);
     if (dryRun) {
-      console.log(`[sales-sync] ${label} DRY RUN sample:`, [...metricsByAccount.entries()].slice(0, 3));
+      console.log(
+        `[sales-sync] ${label} DRY RUN: matched ${idByAccount.size}/${metricsByAccount.size} accounts; sample:`,
+        [...metricsByAccount.entries()].slice(0, 3),
+      );
       return;
     }
     await ensureProperties(token, defs);
-    const idByAccount = await resolveCompanies(token, [...metricsByAccount.keys()]);
     const byId = new Map<string, Record<string, number>>();
     for (const [acct, props] of metricsByAccount) {
       const id = idByAccount.get(acct);
@@ -250,9 +257,15 @@ async function main(): Promise<void> {
   if (ytdUrl) {
     const f = await fetchFresh("YTD report", ytdUrl);
     if (f) {
-      const { accounts, year, priorYear } = parseYtdReport(f.grid);
-      console.log(`[sales-sync] YTD report: ${accounts.length} accounts, ${year ?? "?"} vs prior ${priorYear ?? "—"} (exact same-period numbers)`);
-      if (accounts.length === 0 || !year) {
+      // Flat CSV export (from the Power Automate dataset-query flow) or the
+      // YTD.xlsx pivot — auto-detected by shape.
+      const { accounts, year, priorYear } = parseYtdFlat(f.grid) ?? parseYtdReport(f.grid);
+      console.log(
+        `[sales-sync] YTD report: ${accounts.length} accounts` +
+          (year ? `, ${year} vs prior ${priorYear ?? "—"}` : " (flat export)") +
+          " (exact same-period numbers)",
+      );
+      if (accounts.length === 0) {
         console.warn("[sales-sync] YTD report: no account data — the pivot may not be saved; falling back to month pivots only.");
       } else {
         const metricsByAccount = new Map<string, Record<string, number>>();
