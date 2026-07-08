@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { computeSalesMetrics, lastFullMonth, parseSalesPivot, parseYtdReport } from "@wac/shared";
+import { computeSalesMetrics, lastFullMonth, parseSalesPivot, parseYtdFlat, parseYtdReport } from "@wac/shared";
 import { BATCH, ensureProperties, hs, updateCompanies } from "./hubspot.js";
 import { runDealRollups } from "./dealRollups.js";
 
@@ -161,10 +161,11 @@ async function main(): Promise<void> {
   const dryRun = process.argv.includes("--dry-run");
   const token = env("HUBSPOT_TOKEN");
 
-  // One-off structure dump for a new source workbook (no HubSpot writes):
-  // sheet names + leading rows so a parser can be written against the real shape.
+  // One-off structure dump for a new source file (no HubSpot writes): sheet
+  // names + leading rows so a parser can be written against the real shape.
+  // SALES_INSPECT_URL overrides the target (e.g. a candidate CSV).
   if (process.argv.includes("--inspect")) {
-    const url = env("SALES_YTD_URL");
+    const url = process.env.SALES_INSPECT_URL || env("SALES_YTD_URL");
     const gtoken = await graphToken();
     const meta = await driveItemMeta(gtoken, url);
     console.log(`[inspect] ${meta.name ?? "?"} lastModified ${meta.lastModifiedDateTime ?? "?"}`);
@@ -250,9 +251,15 @@ async function main(): Promise<void> {
   if (ytdUrl) {
     const f = await fetchFresh("YTD report", ytdUrl);
     if (f) {
-      const { accounts, year, priorYear } = parseYtdReport(f.grid);
-      console.log(`[sales-sync] YTD report: ${accounts.length} accounts, ${year ?? "?"} vs prior ${priorYear ?? "—"} (exact same-period numbers)`);
-      if (accounts.length === 0 || !year) {
+      // Flat CSV export (from the Power Automate dataset-query flow) or the
+      // YTD.xlsx pivot — auto-detected by shape.
+      const { accounts, year, priorYear } = parseYtdFlat(f.grid) ?? parseYtdReport(f.grid);
+      console.log(
+        `[sales-sync] YTD report: ${accounts.length} accounts` +
+          (year ? `, ${year} vs prior ${priorYear ?? "—"}` : " (flat export)") +
+          " (exact same-period numbers)",
+      );
+      if (accounts.length === 0) {
         console.warn("[sales-sync] YTD report: no account data — the pivot may not be saved; falling back to month pivots only.");
       } else {
         const metricsByAccount = new Map<string, Record<string, number>>();

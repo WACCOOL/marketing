@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeSalesMetrics, lastFullMonth, parseSalesPivot, parseYtdReport, sumThroughMonth } from "./sales.js";
+import { computeSalesMetrics, lastFullMonth, parseSalesPivot, parseYtdFlat, parseYtdReport, sumThroughMonth } from "./sales.js";
 
 // Two-level header (Year over Month) with per-year Total + Grand Total columns,
 // mirroring the real "WAC Sales" pivot.
@@ -63,6 +63,44 @@ describe("parseYtdReport (exact same-period numbers)", () => {
 
   it("returns empty on a sheet without the Sales/Sales PYTD header", () => {
     expect(parseYtdReport(GRID)).toEqual({ accounts: [], year: null, priorYear: null });
+  });
+});
+
+describe("parseYtdFlat (dataset-query CSV export)", () => {
+  it("maps DAX-style headers (table prefixes, brackets) and treats blanks as $0", () => {
+    const grid: unknown[][] = [
+      ["Customer[Account]", "[ytd]", "[pytd]", "[prior_full]"],
+      ["0002000005", 119.7, 600, 1460],
+      ["0002000004", null, null, null],
+      ["THAI MING", 25, "", 100], // named account — captured (no pivot-label ambiguity in a flat export)
+      ["0002000005", 999, 999, 999], // duplicate — first wins
+    ];
+    expect(parseYtdFlat(grid)).toEqual({
+      accounts: [
+        { account: "0002000005", ytd: 119.7, priorYtd: 600, priorFull: 1460 },
+        { account: "0002000004", ytd: 0, priorYtd: 0, priorFull: 0 },
+        { account: "THAI MING", ytd: 25, priorYtd: 0, priorFull: 100 },
+      ],
+      year: null,
+      priorYear: null,
+    });
+  });
+
+  it("accepts plain headers and marks missing optional columns as null", () => {
+    const grid: unknown[][] = [
+      ["account", "ytd"],
+      ["0002000005", "119.7"],
+    ];
+    expect(parseYtdFlat(grid)).toEqual({
+      accounts: [{ account: "0002000005", ytd: 119.7, priorYtd: null, priorFull: null }],
+      year: null,
+      priorYear: null,
+    });
+  });
+
+  it("returns null for non-flat shapes (pivot grids fall through)", () => {
+    expect(parseYtdFlat(YTD_GRID)).toBeNull();
+    expect(parseYtdFlat(GRID)).toBeNull();
   });
 });
 
