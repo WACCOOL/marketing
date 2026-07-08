@@ -521,7 +521,12 @@ export async function pushTurnoverToHubspot(
     if (r.discounted_sales !== null) properties["discounted_sales"] = r.discounted_sales;
     if (r.ytd_total !== null) properties["ytd_total"] = r.ytd_total;
     if (r.rep_code) properties["rep_code"] = r.rep_code;
-    if (r.quantity && r.discounted_sales !== null) properties["price"] = round2(r.discounted_sales / r.quantity);
+    if (r.quantity && r.discounted_sales !== null) {
+      // HubSpot rejects negative line-item prices (INVALID_PRICE). Opposite-sign
+      // qty/sales rows (rebates) keep their true value in discounted_sales.
+      const price = round2(r.discounted_sales / r.quantity);
+      if (price >= 0) properties["price"] = price;
+    }
     return { idProperty: "bd_line_key", id: key, properties, _doc: r.billing_document };
   });
 
