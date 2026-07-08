@@ -6,9 +6,18 @@
  * are the one HubSpot object whose createdate the API accepts (create AND
  * update) — contacts/companies reject it.
  *
- * Rule: when the quote-creation day is STRICTLY BEFORE the reference day (the
- * existing createdate, or "now" on the create path), backdate createdate to the
- * quote day. Never moves createdate forward, never touches same-day deals.
+ * Rule: when the earliest SAP signal day — quote_creation_date or the oldest
+ * line-item quote_conversion_date, whichever is older — is STRICTLY BEFORE the
+ * reference day (the existing createdate, or "now" on the create path),
+ * backdate createdate to that day. Never moves createdate forward (deals
+ * created manually in HubSpot before SAP synced keep their earlier date),
+ * never touches same-day deals.
+ *
+ * The conversion date participates because SAP routinely dates the sales-order
+ * document BEFORE the quote's system creation stamp (order arrives, quote is
+ * keyed retroactively — 15.5k deals, median gap 1 day, max 13). A deal cannot
+ * convert before it existed, so the SO date bounds the real-world start; without
+ * it those deals close before they're created and days-to-close goes negative.
  *
  * The value written is NOON UTC on the quote day, not midnight:
  * `quote_creation_date` is date-typed (midnight-UTC ms), but createdate is a
@@ -31,6 +40,10 @@ function utcDayStart(ms: number): number {
 export interface DeriveCreateDateInput {
   /** quote_creation_date as ms epoch (toEpochMs), null when absent. */
   quoteCreationMs: number | null;
+  /** Oldest line-item quote_conversion_date (or the deal-level mirror) as ms
+   *  epoch; optional for older callers. Bounds the start when SAP dates the SO
+   *  before the quote's creation stamp. */
+  oldestConversionMs?: number | null;
   /** Existing HubSpot createdate as ms epoch (toEpochMs); null = create path. */
   existingCreateDateMs: number | null;
   /** Injected clock (create-path reference + testability). */
@@ -55,13 +68,21 @@ export function deriveCreateDate(i: DeriveCreateDateInput): DeriveCreateDateResu
   const properties: Record<string, string> = {};
   const actions: FixAction[] = [];
 
-  if (i.quoteCreationMs === null) return { properties, actions };
+  const conversionMs = i.oldestConversionMs ?? null;
+  if (i.quoteCreationMs === null && conversionMs === null) return { properties, actions };
 
-  const quoteDay = utcDayStart(i.quoteCreationMs);
+  const conversionWins =
+    conversionMs !== null && (i.quoteCreationMs === null || conversionMs < i.quoteCreationMs);
+  const signalMs = conversionWins ? conversionMs : (i.quoteCreationMs as number);
+  const source = conversionWins
+    ? "oldest quote_conversion_date (SO dated before quote entry)"
+    : "quote_creation_date";
+
+  const signalDay = utcDayStart(signalMs);
   const referenceMs = i.existingCreateDateMs ?? i.nowMs;
-  if (quoteDay >= utcDayStart(referenceMs)) return { properties, actions };
+  if (signalDay >= utcDayStart(referenceMs)) return { properties, actions };
 
-  const target = quoteDay + NOON_MS;
+  const target = signalDay + NOON_MS;
   properties.createdate = String(target);
   actions.push({
     property: "createdate",
@@ -70,8 +91,8 @@ export function deriveCreateDate(i: DeriveCreateDateInput): DeriveCreateDateResu
     action: "derived",
     reason:
       i.existingCreateDateMs !== null
-        ? `createdate_backdated — ${isoDay(i.existingCreateDateMs)} → ${isoDay(target)} (quote_creation_date)`
-        : `createdate_backdated — new deal backdated to quote_creation_date ${isoDay(target)}`,
+        ? `createdate_backdated — ${isoDay(i.existingCreateDateMs)} → ${isoDay(target)} (${source})`
+        : `createdate_backdated — new deal backdated to ${source} ${isoDay(target)}`,
   });
   return { properties, actions };
 }

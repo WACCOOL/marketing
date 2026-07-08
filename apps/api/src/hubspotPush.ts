@@ -957,14 +957,21 @@ async function upsertDeal(
     );
   }
 
-  // Derived createdate — backdates HubSpot's system createdate to the SAP quote
-  // day when the quote is older (bulk-imported deals carry their import date).
-  // Same merged-after-normalizeWithLearning placement: createdate is a datetime
+  // Derived createdate — backdates HubSpot's system createdate to the earliest
+  // SAP signal (quote_creation_date, or the oldest line conversion date when
+  // SAP dated the SO before the quote entry) when that's older than the current
+  // createdate (bulk-imported deals carry their import date). Same
+  // merged-after-normalizeWithLearning placement: createdate is a datetime
   // and must never pass through the enum heal. Diff-only, so no-op pushes never
   // touch it; the payload's quote_creation_date (already midnight-UTC ms via
   // coerceDates) is preferred, falling back to the value stored on the deal.
+  const payloadConversions = lineItemDates(products)
+    .map((l) => l.conversionMs)
+    .concat(existing ? [toEpochMs(existing.properties.quote_conversion_date)] : [])
+    .filter((ms): ms is number => ms !== null);
   const createDate = deriveCreateDate({
     quoteCreationMs: toEpochMs(properties.quote_creation_date ?? existing?.properties.quote_creation_date),
+    oldestConversionMs: payloadConversions.length ? Math.min(...payloadConversions) : null,
     existingCreateDateMs: existing ? toEpochMs(existing.properties.createdate) : null,
     nowMs: Date.now(),
   });
