@@ -104,6 +104,150 @@ export function parseSalesPivot(grid: unknown[][]): SalesParseResult {
   };
 }
 
+/**
+ * "YTD" report parser — a flat pivot with exact same-period numbers, replacing
+ * the month-bucket comparison where available. TWO-LEVEL column header: a Year
+ * row (2022 … 2026, then "Total Sales"/"Total Sales PYTD" grand totals) over a
+ * measure row ("Sales" | "Sales PYTD" per year). Per account row:
+ *   Sales[latest year]      = exact YTD through the data's refresh date
+ *   Sales PYTD[latest year] = prior year through the SAME calendar date
+ *   Sales[latest − 1]       = full prior year
+ * A present row with an empty cell means $0 (unlike the month pivot, absence
+ * here is a real zero — the account row wouldn't exist without any sales).
+ */
+
+export interface YtdAccount {
+  account: string;
+  /** Exact current-year-to-date $ (through the report's refresh date). */
+  ytd: number;
+  /** Prior year through the same calendar date; null if the report has no PYTD column. */
+  priorYtd: number | null;
+  /** Full prior year $; null if the report has no prior-year column. */
+  priorFull: number | null;
+}
+
+export interface YtdReportResult {
+  accounts: YtdAccount[];
+  /** Latest year column (the current year), null if the sheet didn't parse. */
+  year: string | null;
+  priorYear: string | null;
+}
+
+export function parseYtdReport(grid: unknown[][]): YtdReportResult {
+  const empty: YtdReportResult = { accounts: [], year: null, priorYear: null };
+
+  // The measure row is the one (in the header band) with the most Sales /
+  // Sales PYTD cells; the year row sits directly above it.
+  let measureRowIdx = -1;
+  let best = 0;
+  for (let i = 0; i < Math.min(grid.length, 12); i++) {
+    let cnt = 0;
+    for (const v of grid[i]!) {
+      const s = String(v ?? "").trim();
+      if (s === "Sales" || s === "Sales PYTD") cnt++;
+    }
+    if (cnt > best) {
+      best = cnt;
+      measureRowIdx = i;
+    }
+  }
+  if (measureRowIdx < 1 || best < 2) return empty;
+  const measureRow = grid[measureRowIdx]!;
+  const yearRow = grid[measureRowIdx - 1]!;
+
+  // Forward-fill the (merged) year header; any non-year label ("Total Sales")
+  // ends the span so grand-total columns never inherit a year.
+  const yearAt: (string | null)[] = [];
+  let cur: string | null = null;
+  for (let c = 0; c < Math.max(yearRow.length, measureRow.length); c++) {
+    const s = String(yearRow[c] ?? "").trim();
+    if (YEAR_RE.test(s)) cur = s;
+    else if (s) cur = null;
+    yearAt[c] = cur;
+  }
+
+  const salesCol = new Map<string, number>();
+  const pytdCol = new Map<string, number>();
+  for (let c = 1; c < measureRow.length; c++) {
+    const y = yearAt[c];
+    if (!y) continue;
+    const m = String(measureRow[c] ?? "").trim();
+    if (m === "Sales") salesCol.set(y, c);
+    else if (m === "Sales PYTD") pytdCol.set(y, c);
+  }
+  const years = [...salesCol.keys()].sort();
+  const year = years[years.length - 1];
+  if (!year) return empty;
+  const prior = String(Number(year) - 1);
+  const priorYear = salesCol.has(prior) ? prior : null;
+  const curSalesC = salesCol.get(year)!;
+  const curPytdC = pytdCol.get(year);
+  const priorSalesC = priorYear ? salesCol.get(priorYear) : undefined;
+
+  const accounts: YtdAccount[] = [];
+  const seen = new Set<string>();
+  for (const row of grid) {
+    const acct = String(row[0] ?? "").trim();
+    if (!ACCOUNT_RE.test(acct) || seen.has(acct)) continue;
+    seen.add(acct);
+    accounts.push({
+      account: acct,
+      ytd: asNum(row[curSalesC]) ?? 0,
+      priorYtd: curPytdC != null ? (asNum(row[curPytdC]) ?? 0) : null,
+      priorFull: priorSalesC != null ? (asNum(row[priorSalesC]) ?? 0) : null,
+    });
+  }
+  return { accounts, year, priorYear };
+}
+
+/**
+ * Last COMPLETE month of the pivot's current year, given the data's as-of date
+ * (the workbook's last-refresh date). The latest month bucket is partial while
+ * the as-of date is still inside it, so growth comparisons must stop before it.
+ */
+export function lastFullMonth(latestMonth: number, curYear: string, asOf: { year: number; month: number }): number {
+  if (Number(curYear) < asOf.year) return latestMonth; // that year is over — every bucket is complete
+  return latestMonth >= asOf.month ? asOf.month - 1 : latestMonth;
+}
+
+export interface SalesMetrics {
+  /** Current year through the latest month bucket (true YTD, partial month included). */
+  ytd?: number;
+  /** Full prior year. */
+  priorFull?: number;
+  /** Prior year through `fullMonths` — the comparable window. */
+  priorYtd?: number;
+  /** Growth %, both years through `fullMonths` (apples-to-apples; excludes the partial bucket). */
+  yoyPct?: number;
+}
+
+/** Month-pivot metrics: true YTD, but growth measured on complete months only. */
+export function computeSalesMetrics(
+  byYear: Record<string, Record<number, number>>,
+  cur: string,
+  prev: string | undefined,
+  latestMonth: number,
+  fullMonths: number,
+): SalesMetrics {
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+  const m: SalesMetrics = {};
+  const ytd = sumThroughMonth(byYear[cur], latestMonth);
+  if (ytd != null) m.ytd = round2(ytd);
+  if (!prev) return m;
+  const priorFull = sumThroughMonth(byYear[prev], 12);
+  if (priorFull != null) m.priorFull = round2(priorFull);
+  if (fullMonths > 0) {
+    const priorWindow = sumThroughMonth(byYear[prev], fullMonths);
+    const curWindow = sumThroughMonth(byYear[cur], fullMonths);
+    if (priorWindow != null) {
+      m.priorYtd = round2(priorWindow);
+      if (curWindow != null && priorWindow !== 0) m.yoyPct = round1(((curWindow - priorWindow) / priorWindow) * 100);
+    }
+  }
+  return m;
+}
+
 /** Sum an account's months for a year, up to and including `maxMonth`. */
 export function sumThroughMonth(byMonth: Record<number, number> | undefined, maxMonth: number): number | null {
   if (!byMonth) return null;
