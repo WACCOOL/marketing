@@ -37,19 +37,45 @@ const ORDER_TO_COMPANY_TYPE = 934; // HUBSPOT_DEFINED orders -> companies
 const BATCH = 100;
 const GROUP = "invoiced_orders";
 
+const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 6;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** HubSpot fetch with retry — transient 5xx/429 (and network drops) are
+ * inevitable across the tens of thousands of calls a backfill makes, and one
+ * must not kill a multi-hour run. Exponential backoff, honoring Retry-After. */
 async function hs<T>(token: string, path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${HS}${path}`, {
-    ...init,
-    headers: {
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-      accept: "application/json",
-      ...(init?.headers ?? {}),
-    },
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`HubSpot ${init?.method ?? "GET"} ${path} -> ${res.status}: ${text.slice(0, 300)}`);
-  return text ? (JSON.parse(text) as T) : ({} as T);
+  for (let attempt = 1; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${HS}${path}`, {
+        ...init,
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          accept: "application/json",
+          ...(init?.headers ?? {}),
+        },
+      });
+    } catch (e) {
+      if (attempt >= MAX_ATTEMPTS) throw e;
+      console.warn(`[turnover-sync] ${path} network error (attempt ${attempt}/${MAX_ATTEMPTS}), retrying: ${String(e).slice(0, 120)}`);
+      await sleep(1000 * 2 ** (attempt - 1));
+      continue;
+    }
+    const text = await res.text();
+    if (!res.ok) {
+      if (RETRY_STATUSES.has(res.status) && attempt < MAX_ATTEMPTS) {
+        const after = Number(res.headers.get("retry-after"));
+        const wait = after > 0 ? after * 1000 : 1000 * 2 ** (attempt - 1);
+        console.warn(`[turnover-sync] ${path} -> ${res.status} (attempt ${attempt}/${MAX_ATTEMPTS}), retrying in ${wait}ms`);
+        await sleep(wait);
+        continue;
+      }
+      throw new Error(`HubSpot ${init?.method ?? "GET"} ${path} -> ${res.status}: ${text.slice(0, 300)}`);
+    }
+    return text ? (JSON.parse(text) as T) : ({} as T);
+  }
 }
 
 export interface TurnoverDbRow {
