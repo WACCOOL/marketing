@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEAL_STAGE_IDS,
   UNIVERSAL_PIPELINE_ID,
+  closeDateNoonUtcMs,
   deriveDealStageAndCloseDate,
   lineItemDates,
   toEpochMs,
@@ -11,6 +12,8 @@ import {
 const MS_2024_05_01 = Date.UTC(2024, 4, 1);
 const MS_2024_06_15 = Date.UTC(2024, 5, 15);
 const MS_2026_02_05 = Date.UTC(2026, 1, 5);
+// Every derived closedate lands at noon UTC on the source day (closeDateNoonUtcMs).
+const NOON = 43_200_000;
 
 function existing(over: Partial<ExistingDealState> = {}): ExistingDealState {
   return {
@@ -41,6 +44,14 @@ describe("toEpochMs", () => {
     expect(toEpochMs(null)).toBeNull();
     expect(toEpochMs(undefined)).toBeNull();
     expect(toEpochMs("not a date")).toBeNull();
+  });
+});
+
+describe("closeDateNoonUtcMs", () => {
+  it("anchors any instant to noon UTC on its UTC day", () => {
+    expect(closeDateNoonUtcMs(MS_2024_05_01)).toBe(MS_2024_05_01 + NOON); // midnight → noon
+    expect(closeDateNoonUtcMs(MS_2024_05_01 + NOON)).toBe(MS_2024_05_01 + NOON); // idempotent
+    expect(closeDateNoonUtcMs(Date.UTC(2024, 4, 1, 23, 59, 59))).toBe(MS_2024_05_01 + NOON);
   });
 });
 
@@ -90,7 +101,7 @@ describe("deriveDealStageAndCloseDate — stage mapping (wf 1741406037)", () => 
     expect(r.properties).toEqual({
       dealstage: DEAL_STAGE_IDS.closedWon,
       pipeline: UNIVERSAL_PIPELINE_ID,
-      closedate: String(MS_2024_05_01), // oldest
+      closedate: String(MS_2024_05_01 + NOON), // oldest, noon-UTC anchored
       quote_conversion_date: String(MS_2024_05_01),
     });
     expect(r.actions.map((a) => a.property).sort()).toEqual(["closedate", "dealstage", "quote_conversion_date"]);
@@ -157,7 +168,7 @@ describe("deriveDealStageAndCloseDate — Awarded→ClosedWon promotion (wf 1765
     });
     expect(r.properties).toEqual({
       dealstage: DEAL_STAGE_IDS.closedWon,
-      closedate: String(MS_2024_05_01),
+      closedate: String(MS_2024_05_01 + NOON),
       quote_conversion_date: String(MS_2024_05_01),
     });
     expect(r.actions.find((a) => a.property === "dealstage")?.reason).toContain("promotion");
@@ -187,24 +198,38 @@ describe("deriveDealStageAndCloseDate — close-date maintenance", () => {
       lineItems: [{ conversionMs: MS_2024_05_01, rejectionMs: null }],
     });
     expect(r.properties).toEqual({
-      closedate: String(MS_2024_05_01),
+      closedate: String(MS_2024_05_01 + NOON),
       quote_conversion_date: String(MS_2024_05_01),
     });
     expect(r.actions[0]?.reason).toContain("closedate_corrected");
   });
 
-  it("exact match → no-op (idempotent)", () => {
+  it("exact match (noon anchor) → no-op (idempotent)", () => {
     const r = deriveDealStageAndCloseDate({
       stageOfProject: "AWARDED",
       existing: existing({
         dealstage: DEAL_STAGE_IDS.closedWon,
-        closedateMs: MS_2024_05_01,
+        closedateMs: MS_2024_05_01 + NOON,
         quoteConversionDateMs: MS_2024_05_01,
       }),
       lineItems: [{ conversionMs: MS_2024_05_01, rejectionMs: null }],
     });
     expect(r.properties).toEqual({});
     expect(r.actions).toEqual([]);
+  });
+
+  it("normalizes a legacy midnight-UTC closedate to noon on the same day", () => {
+    const r = deriveDealStageAndCloseDate({
+      stageOfProject: "AWARDED",
+      existing: existing({
+        dealstage: DEAL_STAGE_IDS.closedWon,
+        closedateMs: MS_2024_05_01, // pre-noon-anchor value: displays 4/30 in ET
+        quoteConversionDateMs: MS_2024_05_01,
+      }),
+      lineItems: [{ conversionMs: MS_2024_05_01, rejectionMs: null }],
+    });
+    expect(r.properties).toEqual({ closedate: String(MS_2024_05_01 + NOON) });
+    expect(r.actions[0]?.reason).toContain("closedate_corrected");
   });
 
   it("Closed Won with no conversion dates → closedate untouched", () => {
@@ -223,7 +248,7 @@ describe("deriveDealStageAndCloseDate — close-date maintenance", () => {
       lineItems: [{ conversionMs: MS_2024_05_01, rejectionMs: MS_2026_02_05 }],
     });
     expect(r.properties.dealstage).toBe(DEAL_STAGE_IDS.closedWon);
-    expect(r.properties.closedate).toBe(String(MS_2024_05_01));
+    expect(r.properties.closedate).toBe(String(MS_2024_05_01 + NOON));
   });
 });
 
@@ -249,7 +274,7 @@ describe("deriveDealStageAndCloseDate — lost close dates (toggle)", () => {
       ],
       options: { lostCloseDates: true },
     });
-    expect(r.properties).toEqual({ closedate: String(MS_2026_02_05) });
+    expect(r.properties).toEqual({ closedate: String(MS_2026_02_05 + NOON) });
     expect(r.actions[0]?.reason).toContain("newest rejection_date");
   });
 
@@ -261,7 +286,7 @@ describe("deriveDealStageAndCloseDate — lost close dates (toggle)", () => {
       quoteLastChangedMs: MS_2024_06_15,
       options: { lostCloseDates: true },
     });
-    expect(withFallback.properties).toEqual({ closedate: String(MS_2024_06_15) });
+    expect(withFallback.properties).toEqual({ closedate: String(MS_2024_06_15 + NOON) });
     const neither = deriveDealStageAndCloseDate({
       stageOfProject: "REJECTED",
       existing: lost,
@@ -318,7 +343,7 @@ describe("deriveDealStageAndCloseDate — pipeline guard", () => {
     });
     // promotion blocked by pipeline guard; closedate: effective stage IS the awarded id → maintained
     expect(r.properties.dealstage).toBeUndefined();
-    expect(r.properties.closedate).toBe(String(MS_2024_05_01));
+    expect(r.properties.closedate).toBe(String(MS_2024_05_01 + NOON));
   });
 });
 

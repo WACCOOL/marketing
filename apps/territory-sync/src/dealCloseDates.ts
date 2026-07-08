@@ -93,6 +93,13 @@ function isoDay(ms: number | null): string {
   return ms === null ? "" : new Date(ms).toISOString().slice(0, 10);
 }
 
+/** Calendar-day drift, ignoring time-of-day — the noon-UTC normalization of a
+ *  legacy midnight-UTC closedate must read as 0, not round up to 1. */
+function utcDayDiff(afterMs: number, beforeMs: number): number {
+  const day = 86_400_000;
+  return Math.floor(afterMs / day) - Math.floor(beforeMs / day);
+}
+
 function csvEscape(v: string): string {
   return /[",\n]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v;
 }
@@ -304,7 +311,7 @@ export async function reconcileDealCloseDates(opts: {
       conversionAfter: isoDay(conversionAfterMs),
       deltaDays:
         closedateMs !== null && afterMs !== null && derived.properties.closedate
-          ? Math.round((afterMs - closedateMs) / 86_400_000)
+          ? utcDayDiff(afterMs, closedateMs)
           : null,
       rule: isLost ? "lost" : "won",
       source: cdAction?.reason ?? derived.actions[0]?.reason ?? "",
