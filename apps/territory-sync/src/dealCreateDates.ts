@@ -7,11 +7,13 @@ import { hs } from "./insideSales.js";
  * write in the SAP push (DEAL_CREATEDATE_WRITE). HubSpot stamps `createdate`
  * when a record is created IN HUBSPOT, so bulk-backfilled deals carry their
  * import date, not the real SAP quote date (which lives in
- * quote_creation_date). Sweeps every deal that carries quote_creation_date and
- * applies the SAME shared derivation the live push uses (@wac/shared
- * deriveCreateDate): backdate createdate to noon UTC on the quote day, only
- * when the quote day is STRICTLY EARLIER than the current createdate's UTC day.
- * Same-day deals and quote-after-createdate oddities are left alone.
+ * quote_creation_date). Sweeps every deal that carries quote_creation_date or
+ * the quote_conversion_date mirror and applies the SAME shared derivation the
+ * live push uses (@wac/shared deriveCreateDate): backdate createdate to noon
+ * UTC on the earliest SAP signal day — quote creation, or the oldest conversion
+ * date when SAP dated the SO before the quote entry — only when that day is
+ * STRICTLY EARLIER than the current createdate's UTC day. Same-day deals and
+ * quote-after-createdate oddities are left alone.
  *
  * PROBE: deals are the one HubSpot object whose createdate the API accepts,
  * but that's community lore, not something this portal has proven — so the
@@ -25,7 +27,7 @@ import { hs } from "./insideSales.js";
  * re-running --dry-run until corrections=0.
  */
 
-const SCAN_PROPS = ["sap_quote_number", "dealname", "pipeline", "createdate", "quote_creation_date"].join(",");
+const SCAN_PROPS = ["sap_quote_number", "dealname", "pipeline", "createdate", "quote_creation_date", "quote_conversion_date"].join(",");
 
 const UPDATE_BATCH = 100;
 
@@ -35,6 +37,7 @@ export interface CreateDateChange {
   dealname: string;
   pipeline: string;
   quoteCreationDay: string;
+  quoteConversionDay: string;
   createdateBefore: string;
   createdateAfter: string;
   deltaDays: number;
@@ -43,7 +46,7 @@ export interface CreateDateChange {
 
 export interface DealCreateDateReconcileResult {
   scanned: number;
-  /** Deals carrying quote_creation_date. */
+  /** Deals carrying quote_creation_date or the quote_conversion_date mirror. */
   candidates: number;
   /** Deals whose createdate is on a later UTC day than the quote day. */
   corrections: number;
@@ -152,17 +155,24 @@ export async function reconcileDealCreateDates(opts: {
       scanned++;
       const p = d.properties ?? {};
       const quoteCreationMs = toEpochMs(p.quote_creation_date);
-      if (quoteCreationMs === null) continue;
+      // The deal-level quote_conversion_date mirror (oldest line conversion,
+      // maintained by the push + close-date reconcile) stands in for the
+      // line-item scan the live push does — no association reads needed.
+      const conversionMs = toEpochMs(p.quote_conversion_date);
+      if (quoteCreationMs === null && conversionMs === null) continue;
       candidates++;
       const createdateMs = toEpochMs(p.createdate);
       const derived = deriveCreateDate({
         quoteCreationMs,
+        oldestConversionMs: conversionMs,
         existingCreateDateMs: createdateMs,
         nowMs,
       });
       if (!derived.properties.createdate) {
         // Strictly-earlier is the only write rule; count the inverse oddity.
-        if (createdateMs !== null && isoDay(quoteCreationMs) > isoDay(createdateMs)) quoteAfterCreate++;
+        if (createdateMs !== null && quoteCreationMs !== null && isoDay(quoteCreationMs) > isoDay(createdateMs)) {
+          quoteAfterCreate++;
+        }
         continue;
       }
       corrections++;
@@ -175,6 +185,7 @@ export async function reconcileDealCreateDates(opts: {
         dealname: String(p.dealname ?? ""),
         pipeline: String(p.pipeline ?? ""),
         quoteCreationDay: isoDay(quoteCreationMs),
+        quoteConversionDay: isoDay(conversionMs),
         createdateBefore: isoDay(createdateMs),
         createdateAfter: isoDay(afterMs),
         deltaDays:
@@ -199,7 +210,7 @@ export async function reconcileDealCreateDates(opts: {
   // ---- report ---------------------------------------------------------------
   if (csvPath) {
     const header =
-      "dealId,sap_quote_number,dealname,pipeline,quote_creation_date,createdate_before,createdate_after,delta_days,applied";
+      "dealId,sap_quote_number,dealname,pipeline,quote_creation_date,quote_conversion_date,createdate_before,createdate_after,delta_days,applied";
     const rows = changes.map((ch) =>
       [
         ch.dealId,
@@ -207,6 +218,7 @@ export async function reconcileDealCreateDates(opts: {
         csvEscape(ch.dealname),
         ch.pipeline,
         ch.quoteCreationDay,
+        ch.quoteConversionDay,
         ch.createdateBefore,
         ch.createdateAfter,
         ch.deltaDays,

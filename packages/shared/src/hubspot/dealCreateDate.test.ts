@@ -99,3 +99,68 @@ describe("deriveCreateDate — no quote date", () => {
     expect(r.actions).toEqual([]);
   });
 });
+
+describe("deriveCreateDate — conversion date participates (retroactive SO dates)", () => {
+  // The DISCOUNT TIRE shape: SO dated 13 days before the quote's creation stamp.
+  const CONV_2025_01_31 = Date.UTC(2025, 0, 31);
+  const QUOTE_2025_02_13 = Date.UTC(2025, 1, 13);
+  const NOON_2025_01_31 = CONV_2025_01_31 + NOON_MS;
+
+  it("backdates to the conversion day when it precedes the quote-creation day", () => {
+    const r = deriveCreateDate({
+      quoteCreationMs: QUOTE_2025_02_13,
+      oldestConversionMs: CONV_2025_01_31,
+      existingCreateDateMs: QUOTE_2025_02_13 + 5 * 3_600_000, // import stamp on the quote day
+      nowMs: NOW,
+    });
+    expect(r.properties).toEqual({ createdate: String(NOON_2025_01_31) });
+    expect(r.actions[0]!.reason).toContain("quote_conversion_date");
+  });
+
+  it("quote creation still wins when it is the earlier signal", () => {
+    const r = deriveCreateDate({
+      quoteCreationMs: QUOTE_2026_03_10,
+      oldestConversionMs: Date.UTC(2026, 3, 20), // converted after creation (normal flow)
+      existingCreateDateMs: CREATED_2026_07_02,
+      nowMs: NOW,
+    });
+    expect(r.properties).toEqual({ createdate: String(NOON_2026_03_10) });
+    expect(r.actions[0]!.reason).toContain("quote_creation_date");
+  });
+
+  it("conversion alone can trigger the backdate when quote creation is absent", () => {
+    const r = deriveCreateDate({
+      quoteCreationMs: null,
+      oldestConversionMs: CONV_2025_01_31,
+      existingCreateDateMs: CREATED_2026_07_02,
+      nowMs: NOW,
+    });
+    expect(r.properties).toEqual({ createdate: String(NOON_2025_01_31) });
+  });
+
+  it("never moves createdate FORWARD (manual deal older than both SAP signals)", () => {
+    const r = deriveCreateDate({
+      quoteCreationMs: QUOTE_2025_02_13,
+      oldestConversionMs: CONV_2025_01_31,
+      existingCreateDateMs: Date.UTC(2024, 10, 1, 9, 0, 0), // manually created 2024-11-01
+      nowMs: NOW,
+    });
+    expect(r.properties).toEqual({});
+  });
+
+  it("is idempotent: feeding the conversion-day value back yields no write", () => {
+    const first = deriveCreateDate({
+      quoteCreationMs: QUOTE_2025_02_13,
+      oldestConversionMs: CONV_2025_01_31,
+      existingCreateDateMs: QUOTE_2025_02_13 + 5 * 3_600_000,
+      nowMs: NOW,
+    });
+    const second = deriveCreateDate({
+      quoteCreationMs: QUOTE_2025_02_13,
+      oldestConversionMs: CONV_2025_01_31,
+      existingCreateDateMs: Number(first.properties.createdate),
+      nowMs: NOW,
+    });
+    expect(second.properties).toEqual({});
+  });
+});
