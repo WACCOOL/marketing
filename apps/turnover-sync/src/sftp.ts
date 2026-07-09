@@ -35,11 +35,13 @@ export interface InboundFile {
   orderKey: string;
 }
 
-// Observed: TURNOVER-YYYYMMDD-YYYYMMDDHHMMSS.csv; CUSTOMERS/PARENTS/PRODUCTS-
-// YYYYMMDDHHMMSS.csv. SCH prefix form is TBD — accept glued or delimited.
+// Observed: WAC TURNOVER-YYYYMMDD-YYYYMMDDHHMMSS.csv; Schonbek uses a full
+// range start, SCH_TURNOVER-YYYYMMDDHHMMSS-YYYYMMDDHHMMSS.csv (2026-07-09) —
+// hence \d{8,14} for the first segment. CUSTOMERS/PARENTS/PRODUCTS-
+// YYYYMMDDHHMMSS.csv for both brands.
 const SCH = "(SCH[-_]?)?";
 const KIND_RES: [FileKind, RegExp][] = [
-  ["turnover", new RegExp(`^${SCH}TURNOVER-(\\d{8})-(\\d{14})\\.csv$`, "i")],
+  ["turnover", new RegExp(`^${SCH}TURNOVER-(\\d{8,14})-(\\d{14})\\.csv$`, "i")],
   ["customers", new RegExp(`^${SCH}CUSTOMERS?-(\\d{14})\\.csv$`, "i")],
   ["parents", new RegExp(`^${SCH}PARENTS?-(\\d{14})\\.csv$`, "i")],
   ["products", new RegExp(`^${SCH}PRODUCTS?-(\\d{14})\\.csv$`, "i")],

@@ -20,6 +20,19 @@ describe("toLocalFile", () => {
     expect(f.brand).toBe("SCH");
   });
 
+  it("classifies Schonbek's range-start turnover naming (14-digit first segment)", () => {
+    const f = toLocalFile("/x/SCH_TURNOVER-20240101000000-20241231235959.csv", 10, 1);
+    expect(f.kind).toBe("turnover");
+    expect(f.brand).toBe("SCH");
+    expect(f.orderKey).toBe("20241231235959");
+  });
+
+  it("classifies Schonbek customers/parents files", () => {
+    expect(toLocalFile("/x/SCH_CUSTOMERS-20241231235959.csv", 10, 1).kind).toBe("customers");
+    expect(toLocalFile("/x/SCH_PARENTS-20241231235959.csv", 10, 1).kind).toBe("parents");
+    expect(toLocalFile("/x/SCH_PRODUCTS-20241231235959.csv", 10, 1).kind).toBe("products");
+  });
+
   it("marks non-matching names unknown and falls back to mtime ordering", () => {
     const f = toLocalFile("/x/TURNOVER-202401.csv", 10, 1234);
     expect(f.kind).toBe("unknown");
