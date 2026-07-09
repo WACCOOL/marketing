@@ -22,9 +22,11 @@ import { turnoverLineKey } from "@wac/shared";
  * no HubSpot company get one CREATED (bare account number, name when known) so
  * no order is left unassociated — per Davis 2026-07-08.
  *
- * Also here: the customer parent-child push (native company parent/child
- * associations from company_parents staging; missing companies are CREATED
- * the same way per Davis 2026-07-07) and --verify-coverage reporting.
+ * Also here: the customers push (EVERY staged customer account gets a company
+ * — created if missing, per Davis 2026-07-09 — with product_brand stamped/
+ * appended for single-brand feeds like Schonbek, plus native parent/child
+ * company associations from company_parents staging) and --verify-coverage
+ * reporting.
  *
  * Machinery (hs/coerce/batchUpsert/batchAssociate/resolveIds) follows
  * apps/open-orders-sync/src/hubspot.ts.
@@ -99,7 +101,13 @@ interface CompanyParentDbRow {
   customer_name: string | null;
   parent_account: string | null;
   parent_name: string | null;
+  /** Originating file name — SCH-prefixed files mark Schonbek customers. */
+  source_file?: string | null;
 }
+
+/** product_brand checkbox value for a brand feed ("SCH" → SCHONBEK); WAC's
+ * combined feed spans four brands, so it stamps nothing. */
+const PRODUCT_BRAND: Record<string, string> = { SCH: "SCHONBEK" };
 
 // --- generic helpers ---------------------------------------------------------
 
@@ -211,15 +219,15 @@ const stripZeros = (a: string) => a.replace(/^0+/, "") || a;
 const padded = (a: string) => (/^\d+$/.test(a) ? a.padStart(10, "0") : a);
 const accountForms = (a: string) => [...new Set([a, stripZeros(a), padded(a)])];
 
-async function resolveCompanies(token: string, accounts: string[]): Promise<Map<string, { id: string; name?: string }>> {
+async function resolveCompanies(token: string, accounts: string[]): Promise<Map<string, { id: string; name?: string; productBrand?: string }>> {
   const candidates = [...new Set(accounts.flatMap(accountForms))];
-  const byForm = await resolveIds(token, "companies", "account_number_", candidates, ["name"]);
-  const map = new Map<string, { id: string; name?: string }>();
+  const byForm = await resolveIds(token, "companies", "account_number_", candidates, ["name", "product_brand"]);
+  const map = new Map<string, { id: string; name?: string; productBrand?: string }>();
   for (const a of accounts) {
     for (const form of accountForms(a)) {
       const hit = byForm.get(form);
       if (hit) {
-        map.set(a, { id: hit.__id, name: hit["name"] });
+        map.set(a, { id: hit.__id, name: hit["name"], productBrand: hit["product_brand"] });
         break;
       }
     }
@@ -227,16 +235,38 @@ async function resolveCompanies(token: string, accounts: string[]): Promise<Map<
   return map;
 }
 
+/** Ensure the multi-checkbox product_brand on existing companies includes the
+ * given brand (append, never clobber). */
+async function patchCompanyBrands(token: string, updates: { id: string; current: string | undefined; brand: string }[]): Promise<number> {
+  const inputs = updates
+    .filter((u) => !(u.current ?? "").split(";").includes(u.brand))
+    .map((u) => ({ id: u.id, properties: { product_brand: [...(u.current ?? "").split(";").filter(Boolean), u.brand].join(";") } }));
+  for (let i = 0; i < inputs.length; i += BATCH) {
+    try {
+      await hs(token, "/crm/v3/objects/companies/batch/update", { method: "POST", body: JSON.stringify({ inputs: inputs.slice(i, i + BATCH) }) });
+    } catch (e) {
+      console.warn(`[turnover-sync] company brand patch batch failed: ${String(e).slice(0, 160)}`);
+    }
+  }
+  return inputs.length;
+}
+
 /** Create companies for SAP accounts missing in HubSpot — a bare company with
  * just the account number beats an unassociated order (per Davis 2026-07-08);
  * a name is set when one is known. Returns account → created company id. */
-async function createCompanies(token: string, accounts: string[], nameByAccount: Map<string, string>): Promise<Map<string, string>> {
+async function createCompanies(
+  token: string,
+  accounts: string[],
+  nameByAccount: Map<string, string>,
+  brandByAccount?: Map<string, string>,
+): Promise<Map<string, string>> {
   const createdByAccount = new Map<string, string>();
   const uniq = [...new Set(accounts.filter(Boolean))];
   for (let i = 0; i < uniq.length; i += BATCH) {
     const inputs = uniq.slice(i, i + BATCH).map((a) => {
       const name = nameByAccount.get(a);
-      return { properties: { account_number_: a, ...(name ? { name } : {}) } };
+      const brand = brandByAccount?.get(a);
+      return { properties: { account_number_: a, ...(name ? { name } : {}), ...(brand ? { product_brand: brand } : {}) } };
     });
     try {
       const res = await hs<{ results: { id: string; properties: Record<string, string> }[] }>(
@@ -570,10 +600,16 @@ export async function pushTurnoverToHubspot(
   await batchAssociate(token, "orders", "line_items", [{ typeId: ORDER_TO_LINE_ITEM_TYPE, category: "HUBSPOT_DEFINED" }], liPairs);
 
   // Sold-to accounts with no HubSpot company get one created (bare account
-  // number, name when the customers feed knows it) so no order is orphaned —
-  // per Davis 2026-07-08, deliberate for the daily sync and backfill alike.
+  // number, name when the customers feed knows it, product_brand for
+  // single-brand feeds) so no order is orphaned — per Davis 2026-07-08,
+  // deliberate for the daily sync and backfill alike.
   if (missingAccounts.length > 0) {
-    const created = await createCompanies(token, missingAccounts, customerNames);
+    const brandByAccount = new Map<string, string>();
+    for (const r of rows) {
+      const brand = PRODUCT_BRAND[r.brand];
+      if (r.sold_to && brand) brandByAccount.set(r.sold_to, brand);
+    }
+    const created = await createCompanies(token, missingAccounts, customerNames, brandByAccount);
     for (const [a, id] of created) companyByAccount.set(a, { id });
     console.log(`[turnover-sync] created ${created.size}/${missingAccounts.length} missing Sold-to companies`);
   }
@@ -632,40 +668,59 @@ export async function pushCompanyParents(
 ): Promise<void> {
   const rows: CompanyParentDbRow[] = [];
   for (let from = 0; ; from += 1000) {
-    const { data, error } = await sb.from("company_parents").select("account, customer_name, parent_account, parent_name").order("account").range(from, from + 999);
+    const { data, error } = await sb.from("company_parents").select("account, customer_name, parent_account, parent_name, source_file").order("account").range(from, from + 999);
     if (error) throw new Error(`company_parents read failed: ${error.message}`);
     const page = (data ?? []) as CompanyParentDbRow[];
-    rows.push(...page);
+    rows.push(...page.filter((r) => !opts.accounts || opts.accounts.has(r.account)));
     if (page.length < 1000) break;
   }
-  const links = rows.filter((r) => r.parent_account && (!opts.accounts || opts.accounts.has(r.account)));
-  console.log(`[turnover-sync] parent-child: ${rows.length} customers staged, ${links.length} with a parent`);
-  if (links.length === 0) return;
+  const links = rows.filter((r) => r.parent_account);
+  console.log(`[turnover-sync] customers push: ${rows.length} staged accounts, ${links.length} with a parent`);
+  if (rows.length === 0) return;
 
-  const accounts = [...new Set([...links.map((l) => l.account), ...links.map((l) => l.parent_account!)])];
+  // EVERY customer in the feed gets a company (per Davis 2026-07-09), not just
+  // the ones involved in a parent link; single-brand feeds (SCH-prefixed
+  // files) also stamp/append product_brand.
+  const accounts = [...new Set([...rows.map((r) => r.account), ...links.map((l) => l.parent_account!)])];
   const companyByAccount = await resolveCompanies(token, accounts);
   const missing = accounts.filter((a) => !companyByAccount.has(a));
 
   // Names for creatable missing companies (child name from the customers file,
-  // parent name from the PARENTS legend or its own customer row).
+  // parent name from the PARENTS legend or its own customer row); brand from
+  // the row's source file (a parent inherits its child row's feed).
   const nameByAccount = new Map<string, string>();
+  const brandByAccount = new Map<string, string>();
   for (const r of rows) {
     if (r.customer_name) nameByAccount.set(r.account, r.customer_name);
     if (r.parent_account && r.parent_name && !nameByAccount.has(r.parent_account)) nameByAccount.set(r.parent_account, r.parent_name);
+    const brand = PRODUCT_BRAND[/^SCH/i.test(r.source_file ?? "") ? "SCH" : "WAC"];
+    if (brand) {
+      brandByAccount.set(r.account, brand);
+      if (r.parent_account) brandByAccount.set(r.parent_account, brand);
+    }
   }
   if (opts.dryRun) {
     const named = missing.filter((a) => nameByAccount.has(a));
-    console.log(`[turnover-sync] DRY RUN parent-child: ${missing.length} accounts missing in HubSpot (${named.length} with names, rest created bare), sample:`, missing.slice(0, 10));
+    console.log(`[turnover-sync] DRY RUN customers push: ${missing.length} accounts missing in HubSpot (${named.length} with names, rest created bare; ${brandByAccount.size} branded), sample:`, missing.slice(0, 10));
     return;
   }
 
   // Create ALL missing companies (name when known, else bare account number) —
-  // per Davis 2026-07-07/08.
+  // per Davis 2026-07-07/08/09.
   if (missing.length > 0) {
-    const created = await createCompanies(token, missing, nameByAccount);
+    const created = await createCompanies(token, missing, nameByAccount, brandByAccount);
     for (const [a, id] of created) companyByAccount.set(a, { id });
     console.log(`[turnover-sync] created ${created.size}/${missing.length} missing companies`);
   }
+  // Append product_brand on already-existing companies from single-brand feeds.
+  const brandPatches = accounts
+    .flatMap((a) => {
+      const hit = companyByAccount.get(a);
+      const brand = brandByAccount.get(a);
+      return hit && brand ? [{ id: hit.id, current: hit.productBrand, brand }] : [];
+    });
+  const patched = await patchCompanyBrands(token, brandPatches);
+  if (patched > 0) console.log(`[turnover-sync] appended product_brand on ${patched} existing companies`);
 
   // Native parent/child company association types, discovered not hardcoded.
   const labels = await assocLabels(token, "companies", "companies");
