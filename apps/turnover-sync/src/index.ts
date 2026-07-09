@@ -290,12 +290,18 @@ async function main(): Promise<void> {
   if (has("--push-only")) {
     // --docs / --accounts scope a push to specific billing documents / customer
     // accounts (comma-separated) — for sample-first approval and spot repairs.
+    // --docs-file <path> reads the same list from a file (comma/newline
+    // separated) for scopes too large for the command line.
     const list = (flag: string) => {
       const i = argv.findIndex((a) => a === flag);
       const v = i >= 0 ? argv[i + 1] : argv.find((a) => a.startsWith(`${flag}=`))?.slice(flag.length + 1);
       return v ? new Set(v.split(",").map((s) => s.trim()).filter(Boolean)) : undefined;
     };
-    const docs = list("--docs");
+    const docsFilePath = stringArg("--docs-file");
+    const docsFromFile = docsFilePath
+      ? new Set((await readFile(docsFilePath, "utf8")).split(/[\n,]/).map((s) => s.trim()).filter(Boolean))
+      : undefined;
+    const docs = list("--docs") ?? docsFromFile;
     const accounts = list("--accounts");
     if (docs || !accounts) await pushTurnoverToHubspot(sb, env("HUBSPOT_TOKEN"), { dryRun, billingDocs: docs });
     if (accounts || !docs) await pushCompanyParents(sb, env("HUBSPOT_TOKEN"), { dryRun, accounts });
