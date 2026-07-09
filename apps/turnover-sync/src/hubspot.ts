@@ -41,6 +41,10 @@ const GROUP = "invoiced_orders";
 
 const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
 const MAX_ATTEMPTS = 6;
+// Connection-level failures (fetch throws — Wi-Fi blip, DNS outage) get a much
+// longer runway than HTTP errors: an unattended multi-hour backfill must ride
+// out a several-minute outage. 12 attempts, waits capped at 60s ≈ 8 minutes.
+const MAX_NET_ATTEMPTS = 12;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** HubSpot fetch with retry — transient 5xx/429 (and network drops) are
@@ -60,9 +64,10 @@ async function hs<T>(token: string, path: string, init?: RequestInit): Promise<T
         },
       });
     } catch (e) {
-      if (attempt >= MAX_ATTEMPTS) throw e;
-      console.warn(`[turnover-sync] ${path} network error (attempt ${attempt}/${MAX_ATTEMPTS}), retrying: ${String(e).slice(0, 120)}`);
-      await sleep(1000 * 2 ** (attempt - 1));
+      if (attempt >= MAX_NET_ATTEMPTS) throw e;
+      const wait = Math.min(60_000, 1000 * 2 ** (attempt - 1));
+      console.warn(`[turnover-sync] ${path} network error (attempt ${attempt}/${MAX_NET_ATTEMPTS}), retrying in ${wait}ms: ${String(e).slice(0, 120)}`);
+      await sleep(wait);
       continue;
     }
     const text = await res.text();
