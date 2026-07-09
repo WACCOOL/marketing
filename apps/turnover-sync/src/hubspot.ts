@@ -394,8 +394,19 @@ interface OrderGroup {
   total: number;
 }
 
+/** A line's net value. Discounted Sales normally carries it, but some
+ * channels (Home Depot, DS* drop-ship, parts of the distributor volume) zero
+ * it and put the line value in "YTD Total" instead — confirmed 2026-07-09 by
+ * reconciling per-account against Power BI YTD sales (Home Depot
+ * $1,535,327.16 = Power BI to the cent). When both are nonzero, Discounted
+ * Sales wins (it is the after-discount value; those rows match Power BI). */
+export function lineValue(l: Pick<TurnoverDbRow, "discounted_sales" | "ytd_total">): number {
+  const ds = l.discounted_sales ?? 0;
+  return ds !== 0 ? ds : (l.ytd_total ?? 0);
+}
+
 /** Group staged lines into orders and pick each order's primary rep (the rep
- * with the largest |Discounted Sales| across qty-carrying lines; a rep with any
+ * with the largest |line value| across qty-carrying lines; a rep with any
  * qty-carrying line beats one with none). */
 export function groupOrders(rows: TurnoverDbRow[]): OrderGroup[] {
   const byDoc = new Map<string, TurnoverDbRow[]>();
@@ -413,9 +424,10 @@ export function groupOrders(rows: TurnoverDbRow[]): OrderGroup[] {
       if (l.quotation_ref) quoteRefs.add(l.quotation_ref);
       const qty = l.quantity ?? 0;
       if (qty !== 0) {
-        total += l.discounted_sales ?? 0;
+        const v = lineValue(l);
+        total += v;
         if (l.rep_code) {
-          weight.set(l.rep_code, (weight.get(l.rep_code) ?? 0) + Math.abs(l.discounted_sales ?? 0));
+          weight.set(l.rep_code, (weight.get(l.rep_code) ?? 0) + Math.abs(v));
         }
       }
     }
@@ -551,10 +563,11 @@ export async function pushTurnoverToHubspot(
     if (r.discounted_sales !== null) properties["discounted_sales"] = r.discounted_sales;
     if (r.ytd_total !== null) properties["ytd_total"] = r.ytd_total;
     if (r.rep_code) properties["rep_code"] = r.rep_code;
-    if (r.quantity && r.discounted_sales !== null) {
+    const val = lineValue(r);
+    if (r.quantity && val !== 0) {
       // HubSpot rejects negative line-item prices (INVALID_PRICE). Opposite-sign
-      // qty/sales rows (rebates) keep their true value in discounted_sales.
-      const price = round2(r.discounted_sales / r.quantity);
+      // qty/value rows (rebates) keep their true value in discounted_sales/ytd_total.
+      const price = round2(val / r.quantity);
       if (price >= 0) properties["price"] = price;
     }
     return { idProperty: "bd_line_key", id: key, properties, _doc: r.billing_document };
