@@ -19,12 +19,28 @@
 export const ROLLUP_PROP_YTD = "ytd_won_deals";
 export const ROLLUP_PROP_PRIOR_YTD = "ytd_prior_year_won_deals";
 export const ROLLUP_PROP_PRIOR_YEAR = "prior_year_won_deals";
+// 2026-07-13 additions (Davis): lost value ALWAYS measured by max_amount
+// (SAP zeroes rejected lines so a lost deal's amount decays — the peak is what
+// was lost; fallback to amount when max_amount is blank); pipeline/projection
+// derive from the daily global rates — see aggregateExtendedRollups.
+export const ROLLUP_PROP_YTD_LOST = "ytd_lost_deals";
+export const ROLLUP_PROP_PIPELINE = "future_pipeline_value";
+export const ROLLUP_PROP_PROJECTED = "projected_sales_quote_visibility";
 
 export const DEAL_ROLLUP_PROPS: { name: string; label: string }[] = [
   { name: ROLLUP_PROP_YTD, label: "YTD Won Deals" },
   { name: ROLLUP_PROP_PRIOR_YTD, label: "YTD Prior Year Deals" },
   { name: ROLLUP_PROP_PRIOR_YEAR, label: "Prior Year Deals" },
+  { name: ROLLUP_PROP_YTD_LOST, label: "YTD Lost Deals (Max Amount)" },
+  { name: ROLLUP_PROP_PIPELINE, label: "Current Year Future Value of Pipeline" },
+  { name: ROLLUP_PROP_PROJECTED, label: "Projected Sales (Quote Visibility)" },
 ];
+
+/** All-zero write for one company — derived from DEAL_ROLLUP_PROPS so the
+ * stale-zeroing path can never miss a newly added rollup property. */
+export function zeroRollupProps(): Record<string, number> {
+  return Object.fromEntries(DEAL_ROLLUP_PROPS.map((p) => [p.name, 0]));
+}
 
 /** HUBSPOT_DEFINED deal→company primary association type. */
 export const DEAL_TO_COMPANY_PRIMARY_TYPE_ID = 5;
@@ -39,9 +55,16 @@ export interface DealRollupWindows {
   priorYtdEndMs: number;
   /** Exclusive end of the full prior year (= Jan 1 current year). */
   priorYearEndMs: number;
+  /** Pipeline createdate ceiling: Nov 1 of the current year (deals created
+   * later can't realistically convert in-year — median win cycle 32 days). */
+  pipelineCreateCeilingMs: number;
+  /** Pipeline freshness floor: now − 180 days (85.6% of wins land within 180
+   * days of quote creation; older open deals are overwhelmingly slow losses). */
+  pipelineFreshFloorMs: number;
 }
 
 const DAY_MS = 86_400_000;
+export const PIPELINE_FRESH_DAYS = 180;
 
 export function dealRollupWindows(nowMs: number): DealRollupWindows {
   const d = new Date(nowMs);
@@ -53,6 +76,8 @@ export function dealRollupWindows(nowMs: number): DealRollupWindows {
     priorStartMs: Date.UTC(y - 1, 0, 1),
     priorYtdEndMs: Date.UTC(y - 1, d.getUTCMonth(), d.getUTCDate()) + DAY_MS,
     priorYearEndMs: janCurrent,
+    pipelineCreateCeilingMs: Date.UTC(y, 10, 1),
+    pipelineFreshFloorMs: nowMs - PIPELINE_FRESH_DAYS * DAY_MS,
   };
 }
 
@@ -130,9 +155,131 @@ export function buildRollupWrites(
 ): Map<string, Record<string, number>> {
   const writes = new Map(fresh);
   for (const id of existingIds) {
-    if (!writes.has(id)) {
-      writes.set(id, { [ROLLUP_PROP_YTD]: 0, [ROLLUP_PROP_PRIOR_YTD]: 0, [ROLLUP_PROP_PRIOR_YEAR]: 0 });
-    }
+    if (!writes.has(id)) writes.set(id, zeroRollupProps());
   }
   return writes;
+}
+
+// --- extended rollups (lost / pipeline / projection) -------------------------
+
+export interface LostRollupDeal {
+  companyId: string;
+  closedateMs: number | null;
+  /** Lost value = max_amount (Davis convention), falling back to amount. */
+  maxAmount: unknown;
+  amount: unknown;
+  createdateMs: number | null;
+}
+
+export interface OpenRollupDeal {
+  companyId: string;
+  createdateMs: number | null;
+  amount: unknown;
+}
+
+export interface WonRollupDeal extends RollupDeal {
+  createdateMs: number | null;
+}
+
+const num = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+export const lostValue = (d: { maxAmount: unknown; amount: unknown }): number | null =>
+  num(d.maxAmount) ?? num(d.amount);
+
+const sameUtcDay = (a: number | null, b: number | null): boolean =>
+  a !== null && b !== null && Math.floor(a / DAY_MS) === Math.floor(b / DAY_MS);
+
+/**
+ * Same-day-adjusted YTD value hit rate: won / (won + lost), current-year
+ * closes only, EXCLUDING deals closed the same UTC day they were created
+ * (retroactive quote entries — the order existed before the quote, so they
+ * carry no pipeline-conversion information). Lost valued at max_amount.
+ * null when there's no resolved value to rate against.
+ */
+export function adjustedValueHitRate(
+  won: WonRollupDeal[],
+  lost: LostRollupDeal[],
+  w: DealRollupWindows,
+): number | null {
+  let wonSum = 0;
+  let lostSum = 0;
+  for (const d of won) {
+    if (d.closedateMs === null || d.closedateMs < w.ytdStartMs || d.closedateMs > w.nowMs) continue;
+    if (sameUtcDay(d.closedateMs, d.createdateMs)) continue;
+    wonSum += num(d.amount) ?? 0;
+  }
+  for (const d of lost) {
+    if (d.closedateMs === null || d.closedateMs < w.ytdStartMs || d.closedateMs > w.nowMs) continue;
+    if (sameUtcDay(d.closedateMs, d.createdateMs)) continue;
+    lostSum += lostValue(d) ?? 0;
+  }
+  const denom = wonSum + lostSum;
+  return denom > 0 ? wonSum / denom : null;
+}
+
+export interface ExtendedRollupRates {
+  /** Same-day-adjusted YTD value hit rate (0..1); null → pipeline writes 0. */
+  hitRate: number | null;
+  /** Global quote visibility: YTD won quote value / YTD sales (0..1);
+   * null → projection writes 0. */
+  visibilityRate: number | null;
+}
+
+/**
+ * All six rollup properties per company. Won buckets keep their original
+ * semantics (every win counts — only the RATES exclude same-day closes).
+ * Pipeline: open deals (already stage-filtered by the caller) created within
+ * [freshFloor, createCeiling], valued at amount × hitRate. Projection:
+ * (YTD won + pipeline) / visibilityRate — the quote channel's implied sales.
+ * Every touched company gets ALL SIX properties (0-filled) so writes never
+ * leave a property partially stale.
+ */
+export function aggregateExtendedRollups(
+  input: { won: WonRollupDeal[]; lost: LostRollupDeal[]; open: OpenRollupDeal[] },
+  w: DealRollupWindows,
+  rates: ExtendedRollupRates,
+): Map<string, Record<string, number>> {
+  const out = new Map<string, Record<string, number>>();
+  const props = (companyId: string): Record<string, number> => {
+    let p = out.get(companyId);
+    if (!p) {
+      p = zeroRollupProps();
+      out.set(companyId, p);
+    }
+    return p;
+  };
+  for (const d of input.won) {
+    if (d.closedateMs === null) continue;
+    const amt = num(d.amount);
+    if (amt === null) continue;
+    const p = props(d.companyId);
+    const t = d.closedateMs;
+    if (t >= w.ytdStartMs && t <= w.nowMs) p[ROLLUP_PROP_YTD]! += amt;
+    if (t >= w.priorStartMs && t < w.priorYtdEndMs) p[ROLLUP_PROP_PRIOR_YTD]! += amt;
+    if (t >= w.priorStartMs && t < w.priorYearEndMs) p[ROLLUP_PROP_PRIOR_YEAR]! += amt;
+  }
+  for (const d of input.lost) {
+    if (d.closedateMs === null || d.closedateMs < w.ytdStartMs || d.closedateMs > w.nowMs) continue;
+    const v = lostValue(d);
+    if (v === null) continue;
+    props(d.companyId)[ROLLUP_PROP_YTD_LOST]! += v;
+  }
+  for (const d of input.open) {
+    if (d.createdateMs === null) continue;
+    if (d.createdateMs < w.pipelineFreshFloorMs || d.createdateMs >= w.pipelineCreateCeilingMs) continue;
+    const amt = num(d.amount);
+    if (amt === null) continue;
+    props(d.companyId)[ROLLUP_PROP_PIPELINE]! += amt * (rates.hitRate ?? 0);
+  }
+  for (const p of out.values()) {
+    p[ROLLUP_PROP_PROJECTED] = rates.visibilityRate
+      ? (p[ROLLUP_PROP_YTD]! + p[ROLLUP_PROP_PIPELINE]!) / rates.visibilityRate
+      : 0;
+    for (const k of Object.keys(p)) p[k] = round2(p[k]!);
+  }
+  return out;
 }

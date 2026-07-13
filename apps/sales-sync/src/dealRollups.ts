@@ -2,13 +2,13 @@ import {
   DEAL_ROLLUP_PROPS,
   DEAL_STAGE_IDS,
   UNIVERSAL_PIPELINE_ID,
-  aggregateDealRollups,
+  adjustedValueHitRate,
+  aggregateExtendedRollups,
   buildRollupWrites,
   dealRollupWindows,
   pickRollupCompanyId,
   toEpochMs,
   type DealCompanyAssoc,
-  type RollupDeal,
 } from "@wac/shared";
 import { ensureProperties, existingCompanyProperties, hs, sleep, updateCompanies } from "./hubspot.js";
 
@@ -31,10 +31,14 @@ interface SearchPage {
   results: { id: string; properties: Record<string, string | null> }[];
 }
 
-/** Page qualifying closed-won deals, GT-windowing on hs_object_id (no 10k cap). */
-async function* iterQualifyingDeals(
+type SearchFilter = { propertyName: string; operator: string; value?: string; values?: string[] };
+
+/** Page SAP deals in the Universal Pipeline matching extra filters,
+ * GT-windowing on hs_object_id (no 10k cap). */
+async function* iterDeals(
   token: string,
-  minClosedateMs: number,
+  extraFilters: SearchFilter[],
+  properties: string[],
 ): AsyncGenerator<{ id: string; properties: Record<string, string | null> }> {
   let lastId = "0";
   while (true) {
@@ -43,15 +47,14 @@ async function* iterQualifyingDeals(
         {
           filters: [
             { propertyName: "pipeline", operator: "EQ", value: UNIVERSAL_PIPELINE_ID },
-            { propertyName: "dealstage", operator: "EQ", value: DEAL_STAGE_IDS.closedWon },
             { propertyName: "sap_quote_number", operator: "HAS_PROPERTY" },
-            { propertyName: "closedate", operator: "GTE", value: String(minClosedateMs) },
+            ...extraFilters,
             { propertyName: "hs_object_id", operator: "GT", value: lastId },
           ],
         },
       ],
       sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
-      properties: ["amount", "closedate"],
+      properties,
       limit: SEARCH_PAGE,
     };
     const data = await hs<SearchPage>(token, "/crm/v3/objects/deals/search", {
@@ -64,6 +67,38 @@ async function* iterQualifyingDeals(
     if (data.results.length < SEARCH_PAGE) break;
     await sleep(INTER_BATCH_MS);
   }
+}
+
+/** Global YTD sales: Σ company `ytd_sales` (the Power BI-fed property) —
+ * denominator of the quote visibility rate. */
+async function sumGlobalYtdSales(token: string): Promise<number> {
+  let sum = 0;
+  let lastId = "0";
+  while (true) {
+    const body = {
+      filterGroups: [
+        {
+          filters: [
+            { propertyName: "ytd_sales", operator: "GT", value: "0" },
+            { propertyName: "hs_object_id", operator: "GT", value: lastId },
+          ],
+        },
+      ],
+      sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
+      properties: ["ytd_sales"],
+      limit: SEARCH_PAGE,
+    };
+    const data = await hs<SearchPage>(token, "/crm/v3/objects/companies/search", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (!data.results.length) break;
+    for (const c of data.results) sum += Number(c.properties["ytd_sales"]) || 0;
+    lastId = data.results[data.results.length - 1]!.id;
+    if (data.results.length < SEARCH_PAGE) break;
+    await sleep(INTER_BATCH_MS);
+  }
+  return sum;
 }
 
 interface AssocReadResult {
@@ -154,28 +189,87 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
   const windows = dealRollupWindows(Date.now());
   const tag = dryRun ? " DRY RUN" : "";
 
-  // 1. Sweep qualifying deals.
-  const deals: { id: string; amount: string | null; closedateMs: number | null }[] = [];
-  for await (const d of iterQualifyingDeals(token, windows.priorStartMs)) {
-    deals.push({ id: d.id, amount: d.properties.amount ?? null, closedateMs: toEpochMs(d.properties.closedate) });
-    if (limit && deals.length >= limit) break;
+  // 1. Three sweeps: won (prior-year window for the YoY buckets), lost
+  //    (current-year closes, valued at max_amount), open pipeline (stage not
+  //    won/lost/pre-qualified, created within the winnable window).
+  const won: { id: string; amount: string | null; closedateMs: number | null; createdateMs: number | null }[] = [];
+  for await (const d of iterDeals(
+    token,
+    [
+      { propertyName: "dealstage", operator: "EQ", value: DEAL_STAGE_IDS.closedWon },
+      { propertyName: "closedate", operator: "GTE", value: String(windows.priorStartMs) },
+    ],
+    ["amount", "closedate", "createdate"],
+  )) {
+    won.push({ id: d.id, amount: d.properties.amount ?? null, closedateMs: toEpochMs(d.properties.closedate), createdateMs: toEpochMs(d.properties.createdate) });
+    if (limit && won.length >= limit) break;
+  }
+  const lost: { id: string; amount: string | null; maxAmount: string | null; closedateMs: number | null; createdateMs: number | null }[] = [];
+  for await (const d of iterDeals(
+    token,
+    [
+      { propertyName: "dealstage", operator: "EQ", value: DEAL_STAGE_IDS.closedLost },
+      { propertyName: "closedate", operator: "GTE", value: String(windows.ytdStartMs) },
+    ],
+    ["amount", "max_amount", "closedate", "createdate"],
+  )) {
+    lost.push({ id: d.id, amount: d.properties.amount ?? null, maxAmount: d.properties["max_amount"] ?? null, closedateMs: toEpochMs(d.properties.closedate), createdateMs: toEpochMs(d.properties.createdate) });
+    if (limit && lost.length >= limit) break;
+  }
+  const open: { id: string; amount: string | null; createdateMs: number | null }[] = [];
+  for await (const d of iterDeals(
+    token,
+    [
+      {
+        propertyName: "dealstage",
+        operator: "NOT_IN",
+        values: [DEAL_STAGE_IDS.closedWon, DEAL_STAGE_IDS.closedLost, DEAL_STAGE_IDS.prequal],
+      },
+      { propertyName: "createdate", operator: "GTE", value: String(windows.pipelineFreshFloorMs) },
+      { propertyName: "createdate", operator: "LT", value: String(windows.pipelineCreateCeilingMs) },
+    ],
+    ["amount", "createdate"],
+  )) {
+    open.push({ id: d.id, amount: d.properties.amount ?? null, createdateMs: toEpochMs(d.properties.createdate) });
+    if (limit && open.length >= limit) break;
   }
 
   // 2. Attribute each deal to its primary company.
-  const assocsByDeal = await fetchCompanyAssocsByDeal(token, deals.map((d) => d.id));
-  const rows: RollupDeal[] = [];
+  const allIds = [...new Set([...won, ...lost, ...open].map((d) => d.id))];
+  const assocsByDeal = await fetchCompanyAssocsByDeal(token, allIds);
   let skippedNoCompany = 0;
-  for (const d of deals) {
-    const companyId = pickRollupCompanyId(assocsByDeal.get(d.id) ?? []);
-    if (!companyId) {
-      skippedNoCompany++;
-      continue;
+  const attribute = <T extends { id: string }>(ds: T[]): (T & { companyId: string })[] => {
+    const out: (T & { companyId: string })[] = [];
+    for (const d of ds) {
+      const companyId = pickRollupCompanyId(assocsByDeal.get(d.id) ?? []);
+      if (!companyId) {
+        skippedNoCompany++;
+        continue;
+      }
+      out.push({ ...d, companyId });
     }
-    rows.push({ companyId, closedateMs: d.closedateMs, amount: d.amount });
-  }
+    return out;
+  };
+  const wonRows = attribute(won);
+  const lostRows = attribute(lost);
+  const openRows = attribute(open);
 
-  // 3. Aggregate into the three buckets.
-  const fresh = aggregateDealRollups(rows, windows);
+  // 3. Daily global rates, then aggregate all six buckets.
+  const hitRate = adjustedValueHitRate(wonRows, lostRows, windows);
+  const ytdSales = await sumGlobalYtdSales(token);
+  const ytdWonGlobal = wonRows.reduce(
+    (s, d) => s + (d.closedateMs !== null && d.closedateMs >= windows.ytdStartMs ? Number(d.amount) || 0 : 0),
+    0,
+  );
+  const visibilityRate = ytdSales > 0 && ytdWonGlobal > 0 ? ytdWonGlobal / ytdSales : null;
+  console.log(
+    `[sales-sync] deal-rollups${tag}: hit rate (value, same-day-adj) = ${hitRate === null ? "n/a" : (hitRate * 100).toFixed(2) + "%"}, ` +
+      `quote visibility = ${visibilityRate === null ? "n/a" : (visibilityRate * 100).toFixed(2) + "%"} ` +
+      `(YTD won $${Math.round(ytdWonGlobal).toLocaleString("en-US")} / YTD sales $${Math.round(ytdSales).toLocaleString("en-US")})`,
+  );
+  const fresh = aggregateExtendedRollups({ won: wonRows, lost: lostRows, open: openRows }, windows, { hitRate, visibilityRate });
+  const deals = { length: won.length + lost.length + open.length };
+  const rows = { length: wonRows.length + lostRows.length + openRows.length };
 
   // 4/5. Ensure properties, zero out companies that dropped out, write.
   // In dry-run the stale scan still runs when the properties already exist,
