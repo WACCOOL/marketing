@@ -6,7 +6,6 @@ import {
   aggregateExtendedRollups,
   buildRollupWrites,
   creationSeasonality,
-  creationValueInWindow,
   dealRollupWindows,
   expectedFutureCreationWins,
   lostValue,
@@ -305,11 +304,13 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
   );
   const visibilityRate = ytdSales > 0 && ytdWonGlobal > 0 ? ytdWonGlobal / ytdSales : null;
 
-  // YoY creation pace: this year's creation value vs the same window last year.
+  // YoY creation pace by COUNT of deals created (value ratios are poisoned by
+  // valuation asymmetry: recent deals carry rich max_amount while older
+  // cohorts' amounts have decayed — observed 2026-07-13 as a spurious x4).
   const seasonality = creationSeasonality(priorCohort, priorYear);
-  const thisYtdCreation = creationValueInWindow(thisCohort, windows.ytdStartMs, windows.nowMs);
-  const priorSameWindowCreation = creationValueInWindow(priorCohort, windows.priorStartMs, windows.priorYtdEndMs);
-  const yoyFactor = priorSameWindowCreation > 0 && thisYtdCreation > 0 ? thisYtdCreation / priorSameWindowCreation : 1;
+  const thisYtdCount = thisCohort.filter((d) => d.createdateMs !== null && d.createdateMs >= windows.ytdStartMs && d.createdateMs <= windows.nowMs).length;
+  const priorSameWindowCount = priorCohort.filter((d) => d.createdateMs !== null && d.createdateMs >= windows.priorStartMs && d.createdateMs < windows.priorYtdEndMs).length;
+  const yoyFactor = priorSameWindowCount > 0 && thisYtdCount > 0 ? thisYtdCount / priorSameWindowCount : 1;
   const futureCreationGlobal = expectedFutureCreationWins(seasonality, windows.nowMs, yoyFactor);
 
   // Distribute the global expectation by each company's YTD creation share.
@@ -335,7 +336,7 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
   );
   console.log(
     `[sales-sync] deal-rollups${tag}: future creation = $${Math.round(futureCreationGlobal).toLocaleString("en-US")} ` +
-      `(YoY creation pace ×${yoyFactor.toFixed(3)}: YTD $${Math.round(thisYtdCreation).toLocaleString("en-US")} vs prior-YTD $${Math.round(priorSameWindowCreation).toLocaleString("en-US")}; ` +
+      `(YoY creation pace ×${yoyFactor.toFixed(3)} by count: YTD ${thisYtdCount} vs prior-YTD ${priorSameWindowCount}; ` +
       `${priorYear} cohort in-year wins $${Math.round(seasonality.winsByCreationMonth.reduce((a, b) => a + b, 0)).toLocaleString("en-US")})`,
   );
   const fresh = aggregateExtendedRollups({ won: wonRows, lost: lostRows, open: openRows, creationByCompany }, windows, { hitRate, visibilityRate });
