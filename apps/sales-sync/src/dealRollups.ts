@@ -321,8 +321,13 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
   // win propensity. Effective pipeline yield = hitRate(TTM) × timing.
   const snapshotMs = windows.priorYtdEndMs - 86_400_000;
   const yieldRes = pipelineInYearYield(priorCohort, snapshotMs, windows.priorYearEndMs);
-  const pipelineYield =
-    hitRate !== null && yieldRes.timing !== null ? hitRate * yieldRes.timing : yieldRes.yield;
+  // The projection uses the DIRECT snapshot yield: it depends only on win
+  // timing (repaired, reliable) and pipeline value — never on lost closedates,
+  // which carry SAP's bulk rejection-ENTRY cadence (e.g. thousands of old
+  // quotes rejected in one 2026 cleanup sweep), so any window on them (TTM
+  // included) measures data-entry bursts, not business loss timing. The TTM
+  // hit rate stays computed + logged as an informational metric only.
+  const pipelineYield = yieldRes.yield;
 
   // Visibility on the prior FULL-YEAR basis: FY quote wins / FY sales
   // (previous_year_sales is the Power BI-fed company property).
@@ -359,9 +364,9 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
   }
 
   console.log(
-    `[sales-sync] deal-rollups${tag}: pipeline yield = ${pipelineYield === null ? "n/a" : (pipelineYield * 100).toFixed(2) + "%"} ` +
-      `= TTM hit rate ${hitRate === null ? "n/a" : (hitRate * 100).toFixed(2) + "%"} × in-year timing ${yieldRes.timing === null ? "n/a" : (yieldRes.timing * 100).toFixed(2) + "%"} ` +
-      `(year-back snapshot: base $${Math.round(yieldRes.base).toLocaleString("en-US")}, in-year wins $${Math.round(yieldRes.wins).toLocaleString("en-US")}, eventual $${Math.round(yieldRes.eventualWins).toLocaleString("en-US")}) | ` +
+    `[sales-sync] deal-rollups${tag}: pipeline yield (year-back snapshot) = ${pipelineYield === null ? "n/a" : (pipelineYield * 100).toFixed(2) + "%"} ` +
+      `(base $${Math.round(yieldRes.base).toLocaleString("en-US")}, in-year wins $${Math.round(yieldRes.wins).toLocaleString("en-US")}) | ` +
+      `informational: TTM hit rate ${hitRate === null ? "n/a" : (hitRate * 100).toFixed(2) + "%"} (lost dates = SAP entry cadence — do not project with it), in-year timing ${yieldRes.timing === null ? "n/a" : (yieldRes.timing * 100).toFixed(2) + "%"} | ` +
       `visibility (prior FY) = ${visibilityRate === null ? "n/a" : (visibilityRate * 100).toFixed(2) + "%"} ($${Math.round(priorFyWins).toLocaleString("en-US")} / $${Math.round(priorFySales).toLocaleString("en-US")}) | ` +
       `YTD won $${Math.round(ytdWonGlobal).toLocaleString("en-US")} / YTD sales $${Math.round(ytdSales).toLocaleString("en-US")}`,
   );
