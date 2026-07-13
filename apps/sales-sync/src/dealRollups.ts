@@ -5,7 +5,11 @@ import {
   adjustedValueHitRate,
   aggregateExtendedRollups,
   buildRollupWrites,
+  creationSeasonality,
+  creationValueInWindow,
   dealRollupWindows,
+  expectedFutureCreationWins,
+  lostValue,
   pickRollupCompanyId,
   toEpochMs,
   type DealCompanyAssoc,
@@ -234,8 +238,45 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
     if (limit && open.length >= limit) break;
   }
 
+  // 1b. Creation cohorts for the future-creation component: last year's full
+  //     cohort (the seasonality curve) and this year's creations (YoY pace +
+  //     per-company distribution of the expected future wins).
+  const priorYear = new Date(windows.nowMs).getUTCFullYear() - 1;
+  const priorCohort: { createdateMs: number | null; closedateMs: number | null; won: boolean; amount: string | null; maxAmount: string | null }[] = [];
+  for await (const d of iterDeals(
+    token,
+    [
+      { propertyName: "createdate", operator: "GTE", value: String(windows.priorStartMs) },
+      { propertyName: "createdate", operator: "LT", value: String(windows.ytdStartMs) },
+    ],
+    ["createdate", "closedate", "dealstage", "amount", "max_amount"],
+  )) {
+    priorCohort.push({
+      createdateMs: toEpochMs(d.properties.createdate),
+      closedateMs: toEpochMs(d.properties.closedate),
+      won: d.properties.dealstage === DEAL_STAGE_IDS.closedWon,
+      amount: d.properties.amount ?? null,
+      maxAmount: d.properties["max_amount"] ?? null,
+    });
+    if (limit && priorCohort.length >= limit) break;
+  }
+  const thisCohort: { id: string; createdateMs: number | null; amount: string | null; maxAmount: string | null }[] = [];
+  for await (const d of iterDeals(
+    token,
+    [{ propertyName: "createdate", operator: "GTE", value: String(windows.ytdStartMs) }],
+    ["createdate", "amount", "max_amount"],
+  )) {
+    thisCohort.push({
+      id: d.id,
+      createdateMs: toEpochMs(d.properties.createdate),
+      amount: d.properties.amount ?? null,
+      maxAmount: d.properties["max_amount"] ?? null,
+    });
+    if (limit && thisCohort.length >= limit) break;
+  }
+
   // 2. Attribute each deal to its primary company.
-  const allIds = [...new Set([...won, ...lost, ...open].map((d) => d.id))];
+  const allIds = [...new Set([...won, ...lost, ...open, ...thisCohort].map((d) => d.id))];
   const assocsByDeal = await fetchCompanyAssocsByDeal(token, allIds);
   let skippedNoCompany = 0;
   const attribute = <T extends { id: string }>(ds: T[]): (T & { companyId: string })[] => {
@@ -253,8 +294,9 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
   const wonRows = attribute(won);
   const lostRows = attribute(lost);
   const openRows = attribute(open);
+  const creationRows = attribute(thisCohort);
 
-  // 3. Daily global rates, then aggregate all six buckets.
+  // 3. Daily global rates + future-creation expectation, then aggregate.
   const hitRate = adjustedValueHitRate(wonRows, lostRows, windows);
   const ytdSales = await sumGlobalYtdSales(token);
   const ytdWonGlobal = wonRows.reduce(
@@ -262,14 +304,43 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
     0,
   );
   const visibilityRate = ytdSales > 0 && ytdWonGlobal > 0 ? ytdWonGlobal / ytdSales : null;
+
+  // YoY creation pace: this year's creation value vs the same window last year.
+  const seasonality = creationSeasonality(priorCohort, priorYear);
+  const thisYtdCreation = creationValueInWindow(thisCohort, windows.ytdStartMs, windows.nowMs);
+  const priorSameWindowCreation = creationValueInWindow(priorCohort, windows.priorStartMs, windows.priorYtdEndMs);
+  const yoyFactor = priorSameWindowCreation > 0 && thisYtdCreation > 0 ? thisYtdCreation / priorSameWindowCreation : 1;
+  const futureCreationGlobal = expectedFutureCreationWins(seasonality, windows.nowMs, yoyFactor);
+
+  // Distribute the global expectation by each company's YTD creation share.
+  const creationByCompanyValue = new Map<string, number>();
+  let creationTotal = 0;
+  for (const d of creationRows) {
+    const v = lostValue({ maxAmount: d.maxAmount, amount: d.amount }) ?? 0;
+    if (v <= 0) continue;
+    creationByCompanyValue.set(d.companyId, (creationByCompanyValue.get(d.companyId) ?? 0) + v);
+    creationTotal += v;
+  }
+  const creationByCompany = new Map<string, number>();
+  if (creationTotal > 0 && futureCreationGlobal > 0) {
+    for (const [companyId, v] of creationByCompanyValue) {
+      creationByCompany.set(companyId, (v / creationTotal) * futureCreationGlobal);
+    }
+  }
+
   console.log(
     `[sales-sync] deal-rollups${tag}: hit rate (value, same-day-adj) = ${hitRate === null ? "n/a" : (hitRate * 100).toFixed(2) + "%"}, ` +
       `quote visibility = ${visibilityRate === null ? "n/a" : (visibilityRate * 100).toFixed(2) + "%"} ` +
       `(YTD won $${Math.round(ytdWonGlobal).toLocaleString("en-US")} / YTD sales $${Math.round(ytdSales).toLocaleString("en-US")})`,
   );
-  const fresh = aggregateExtendedRollups({ won: wonRows, lost: lostRows, open: openRows }, windows, { hitRate, visibilityRate });
-  const deals = { length: won.length + lost.length + open.length };
-  const rows = { length: wonRows.length + lostRows.length + openRows.length };
+  console.log(
+    `[sales-sync] deal-rollups${tag}: future creation = $${Math.round(futureCreationGlobal).toLocaleString("en-US")} ` +
+      `(YoY creation pace ×${yoyFactor.toFixed(3)}: YTD $${Math.round(thisYtdCreation).toLocaleString("en-US")} vs prior-YTD $${Math.round(priorSameWindowCreation).toLocaleString("en-US")}; ` +
+      `${priorYear} cohort in-year wins $${Math.round(seasonality.winsByCreationMonth.reduce((a, b) => a + b, 0)).toLocaleString("en-US")})`,
+  );
+  const fresh = aggregateExtendedRollups({ won: wonRows, lost: lostRows, open: openRows, creationByCompany }, windows, { hitRate, visibilityRate });
+  const deals = { length: won.length + lost.length + open.length + priorCohort.length + thisCohort.length };
+  const rows = { length: wonRows.length + lostRows.length + openRows.length + creationRows.length };
 
   // 4/5. Ensure properties, zero out companies that dropped out, write.
   // In dry-run the stale scan still runs when the properties already exist,

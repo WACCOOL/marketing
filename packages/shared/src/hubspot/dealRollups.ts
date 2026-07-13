@@ -25,6 +25,7 @@ export const ROLLUP_PROP_PRIOR_YEAR = "prior_year_won_deals";
 // derive from the daily global rates — see aggregateExtendedRollups.
 export const ROLLUP_PROP_YTD_LOST = "ytd_lost_deals";
 export const ROLLUP_PROP_PIPELINE = "future_pipeline_value";
+export const ROLLUP_PROP_CREATION = "future_creation_value";
 export const ROLLUP_PROP_PROJECTED = "projected_sales_quote_visibility";
 
 export const DEAL_ROLLUP_PROPS: { name: string; label: string }[] = [
@@ -33,6 +34,7 @@ export const DEAL_ROLLUP_PROPS: { name: string; label: string }[] = [
   { name: ROLLUP_PROP_PRIOR_YEAR, label: "Prior Year Deals" },
   { name: ROLLUP_PROP_YTD_LOST, label: "YTD Lost Deals (Max Amount)" },
   { name: ROLLUP_PROP_PIPELINE, label: "Current Year Future Value of Pipeline" },
+  { name: ROLLUP_PROP_CREATION, label: "Current Year Expected New-Deal Wins" },
   { name: ROLLUP_PROP_PROJECTED, label: "Projected Sales (Quote Visibility)" },
 ];
 
@@ -221,6 +223,78 @@ export function adjustedValueHitRate(
   return denom > 0 ? wonSum / denom : null;
 }
 
+// --- future deal creation (seasonality-weighted) ------------------------------
+
+export interface CreationCohortDeal {
+  createdateMs: number | null;
+  closedateMs: number | null;
+  won: boolean;
+  amount: unknown;
+  /** Creation value = max_amount fallback amount (amount decays on lost deals). */
+  maxAmount: unknown;
+}
+
+export interface CreationSeasonality {
+  /** Value WON in-year from deals CREATED in each calendar month (index 0-11).
+   * Encodes both the seasonal creation pattern (a slow month creates little)
+   * and the shrinking runway (a December deal rarely closes by New Year's). */
+  winsByCreationMonth: number[];
+  /** Creation value (max_amount∥amount) per creation month — the YoY basis. */
+  creationValueByMonth: number[];
+}
+
+/** Build the prior-year cohort curve: deals created in `year`, their creation
+ * value by month, and the value they won within that same calendar year. */
+export function creationSeasonality(deals: CreationCohortDeal[], year: number): CreationSeasonality {
+  const winsByCreationMonth = Array(12).fill(0) as number[];
+  const creationValueByMonth = Array(12).fill(0) as number[];
+  const yearStart = Date.UTC(year, 0, 1);
+  const yearEnd = Date.UTC(year + 1, 0, 1);
+  for (const d of deals) {
+    if (d.createdateMs === null || d.createdateMs < yearStart || d.createdateMs >= yearEnd) continue;
+    const m = new Date(d.createdateMs).getUTCMonth();
+    creationValueByMonth[m]! += lostValue({ maxAmount: d.maxAmount, amount: d.amount }) ?? 0;
+    if (d.won && d.closedateMs !== null && d.closedateMs < yearEnd) {
+      winsByCreationMonth[m]! += num(d.amount) ?? 0;
+    }
+  }
+  return { winsByCreationMonth, creationValueByMonth };
+}
+
+/** Creation value (max_amount∥amount) of deals created in [startMs, endMs). */
+export function creationValueInWindow(
+  deals: { createdateMs: number | null; amount: unknown; maxAmount: unknown }[],
+  startMs: number,
+  endMs: number,
+): number {
+  let sum = 0;
+  for (const d of deals) {
+    if (d.createdateMs === null || d.createdateMs < startMs || d.createdateMs >= endMs) continue;
+    sum += lostValue({ maxAmount: d.maxAmount, amount: d.amount }) ?? 0;
+  }
+  return sum;
+}
+
+/**
+ * Expected in-year wins from deals NOT YET CREATED: the prior-year curve's
+ * remaining months (current month prorated by days left), scaled by this
+ * year's creation pace vs the same window last year. No hit-rate multiply —
+ * the curve is realized wins, its own conversion already baked in.
+ */
+export function expectedFutureCreationWins(
+  s: CreationSeasonality,
+  nowMs: number,
+  yoyFactor: number,
+): number {
+  const d = new Date(nowMs);
+  const m = d.getUTCMonth();
+  const daysInMonth = new Date(Date.UTC(d.getUTCFullYear(), m + 1, 0)).getUTCDate();
+  const fracRemaining = (daysInMonth - d.getUTCDate()) / daysInMonth;
+  let sum = s.winsByCreationMonth[m]! * fracRemaining;
+  for (let k = m + 1; k < 12; k++) sum += s.winsByCreationMonth[k]!;
+  return sum * yoyFactor;
+}
+
 export interface ExtendedRollupRates {
   /** Same-day-adjusted YTD value hit rate (0..1); null → pipeline writes 0. */
   hitRate: number | null;
@@ -230,16 +304,24 @@ export interface ExtendedRollupRates {
 }
 
 /**
- * All six rollup properties per company. Won buckets keep their original
+ * All rollup properties per company. Won buckets keep their original
  * semantics (every win counts — only the RATES exclude same-day closes).
  * Pipeline: open deals (already stage-filtered by the caller) created within
- * [freshFloor, createCeiling], valued at amount × hitRate. Projection:
- * (YTD won + pipeline) / visibilityRate — the quote channel's implied sales.
- * Every touched company gets ALL SIX properties (0-filled) so writes never
- * leave a property partially stale.
+ * [freshFloor, createCeiling], valued at amount × hitRate. Creation: the
+ * caller-distributed share of expected in-year wins from not-yet-created
+ * deals (seasonality curve × YoY pace). Projection:
+ * (YTD won + pipeline + creation) / visibilityRate — the quote channel's
+ * implied sales. Every touched company gets ALL properties (0-filled) so
+ * writes never leave a property partially stale.
  */
 export function aggregateExtendedRollups(
-  input: { won: WonRollupDeal[]; lost: LostRollupDeal[]; open: OpenRollupDeal[] },
+  input: {
+    won: WonRollupDeal[];
+    lost: LostRollupDeal[];
+    open: OpenRollupDeal[];
+    /** companyId → its share of expectedFutureCreationWins (pre-distributed). */
+    creationByCompany?: Map<string, number>;
+  },
   w: DealRollupWindows,
   rates: ExtendedRollupRates,
 ): Map<string, Record<string, number>> {
@@ -275,9 +357,12 @@ export function aggregateExtendedRollups(
     if (amt === null) continue;
     props(d.companyId)[ROLLUP_PROP_PIPELINE]! += amt * (rates.hitRate ?? 0);
   }
+  for (const [companyId, share] of input.creationByCompany ?? []) {
+    if (share > 0) props(companyId)[ROLLUP_PROP_CREATION]! += share;
+  }
   for (const p of out.values()) {
     p[ROLLUP_PROP_PROJECTED] = rates.visibilityRate
-      ? (p[ROLLUP_PROP_YTD]! + p[ROLLUP_PROP_PIPELINE]!) / rates.visibilityRate
+      ? (p[ROLLUP_PROP_YTD]! + p[ROLLUP_PROP_PIPELINE]! + p[ROLLUP_PROP_CREATION]!) / rates.visibilityRate
       : 0;
     for (const k of Object.keys(p)) p[k] = round2(p[k]!);
   }

@@ -265,3 +265,89 @@ describe("aggregateExtendedRollups", () => {
     expect(out.size).toBe(0);
   });
 });
+
+// --- future creation (seasonality) --------------------------------------------
+
+import {
+  ROLLUP_PROP_CREATION,
+  creationSeasonality,
+  creationValueInWindow,
+  expectedFutureCreationWins,
+  type CreationCohortDeal,
+} from "./dealRollups.js";
+
+const cohortDeal = (over: Partial<CreationCohortDeal>): CreationCohortDeal => ({
+  createdateMs: Date.UTC(2025, 0, 10),
+  closedateMs: null,
+  won: false,
+  amount: "100",
+  maxAmount: "100",
+  ...over,
+});
+
+describe("creationSeasonality", () => {
+  it("buckets creation value by month and in-year wins by CREATION month", () => {
+    const s = creationSeasonality(
+      [
+        cohortDeal({ createdateMs: Date.UTC(2025, 0, 5), maxAmount: "1000" }),
+        cohortDeal({ createdateMs: Date.UTC(2025, 0, 20), won: true, closedateMs: Date.UTC(2025, 4, 1), amount: "300", maxAmount: "400" }),
+        // won but only AFTER year end — not an in-year win
+        cohortDeal({ createdateMs: Date.UTC(2025, 11, 1), won: true, closedateMs: Date.UTC(2026, 1, 1), amount: "999", maxAmount: "999" }),
+        // outside the cohort year entirely
+        cohortDeal({ createdateMs: Date.UTC(2024, 5, 1), maxAmount: "5000" }),
+      ],
+      2025,
+    );
+    expect(s.creationValueByMonth[0]).toBe(1400);
+    expect(s.winsByCreationMonth[0]).toBe(300); // won amount, not max
+    expect(s.creationValueByMonth[11]).toBe(999);
+    expect(s.winsByCreationMonth[11]).toBe(0);
+  });
+});
+
+describe("expectedFutureCreationWins", () => {
+  it("prorates the current month and sums the rest of the curve, scaled YoY", () => {
+    const s: ReturnType<typeof creationSeasonality> = {
+      winsByCreationMonth: [0, 0, 0, 0, 0, 0, 310, 100, 50, 0, 0, 40],
+      creationValueByMonth: Array(12).fill(0),
+    };
+    // 2026-07-13 → July has 31 days, 18 remaining → 310×(18/31) = 180
+    const v = expectedFutureCreationWins(s, Date.UTC(2026, 6, 13, 12), 1.1);
+    expect(v).toBeCloseTo((180 + 100 + 50 + 40) * 1.1, 6);
+  });
+
+  it("December run counts only the month remainder", () => {
+    const s = { winsByCreationMonth: Array(12).fill(0).map((_, i) => (i === 11 ? 62 : 0)), creationValueByMonth: Array(12).fill(0) };
+    expect(expectedFutureCreationWins(s, Date.UTC(2026, 11, 30, 12), 1)).toBeCloseTo(62 * (1 / 31), 6);
+  });
+});
+
+describe("creationValueInWindow", () => {
+  it("sums max_amount-fallback creation value inside [start, end)", () => {
+    const v = creationValueInWindow(
+      [
+        cohortDeal({ createdateMs: Date.UTC(2026, 0, 5), maxAmount: "10" }),
+        cohortDeal({ createdateMs: Date.UTC(2026, 2, 5), maxAmount: "", amount: "7" }),
+        cohortDeal({ createdateMs: Date.UTC(2025, 11, 31), maxAmount: "999" }),
+      ],
+      Date.UTC(2026, 0, 1),
+      Date.UTC(2026, 6, 1),
+    );
+    expect(v).toBe(17);
+  });
+});
+
+describe("aggregateExtendedRollups with creation shares", () => {
+  it("adds the distributed creation share and includes it in the projection", () => {
+    const w = dealRollupWindows(NOW);
+    const out = aggregateExtendedRollups(
+      { won: [wonDeal({ amount: "100" })], lost: [], open: [], creationByCompany: new Map([["c1", 50], ["c2", 25]]) },
+      w,
+      { hitRate: 0.25, visibilityRate: 0.2 },
+    );
+    expect(out.get("c1")![ROLLUP_PROP_CREATION]).toBe(50);
+    expect(out.get("c1")![ROLLUP_PROP_PROJECTED]).toBe(750); // (100 + 0 + 50) / 0.2
+    expect(out.get("c2")![ROLLUP_PROP_CREATION]).toBe(25);
+    expect(out.get("c2")![ROLLUP_PROP_PROJECTED]).toBe(125); // (0 + 0 + 25) / 0.2
+  });
+});
