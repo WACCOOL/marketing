@@ -196,26 +196,29 @@ const sameUtcDay = (a: number | null, b: number | null): boolean =>
   a !== null && b !== null && Math.floor(a / DAY_MS) === Math.floor(b / DAY_MS);
 
 /**
- * Same-day-adjusted YTD value hit rate: won / (won + lost), current-year
- * closes only, EXCLUDING deals closed the same UTC day they were created
- * (retroactive quote entries — the order existed before the quote, so they
- * carry no pipeline-conversion information). Lost valued at max_amount.
- * null when there's no resolved value to rate against.
+ * Same-day-adjusted value hit rate: won / (won + lost) over closes within
+ * [fromMs, toMs] — callers pass the TRAILING 12 MONTHS (per Davis 2026-07-13:
+ * always the previous 12 months, so the window is fresh, stable, and carries
+ * every season exactly once; a YTD window is noise in January). EXCLUDES
+ * deals closed the same UTC day they were created (retroactive quote entries
+ * — the order existed before the quote, so they carry no pipeline-conversion
+ * information). Lost valued at max_amount. null when nothing resolved.
  */
 export function adjustedValueHitRate(
   won: WonRollupDeal[],
   lost: LostRollupDeal[],
-  w: DealRollupWindows,
+  fromMs: number,
+  toMs: number,
 ): number | null {
   let wonSum = 0;
   let lostSum = 0;
   for (const d of won) {
-    if (d.closedateMs === null || d.closedateMs < w.ytdStartMs || d.closedateMs > w.nowMs) continue;
+    if (d.closedateMs === null || d.closedateMs < fromMs || d.closedateMs > toMs) continue;
     if (sameUtcDay(d.closedateMs, d.createdateMs)) continue;
     wonSum += num(d.amount) ?? 0;
   }
   for (const d of lost) {
-    if (d.closedateMs === null || d.closedateMs < w.ytdStartMs || d.closedateMs > w.nowMs) continue;
+    if (d.closedateMs === null || d.closedateMs < fromMs || d.closedateMs > toMs) continue;
     if (sameUtcDay(d.closedateMs, d.createdateMs)) continue;
     lostSum += lostValue(d) ?? 0;
   }
@@ -249,18 +252,32 @@ export function pipelineInYearYield(
   cohort: CreationCohortDeal[],
   snapshotMs: number,
   yearEndMs: number,
-): { base: number; wins: number; yield: number | null } {
+): { base: number; wins: number; eventualWins: number; yield: number | null; timing: number | null } {
   const freshFloor = snapshotMs - PIPELINE_FRESH_DAYS * DAY_MS;
   let base = 0;
   let wins = 0;
+  let eventualWins = 0;
   for (const d of cohort) {
     if (d.createdateMs === null || d.createdateMs < freshFloor || d.createdateMs >= snapshotMs) continue;
     if (d.closedateMs !== null && d.closedateMs < snapshotMs) continue;
     if (d.preQualified) continue;
     base += lostValue({ maxAmount: d.maxAmount, amount: d.amount }) ?? 0;
-    if (d.won && d.closedateMs !== null && d.closedateMs < yearEndMs) wins += num(d.amount) ?? 0;
+    if (d.won && d.closedateMs !== null) {
+      eventualWins += num(d.amount) ?? 0;
+      if (d.closedateMs < yearEndMs) wins += num(d.amount) ?? 0;
+    }
   }
-  return { base, wins, yield: base > 0 ? wins / base : null };
+  return {
+    base,
+    wins,
+    eventualWins,
+    yield: base > 0 ? wins / base : null,
+    // Of the snapshot cohort's eventual winners (observed to date — still-open
+    // deals that win later would nudge this down slightly), the fraction that
+    // landed before that year's end: the in-year TIMING factor that a trailing
+    // window can't measure (recent deals' year-end fates don't exist yet).
+    timing: eventualWins > 0 ? wins / eventualWins : null,
+  };
 }
 
 export interface CreationSeasonality {

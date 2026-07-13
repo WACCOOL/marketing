@@ -199,11 +199,18 @@ describe("adjustedValueHitRate", () => {
       wonDeal({ amount: "9999", closedateMs: Date.UTC(2025, 5, 1) }),
     ];
     const lost = [lostDeal({ maxAmount: "700" })];
-    expect(adjustedValueHitRate(won, lost, w)).toBeCloseTo(300 / 1000, 10);
+    expect(adjustedValueHitRate(won, lost, w.ytdStartMs, w.nowMs)).toBeCloseTo(300 / 1000, 10);
+  });
+
+  it("trailing window includes prior-year closes", () => {
+    const w = dealRollupWindows(NOW);
+    const won = [wonDeal({ amount: "100", closedateMs: Date.UTC(2025, 9, 1) })];
+    expect(adjustedValueHitRate(won, [], NOW - 365 * DAY, NOW)).toBe(1);
   });
 
   it("null when nothing resolved", () => {
-    expect(adjustedValueHitRate([], [], dealRollupWindows(NOW))).toBeNull();
+    const w = dealRollupWindows(NOW);
+    expect(adjustedValueHitRate([], [], w.ytdStartMs, w.nowMs)).toBeNull();
   });
 });
 
@@ -377,7 +384,9 @@ describe("pipelineInYearYield", () => {
     );
     expect(r.base).toBe(300 + 700 + 500);
     expect(r.wins).toBe(200);
+    expect(r.eventualWins).toBe(200 + 500); // in-year + spillover
     expect(r.yield).toBeCloseTo(200 / 1500, 10);
+    expect(r.timing).toBeCloseTo(200 / 700, 10);
   });
 
   it("null yield on an empty base", () => {
