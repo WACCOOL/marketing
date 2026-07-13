@@ -209,7 +209,7 @@ describe("adjustedValueHitRate", () => {
 
 describe("aggregateExtendedRollups", () => {
   const w = dealRollupWindows(NOW);
-  const rates = { hitRate: 0.25, visibilityRate: 0.2 };
+  const rates = { pipelineYield: 0.25, visibilityRate: 0.2 };
 
   it("fills all six properties, values lost at max_amount, weights pipeline by hit rate", () => {
     const out = aggregateExtendedRollups(
@@ -250,7 +250,7 @@ describe("aggregateExtendedRollups", () => {
     const out = aggregateExtendedRollups(
       { won: [wonDeal({})], lost: [], open: [openDeal({})] },
       w,
-      { hitRate: null, visibilityRate: null },
+      { pipelineYield: null, visibilityRate: null },
     );
     expect(out.get("c1")![ROLLUP_PROP_PIPELINE]).toBe(0);
     expect(out.get("c1")![ROLLUP_PROP_PROJECTED]).toBe(0);
@@ -273,6 +273,7 @@ import {
   creationSeasonality,
   creationValueInWindow,
   expectedFutureCreationWins,
+  pipelineInYearYield,
   type CreationCohortDeal,
 } from "./dealRollups.js";
 
@@ -343,11 +344,43 @@ describe("aggregateExtendedRollups with creation shares", () => {
     const out = aggregateExtendedRollups(
       { won: [wonDeal({ amount: "100" })], lost: [], open: [], creationByCompany: new Map([["c1", 50], ["c2", 25]]) },
       w,
-      { hitRate: 0.25, visibilityRate: 0.2 },
+      { pipelineYield: 0.25, visibilityRate: 0.2 },
     );
     expect(out.get("c1")![ROLLUP_PROP_CREATION]).toBe(50);
     expect(out.get("c1")![ROLLUP_PROP_PROJECTED]).toBe(750); // (100 + 0 + 50) / 0.2
     expect(out.get("c2")![ROLLUP_PROP_CREATION]).toBe(25);
     expect(out.get("c2")![ROLLUP_PROP_PROJECTED]).toBe(125); // (0 + 0 + 25) / 0.2
+  });
+});
+
+describe("pipelineInYearYield", () => {
+  const SNAP = Date.UTC(2025, 6, 14);
+  const YEND = Date.UTC(2026, 0, 1);
+  it("bases on fresh deals still open at the snapshot, wins on in-year closes", () => {
+    const r = pipelineInYearYield(
+      [
+        // fresh, open at snapshot, won in-year → base + win
+        cohortDeal({ createdateMs: Date.UTC(2025, 4, 1), closedateMs: Date.UTC(2025, 9, 1), won: true, amount: "200", maxAmount: "300" }),
+        // fresh, open at snapshot, still open → base only
+        cohortDeal({ createdateMs: Date.UTC(2025, 5, 1), closedateMs: null, maxAmount: "700" }),
+        // closed BEFORE the snapshot → not in the base
+        cohortDeal({ createdateMs: Date.UTC(2025, 3, 1), closedateMs: Date.UTC(2025, 5, 1), won: true, amount: "9999", maxAmount: "9999" }),
+        // created too long ago (stale) → excluded
+        cohortDeal({ createdateMs: SNAP - 200 * 86400000, closedateMs: null, maxAmount: "9999" }),
+        // pre-qualified now → excluded
+        cohortDeal({ createdateMs: Date.UTC(2025, 5, 15), closedateMs: null, preQualified: true, maxAmount: "9999" }),
+        // won but only AFTER year end → base, not an in-year win
+        cohortDeal({ createdateMs: Date.UTC(2025, 6, 1), closedateMs: Date.UTC(2026, 1, 1), won: true, amount: "500", maxAmount: "500" }),
+      ],
+      SNAP,
+      YEND,
+    );
+    expect(r.base).toBe(300 + 700 + 500);
+    expect(r.wins).toBe(200);
+    expect(r.yield).toBeCloseTo(200 / 1500, 10);
+  });
+
+  it("null yield on an empty base", () => {
+    expect(pipelineInYearYield([], SNAP, YEND).yield).toBeNull();
   });
 });

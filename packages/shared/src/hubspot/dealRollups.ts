@@ -229,9 +229,38 @@ export interface CreationCohortDeal {
   createdateMs: number | null;
   closedateMs: number | null;
   won: boolean;
+  /** Current stage is Pre-Qualified (excluded from pipeline-yield bases). */
+  preQualified?: boolean;
   amount: unknown;
   /** Creation value = max_amount fallback amount (amount decays on lost deals). */
   maxAmount: unknown;
+}
+
+/**
+ * In-year pipeline yield, measured on the snapshot exactly one year back
+ * (rolling, day-anchored — per Davis 2026-07-13: freshest measurable data,
+ * seasonality built in because the reference always has the same remaining
+ * runway): of the fresh open pipeline at `snapshotMs` (created within the
+ * fresh window, not closed before the snapshot, not Pre-Qualified now), the
+ * fraction (by value) won before `yearEndMs`. Base valued at max_amount∥amount;
+ * wins at amount. null when the base is empty.
+ */
+export function pipelineInYearYield(
+  cohort: CreationCohortDeal[],
+  snapshotMs: number,
+  yearEndMs: number,
+): { base: number; wins: number; yield: number | null } {
+  const freshFloor = snapshotMs - PIPELINE_FRESH_DAYS * DAY_MS;
+  let base = 0;
+  let wins = 0;
+  for (const d of cohort) {
+    if (d.createdateMs === null || d.createdateMs < freshFloor || d.createdateMs >= snapshotMs) continue;
+    if (d.closedateMs !== null && d.closedateMs < snapshotMs) continue;
+    if (d.preQualified) continue;
+    base += lostValue({ maxAmount: d.maxAmount, amount: d.amount }) ?? 0;
+    if (d.won && d.closedateMs !== null && d.closedateMs < yearEndMs) wins += num(d.amount) ?? 0;
+  }
+  return { base, wins, yield: base > 0 ? wins / base : null };
 }
 
 export interface CreationSeasonality {
@@ -296,9 +325,11 @@ export function expectedFutureCreationWins(
 }
 
 export interface ExtendedRollupRates {
-  /** Same-day-adjusted YTD value hit rate (0..1); null → pipeline writes 0. */
-  hitRate: number | null;
-  /** Global quote visibility: YTD won quote value / YTD sales (0..1);
+  /** In-year pipeline yield (pipelineInYearYield, rolling year-back snapshot);
+   * null → pipeline writes 0. */
+  pipelineYield: number | null;
+  /** Global quote visibility — prior FULL YEAR basis (FY quote wins / FY
+   * sales), which backtests exactly where the YTD basis under-projects;
    * null → projection writes 0. */
   visibilityRate: number | null;
 }
@@ -355,7 +386,7 @@ export function aggregateExtendedRollups(
     if (d.createdateMs < w.pipelineFreshFloorMs || d.createdateMs >= w.pipelineCreateCeilingMs) continue;
     const amt = num(d.amount);
     if (amt === null) continue;
-    props(d.companyId)[ROLLUP_PROP_PIPELINE]! += amt * (rates.hitRate ?? 0);
+    props(d.companyId)[ROLLUP_PROP_PIPELINE]! += amt * (rates.pipelineYield ?? 0);
   }
   for (const [companyId, share] of input.creationByCompany ?? []) {
     if (share > 0) props(companyId)[ROLLUP_PROP_CREATION]! += share;

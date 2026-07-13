@@ -7,6 +7,7 @@ import {
   buildRollupWrites,
   creationSeasonality,
   dealRollupWindows,
+  pipelineInYearYield,
   expectedFutureCreationWins,
   lostValue,
   pickRollupCompanyId,
@@ -72,9 +73,8 @@ async function* iterDeals(
   }
 }
 
-/** Global YTD sales: Σ company `ytd_sales` (the Power BI-fed property) —
- * denominator of the quote visibility rate. */
-async function sumGlobalYtdSales(token: string): Promise<number> {
+/** Global Σ of a numeric company property (Power BI-fed sales props). */
+async function sumGlobalCompanyProp(token: string, prop: string): Promise<number> {
   let sum = 0;
   let lastId = "0";
   while (true) {
@@ -82,13 +82,13 @@ async function sumGlobalYtdSales(token: string): Promise<number> {
       filterGroups: [
         {
           filters: [
-            { propertyName: "ytd_sales", operator: "GT", value: "0" },
+            { propertyName: prop, operator: "GT", value: "0" },
             { propertyName: "hs_object_id", operator: "GT", value: lastId },
           ],
         },
       ],
       sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
-      properties: ["ytd_sales"],
+      properties: [prop],
       limit: SEARCH_PAGE,
     };
     const data = await hs<SearchPage>(token, "/crm/v3/objects/companies/search", {
@@ -96,13 +96,15 @@ async function sumGlobalYtdSales(token: string): Promise<number> {
       body: JSON.stringify(body),
     });
     if (!data.results.length) break;
-    for (const c of data.results) sum += Number(c.properties["ytd_sales"]) || 0;
+    for (const c of data.results) sum += Number(c.properties[prop]) || 0;
     lastId = data.results[data.results.length - 1]!.id;
     if (data.results.length < SEARCH_PAGE) break;
     await sleep(INTER_BATCH_MS);
   }
   return sum;
 }
+
+const sumGlobalYtdSales = (token: string) => sumGlobalCompanyProp(token, "ytd_sales");
 
 interface AssocReadResult {
   results?: {
@@ -245,11 +247,14 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
   //     cohort (the seasonality curve) and this year's creations (YoY pace +
   //     per-company distribution of the expected future wins).
   const priorYear = new Date(windows.nowMs).getUTCFullYear() - 1;
-  const priorCohort: { createdateMs: number | null; closedateMs: number | null; won: boolean; amount: string | null; maxAmount: string | null }[] = [];
+  // Two years back: the rolling year-ago pipeline snapshot's 180-day fresh
+  // window reaches into the year before last on early-calendar runs.
+  const twoYearsBackMs = Date.UTC(priorYear - 1, 0, 1);
+  const priorCohort: { createdateMs: number | null; closedateMs: number | null; won: boolean; preQualified: boolean; amount: string | null; maxAmount: string | null }[] = [];
   for await (const d of iterDeals(
     token,
     [
-      { propertyName: "createdate", operator: "GTE", value: String(windows.priorStartMs) },
+      { propertyName: "createdate", operator: "GTE", value: String(twoYearsBackMs) },
       { propertyName: "createdate", operator: "LT", value: String(windows.ytdStartMs) },
     ],
     ["createdate", "closedate", "dealstage", "amount", "max_amount"],
@@ -258,6 +263,7 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
       createdateMs: toEpochMs(d.properties.createdate),
       closedateMs: toEpochMs(d.properties.closedate),
       won: d.properties.dealstage === DEAL_STAGE_IDS.closedWon,
+      preQualified: d.properties.dealstage === DEAL_STAGE_IDS.prequal,
       amount: d.properties.amount ?? null,
       maxAmount: d.properties["max_amount"] ?? null,
     });
@@ -306,7 +312,19 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
     (s, d) => s + (d.closedateMs !== null && d.closedateMs >= windows.ytdStartMs ? Number(d.amount) || 0 : 0),
     0,
   );
-  const visibilityRate = ytdSales > 0 && ytdWonGlobal > 0 ? ytdWonGlobal / ytdSales : null;
+
+  // Rolling year-back pipeline snapshot (same day-of-year, completed year).
+  const snapshotMs = windows.priorYtdEndMs - 86_400_000;
+  const yieldRes = pipelineInYearYield(priorCohort, snapshotMs, windows.priorYearEndMs);
+
+  // Visibility on the prior FULL-YEAR basis: FY quote wins / FY sales
+  // (previous_year_sales is the Power BI-fed company property).
+  const priorFyWins = wonRows.reduce(
+    (s, d) => s + (d.closedateMs !== null && d.closedateMs >= windows.priorStartMs && d.closedateMs < windows.priorYearEndMs ? Number(d.amount) || 0 : 0),
+    0,
+  );
+  const priorFySales = await sumGlobalCompanyProp(token, "previous_year_sales");
+  const visibilityRate = priorFySales > 0 && priorFyWins > 0 ? priorFyWins / priorFySales : null;
 
   // YoY creation pace by COUNT of deals created (value ratios are poisoned by
   // valuation asymmetry: recent deals carry rich max_amount while older
@@ -334,16 +352,18 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
   }
 
   console.log(
-    `[sales-sync] deal-rollups${tag}: hit rate (value, same-day-adj) = ${hitRate === null ? "n/a" : (hitRate * 100).toFixed(2) + "%"}, ` +
-      `quote visibility = ${visibilityRate === null ? "n/a" : (visibilityRate * 100).toFixed(2) + "%"} ` +
-      `(YTD won $${Math.round(ytdWonGlobal).toLocaleString("en-US")} / YTD sales $${Math.round(ytdSales).toLocaleString("en-US")})`,
+    `[sales-sync] deal-rollups${tag}: pipeline yield (year-back snapshot) = ${yieldRes.yield === null ? "n/a" : (yieldRes.yield * 100).toFixed(2) + "%"} ` +
+      `(base $${Math.round(yieldRes.base).toLocaleString("en-US")} -> in-year wins $${Math.round(yieldRes.wins).toLocaleString("en-US")}) | ` +
+      `visibility (prior FY) = ${visibilityRate === null ? "n/a" : (visibilityRate * 100).toFixed(2) + "%"} ($${Math.round(priorFyWins).toLocaleString("en-US")} / $${Math.round(priorFySales).toLocaleString("en-US")}) | ` +
+      `hit rate (value, same-day-adj, informational) = ${hitRate === null ? "n/a" : (hitRate * 100).toFixed(2) + "%"} | ` +
+      `YTD won $${Math.round(ytdWonGlobal).toLocaleString("en-US")} / YTD sales $${Math.round(ytdSales).toLocaleString("en-US")}`,
   );
   console.log(
     `[sales-sync] deal-rollups${tag}: future creation = $${Math.round(futureCreationGlobal).toLocaleString("en-US")} ` +
       `(YoY creation pace ×${yoyFactor.toFixed(3)} by count: YTD ${thisYtdCount} vs prior-YTD ${priorSameWindowCount}; ` +
       `${priorYear} cohort in-year wins $${Math.round(seasonality.winsByCreationMonth.reduce((a, b) => a + b, 0)).toLocaleString("en-US")})`,
   );
-  const fresh = aggregateExtendedRollups({ won: wonRows, lost: lostRows, open: openRows, creationByCompany }, windows, { hitRate, visibilityRate });
+  const fresh = aggregateExtendedRollups({ won: wonRows, lost: lostRows, open: openRows, creationByCompany }, windows, { pipelineYield: yieldRes.yield, visibilityRate });
   const deals = { length: won.length + lost.length + open.length + priorCohort.length + thisCohort.length };
   const rows = { length: wonRows.length + lostRows.length + openRows.length + creationRows.length };
 
