@@ -126,18 +126,142 @@ describe("pickRollupCompanyId", () => {
 describe("buildRollupWrites", () => {
   const freshProps = { [ROLLUP_PROP_YTD]: 10, [ROLLUP_PROP_PRIOR_YTD]: 0, [ROLLUP_PROP_PRIOR_YEAR]: 5 };
 
-  it("keeps fresh values and zero-fills companies that dropped out", () => {
+  it("keeps fresh values and zero-fills companies that dropped out (ALL rollup props)", () => {
     const writes = buildRollupWrites(new Map([["c1", freshProps]]), ["c1", "c2"]);
     expect(writes.get("c1")).toEqual(freshProps);
-    expect(writes.get("c2")).toEqual({
-      [ROLLUP_PROP_YTD]: 0,
-      [ROLLUP_PROP_PRIOR_YTD]: 0,
-      [ROLLUP_PROP_PRIOR_YEAR]: 0,
-    });
+    const zeroed = writes.get("c2")!;
+    expect(Object.values(zeroed).every((v) => v === 0)).toBe(true);
+    expect(Object.keys(zeroed).length).toBeGreaterThanOrEqual(6);
   });
 
   it("first run (nothing existing) writes only the fresh set", () => {
     const writes = buildRollupWrites(new Map([["c1", freshProps]]), []);
     expect([...writes.keys()]).toEqual(["c1"]);
+  });
+});
+
+// --- extended rollups (lost / pipeline / projection) --------------------------
+
+import {
+  PIPELINE_FRESH_DAYS,
+  ROLLUP_PROP_PIPELINE,
+  ROLLUP_PROP_PROJECTED,
+  ROLLUP_PROP_YTD_LOST,
+  adjustedValueHitRate,
+  aggregateExtendedRollups,
+  lostValue,
+  zeroRollupProps,
+  type LostRollupDeal,
+  type OpenRollupDeal,
+  type WonRollupDeal,
+} from "./dealRollups.js";
+
+const wonDeal = (over: Partial<WonRollupDeal>): WonRollupDeal => ({
+  companyId: "c1",
+  closedateMs: Date.UTC(2026, 2, 15),
+  createdateMs: Date.UTC(2026, 0, 10),
+  amount: "100",
+  ...over,
+});
+
+const lostDeal = (over: Partial<LostRollupDeal>): LostRollupDeal => ({
+  companyId: "c1",
+  closedateMs: Date.UTC(2026, 3, 1),
+  createdateMs: Date.UTC(2026, 0, 5),
+  maxAmount: "500",
+  amount: "0",
+  ...over,
+});
+
+const openDeal = (over: Partial<OpenRollupDeal>): OpenRollupDeal => ({
+  companyId: "c1",
+  createdateMs: NOW - 30 * DAY,
+  amount: "1000",
+  ...over,
+});
+
+describe("lostValue", () => {
+  it("prefers max_amount, falls back to amount", () => {
+    expect(lostValue({ maxAmount: "500", amount: "20" })).toBe(500);
+    expect(lostValue({ maxAmount: "", amount: "20" })).toBe(20);
+    expect(lostValue({ maxAmount: null, amount: null })).toBeNull();
+  });
+});
+
+describe("adjustedValueHitRate", () => {
+  it("won/(won+lost) on current-year closes, excluding same-day closes", () => {
+    const w = dealRollupWindows(NOW);
+    const won = [
+      wonDeal({ amount: "300" }),
+      // same-day close (retroactive quote) — excluded from the rate
+      wonDeal({ amount: "9999", closedateMs: Date.UTC(2026, 1, 3), createdateMs: Date.UTC(2026, 1, 3, 8) }),
+      // prior-year close — outside the YTD rate window
+      wonDeal({ amount: "9999", closedateMs: Date.UTC(2025, 5, 1) }),
+    ];
+    const lost = [lostDeal({ maxAmount: "700" })];
+    expect(adjustedValueHitRate(won, lost, w)).toBeCloseTo(300 / 1000, 10);
+  });
+
+  it("null when nothing resolved", () => {
+    expect(adjustedValueHitRate([], [], dealRollupWindows(NOW))).toBeNull();
+  });
+});
+
+describe("aggregateExtendedRollups", () => {
+  const w = dealRollupWindows(NOW);
+  const rates = { hitRate: 0.25, visibilityRate: 0.2 };
+
+  it("fills all six properties, values lost at max_amount, weights pipeline by hit rate", () => {
+    const out = aggregateExtendedRollups(
+      {
+        won: [wonDeal({ amount: "100" })],
+        lost: [lostDeal({ maxAmount: "500" })],
+        open: [openDeal({ amount: "1000" })],
+      },
+      w,
+      rates,
+    );
+    const p = out.get("c1")!;
+    expect(Object.keys(p).sort()).toEqual(Object.keys(zeroRollupProps()).sort());
+    expect(p[ROLLUP_PROP_YTD]).toBe(100);
+    expect(p[ROLLUP_PROP_YTD_LOST]).toBe(500);
+    expect(p[ROLLUP_PROP_PIPELINE]).toBe(250); // 1000 × 0.25
+    expect(p[ROLLUP_PROP_PROJECTED]).toBe(1750); // (100 + 250) / 0.2
+  });
+
+  it("pipeline drops deals outside the fresh window or past the Nov-1 ceiling", () => {
+    const out = aggregateExtendedRollups(
+      {
+        won: [],
+        lost: [],
+        open: [
+          openDeal({ createdateMs: NOW - (PIPELINE_FRESH_DAYS + 5) * DAY }), // stale
+          openDeal({ createdateMs: Date.UTC(2026, 10, 15) }), // after Nov 1
+          openDeal({ createdateMs: NOW - 10 * DAY, amount: "400" }),
+        ],
+      },
+      w,
+      rates,
+    );
+    expect(out.get("c1")![ROLLUP_PROP_PIPELINE]).toBe(100); // only 400 × 0.25
+  });
+
+  it("null rates zero the derived props instead of dividing", () => {
+    const out = aggregateExtendedRollups(
+      { won: [wonDeal({})], lost: [], open: [openDeal({})] },
+      w,
+      { hitRate: null, visibilityRate: null },
+    );
+    expect(out.get("c1")![ROLLUP_PROP_PIPELINE]).toBe(0);
+    expect(out.get("c1")![ROLLUP_PROP_PROJECTED]).toBe(0);
+  });
+
+  it("lost outside the current year does not count", () => {
+    const out = aggregateExtendedRollups(
+      { won: [], lost: [lostDeal({ closedateMs: Date.UTC(2025, 10, 1) })], open: [] },
+      w,
+      rates,
+    );
+    expect(out.size).toBe(0);
   });
 });
