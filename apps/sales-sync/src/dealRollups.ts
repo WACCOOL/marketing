@@ -112,7 +112,9 @@ async function fetchCompanyAssocsByDeal(token: string, dealIds: string[]): Promi
   return byDeal;
 }
 
-/** Ids of companies that already carry any of the rollup properties. */
+/** Ids of companies carrying a NONZERO rollup value. GT 0, not HAS_PROPERTY:
+ * already-zeroed companies would otherwise count as "stale" and be rewritten
+ * 0 on every run (amounts are never negative, so GT 0 loses nothing). */
 async function companiesWithRollupValues(token: string): Promise<Set<string>> {
   const ids = new Set<string>();
   let lastId = "0";
@@ -120,7 +122,7 @@ async function companiesWithRollupValues(token: string): Promise<Set<string>> {
     const body = {
       filterGroups: DEAL_ROLLUP_PROPS.map((p) => ({
         filters: [
-          { propertyName: p.name, operator: "HAS_PROPERTY" },
+          { propertyName: p.name, operator: "GT", value: "0" },
           { propertyName: "hs_object_id", operator: "GT", value: lastId },
         ],
       })),
