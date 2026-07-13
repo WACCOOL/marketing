@@ -218,7 +218,9 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
     token,
     [
       { propertyName: "dealstage", operator: "EQ", value: DEAL_STAGE_IDS.closedLost },
-      { propertyName: "closedate", operator: "GTE", value: String(windows.ytdStartMs) },
+      // Trailing 12 months (not just YTD): the TTM hit rate needs last
+      // year's closes; the YTD-lost bucket still windows on ytdStartMs.
+      { propertyName: "closedate", operator: "GTE", value: String(windows.nowMs - 365 * 86_400_000) },
     ],
     ["amount", "max_amount", "closedate", "createdate"],
   )) {
@@ -306,16 +308,21 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
   const creationRows = attribute(thisCohort);
 
   // 3. Daily global rates + future-creation expectation, then aggregate.
-  const hitRate = adjustedValueHitRate(wonRows, lostRows, windows);
+  const ttmStartMs = windows.nowMs - 365 * 86_400_000;
+  const hitRate = adjustedValueHitRate(wonRows, lostRows, ttmStartMs, windows.nowMs);
   const ytdSales = await sumGlobalYtdSales(token);
   const ytdWonGlobal = wonRows.reduce(
     (s, d) => s + (d.closedateMs !== null && d.closedateMs >= windows.ytdStartMs ? Number(d.amount) || 0 : 0),
     0,
   );
 
-  // Rolling year-back pipeline snapshot (same day-of-year, completed year).
+  // Rolling year-back pipeline snapshot (same day-of-year, completed year)
+  // supplies the in-year TIMING factor; the fresh TTM hit rate supplies the
+  // win propensity. Effective pipeline yield = hitRate(TTM) × timing.
   const snapshotMs = windows.priorYtdEndMs - 86_400_000;
   const yieldRes = pipelineInYearYield(priorCohort, snapshotMs, windows.priorYearEndMs);
+  const pipelineYield =
+    hitRate !== null && yieldRes.timing !== null ? hitRate * yieldRes.timing : yieldRes.yield;
 
   // Visibility on the prior FULL-YEAR basis: FY quote wins / FY sales
   // (previous_year_sales is the Power BI-fed company property).
@@ -352,10 +359,10 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
   }
 
   console.log(
-    `[sales-sync] deal-rollups${tag}: pipeline yield (year-back snapshot) = ${yieldRes.yield === null ? "n/a" : (yieldRes.yield * 100).toFixed(2) + "%"} ` +
-      `(base $${Math.round(yieldRes.base).toLocaleString("en-US")} -> in-year wins $${Math.round(yieldRes.wins).toLocaleString("en-US")}) | ` +
+    `[sales-sync] deal-rollups${tag}: pipeline yield = ${pipelineYield === null ? "n/a" : (pipelineYield * 100).toFixed(2) + "%"} ` +
+      `= TTM hit rate ${hitRate === null ? "n/a" : (hitRate * 100).toFixed(2) + "%"} × in-year timing ${yieldRes.timing === null ? "n/a" : (yieldRes.timing * 100).toFixed(2) + "%"} ` +
+      `(year-back snapshot: base $${Math.round(yieldRes.base).toLocaleString("en-US")}, in-year wins $${Math.round(yieldRes.wins).toLocaleString("en-US")}, eventual $${Math.round(yieldRes.eventualWins).toLocaleString("en-US")}) | ` +
       `visibility (prior FY) = ${visibilityRate === null ? "n/a" : (visibilityRate * 100).toFixed(2) + "%"} ($${Math.round(priorFyWins).toLocaleString("en-US")} / $${Math.round(priorFySales).toLocaleString("en-US")}) | ` +
-      `hit rate (value, same-day-adj, informational) = ${hitRate === null ? "n/a" : (hitRate * 100).toFixed(2) + "%"} | ` +
       `YTD won $${Math.round(ytdWonGlobal).toLocaleString("en-US")} / YTD sales $${Math.round(ytdSales).toLocaleString("en-US")}`,
   );
   console.log(
@@ -363,7 +370,7 @@ export async function runDealRollups({ token, dryRun, limit }: DealRollupOptions
       `(YoY creation pace ×${yoyFactor.toFixed(3)} by count: YTD ${thisYtdCount} vs prior-YTD ${priorSameWindowCount}; ` +
       `${priorYear} cohort in-year wins $${Math.round(seasonality.winsByCreationMonth.reduce((a, b) => a + b, 0)).toLocaleString("en-US")})`,
   );
-  const fresh = aggregateExtendedRollups({ won: wonRows, lost: lostRows, open: openRows, creationByCompany }, windows, { pipelineYield: yieldRes.yield, visibilityRate });
+  const fresh = aggregateExtendedRollups({ won: wonRows, lost: lostRows, open: openRows, creationByCompany }, windows, { pipelineYield, visibilityRate });
   const deals = { length: won.length + lost.length + open.length + priorCohort.length + thisCohort.length };
   const rows = { length: wonRows.length + lostRows.length + openRows.length + creationRows.length };
 
