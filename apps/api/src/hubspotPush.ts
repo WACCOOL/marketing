@@ -986,6 +986,29 @@ async function upsertDeal(
     }
   }
 
+  // Raw SAP header net value — preserved verbatim (zeros included) so the
+  // zeroing behavior stays inspectable next to the repaired Amount (Davis
+  // 2026-07-13). Merged after normalizeWithLearning like the other derived
+  // numbers so it never passes the enum heal.
+  const rawHeaderNet = toNumber(payload.quote_net_value);
+  if (rawHeaderNet !== undefined) properties["sap_net_value"] = rawHeaderNet;
+
+  // Closed Lost amount reconstruction: SAP zeroes header AND deal amount on
+  // rejection — exactly when the lost value matters for reporting. Line unit
+  // prices survive, so a lost deal's Amount becomes Σ line (qty × unit price).
+  // Lost deals ONLY: for open deals the zeroing header IS the open value, and
+  // for won/partially-converted deals the line sum overstates the converted
+  // value (and quoting confirmed that zeroing is deliberate — PR #121/#123).
+  const effectiveStage = (derived.properties as Record<string, unknown>)["dealstage"] ?? existing?.properties.dealstage ?? null;
+  if (String(effectiveStage ?? "") === DEAL_STAGE_IDS.closedLost) {
+    const lineNetSum = products.reduce((s, p) => {
+      const q = Number(p?.item_quantity);
+      const up = Number(p?.unit_price);
+      return s + (Number.isFinite(q) && Number.isFinite(up) ? q * up : 0);
+    }, 0);
+    if (lineNetSum > 0) properties["amount"] = Math.round(lineNetSum * 100) / 100;
+  }
+
   if (existing) {
     const id = existing.id;
     await withHeal(token, signal, "deal", fixActions, properties, (props) =>
@@ -1042,6 +1065,14 @@ async function upsertLineItems(
       if (mapped.unit_price !== undefined) {
         mapped.unit_price = toNumber(mapped.unit_price);
         mapped.price = mapped.unit_price;
+      }
+      // Extended line net value (unit price × qty). SAP zeroes the HEADER net
+      // value on rejection/conversion but line prices survive, so this is the
+      // durable record of what each line was worth (Davis 2026-07-13).
+      {
+        const q = Number(mapped.quantity);
+        const up = Number(mapped.unit_price);
+        if (Number.isFinite(q) && Number.isFinite(up)) mapped.net_value = Math.round(q * up * 100) / 100;
       }
       if (mapped.commission !== undefined) mapped.commission = toDecimalPercent(mapped.commission);
       if (mapped.hs_discount_percentage !== undefined) {

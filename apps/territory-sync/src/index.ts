@@ -32,6 +32,7 @@ import { backfillRepCodes } from "./repCodeBackfill.js";
 import { reconcileDealCloseDates } from "./dealCloseDates.js";
 import { reconcileDealCreateDates } from "./dealCreateDates.js";
 import { repairConversionDates } from "./conversionDateRepair.js";
+import { backfillNetValues } from "./netValueBackfill.js";
 
 /**
  * Territory sync — out-of-band parser for the Territory workbook.
@@ -294,6 +295,42 @@ async function main(): Promise<void> {
       `[specifier-assoc] deals: scanned=${r.scanned} ${dryRun ? "would-associate" : "associated"}=${r.associated} ` +
         `unresolved=${r.unresolved}${r.labelMissing ? " [Specifier label not set up — labeling skipped]" : ""}`,
     );
+    return;
+  }
+
+  // Net-value backfill from SAP's corrective quote export: line-item
+  // net_value (NET PRICE × Quantity — survives SAP's zeroing), deal
+  // sap_net_value (raw header, zeros included), and Amount on Closed LOST
+  // deals = Σ line net values. ALWAYS --dry-run (with --csv=path) first;
+  // --max-apply=N samples; --skip-lines / --skip-deals stage the phases.
+  const netValArg = process.argv.find((a) => a.startsWith("--backfill-net-values="));
+  if (netValArg) {
+    const token = process.env.HUBSPOT_TOKEN;
+    if (!token) {
+      console.log("[net-values] HUBSPOT_TOKEN unset; nothing to do.");
+      return;
+    }
+    const csvArg = process.argv.find((a) => a.startsWith("--csv="));
+    const maxApplyArg = process.argv.find((a) => a.startsWith("--max-apply="));
+    const r = await backfillNetValues({
+      token,
+      dir: netValArg.split("=")[1]!,
+      dryRun,
+      limit,
+      maxApply: maxApplyArg ? Number(maxApplyArg.split("=")[1]) || undefined : undefined,
+      csvPath: csvArg ? csvArg.split("=")[1] : undefined,
+      skipLines: process.argv.includes("--skip-lines"),
+      skipDeals: process.argv.includes("--skip-deals"),
+    });
+    const verb = dryRun ? "would-" : "";
+    console.log(
+      `[net-values] lines: found=${r.linesFound} missing=${r.linesMissing} ${verb}set=${r.lineSet} unchanged=${r.lineUnchanged}`,
+    );
+    console.log(
+      `[net-values] deals: matched=${r.dealsMatched} ${verb}sap_net_value=${r.sapNetSet} ${verb}lost-amount=${r.lostAmountSet}`,
+    );
+    console.log(`[net-values] ${dryRun ? "DRY RUN — no writes" : `applied=${r.applied}`}`);
+    for (const f of r.failures) console.warn(`[net-values] WARN: ${f}`);
     return;
   }
 
