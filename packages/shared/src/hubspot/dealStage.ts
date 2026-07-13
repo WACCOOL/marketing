@@ -69,7 +69,7 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 /** SAP stage_of_project (trim+UPPER) -> dealstage, excluding AWARDED (special-cased). */
-const STAGE_BY_PROJECT_STAGE: Record<string, string> = {
+export const STAGE_BY_PROJECT_STAGE: Record<string, string> = {
   BIDDING: DEAL_STAGE_IDS.bidding,
   REBIDDING: DEAL_STAGE_IDS.bidding,
   BUDGETING: DEAL_STAGE_IDS.db,
