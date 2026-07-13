@@ -31,6 +31,7 @@ import {
 import { backfillRepCodes } from "./repCodeBackfill.js";
 import { reconcileDealCloseDates } from "./dealCloseDates.js";
 import { reconcileDealCreateDates } from "./dealCreateDates.js";
+import { repairConversionDates } from "./conversionDateRepair.js";
 
 /**
  * Territory sync — out-of-band parser for the Territory workbook.
@@ -293,6 +294,44 @@ async function main(): Promise<void> {
       `[specifier-assoc] deals: scanned=${r.scanned} ${dryRun ? "would-associate" : "associated"}=${r.associated} ` +
         `unresolved=${r.unresolved}${r.labelMissing ? " [Specifier label not set up — labeling skipped]" : ""}`,
     );
+    return;
+  }
+
+  // Conversion-date corrective backfill (SAP's pre-2026-06-26 payloads copied
+  // the quote document date into quote_conversion_date — Johnson Yao 7/10):
+  // repair line-item conversion dates from SAP's corrective CSV export, clear
+  // stale deal mirrors, revert falsely-promoted Closed Wons. Then run
+  // --reconcile-deal-close-dates and verify --reconcile-deal-create-dates
+  // --dry-run reports 0. ALWAYS --dry-run (with --csv=path) first;
+  // --max-apply=N for the sample stage; --skip-lines / --skip-deals stage the phases.
+  const repairArg = process.argv.find((a) => a.startsWith("--repair-conversion-dates="));
+  if (repairArg) {
+    const token = process.env.HUBSPOT_TOKEN;
+    if (!token) {
+      console.log("[conv-repair] HUBSPOT_TOKEN unset; nothing to do.");
+      return;
+    }
+    const csvArg = process.argv.find((a) => a.startsWith("--csv="));
+    const maxApplyArg = process.argv.find((a) => a.startsWith("--max-apply="));
+    const r = await repairConversionDates({
+      token,
+      dir: repairArg.split("=")[1]!,
+      dryRun,
+      limit,
+      maxApply: maxApplyArg ? Number(maxApplyArg.split("=")[1]) || undefined : undefined,
+      csvPath: csvArg ? csvArg.split("=")[1] : undefined,
+      skipLines: process.argv.includes("--skip-lines"),
+      skipDeals: process.argv.includes("--skip-deals"),
+    });
+    const verb = dryRun ? "would-" : "";
+    console.log(
+      `[conv-repair] lines: found=${r.linesFound} missing=${r.linesMissing} ${verb}set=${r.lineSet} ${verb}clear=${r.lineCleared} unchanged=${r.lineUnchanged}`,
+    );
+    console.log(
+      `[conv-repair] deals: matched=${r.dealsMatched} ${verb}mirror-clear=${r.mirrorCleared} ${verb}closed-won-revert=${r.closedWonReverted}`,
+    );
+    console.log(`[conv-repair] ${dryRun ? "DRY RUN — no writes" : `applied=${r.applied}`}`);
+    for (const f of r.failures) console.warn(`[conv-repair] WARN: ${f}`);
     return;
   }
 
