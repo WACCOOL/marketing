@@ -155,28 +155,32 @@ async function fetchCompanyAssocsByDeal(token: string, dealIds: string[]): Promi
  * 0 on every run (amounts are never negative, so GT 0 loses nothing). */
 async function companiesWithRollupValues(token: string): Promise<Set<string>> {
   const ids = new Set<string>();
-  let lastId = "0";
-  while (true) {
-    const body = {
-      filterGroups: DEAL_ROLLUP_PROPS.map((p) => ({
-        filters: [
-          { propertyName: p.name, operator: "GT", value: "0" },
-          { propertyName: "hs_object_id", operator: "GT", value: lastId },
-        ],
-      })),
-      sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
-      properties: ["hs_object_id"],
-      limit: SEARCH_PAGE,
-    };
-    const data = await hs<SearchPage>(token, "/crm/v3/objects/companies/search", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    if (!data.results.length) break;
-    for (const c of data.results) ids.add(c.id);
-    lastId = data.results[data.results.length - 1]!.id;
-    if (data.results.length < SEARCH_PAGE) break;
-    await sleep(INTER_BATCH_MS);
+  // HubSpot search caps filterGroups at 5 — chunk the per-property OR groups.
+  for (let g = 0; g < DEAL_ROLLUP_PROPS.length; g += 5) {
+    const propChunk = DEAL_ROLLUP_PROPS.slice(g, g + 5);
+    let lastId = "0";
+    while (true) {
+      const body = {
+        filterGroups: propChunk.map((p) => ({
+          filters: [
+            { propertyName: p.name, operator: "GT", value: "0" },
+            { propertyName: "hs_object_id", operator: "GT", value: lastId },
+          ],
+        })),
+        sorts: [{ propertyName: "hs_object_id", direction: "ASCENDING" }],
+        properties: ["hs_object_id"],
+        limit: SEARCH_PAGE,
+      };
+      const data = await hs<SearchPage>(token, "/crm/v3/objects/companies/search", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      if (!data.results.length) break;
+      for (const c of data.results) ids.add(c.id);
+      lastId = data.results[data.results.length - 1]!.id;
+      if (data.results.length < SEARCH_PAGE) break;
+      await sleep(INTER_BATCH_MS);
+    }
   }
   return ids;
 }
