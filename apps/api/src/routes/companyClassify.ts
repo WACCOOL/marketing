@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppBindings } from "../auth.js";
 import { serviceSupabase } from "../supabase.js";
 import { classifySubType, type ClassifySource } from "../companyClassify.js";
+import { webhookAuthorized } from "./webhookAuth.js";
 
 export const companyClassifyRoutes = new Hono<AppBindings>();
 
@@ -17,23 +18,7 @@ export const companyClassifyRoutes = new Hono<AppBindings>();
  * delivers the enrolled company's id as `objectId`.
  */
 
-function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
-function authorized(c: {
-  req: { header: (n: string) => string | undefined; query: (n: string) => string | undefined };
-  env: AppBindings["Bindings"];
-}): boolean {
-  const expected = c.env.REP_LOOKUP_TOKEN;
-  if (!expected) return false; // closed until configured
-  const bearer = (c.req.header("authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1];
-  const provided = bearer ?? c.req.header("x-api-key") ?? c.req.query("key");
-  return !!provided && constantTimeEqual(provided, expected);
-}
+const authorized = webhookAuthorized;
 
 /** Pull the HubSpot company record id out of a webhook / request body. */
 function companyIdFrom(body: Record<string, unknown>, queryId?: string): string | null {

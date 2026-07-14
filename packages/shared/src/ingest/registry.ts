@@ -200,6 +200,28 @@ export const SOURCES: Record<string, SourceDescriptor> = {
     },
     ingestable: false,
   },
+
+  // Pulled from Material Bank's SFTP by apps/material-bank-sync (no `/api/ingest`
+  // inbox); listed for the source list / destination map like sales-layer.
+  "material-bank": {
+    key: "material-bank",
+    label: "Material Bank Projects",
+    description:
+      "XML sample-order feed from Material Bank's SFTP; each order becomes a Pre-Qualified deal (Universal pipeline) with line items and a routed owner, plus the contact.",
+    authMode: "automated",
+    r2Prefix: "material-bank",
+    acceptedContentTypes: ["text/xml", "application/xml"],
+    defaultExt: "xml",
+    maxBytes: 20 * MB,
+    reconciliation: "append",
+    parserKey: "materialBank",
+    stagingTables: [],
+    hubspot: {
+      object: "orders",
+      note: "Deals (Universal pipeline, Pre-Qualified) + line items + contacts, owner-routed via the lead tree.",
+    },
+    ingestable: false,
+  },
 };
 
 export type SourceKey = keyof typeof SOURCES;

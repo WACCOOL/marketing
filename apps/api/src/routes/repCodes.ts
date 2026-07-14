@@ -3,6 +3,7 @@ import { normalizeZip, buildContactRepCodeProps } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { serviceSupabase } from "../supabase.js";
 import { hs, PATHS } from "../hubspotPush.js";
+import { webhookAuthorized } from "./webhookAuth.js";
 
 export const repCodeRoutes = new Hono<AppBindings>();
 
@@ -18,22 +19,10 @@ export const repCodeRoutes = new Hono<AppBindings>();
  * HubSpot workflow can send). Reads rep_code_zips via the service role.
  */
 
-function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
+const authorized = webhookAuthorized;
 
-function authorized(c: { req: { header: (n: string) => string | undefined; query: (n: string) => string | undefined }; env: AppBindings["Bindings"] }): boolean {
-  const expected = c.env.REP_LOOKUP_TOKEN;
-  if (!expected) return false; // closed until configured
-  const bearer = (c.req.header("authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1];
-  const provided = bearer ?? c.req.header("x-api-key") ?? c.req.query("key");
-  return !!provided && constantTimeEqual(provided, expected);
-}
-
-async function lookup(env: AppBindings["Bindings"], rawZip: string) {
+/** ZIP → the covering rep code per channel. Reused by the Material Bank sync. */
+export async function lookupRepCodesByZip(env: AppBindings["Bindings"], rawZip: string) {
   const zip = normalizeZip(rawZip);
   if (!zip) return { zip: rawZip, found: false, count: 0, repCodes: [], repCodesText: "", byChannel: {} };
   const sb = serviceSupabase(env);
@@ -58,7 +47,7 @@ async function lookup(env: AppBindings["Bindings"], rawZip: string) {
 
 repCodeRoutes.get("/by-zip/:zip", async (c) => {
   if (!authorized(c)) return c.json({ error: "unauthorized" }, 401);
-  return c.json(await lookup(c.env, c.req.param("zip")));
+  return c.json(await lookupRepCodesByZip(c.env, c.req.param("zip")));
 });
 
 repCodeRoutes.post("/by-zip", async (c) => {
@@ -66,7 +55,7 @@ repCodeRoutes.post("/by-zip", async (c) => {
   const body = (await c.req.json().catch(() => ({}))) as { zip?: unknown };
   const zip = String(body.zip ?? c.req.query("zip") ?? "").trim();
   if (!zip) return c.json({ error: "missing zip" }, 400);
-  return c.json(await lookup(c.env, zip));
+  return c.json(await lookupRepCodesByZip(c.env, zip));
 });
 
 // ---------------------------------------------------------------------------
@@ -138,7 +127,7 @@ async function syncContact(
   }
 
   // US-only gate: only a 5-digit US ZIP looks codes up; everything else clears.
-  const result = await lookup(env, usZip5(zip));
+  const result = await lookupRepCodesByZip(env, usZip5(zip));
   const properties = buildContactRepCodeProps(result.byChannel);
 
   const patch = await hs(

@@ -94,7 +94,7 @@ export const PATHS = {
   leadCreate: "/crm/v3/objects/leads",
 };
 
-const ASSOC = {
+export const ASSOC = {
   category: "HUBSPOT_DEFINED",
   lineItemToDeal: 20,
   companyToDeal: 6,
@@ -183,7 +183,7 @@ class HsError extends Error {
  * Run a single-object request with the heal loop: on a validation error, smart-match
  * or drop the offending properties (recording actions) and retry; throw if unrecoverable.
  */
-async function withHeal(
+export async function withHeal(
   token: string,
   signal: AbortSignal,
   scope: string,
@@ -285,12 +285,12 @@ function isValidEmail(email: unknown): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email ?? ""));
 }
 
-interface ContactByEmail {
+export interface ContactByEmail {
   id: string;
   email: string;
 }
 
-async function getContactByEmailExact(
+export async function getContactByEmailExact(
   token: string,
   email: string,
   signal: AbortSignal,
@@ -397,7 +397,7 @@ async function findContactByEmailPrefix(
 }
 
 /** Email domains too generic to match a rep on. */
-const GENERIC_DOMAINS = new Set([
+export const GENERIC_DOMAINS = new Set([
   "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com", "icloud.com",
   "me.com", "live.com", "msn.com", "comcast.net", "att.net", "verizon.net",
 ]);

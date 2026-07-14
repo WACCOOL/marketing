@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { AppBindings } from "../auth.js";
 import { processEventLead, type EventLeadBody } from "../eventLead.js";
 import { syncNationalAccountDomains } from "../nationalAccounts.js";
+import { webhookAuthorized } from "./webhookAuth.js";
 
 /**
  * Marketing-event lead-ownership webhook + the national-account domain sync.
@@ -16,23 +17,7 @@ import { syncNationalAccountDomains } from "../nationalAccounts.js";
  */
 export const eventLeadRoutes = new Hono<AppBindings>();
 
-function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
-function authorized(c: {
-  req: { header: (n: string) => string | undefined; query: (n: string) => string | undefined };
-  env: AppBindings["Bindings"];
-}): boolean {
-  const expected = c.env.REP_LOOKUP_TOKEN;
-  if (!expected) return false;
-  const bearer = (c.req.header("authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1];
-  const provided = bearer ?? c.req.header("x-api-key") ?? c.req.query("key");
-  return !!provided && constantTimeEqual(provided, expected);
-}
+const authorized = webhookAuthorized;
 
 function contactIdFrom(body: Record<string, unknown>, queryId?: string): string | null {
   const raw =

@@ -42,7 +42,7 @@ import { classifyProductFocus } from "./productFocus.js";
 // ---------------------------------------------------------------------------
 
 /** Fixed person → HubSpot owner id. (Discovered via search_owners.) */
-const PERSON_OWNER_ID: Record<string, string> = {
+export const PERSON_OWNER_ID: Record<string, string> = {
   "Lana": "949674634", // Lana Anderson
   "Harry": "410841723", // Harry Moshos
   "Navita Phagoo": "1913042681",
@@ -63,7 +63,7 @@ const INTL_EMAIL_OWNER_ID: Record<string, string> = {
 };
 
 /** Global fallback owner (Lana) for unresolved leaves / blank rep codes. */
-const FALLBACK_OWNER_ID = PERSON_OWNER_ID["Lana"]!;
+export const FALLBACK_OWNER_ID = PERSON_OWNER_ID["Lana"]!;
 
 /**
  * Dynamic list "Competitor Contacts Based on Domain". Members get NO lead — unless
@@ -554,7 +554,7 @@ async function ownerName(token: string, ownerId: string, signal: AbortSignal): P
 }
 
 /** Rep Code object record id + owner, by rep code value (one batch read). */
-async function repCodeObject(
+export async function repCodeObject(
   token: string,
   repCode: string,
   signal: AbortSignal,
@@ -648,7 +648,7 @@ async function campaignFromEvents(
 }
 
 /** Regional Manager (RSM/TSM) owner for a rep code, via rep_codes.rsm_tsm → owner. */
-async function repCodeRsmOwnerId(
+export async function repCodeRsmOwnerId(
   env: Env,
   token: string,
   repCode: string,
@@ -666,16 +666,21 @@ async function repCodeRsmOwnerId(
   return owner?.id ?? "";
 }
 
-interface Resolved {
+export interface Resolved {
   ownerId: string | null;
   source: string;
 }
 
-async function resolveLeaf(
+/**
+ * Turn a tree leaf into a HubSpot owner id. Only needs the contact's per-channel
+ * rep codes (the param is deliberately that narrow so other flows — e.g. the
+ * Material Bank sync, which derives rep codes from the contact ZIP — can reuse it).
+ */
+export async function resolveLeaf(
   env: Env,
   token: string,
   leaf: Leaf,
-  contact: ContactFacts,
+  contact: { repCodes: Record<string, string> },
   campaignChannel: string | undefined,
   signal: AbortSignal,
 ): Promise<Resolved> {
