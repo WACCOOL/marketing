@@ -131,14 +131,17 @@ async function mirrorAttachment(
   signal: AbortSignal,
 ): Promise<string | null> {
   const auth = btoa(`${env.ZENDESK_EMAIL}/token:${env.ZENDESK_API_TOKEN}`);
+  // Zendesk's attachment edge 403s requests without a browser-ish User-Agent
+  // (Workers fetch sends none by default).
+  const ua = "Mozilla/5.0 (WAC marketing Worker; zendesk-mirror)";
   let res = await fetch(att.content_url, {
-    headers: { authorization: `Basic ${auth}` },
+    headers: { authorization: `Basic ${auth}`, "user-agent": ua },
     redirect: "manual",
     signal,
   });
   const location = res.headers.get("location");
   if (res.status >= 300 && res.status < 400 && location) {
-    res = await fetch(location, { signal });
+    res = await fetch(location, { headers: { "user-agent": ua }, signal });
   }
   if (!res.ok) {
     console.error(`[zendesk-sync] attachment ${att.id} download failed: ${res.status}`);
