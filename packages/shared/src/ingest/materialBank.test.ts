@@ -101,6 +101,73 @@ describe("parseMaterialBank", () => {
     expect(stats.duplicates).toBe(1);
   });
 
+  it("parses the live feed's four-level nesting (group → contact → order → lines)", () => {
+    // Mirrors the real MGT_DailyLeads file structure observed 2026-07-14.
+    const { valid, errors, stats } = parseMaterialBank(
+      doc([
+        {
+          CONSIGNEE: "WAC Lighting",
+          CREATEDATE: "07/14/2026",
+          row: [
+            {
+              ORDERDATE: "07/13/2026",
+              CONTACT1NAME: "Jane Designer",
+              EntityId: "999",
+              CONTACT1EMAIL: "Jane@Studio.com",
+              CONTACT1PHONE: "555-1111",
+              STREET1: "1 Design Way",
+              Company: "Studio One",
+              City: "Austin",
+              State: "TX",
+              Zip: "78701",
+              Country: "United States",
+              CompanyPractice: "Residential Interior Design",
+              Title: "Principal",
+              MOBILEPHONE: "555-2222",
+              CONTACTPREFERENCE: "Email",
+              row: {
+                ORDERID: "S1234567",
+                row: [
+                  {
+                    ProjectName: "Lake House",
+                    QTYORIGINAL: "1",
+                    SKU: "AB-123",
+                    Name: "Sconce",
+                    MBShipped: "Y",
+                    Color: "Brass",
+                    ProjectType: "Single Family",
+                    ProjectPhase: "Design",
+                    ProjectDescription: "New build",
+                    ProjectBudget: "$100k+",
+                    ExpectedProjectCompletionMonth: "March",
+                    ExpectedProjectCompletionYear: "2027",
+                  },
+                  { QTYORIGINAL: "2", SKU: "CD-456", Color: "Black" },
+                ],
+              },
+            },
+          ],
+        },
+      ]),
+    );
+    expect(errors).toEqual([]);
+    expect(stats).toMatchObject({ orders: 1, lineRows: 2 });
+    const o = valid[0]!;
+    expect(o.orderId).toBe("S1234567");
+    // contact/company inherited from two levels above the order
+    expect(o.contact.email).toBe("jane@studio.com");
+    expect(o.contact.mobilePhone).toBe("555-2222");
+    expect(o.company.practice).toBe("Residential Interior Design");
+    expect(o.address.zip).toBe("78701");
+    // project fields picked off the line rows
+    expect(o.project.name).toBe("Lake House");
+    expect(o.project.budgetRaw).toBe("$100k+");
+    expect(o.lines).toEqual([
+      { sku: "AB-123", quantity: 1, color: "Brass" },
+      { sku: "CD-456", quantity: 2, color: "Black" },
+    ]);
+  });
+
   it("returns nothing for an empty/alien document", () => {
     expect(parseMaterialBank(null).valid).toEqual([]);
     expect(parseMaterialBank({}).valid).toEqual([]);
