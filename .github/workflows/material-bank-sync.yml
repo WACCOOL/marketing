@@ -35,6 +35,10 @@ on:
         description: "Reprocess files even if already recorded"
         type: boolean
         default: false
+      inbox:
+        description: "Read from the R2 relay inbox instead of SFTP (interim path while Material Bank's IP whitelist blocks GitHub runners)"
+        type: boolean
+        default: false
 
 concurrency:
   group: material-bank-sync
@@ -76,4 +80,5 @@ jobs:
           if [ -n "${{ inputs.limit }}" ]; then ARGS="$ARGS --limit ${{ inputs.limit }}"; fi
           if [ -n "${{ inputs.file }}" ]; then ARGS="$ARGS --file ${{ inputs.file }}"; fi
           if [ "${{ inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          if [ "${{ inputs.inbox }}" = "true" ]; then ARGS="$ARGS --inbox"; fi
           pnpm --filter @wac/material-bank-sync sync -- $ARGS

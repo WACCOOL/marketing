@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { XMLParser } from "fast-xml-parser";
 import { parseMaterialBank, type MaterialBankOrder, type ParseResult } from "@wac/shared";
@@ -30,6 +30,11 @@ import { connect, download, listInbound, type InboundFile } from "./sftp.js";
  *   --force         reprocess files even if already recorded
  *   --local <path>  ingest a local .xml file (or directory of them) instead of
  *                   SFTP — everything downstream is identical
+ *   --inbox         ingest from the R2 relay inbox (ingest/material-bank/inbox/,
+ *                   filled by the Make.com transport relay via the Worker's
+ *                   /material-bank/file endpoint) instead of SFTP — the interim
+ *                   path while Material Bank's SFTP IP whitelist blocks
+ *                   GitHub-hosted runners. No MB_SFTP_* env needed.
  *
  * Env: MB_SFTP_HOST/PORT/USER/PASSWORD/MB_SFTP_PATH,
  *      R2_ENDPOINT/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY/R2_BUCKET,
@@ -94,6 +99,52 @@ async function postOrder(order: MaterialBankOrder, dryRun: boolean): Promise<Ord
   return { orderId: order.orderId, status: "error", error: lastErr };
 }
 
+// --- R2 relay-inbox source --------------------------------------------------------
+
+const INBOX_PREFIX = "ingest/material-bank/inbox/";
+
+function makeS3(): { s3: S3Client; bucket: string } {
+  return {
+    s3: new S3Client({
+      region: "auto",
+      endpoint: env("R2_ENDPOINT"),
+      credentials: { accessKeyId: env("R2_ACCESS_KEY_ID"), secretAccessKey: env("R2_SECRET_ACCESS_KEY") },
+    }),
+    bucket: env("R2_BUCKET"),
+  };
+}
+
+async function listInbox(s3: S3Client, bucket: string): Promise<(InboundFile & { r2Key: string })[]> {
+  const out: (InboundFile & { r2Key: string })[] = [];
+  let token: string | undefined;
+  do {
+    const res = await s3.send(
+      new ListObjectsV2Command({ Bucket: bucket, Prefix: INBOX_PREFIX, ContinuationToken: token }),
+    );
+    for (const o of res.Contents ?? []) {
+      const key = o.Key ?? "";
+      const name = key.slice(INBOX_PREFIX.length);
+      if (!name || !/\.xml$/i.test(name)) continue;
+      out.push({
+        path: key,
+        name,
+        size: o.Size ?? 0,
+        modifiedAt: o.LastModified?.getTime() ?? 0,
+        r2Key: key,
+      });
+    }
+    token = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (token);
+  return out.sort((a, b) => a.modifiedAt - b.modifiedAt);
+}
+
+async function downloadInbox(s3: S3Client, bucket: string, key: string): Promise<Buffer> {
+  const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const bytes = await res.Body?.transformToByteArray();
+  if (!bytes) throw new Error(`r2 get ${key}: empty body`);
+  return Buffer.from(bytes);
+}
+
 // --- local-file source ----------------------------------------------------------
 
 async function listLocal(path: string): Promise<(InboundFile & { absPath: string })[]> {
@@ -146,14 +197,25 @@ async function main(): Promise<void> {
   };
   const fileArg = stringArg("--file");
   const localArg = stringArg("--local");
+  const inbox = has("--inbox");
   const limit = Number(stringArg("--limit") ?? "") || null;
   const dryRun = has("--dry-run");
 
-  const client = localArg ? null : await connect();
+  // Needed up front for the inbox source; created lazily for the live-mode archive.
+  let r2 = inbox ? makeS3() : null;
+  const client = localArg || inbox ? null : await connect();
   try {
-    const all = localArg ? await listLocal(localArg) : await listInbound(client!);
+    const all = localArg
+      ? await listLocal(localArg)
+      : inbox
+        ? await listInbox(r2!.s3, r2!.bucket)
+        : await listInbound(client!);
     const read = (f: InboundFile) =>
-      localArg ? readFile((f as InboundFile & { absPath: string }).absPath) : download(client!, f.path);
+      localArg
+        ? readFile((f as InboundFile & { absPath: string }).absPath)
+        : inbox
+          ? downloadInbox(r2!.s3, r2!.bucket, (f as InboundFile & { r2Key: string }).r2Key)
+          : download(client!, f.path);
 
     if (has("--sample")) {
       await runSample(read, all);
@@ -163,12 +225,6 @@ async function main(): Promise<void> {
     const sb: SupabaseClient = createClient(env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"), {
       auth: { persistSession: false, autoRefreshToken: false },
     });
-    const s3 = new S3Client({
-      region: "auto",
-      endpoint: env("R2_ENDPOINT"),
-      credentials: { accessKeyId: env("R2_ACCESS_KEY_ID"), secretAccessKey: env("R2_SECRET_ACCESS_KEY") },
-    });
-    const bucket = env("R2_BUCKET");
 
     const { data, error } = await sb
       .from("data_ingestions")
@@ -180,7 +236,7 @@ async function main(): Promise<void> {
 
     const work = all.filter((f) => (!fileArg || f.name === fileArg) && (has("--force") || !done.has(f.name)));
     console.log(
-      `[material-bank-sync] ${all.length} files ${localArg ? `under ${localArg}` : "on server"}, ${work.length} to process` +
+      `[material-bank-sync] ${all.length} files ${localArg ? `under ${localArg}` : inbox ? "in the relay inbox" : "on server"}, ${work.length} to process` +
         `${fileArg ? ` (--file ${fileArg})` : ""}${dryRun ? " [DRY RUN]" : ""}${limit ? ` [limit ${limit}]` : ""}`,
     );
 
@@ -194,12 +250,14 @@ async function main(): Promise<void> {
 
       let ingestionId: string | null = null;
       if (!dryRun) {
-        const r2Key = await (async () => {
+        // Relay-inbox files are already in R2 — reuse their key as the archive.
+        let r2Key = (f as InboundFile & { r2Key?: string }).r2Key ?? null;
+        if (!r2Key) {
+          r2 ??= makeS3();
           const now = new Date();
-          const key = `ingest/${SOURCE}/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, "0")}/${String(now.getUTCDate()).padStart(2, "0")}/${randomUUID()}__${f.name}`;
-          await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: buf, ContentType: "text/xml" }));
-          return key;
-        })();
+          r2Key = `ingest/${SOURCE}/${now.getUTCFullYear()}/${String(now.getUTCMonth() + 1).padStart(2, "0")}/${String(now.getUTCDate()).padStart(2, "0")}/${randomUUID()}__${f.name}`;
+          await r2.s3.send(new PutObjectCommand({ Bucket: r2.bucket, Key: r2Key, Body: buf, ContentType: "text/xml" }));
+        }
         const { data: ins, error: insErr } = await sb
           .from("data_ingestions")
           .insert({
@@ -209,7 +267,7 @@ async function main(): Promise<void> {
             original_name: f.name,
             content_type: "text/xml",
             byte_size: f.size,
-            delivered_by: localArg ? "local" : "sftp",
+            delivered_by: localArg ? "local" : inbox ? "make-relay" : "sftp",
             started_at: iso(),
           })
           .select("id")
