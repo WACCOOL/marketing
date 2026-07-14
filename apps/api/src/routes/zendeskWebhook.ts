@@ -70,7 +70,10 @@ function ticketIdFrom(raw: string, queryId?: string): number | null {
   } catch {
     /* signature already validated the sender; a mangled body just falls through */
   }
-  const candidate = body.ticket_id ?? body.ticketId ?? queryId;
+  // Accept the flat shape our trigger sends ({"ticket_id": …}) AND the nested
+  // {"ticket": {"id": …}} shape of Zendesk's default/test payloads.
+  const nested = (body.ticket as Record<string, unknown> | undefined)?.id;
+  const candidate = body.ticket_id ?? body.ticketId ?? nested ?? queryId;
   const id = Number(candidate);
   return Number.isFinite(id) && id > 0 ? id : null;
 }
