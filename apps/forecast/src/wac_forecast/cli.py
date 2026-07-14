@@ -110,17 +110,28 @@ def snapshot(as_of: str) -> None:
 
 
 @main.command()
-def backtest() -> None:
+@click.option("--ml", is_flag=True, help="include the ML method (needs trained models)")
+def backtest(ml: bool) -> None:
     """Monthly snapshots × all methods × metrics."""
     from .backtest import run_backtest
 
-    run_backtest()
+    run_backtest(include_ml=ml)
 
 
 @main.command()
 def train() -> None:
-    """Train win-prob + company-sales models (M2)."""
-    raise SystemExit("train: not implemented yet (M2)")
+    """Train win-prob + company-sales models."""
+    from .train import run_training
+
+    run_training()
+
+
+@main.command()
+def report() -> None:
+    """Build the Gate-1 backtest report (artifacts/backtest_report.html)."""
+    from .report import build_report
+
+    build_report()
 
 
 @main.command()

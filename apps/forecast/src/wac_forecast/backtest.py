@@ -49,16 +49,26 @@ def realized_actuals(turnover: pd.DataFrame) -> dict[int, pd.Series]:
     return out
 
 
-def run_backtest(grid: list[datetime] | None = None) -> pd.DataFrame:
+def run_backtest(grid: list[datetime] | None = None, include_ml: bool = False) -> pd.DataFrame:
     grid = grid or SNAPSHOT_GRID
     print("loading raw parquet…")
     deals = load_raw("deals")
     lines = load_raw("line_items")
     assocs = load_raw("deal_company_assocs")
     companies = load_raw("companies")
+    parents = load_raw("company_parents")
     turnover = prepare_turnover(load_raw("turnover_orders"))
 
-    d_prep, _li = prepare_deals(deals, lines, assocs)
+    d_prep, li = prepare_deals(deals, lines, assocs)
+
+    win = co = None
+    if include_ml:
+        from .models.company_sales import CompanySalesModel
+        from .models.win_prob import WinProbModel
+
+        model_dir = CONFIG.artifacts_dir / "models" / "latest"
+        win = WinProbModel.load(model_dir)
+        co = CompanySalesModel.load(model_dir)
     actuals = realized_actuals(turnover)
     acct_map = account_company_map(companies)
 
@@ -78,26 +88,36 @@ def run_backtest(grid: list[datetime] | None = None) -> pd.DataFrame:
         qv_company = pd.DataFrame.from_dict(qvr["per_company"], orient="index")
         qv_total_companies = float(qv_company["projected_sales_quote_visibility"].sum()) if len(qv_company) else 0.0
 
-        rows.append(
-            {
-                "as_of": label,
-                "year": year,
-                "actual_full_year": actual_total,
-                "growth_total": float(gr["forecast"].sum()),
-                "qv_total_global": qvr["global_total"],
-                "qv_total_companies": qv_total_companies,
-                **{f"qv_{k}": v for k, v in qvr["rates"].items()},
-            }
-        )
+        row = {
+            "as_of": label,
+            "year": year,
+            "actual_full_year": actual_total,
+            "growth_total": float(gr["forecast"].sum()),
+            "qv_total_global": qvr["global_total"],
+            "qv_total_companies": qv_total_companies,
+            **{f"qv_{k}": v for k, v in qvr["rates"].items()},
+        }
+
+        if win is not None:
+            from .scoring import ml_forecast_at
+
+            ml = ml_forecast_at(dt, win, co, d_prep, li, turnover, companies, parents)
+            row["ml_total"] = ml["total"]
+            row["ml_sum_parents"] = ml["sum_parents"]
+            row["ml_uplift_share"] = ml["uplift_share"]
+            ml["per_parent"].to_parquet(out_dir / f"ml_{label}.parquet")
+            if ml["per_deal"] is not None:
+                ml["per_deal"].to_parquet(out_dir / f"ml_deals_{label}.parquet")
+        rows.append(row)
 
         # Persist per-company frames for metric computation / the report.
         gr.assign(company_id=gr.index.map(acct_map)).to_parquet(out_dir / f"growth_{label}.parquet")
         if len(qv_company):
             qv_company.rename_axis("company_id").to_parquet(out_dir / f"qv_{label}.parquet")
+        ml_str = f" | ML ${row['ml_total']:,.0f}" if "ml_total" in row else ""
         print(
-            f"  {label}: actual FY ${actual_total:,.0f} | growth ${rows[-1]['growth_total']:,.0f} "
-            f"| QV ${qvr['global_total']:,.0f} (vis {qvr['rates']['visibilityRate'] and qvr['rates']['visibilityRate']*100:.2f}%, "
-            f"yield {qvr['rates']['pipelineYield'] and qvr['rates']['pipelineYield']*100:.2f}%)"
+            f"  {label}: actual FY ${actual_total:,.0f} | growth ${row['growth_total']:,.0f} "
+            f"| QV ${qvr['global_total']:,.0f}{ml_str}"
         )
 
     summary = pd.DataFrame(rows)

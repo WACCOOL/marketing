@@ -12,7 +12,8 @@ scoring that writes `projected_sales_ml` (company) and `ml_win_probability` /
 
 ## Setup
 
-Requires [uv](https://docs.astral.sh/uv/) (`brew install uv`).
+Requires [uv](https://docs.astral.sh/uv/) and OpenMP for LightGBM
+(`brew install uv libomp`).
 
 ```bash
 cd apps/forecast
