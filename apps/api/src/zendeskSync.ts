@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { isFakeZendeskEmail } from "@wac/shared";
+import { extractQuoteNumbers, isFakeZendeskEmail } from "@wac/shared";
 import type { Env } from "./env.js";
 import { hs, PATHS, ASSOC } from "./hubspotPush.js";
 import { serviceSupabase } from "./supabase.js";
@@ -332,19 +332,29 @@ export async function syncZendeskTicket(
   // ---- deal adoption (any synced group) ----------------------------------
   // Quote tickets mostly live in the Quotes/Custom Quotes/Schonbek Quotes
   // groups, but ANY ticket carrying the HubSpot-deal-ID field or an
-  // unambiguous SAP quote number deserves the deal link.
-  const quoteNumber = customFieldValue(ticket, ZD_FIELDS.quoteNumber);
+  // unambiguous SAP quote number deserves the deal link. The quote-number
+  // field is free text ("25103158 VENTRIX", two numbers at once) — extract
+  // the digit-run candidates and try each until one matches exactly one deal.
+  const quoteNumberRaw = customFieldValue(ticket, ZD_FIELDS.quoteNumber);
+  const quoteCandidates = extractQuoteNumbers(quoteNumberRaw);
+  const quoteNumber = quoteCandidates.join(", ") || quoteNumberRaw;
   if (!result.dealId) {
     const fieldDealId = customFieldValue(ticket, ZD_FIELDS.hubspotDealId);
     if (fieldDealId && /^\d+$/.test(fieldDealId)) {
       result.dealId = fieldDealId;
       result.dealMatch = "deal_id_field";
-    } else if (quoteNumber) {
-      const found = await findDealByQuoteNumber(env, quoteNumber, signal);
-      result.dealId = found.id;
-      result.dealMatch = found.match;
-      if (found.match === "ambiguous") {
-        console.log(`[zendesk-sync] ticket ${ticketId}: quote # ${quoteNumber} matches >1 deal; not adopting`);
+    } else {
+      for (const candidate of quoteCandidates) {
+        const found = await findDealByQuoteNumber(env, candidate, signal);
+        if (found.match === "quote_number") {
+          result.dealId = found.id;
+          result.dealMatch = "quote_number";
+          break;
+        }
+        result.dealMatch = found.match;
+        if (found.match === "ambiguous") {
+          console.log(`[zendesk-sync] ticket ${ticketId}: quote # ${candidate} matches >1 deal; trying next candidate`);
+        }
       }
     }
   }
