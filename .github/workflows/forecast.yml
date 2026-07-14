@@ -1,0 +1,83 @@
+name: ML Forecast
+
+# Third forecasting method (apps/forecast): scores the open book daily with
+# the latest models (R2), writes company projected_sales_ml + deal
+# ml_win_probability / ml_expected_value, and logs the total-year forecast to
+# Supabase forecast_runs. Monthly retrain refreshes the model artifacts.
+#
+# GATED: does nothing until FORECAST_WRITE=1 is set as a repo variable —
+# Gate 1 (backtest report) and Gate 2 (sample spot-check) come first.
+on:
+  schedule:
+    - cron: "0 14 * * *" # 14:00 UTC — after sales-sync (13:00) refreshes props
+    - cron: "30 14 1 * *" # monthly retrain, 1st of month
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Score + print sample; no HubSpot writes"
+        type: boolean
+        default: false
+      sample:
+        description: "Write only N sample companies (Gate-2 spot-check)"
+        type: string
+        default: ""
+      retrain:
+        description: "Force a retrain before scoring"
+        type: boolean
+        default: false
+
+concurrency:
+  group: forecast
+  cancel-in-progress: false
+
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dependencies
+        working-directory: apps/forecast
+        run: uv sync --frozen
+      - name: Extract
+        working-directory: apps/forecast
+        env:
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: uv run wac-forecast extract
+      - name: Retrain (monthly or forced)
+        if: ${{ github.event.schedule == '30 14 1 * *' || inputs.retrain }}
+        working-directory: apps/forecast
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: uv run wac-forecast train && uv run wac-forecast models-upload
+      - name: Fetch latest models
+        if: ${{ github.event.schedule != '30 14 1 * *' && !inputs.retrain }}
+        working-directory: apps/forecast
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: uv run wac-forecast models-download
+      - name: Score
+        working-directory: apps/forecast
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: uv run wac-forecast score
+      - name: Push to HubSpot
+        working-directory: apps/forecast
+        env:
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          FORECAST_WRITE: ${{ vars.FORECAST_WRITE }}
+        run: >
+          uv run wac-forecast push
+          ${{ inputs.dry_run && '--dry-run' || '' }}
+          ${{ inputs.sample && format('--sample={0}', inputs.sample) || '' }}
