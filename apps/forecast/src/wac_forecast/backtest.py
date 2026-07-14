@@ -15,7 +15,7 @@ import pandas as pd
 from .baselines.growth_rate import growth_rate_forecast, sales_by_account
 from .baselines.qv_replay import quote_visibility_at
 from .config import CONFIG
-from .snapshot import load_raw, prepare_deals, prepare_turnover
+from .snapshot import load_raw, load_sales, prepare_deals
 
 SNAPSHOT_GRID = [
     datetime(y, m, 1, tzinfo=timezone.utc)
@@ -57,7 +57,7 @@ def run_backtest(grid: list[datetime] | None = None, include_ml: bool = False) -
     assocs = load_raw("deal_company_assocs")
     companies = load_raw("companies")
     parents = load_raw("company_parents")
-    turnover = prepare_turnover(load_raw("turnover_orders"))
+    turnover = load_sales()
 
     d_prep, li = prepare_deals(deals, lines, assocs)
 

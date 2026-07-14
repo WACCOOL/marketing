@@ -67,6 +67,14 @@ COMPANY_PROPS = [
 ]
 
 
+INVOICED_ORDERS_PIPELINE = "14a2e10e-5471-408a-906e-c51f3b04369e"
+
+ORDER_PROPS = [
+    "billing_date", "billing_document", "customer_account",
+    "hs_homecurrency_amount", "brand", "channel", "sales_group",
+]
+
+
 class HubSpot:
     def __init__(self, token: str | None = None):
         self.token = token or CONFIG.hubspot_token
@@ -176,6 +184,25 @@ class HubSpot:
         # No scope filter: SAP-linked companies are identified downstream by
         # account_number_, but sales/classifier props exist on others too.
         rows = list(self.iter_search("companies", [], props))
+        return self._frame(rows, props)
+
+    def extract_orders(self) -> pd.DataFrame:
+        """Invoiced orders (native commerce object) — the COMPLETE revenue
+        record, all brands incl. Modern Forms; the Supabase turnover_orders
+        SFTP feed only carries WAC+SCH (~half of sales). One row per billing
+        document; `hs_homecurrency_amount` is the report-canonical value."""
+        props = self._available("orders", ORDER_PROPS)
+        rows = list(
+            self.iter_search(
+                "orders",
+                [
+                    {"propertyName": "hs_pipeline", "operator": "EQ", "value": INVOICED_ORDERS_PIPELINE},
+                    {"propertyName": "billing_date", "operator": "HAS_PROPERTY"},
+                ],
+                props,
+                log_every=100_000,
+            )
+        )
         return self._frame(rows, props)
 
     def extract_deal_company_assocs(self, deal_ids: list[str]) -> pd.DataFrame:

@@ -10,7 +10,7 @@ from .backtest import account_company_map, realized_actuals
 from .config import CONFIG
 from .features.company import parent_map, to_parent
 from .metrics import company_metrics, deal_metrics, decile_table, reliability_table
-from .snapshot import load_raw, prepare_turnover
+from .snapshot import load_raw, load_sales
 
 STYLE = """
 <style>
@@ -55,7 +55,7 @@ def build_report() -> None:
     sections.append(_fmt_money(tot).to_html(index=False))
 
     # Company-level metrics on completed-year snapshots (2025).
-    turnover = prepare_turnover(load_raw("turnover_orders"))
+    turnover = load_sales()
     parents = load_raw("company_parents")
     companies = load_raw("companies")
     actuals = realized_actuals(turnover)

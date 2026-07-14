@@ -151,3 +151,29 @@ def prepare_turnover(turnover: pd.DataFrame) -> pd.DataFrame:
     t["sales_n"] = _num(t["discounted_sales"]).fillna(0.0)
     t["account_key"] = t["sold_to"].astype("string").str.strip().str.lstrip("0")
     return t
+
+
+def prepare_orders(orders: pd.DataFrame) -> pd.DataFrame:
+    """HubSpot invoiced orders → the same frame shape prepare_turnover emits,
+    so every downstream consumer works unchanged. One row per billing
+    document; quantity=1 (no split-rep duplication in this source)."""
+    return pd.DataFrame(
+        {
+            "billing_document": orders["billing_document"],
+            "brand": orders["brand"] if "brand" in orders.columns else None,
+            "quantity": 1.0,
+            "billing_ms": to_ms(orders["billing_date"]),
+            "sales_n": _num(orders["hs_homecurrency_amount"]).fillna(0.0),
+            "account_key": orders["customer_account"].astype("string").str.strip().str.lstrip("0"),
+        }
+    )
+
+
+def load_sales() -> pd.DataFrame:
+    """The sales ground-truth frame. Prefers the HubSpot invoiced-orders pull
+    (COMPLETE revenue, all brands — ~$240M/yr) over the Supabase turnover SFTP
+    feed (WAC+SCH only, ~half of sales)."""
+    if (CONFIG.raw_dir / "orders.parquet").exists():
+        return prepare_orders(load_raw("orders"))
+    print("[warn] orders.parquet missing — falling back to turnover_orders (WAC+SCH only)")
+    return prepare_turnover(load_raw("turnover_orders"))

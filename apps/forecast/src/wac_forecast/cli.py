@@ -16,6 +16,7 @@ ENTITIES = [
     "line_items",
     "companies",
     "deal_company_assocs",
+    "orders",
     "turnover_orders",
     "open_orders",
     "rep_codes",
@@ -51,7 +52,7 @@ def extract(only: str | None) -> None:
     manifest_path = CONFIG.raw_dir / "manifest.json"
     manifest: dict = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
 
-    hubspot_wanted = wanted & {"deals", "line_items", "companies", "deal_company_assocs"}
+    hubspot_wanted = wanted & {"deals", "line_items", "companies", "deal_company_assocs", "orders"}
     if hubspot_wanted:
         from .extract.hubspot import HubSpot
 
@@ -65,6 +66,9 @@ def extract(only: str | None) -> None:
         if "companies" in wanted:
             print("extracting companies…")
             _write("companies", hs.extract_companies(), manifest)
+        if "orders" in wanted:
+            print("extracting orders (invoiced, ~1.1M — slow)…")
+            _write("orders", hs.extract_orders(), manifest)
         if "deal_company_assocs" in wanted:
             deals_path = CONFIG.raw_dir / "deals.parquet"
             if not deals_path.exists():

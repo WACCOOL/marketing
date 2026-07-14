@@ -21,7 +21,7 @@ from .features.company import build_company_features
 from .features.deal import build_deal_features
 from .models.company_sales import train_company_sales
 from .models.win_prob import WinProbModel, train_win_prob
-from .snapshot import load_raw, prepare_deals, prepare_turnover
+from .snapshot import load_raw, load_sales, prepare_deals
 
 TRAIN_END = "2025-09-01"
 CALIB_END = "2026-01-01"
@@ -39,7 +39,7 @@ def load_prepared():
     assocs = load_raw("deal_company_assocs")
     companies = load_raw("companies")
     parents = load_raw("company_parents")
-    turnover = prepare_turnover(load_raw("turnover_orders"))
+    turnover = load_sales()
     d_prep, li = prepare_deals(deals, lines, assocs)
     return d_prep, li, companies, parents, turnover
 
