@@ -8,6 +8,12 @@ apps/render-worker/exports/
 apps/render-worker/.review/
 __pycache__/
 *.pyc
+# ML forecast (apps/forecast): extracted data and model/report artifacts stay
+# local — this repo is PUBLIC.
+apps/forecast/data/
+apps/forecast/artifacts/
+*.parquet
+.venv/
 dist/
 dist-harness/
 build/

@@ -1,0 +1,3786 @@
+{
+ "nowMs": 1783956600000,
+ "windows": {
+  "nowMs": 1783956600000,
+  "ytdStartMs": 1767225600000,
+  "priorStartMs": 1735689600000,
+  "priorYtdEndMs": 1752451200000,
+  "priorYearEndMs": 1767225600000,
+  "pipelineCreateCeilingMs": 1793491200000,
+  "pipelineFreshFloorMs": 1768404600000
+ },
+ "leapWindows": {
+  "nowMs": 1709208000000,
+  "ytdStartMs": 1704067200000,
+  "priorStartMs": 1672531200000,
+  "priorYtdEndMs": 1677715200000,
+  "priorYearEndMs": 1704067200000,
+  "pipelineCreateCeilingMs": 1730419200000,
+  "pipelineFreshFloorMs": 1693656000000
+ },
+ "cohort": [
+  {
+   "companyId": "c1",
+   "createdateMs": 1724119200000,
+   "closedateMs": 1731808800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 436906.85,
+   "maxAmount": 511921.63
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1743778800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 462277.72,
+   "maxAmount": 330305.02
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1718456400000,
+   "closedateMs": 1751029200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 30352.44,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1746817200000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 355682.7,
+   "maxAmount": 594172.47
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": null,
+   "closedateMs": 1755136800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 194705.69,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1725667200000,
+   "closedateMs": 1737158400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 291161.47,
+   "maxAmount": 188596.47
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1714431600000,
+   "closedateMs": 1746226800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 59296.58,
+   "maxAmount": 70424.78
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1723471200000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 440910.94,
+   "maxAmount": 418301.53
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1770800400000,
+   "closedateMs": 1775120400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 373518.63,
+   "maxAmount": 27323.77
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1710270000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 244944.54,
+   "maxAmount": 548260.9
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1719730800000,
+   "closedateMs": 1728802800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 237202.21,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1751299200000,
+   "closedateMs": 1772121600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 117708.26,
+   "maxAmount": 569965.61
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1749506400000,
+   "closedateMs": 1758319200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 353809.22,
+   "maxAmount": 185285.41
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1748880000000,
+   "closedateMs": 1760544000000,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 181940.7
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1755360000000,
+   "closedateMs": 1764086400000,
+   "won": false,
+   "preQualified": true,
+   "amount": 365712.64,
+   "maxAmount": 443166.9
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1746745200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": true,
+   "amount": 307926.89,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1763424000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 15314.33,
+   "maxAmount": 353749.15
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1709521200000,
+   "closedateMs": 1718334000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 334290.07,
+   "maxAmount": 216825.99
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1759730400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 294779.3,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1715749200000,
+   "closedateMs": 1727499600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 145828.23,
+   "maxAmount": 255774.27
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1732208400000,
+   "closedateMs": 1758214800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 397720.56,
+   "maxAmount": 97168.75
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": true,
+   "amount": 113770.94,
+   "maxAmount": 584314.24
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1757340000000,
+   "closedateMs": 1774533600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 408222.99,
+   "maxAmount": 460247.3
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1713502800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 558295.63
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1753448400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 119085.7,
+   "maxAmount": 357373.31
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1723172400000,
+   "closedateMs": 1727924400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 45707.21,
+   "maxAmount": 588169.3
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1735812000000,
+   "closedateMs": 1739440800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 182264.15,
+   "maxAmount": 177368.08
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 164329.97,
+   "maxAmount": 482716.53
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1740790800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": true,
+   "amount": 45741.73,
+   "maxAmount": 166237.34
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 368519.23,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1734994800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 30953.06,
+   "maxAmount": 396647.12
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1783054800000,
+   "closedateMs": 1813381200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 331150.45,
+   "maxAmount": 599587.31
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1731556800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": true,
+   "amount": 435530.38,
+   "maxAmount": 461932.22
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1739901600000,
+   "closedateMs": 1744826400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 20161.85,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1764748800000,
+   "closedateMs": 1780041600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 130437.02,
+   "maxAmount": 94991.89
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1745294400000,
+   "closedateMs": 1754452800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 280948.2,
+   "maxAmount": 168684.94
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1735246800000,
+   "closedateMs": 1742936400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 62750.18,
+   "maxAmount": 478296.72
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1782738000000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 443751.1,
+   "maxAmount": 409460.98
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1732456800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 238764.64,
+   "maxAmount": 424761.5
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1713574800000,
+   "closedateMs": 1738717200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 142665.79,
+   "maxAmount": 127464.36
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1777705200000,
+   "closedateMs": 1787554800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 185335.11,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1707598800000,
+   "closedateMs": 1723323600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 210652.06,
+   "maxAmount": 114317.18
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1775545200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 77002.74
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1774544400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": true,
+   "amount": 389047.38,
+   "maxAmount": 100853.94
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": null,
+   "closedateMs": 1721394000000,
+   "won": false,
+   "preQualified": true,
+   "amount": 357937.75,
+   "maxAmount": 464814.41
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1724072400000,
+   "closedateMs": 1743253200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 305850.42,
+   "maxAmount": 542198.89
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1777100400000,
+   "closedateMs": 1793689200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 167887.4,
+   "maxAmount": 485788.87
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1765908000000,
+   "closedateMs": 1781546400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 429369.42,
+   "maxAmount": 205965.12
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1735804800000,
+   "closedateMs": 1768982400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 196724.67,
+   "maxAmount": 87078.53
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1721833200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 202897.63,
+   "maxAmount": 241225.4
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1763812800000,
+   "closedateMs": 1783944000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 364060.28,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1759183200000,
+   "closedateMs": 1788386400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 362279.7,
+   "maxAmount": 270592.48
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1715727600000,
+   "closedateMs": 1727132400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 434908.85,
+   "maxAmount": 368968.56
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1793401200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 32893.93,
+   "maxAmount": 447260.52
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1711465200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 272781.12,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1777575600000,
+   "closedateMs": 1807470000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 181285.52,
+   "maxAmount": 158330.19
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1717542000000,
+   "closedateMs": 1726700400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 60383.92,
+   "maxAmount": 88874.08
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1740488400000,
+   "closedateMs": 1765976400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 369211.37,
+   "maxAmount": 439778.15
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1739433600000,
+   "closedateMs": 1754035200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 14592.43,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1762581600000,
+   "closedateMs": 1769061600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 94802.32,
+   "maxAmount": 303593.66
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1728489600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 350453.65,
+   "maxAmount": 382199.16
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1730206800000,
+   "closedateMs": 1748005200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 372504.79,
+   "maxAmount": 273625.7
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1779256800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 455495.86,
+   "maxAmount": 577193.66
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1759903200000,
+   "closedateMs": 1765605600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 255168.2,
+   "maxAmount": 107150.41
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1768003200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 195166.74,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1719450000000,
+   "closedateMs": 1752973200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 395948.94,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1771171200000,
+   "closedateMs": 1801843200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 143230.08,
+   "maxAmount": 573875.09
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": true,
+   "amount": 141896.45,
+   "maxAmount": 25433.38
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1761264000000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 53966.29,
+   "maxAmount": 146247.56
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": null,
+   "closedateMs": 1770778800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 349272.77,
+   "maxAmount": 399677.63
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1724176800000,
+   "closedateMs": 1757786400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 475691.6,
+   "maxAmount": 240636.5
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1706742000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 145148.03,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 160405.93,
+   "maxAmount": 84959.14
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": true,
+   "amount": 173293.21,
+   "maxAmount": 179799.72
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": null,
+   "closedateMs": 1730156400000,
+   "won": false,
+   "preQualified": true,
+   "amount": "",
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1733234400000,
+   "closedateMs": 1767621600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 146426.12,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1710108000000,
+   "closedateMs": 1741471200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 396726.7,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1709917200000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": true,
+   "amount": 154029.98,
+   "maxAmount": 151960.43
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1714986000000,
+   "closedateMs": 1742461200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 50496.17,
+   "maxAmount": 479652.48
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1716332400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 212388.29,
+   "maxAmount": 291996.23
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1751515200000,
+   "closedateMs": 1759204800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 90751.68,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1770912000000,
+   "closedateMs": 1785513600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 318234.96,
+   "maxAmount": 576388.57
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1720141200000,
+   "closedateMs": 1734138000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 442977.63,
+   "maxAmount": 42410.42
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1750453200000,
+   "closedateMs": 1764104400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 133776.12,
+   "maxAmount": 85862.62
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1707256800000,
+   "closedateMs": 1727992800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 352745.43,
+   "maxAmount": 60607.76
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1766768400000,
+   "closedateMs": 1800032400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 306242.59,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1736600400000,
+   "closedateMs": 1747141200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 451377.22,
+   "maxAmount": 246820.54
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1770768000000,
+   "closedateMs": 1793923200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 313092.04,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1752627600000,
+   "closedateMs": 1763427600000,
+   "won": false,
+   "preQualified": true,
+   "amount": 201932.99,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1772546400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 451389.38,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1724029200000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 126939.75,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1737187200000,
+   "closedateMs": 1761033600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 421246.72,
+   "maxAmount": 267287.51
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 246115.54,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1727413200000,
+   "closedateMs": 1737954000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 463463.01,
+   "maxAmount": 226646.03
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1746824400000,
+   "closedateMs": 1781298000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 486436.37,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1770944400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 449597.96,
+   "maxAmount": 339553.66
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1769108400000,
+   "closedateMs": 1787598000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 183943.49,
+   "maxAmount": 286826.3
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1716789600000,
+   "closedateMs": 1729317600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 166785.8,
+   "maxAmount": 170557.55
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1736222400000,
+   "closedateMs": 1753675200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 69543.49,
+   "maxAmount": 446966.78
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1719273600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 311402.74,
+   "maxAmount": 434305.73
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1768579200000,
+   "closedateMs": 1775923200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 320259.15,
+   "maxAmount": 330348.97
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1712930400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 339726.58,
+   "maxAmount": 211559.29
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1767056400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 1492.45,
+   "maxAmount": 101600.38
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1771992000000,
+   "closedateMs": 1789963200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 365243.09,
+   "maxAmount": 595831.98
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1727107200000,
+   "closedateMs": 1757779200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 160527.84,
+   "maxAmount": 125043.29
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1733324400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 181140.17,
+   "maxAmount": 532468.37
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1736877600000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 469207.37,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1772499600000,
+   "closedateMs": 1802912400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 307992.53,
+   "maxAmount": 259532.14
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1763503200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 314669.91,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1764921600000,
+   "closedateMs": 1788508800000,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 162186.13
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1731052800000,
+   "closedateMs": 1734854400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 41452.92,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1751893200000,
+   "closedateMs": 1782306000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 210442.05,
+   "maxAmount": 35081.28
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1704387600000,
+   "closedateMs": 1738861200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 177202.3,
+   "maxAmount": 419331.8
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1704470400000,
+   "closedateMs": 1723996800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 44522.55,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1765630800000,
+   "closedateMs": 1772024400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 391872.29,
+   "maxAmount": 365158.27
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1731319200000,
+   "closedateMs": 1735639200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 308310.5,
+   "maxAmount": 588074.72
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1706356800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 267242.02,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1738692000000,
+   "closedateMs": 1765044000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 393750.28,
+   "maxAmount": 413475.73
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1709053200000,
+   "closedateMs": 1741453200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 224126.96,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1708419600000,
+   "closedateMs": 1730624400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 324754.69,
+   "maxAmount": 202155.59
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 314156.72,
+   "maxAmount": 203945.35
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1713495600000,
+   "closedateMs": 1740711600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 211283.06,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1776697200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 318431.65,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1765130400000,
+   "closedateMs": 1794074400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 189331.23,
+   "maxAmount": 17622.83
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1754373600000,
+   "closedateMs": 1774332000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 450700.09,
+   "maxAmount": 89687.46
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1779336000000,
+   "closedateMs": 1787371200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 163543.91,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1778659200000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 45294.39,
+   "maxAmount": 536295.12
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1754226000000,
+   "closedateMs": 1788267600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 264606.51,
+   "maxAmount": 302027.83
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1731898800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 163685.88,
+   "maxAmount": 100162.29
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1726689600000,
+   "closedateMs": 1759262400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 133937.62,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1728072000000,
+   "closedateMs": 1757793600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 357636.92,
+   "maxAmount": 212568.85
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1744246800000,
+   "closedateMs": 1765760400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 31122.43,
+   "maxAmount": 286986.43
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1733814000000,
+   "closedateMs": 1756969200000,
+   "won": true,
+   "preQualified": true,
+   "amount": 327176.51,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1738872000000,
+   "closedateMs": 1747252800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 316841.3,
+   "maxAmount": 385977.56
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1736604000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 174307.11,
+   "maxAmount": 188208.4
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1746691200000,
+   "closedateMs": 1749628800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 298369.64,
+   "maxAmount": 288475.24
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1756375200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 69096.49,
+   "maxAmount": 72888.56
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1727182800000,
+   "closedateMs": 1747573200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 144055.11,
+   "maxAmount": 168966.16
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1749308400000,
+   "closedateMs": 1765292400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 482356.35,
+   "maxAmount": 545317.95
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1770523200000,
+   "closedateMs": 1773979200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 188880.03,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": 1777651200000,
+   "won": true,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 192124.18
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1761674400000,
+   "closedateMs": 1787335200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 193361.94,
+   "maxAmount": 451077.36
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1768896000000,
+   "closedateMs": 1770192000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 216581.19,
+   "maxAmount": 143359.54
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1740157200000,
+   "closedateMs": 1772902800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 4447.15,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1773032400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 211361.63,
+   "maxAmount": 308769.48
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": 1736992800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 183004.8,
+   "maxAmount": 104086.24
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1716418800000,
+   "closedateMs": 1719702000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 68594.19,
+   "maxAmount": 136580.03
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": null,
+   "closedateMs": 1762653600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 218163.68,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1763017200000,
+   "won": true,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 448389.53
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1721124000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 420456.52
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1721278800000,
+   "closedateMs": 1755579600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 127831.58,
+   "maxAmount": 382383.47
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1755788400000,
+   "closedateMs": 1773154800000,
+   "won": false,
+   "preQualified": true,
+   "amount": 80431.49,
+   "maxAmount": 500937.1
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1712001600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": true,
+   "amount": 287568.01,
+   "maxAmount": 520798.11
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1767294000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 383743.64,
+   "maxAmount": 395973.64
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1752292800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 383548.26,
+   "maxAmount": 586575.45
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1762214400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 71707.49,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1762614000000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 230199.46,
+   "maxAmount": 26257.67
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1742734800000,
+   "closedateMs": 1771938000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 70095.59,
+   "maxAmount": 364519.38
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1779588000000,
+   "closedateMs": 1788314400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 357201,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 204770.95,
+   "maxAmount": 445326.14
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1760637600000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 162952.58,
+   "maxAmount": 578549.68
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 426285.65,
+   "maxAmount": 64818.37
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1775836800000,
+   "closedateMs": 1788451200000,
+   "won": true,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 496875.37
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1706598000000,
+   "closedateMs": 1711263600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 469113.86,
+   "maxAmount": 414074.28
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1747494000000,
+   "closedateMs": 1748790000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 392989.06,
+   "maxAmount": 446327.79
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1745294400000,
+   "closedateMs": 1747022400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 167263.31,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1753408800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 168018.58,
+   "maxAmount": 102319.15
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1772560800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 317479.61,
+   "maxAmount": 393167.93
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1782277200000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 437479.51,
+   "maxAmount": 336450.54
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1713931200000,
+   "closedateMs": 1743307200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 404887.89,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": 1716350400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 132902.84,
+   "maxAmount": 122863.17
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1725408000000,
+   "closedateMs": 1732233600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 271138.32,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1757296800000,
+   "closedateMs": 1790215200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 416464.96,
+   "maxAmount": 229262.75
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 338564.87,
+   "maxAmount": 63556.38
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1772722800000,
+   "closedateMs": 1773673200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 290822.07,
+   "maxAmount": 229643.33
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1757044800000,
+   "closedateMs": 1773892800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 241504.6,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1757703600000,
+   "closedateMs": 1770404400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 349623.37,
+   "maxAmount": 509199.85
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1759359600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 423263.84,
+   "maxAmount": 410520.01
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1725066000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 34839.89,
+   "maxAmount": 187329.71
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1774875600000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 233730.95,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1738933200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 68431.07,
+   "maxAmount": 73907.78
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1768928400000,
+   "closedateMs": 1785517200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 51477.54,
+   "maxAmount": 4090.13
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1713801600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 15030.98
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1728190800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 331613.45,
+   "maxAmount": 182579.53
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1774530000000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 68242.14,
+   "maxAmount": 313441.02
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1778187600000,
+   "closedateMs": 1793739600000,
+   "won": false,
+   "preQualified": true,
+   "amount": 226286.72,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1724450400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 239706.45,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1772791200000,
+   "closedateMs": 1780308000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 490318.58,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1776913200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 144836.66,
+   "maxAmount": 390441.3
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1763859600000,
+   "closedateMs": 1795914000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 154006.43,
+   "maxAmount": 258188.78
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1759568400000,
+   "closedateMs": 1791450000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 71360.84,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1715230800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 310014.04,
+   "maxAmount": 124642.93
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1758898800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 414156.49,
+   "maxAmount": 273721.1
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1752271200000,
+   "closedateMs": 1756677600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 396930.16,
+   "maxAmount": 241134.72
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1719712800000,
+   "closedateMs": 1747792800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 182873.77,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1718460000000,
+   "closedateMs": 1729000800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 95402.94,
+   "maxAmount": 153402.74
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1735167600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 468780.05
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1764464400000,
+   "closedateMs": 1789434000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 459976.39,
+   "maxAmount": 237491.59
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1734976800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 366600.54,
+   "maxAmount": 214661.87
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1783414800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 322111.58,
+   "maxAmount": 379812.39
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": 1796036400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 209097.85,
+   "maxAmount": 306069.95
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1707469200000,
+   "closedateMs": 1740646800000,
+   "won": true,
+   "preQualified": true,
+   "amount": "",
+   "maxAmount": 560147.77
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1771362000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 191542.1,
+   "maxAmount": 494004.22
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1785841200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 342425.17,
+   "maxAmount": 398208.83
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1742425200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": true,
+   "amount": 137017.26,
+   "maxAmount": 164746.65
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 278529.1,
+   "maxAmount": 443746.46
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1732057200000,
+   "closedateMs": 1734994800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 337236.59,
+   "maxAmount": 21985.66
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1707703200000,
+   "closedateMs": 1710640800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 204077.12,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 424898.8,
+   "maxAmount": 250031.04
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1738666800000,
+   "closedateMs": 1771412400000,
+   "won": true,
+   "preQualified": true,
+   "amount": 149094.31,
+   "maxAmount": 11159.39
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1761188400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 86648.45,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1714489200000,
+   "closedateMs": 1742310000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 194699.02,
+   "maxAmount": 517432.56
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1780009200000,
+   "closedateMs": 1801695600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 215179.42,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1765018800000,
+   "closedateMs": 1793271600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 168712.71,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1783281600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 358340.36,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1706756400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 51648.77,
+   "maxAmount": 114483.31
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1767412800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1715540400000,
+   "closedateMs": 1748113200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 95411.68,
+   "maxAmount": 561637.07
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1742619600000,
+   "closedateMs": 1774414800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 353055.5,
+   "maxAmount": 236160.25
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1780837200000,
+   "closedateMs": 1808830800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 475683.09,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1771959600000,
+   "closedateMs": 1780858800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 453818.12,
+   "maxAmount": 354753.84
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 398029.4,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1719100800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 411022.54,
+   "maxAmount": 117076.58
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1707854400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 32627.47,
+   "maxAmount": 41835.21
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1769695200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": true,
+   "amount": 165653.63,
+   "maxAmount": 510244.25
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": 1739469600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 287191.24,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1735135200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 173434.96,
+   "maxAmount": 8212.23
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1756656000000,
+   "closedateMs": 1779292800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 318904.55,
+   "maxAmount": 531688.58
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1743390000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 53089.97,
+   "maxAmount": 333755.42
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1728277200000,
+   "closedateMs": 1730178000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 204431.99,
+   "maxAmount": 127690.79
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1710936000000,
+   "closedateMs": 1740484800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 349400.16,
+   "maxAmount": 162116.13
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1716188400000,
+   "closedateMs": 1740034800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 139078.32,
+   "maxAmount": 497165.02
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1750669200000,
+   "closedateMs": 1758877200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 491501.41,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1782511200000,
+   "closedateMs": 1806530400000,
+   "won": false,
+   "preQualified": true,
+   "amount": 452052.56,
+   "maxAmount": 68495.74
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1758384000000,
+   "closedateMs": 1790524800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 469263.19,
+   "maxAmount": 188686.62
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1722063600000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 400287.76,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1735876800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 158093.93,
+   "maxAmount": 264210.68
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1760029200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 372836.93,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1705888800000,
+   "closedateMs": 1712628000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 461338.34,
+   "maxAmount": 336478.48
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1754053200000,
+   "closedateMs": 1773752400000,
+   "won": true,
+   "preQualified": true,
+   "amount": 102865.94,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1736668800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 180402.94,
+   "maxAmount": 158897.58
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1722780000000,
+   "closedateMs": 1735912800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 70306.39,
+   "maxAmount": 110979.61
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1768014000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 245446.56,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1720540800000,
+   "closedateMs": 1730822400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 344229.01,
+   "maxAmount": 478394.21
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1738195200000,
+   "closedateMs": 1764115200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 449931.02,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1772218800000,
+   "closedateMs": 1798570800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 9985.82,
+   "maxAmount": 343203.24
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1745838000000,
+   "closedateMs": 1767178800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 498646.84,
+   "maxAmount": 532381.27
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1766278800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 319129.96,
+   "maxAmount": 28156.62
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1766437200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 187376.52,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1753236000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 488036.42,
+   "maxAmount": 76270.8
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1730602800000,
+   "closedateMs": 1763002800000,
+   "won": true,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 56864.27
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1749042000000,
+   "closedateMs": 1759150800000,
+   "won": false,
+   "preQualified": true,
+   "amount": "",
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1765353600000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": true,
+   "amount": 422427.23,
+   "maxAmount": 588380.26
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1755363600000,
+   "closedateMs": 1780938000000,
+   "won": false,
+   "preQualified": true,
+   "amount": 69894.95,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1713499200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": true,
+   "amount": 194446.74,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1769158800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 166332.52,
+   "maxAmount": 8111.63
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1751000400000,
+   "closedateMs": 1776056400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 250481.79,
+   "maxAmount": 511595.29
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1715558400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 324488.48,
+   "maxAmount": 26341.83
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1779822000000,
+   "closedateMs": 1780599600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 129286.29,
+   "maxAmount": 174152.8
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1734994800000,
+   "closedateMs": 1750287600000,
+   "won": true,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 419125.74
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 106839.86,
+   "maxAmount": 285625.39
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1748790000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 125842.02,
+   "maxAmount": 36881.11
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1713405600000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 422535.68,
+   "maxAmount": 310533.62
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1718852400000,
+   "closedateMs": 1733972400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 250031.43,
+   "maxAmount": 43073.66
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1747342800000,
+   "closedateMs": 1776632400000,
+   "won": true,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 307180.91
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1710982800000,
+   "closedateMs": 1740963600000,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 80400.15
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1783029600000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 99159.96,
+   "maxAmount": 359141.98
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1777273200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 111109.21
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1756191600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 432917.86,
+   "maxAmount": 222903.54
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1712199600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 223005.19,
+   "maxAmount": 55670.01
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1738292400000,
+   "closedateMs": 1748833200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 55182.11,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1714312800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 77770.84,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1715472000000,
+   "closedateMs": 1736121600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 234106.71,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1722794400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 133032.3,
+   "maxAmount": 412426.9
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1733756400000,
+   "closedateMs": 1743519600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 477701.94,
+   "maxAmount": 517234.02
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": 1743609600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 82883.24,
+   "maxAmount": 242377.46
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1767186000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 362244.15,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1758610800000,
+   "closedateMs": 1792566000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 43060.53,
+   "maxAmount": 7964.48
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1733094000000,
+   "closedateMs": 1759273200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 233735.56,
+   "maxAmount": 397996.83
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1732240800000,
+   "closedateMs": 1757037600000,
+   "won": false,
+   "preQualified": true,
+   "amount": 223351.55,
+   "maxAmount": 344604.25
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1720972800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 78952.74,
+   "maxAmount": 81351.42
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1706497200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 437720.87,
+   "maxAmount": 34768.49
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": null,
+   "closedateMs": 1759543200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 41767.94,
+   "maxAmount": 260990.66
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1760364000000,
+   "closedateMs": 1789653600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 85748.82,
+   "maxAmount": 227676.71
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1772874000000,
+   "closedateMs": 1791018000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 484497.97,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1720022400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 237695.57,
+   "maxAmount": 375812.16
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1740960000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 459493.95,
+   "maxAmount": 12051.61
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": null,
+   "closedateMs": 1807923600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 391839.44,
+   "maxAmount": 49932.19
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1747342800000,
+   "closedateMs": 1754773200000,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 115585.75
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1719086400000,
+   "closedateMs": 1749672000000,
+   "won": false,
+   "preQualified": true,
+   "amount": 45146.95,
+   "maxAmount": 404990.47
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": 1717606800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 242690.33,
+   "maxAmount": 444418.02
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1736168400000,
+   "closedateMs": 1741611600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 399568.47,
+   "maxAmount": 134376.84
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": null,
+   "closedateMs": 1760731200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 333167.4,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1754013600000,
+   "closedateMs": 1774231200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 229405.94,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1751234400000,
+   "closedateMs": 1781301600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 143608.51,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1723327200000,
+   "closedateMs": 1726869600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 143399.2,
+   "maxAmount": 244088.89
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1758146400000,
+   "closedateMs": 1774216800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 152517.72,
+   "maxAmount": 10271.83
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1738378800000,
+   "closedateMs": 1739847600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 129184.28,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1745182800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 50411.78,
+   "maxAmount": 105145.36
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1732892400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": true,
+   "amount": 442113.58,
+   "maxAmount": 231248.13
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 267743.21,
+   "maxAmount": 383188.39
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1757646000000,
+   "closedateMs": 1780369200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 24099.87,
+   "maxAmount": 571677.83
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1754395200000,
+   "closedateMs": 1780315200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 403404.81,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1720778400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 289437.71,
+   "maxAmount": 124667.14
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": null,
+   "closedateMs": 1792267200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 82948.16,
+   "maxAmount": 378430.19
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1737140400000,
+   "closedateMs": 1771268400000,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 148562.63
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1778115600000,
+   "closedateMs": 1809219600000,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 121693.6
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1754690400000,
+   "closedateMs": 1755900000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 234613.41,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1761688800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 449224.29,
+   "maxAmount": 204968.93
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1763406000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 271841.26,
+   "maxAmount": 459508.15
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1750420800000,
+   "closedateMs": 1772798400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 123371.23,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1760360400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 401626.67,
+   "maxAmount": 166311.44
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1770220800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 314376.2
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1728756000000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": true,
+   "amount": 14557.64,
+   "maxAmount": 223393.4
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1710090000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 181308.19,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1726311600000,
+   "closedateMs": 1730718000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 479846.88,
+   "maxAmount": 517217.84
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1725386400000,
+   "closedateMs": 1746900000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 417271.25,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1764453600000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 283901.43
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1780592400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 277629.23,
+   "maxAmount": 363302.59
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1729447200000,
+   "closedateMs": 1729620000000,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1747728000000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 497575.14,
+   "maxAmount": 322687.28
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": null,
+   "closedateMs": 1809759600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 55601.31,
+   "maxAmount": 188757.25
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1716894000000,
+   "closedateMs": 1746961200000,
+   "won": true,
+   "preQualified": true,
+   "amount": 411032.71,
+   "maxAmount": 418456.28
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1715583600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 479695.74,
+   "maxAmount": 151298.12
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1762459200000,
+   "closedateMs": 1782331200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 135001.71,
+   "maxAmount": 322011.97
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 267136.21,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1758524400000,
+   "closedateMs": 1789887600000,
+   "won": true,
+   "preQualified": true,
+   "amount": 345032.56,
+   "maxAmount": 493215.27
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1715396400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 387000.61,
+   "maxAmount": 576916.58
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1728428400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 195906.01,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1744092000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 254680.56,
+   "maxAmount": 582263.97
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1767967200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 116037.15,
+   "maxAmount": 593112.65
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1726513200000,
+   "closedateMs": 1751137200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 6162.08,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": null,
+   "closedateMs": 1763517600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 427442.46,
+   "maxAmount": 314672.4
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1736665200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 444122.84,
+   "maxAmount": 240678.9
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1754960400000,
+   "closedateMs": 1755046800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 247736,
+   "maxAmount": 90750.65
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1739181600000,
+   "closedateMs": 1768212000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 475645.47,
+   "maxAmount": 175604.83
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 144336.55,
+   "maxAmount": 486469.6
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1723989600000,
+   "closedateMs": 1738850400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 304501.66,
+   "maxAmount": 237521.29
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 426438.28,
+   "maxAmount": 544499.06
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1709722800000,
+   "closedateMs": 1730631600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 391055.7,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1706648400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 223629.54,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1782954000000,
+   "closedateMs": 1803776400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 258935.61,
+   "maxAmount": 57360.33
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1762196400000,
+   "closedateMs": 1769972400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 408038.99,
+   "maxAmount": 64764.3
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1774990800000,
+   "closedateMs": 1788901200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 373207.96,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1782896400000,
+   "closedateMs": 1787562000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 324201.02,
+   "maxAmount": 575974.26
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1769727600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 394356.32,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1709888400000,
+   "closedateMs": 1718355600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 429918.39,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1726862400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 47744.53,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1736197200000,
+   "closedateMs": 1743109200000,
+   "won": true,
+   "preQualified": false,
+   "amount": 34478.23,
+   "maxAmount": 280168.61
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1731146400000,
+   "closedateMs": 1736848800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 241296.13,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1733637600000,
+   "closedateMs": 1754114400000,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 20960.21
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1721138400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 551416.02
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": null,
+   "closedateMs": 1746212400000,
+   "won": false,
+   "preQualified": false,
+   "amount": 435828.28,
+   "maxAmount": 97785.39
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1726185600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 469237.18,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1762650000000,
+   "closedateMs": 1782090000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 340761.14,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1705986000000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 277718.26,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1707080400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": true,
+   "amount": 430590.22,
+   "maxAmount": 374355.58
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1751850000000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 188061.29,
+   "maxAmount": 141555.85
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1755450000000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 337353.46,
+   "maxAmount": 598650.21
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1754647200000,
+   "closedateMs": 1788775200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 423069.29,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1725782400000,
+   "closedateMs": 1744531200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 435357.25,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1764345600000,
+   "closedateMs": 1770048000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 59219.05,
+   "maxAmount": 462199.45
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": null,
+   "closedateMs": 1777269600000,
+   "won": true,
+   "preQualified": true,
+   "amount": "",
+   "maxAmount": 38577.01
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1800327600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 90841.72,
+   "maxAmount": 75680.85
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1758211200000,
+   "closedateMs": 1758556800000,
+   "won": true,
+   "preQualified": false,
+   "amount": 354616.2,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1777176000000,
+   "closedateMs": 1805947200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 182808.33,
+   "maxAmount": 91429.61
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1705028400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 472836.02,
+   "maxAmount": 147793.1
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1710129600000,
+   "closedateMs": 1714881600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 161054.55,
+   "maxAmount": 24063.39
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1710410400000,
+   "closedateMs": 1721124000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 418971.01,
+   "maxAmount": 116411.83
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1776279600000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 454036.64,
+   "maxAmount": 433083.96
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1732424400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 527390.11
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1725188400000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 131007.89,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1756720800000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 155773.53,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1750568400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 244560.64,
+   "maxAmount": 388256.95
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1775559600000,
+   "closedateMs": 1778065200000,
+   "won": true,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": null
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1730905200000,
+   "closedateMs": 1732806000000,
+   "won": false,
+   "preQualified": false,
+   "amount": 479749.42,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1705910400000,
+   "closedateMs": 1731657600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 399605.07,
+   "maxAmount": 125305
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1737493200000,
+   "closedateMs": 1771707600000,
+   "won": true,
+   "preQualified": false,
+   "amount": 310972.03,
+   "maxAmount": 64874.32
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1712775600000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 469669.76,
+   "maxAmount": 514962.51
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1746453600000,
+   "closedateMs": 1746712800000,
+   "won": false,
+   "preQualified": true,
+   "amount": 121173.41,
+   "maxAmount": 538051.36
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1767751200000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 81701.19,
+   "maxAmount": 355595.52
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": null,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": 31841.87
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1722070800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 461973.34,
+   "maxAmount": 347445.01
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1710734400000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 30601.28,
+   "maxAmount": 165175.46
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1734040800000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 476211.69,
+   "maxAmount": 50560.77
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1731967200000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 78351.32,
+   "maxAmount": 523447.26
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1782363600000,
+   "closedateMs": 1797829200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 50952.98,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1769547600000,
+   "closedateMs": 1787605200000,
+   "won": false,
+   "preQualified": false,
+   "amount": 432287.27,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1778065200000,
+   "closedateMs": 1794135600000,
+   "won": false,
+   "preQualified": false,
+   "amount": 32703,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": null,
+   "closedateMs": 1787097600000,
+   "won": true,
+   "preQualified": true,
+   "amount": 140994.41,
+   "maxAmount": 271926.11
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1776171600000,
+   "closedateMs": 1786194000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 103975.65,
+   "maxAmount": 593183.15
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1774418400000,
+   "closedateMs": 1787896800000,
+   "won": false,
+   "preQualified": false,
+   "amount": 331085.42,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1737450000000,
+   "closedateMs": 1762160400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 243627.46,
+   "maxAmount": null
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": null,
+   "closedateMs": 1775052000000,
+   "won": true,
+   "preQualified": false,
+   "amount": 413095.86,
+   "maxAmount": 135132.45
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1767906000000,
+   "closedateMs": null,
+   "won": true,
+   "preQualified": false,
+   "amount": 491894.41,
+   "maxAmount": 123659.56
+  },
+  {
+   "companyId": "c1",
+   "createdateMs": 1753340400000,
+   "closedateMs": 1766905200000,
+   "won": false,
+   "preQualified": false,
+   "amount": "",
+   "maxAmount": null
+  },
+  {
+   "companyId": "c2",
+   "createdateMs": 1745902800000,
+   "closedateMs": 1765602000000,
+   "won": false,
+   "preQualified": true,
+   "amount": "",
+   "maxAmount": null
+  },
+  {
+   "companyId": "c3",
+   "createdateMs": 1707231600000,
+   "closedateMs": null,
+   "won": false,
+   "preQualified": false,
+   "amount": 286173.74,
+   "maxAmount": 263883.65
+  },
+  {
+   "companyId": "c4",
+   "createdateMs": 1739944800000,
+   "closedateMs": 1746165600000,
+   "won": false,
+   "preQualified": true,
+   "amount": 291398.8,
+   "maxAmount": 490373.22
+  },
+  {
+   "companyId": "c5",
+   "createdateMs": 1759924800000,
+   "closedateMs": 1791806400000,
+   "won": true,
+   "preQualified": false,
+   "amount": 136384.75,
+   "maxAmount": 126216.5
+  }
+ ],
+ "snapshotMs": 1752364800000,
+ "yieldRes": {
+  "base": 11075140.85,
+  "wins": 2281005.09,
+  "eventualWins": 3113594.25,
+  "yield": 0.20595720821013305,
+  "timing": 0.7325954851053569
+ },
+ "seasonality": {
+  "winsByCreationMonth": [
+   1386729.6900000002,
+   839775.8600000001,
+   0,
+   448211.51,
+   0,
+   491501.41,
+   0,
+   0,
+   354616.2,
+   0,
+   0,
+   0
+  ],
+  "creationValueByMonth": [
+   3682768.4599999995,
+   2158662.37,
+   943715.23,
+   2067884.94,
+   3406844.06,
+   2875329.8399999994,
+   1832995.23,
+   4093051.6300000004,
+   3766733.8400000003,
+   3244344.1200000006,
+   3548195.06,
+   2401260.95
+  ]
+ },
+ "hitRate": 0.4672142372271785,
+ "yoyFactor": 1.234,
+ "futureWins": 437596.3908,
+ "creationWindowValue": 21102907.82,
+ "creationByCompany": {
+  "c1": 120000.55,
+  "c2": 0,
+  "c3": 98765.43
+ },
+ "visibilityRate": 0.1234,
+ "aggregated": {
+  "c1": {
+   "ytd_won_deals": 1049195.26,
+   "ytd_prior_year_won_deals": 592519.9,
+   "prior_year_won_deals": 1746880.26,
+   "ytd_lost_deals": 825347.42,
+   "future_pipeline_value": 208075.85,
+   "future_creation_value": 120000.55,
+   "projected_sales_quote_visibility": 11161034.51
+  },
+  "c3": {
+   "ytd_won_deals": 1749327.59,
+   "ytd_prior_year_won_deals": 900087.82,
+   "prior_year_won_deals": 2731078.82,
+   "ytd_lost_deals": 1015330.18,
+   "future_pipeline_value": 355626.38,
+   "future_creation_value": 98765.43,
+   "projected_sales_quote_visibility": 17858341.96
+  },
+  "c2": {
+   "ytd_won_deals": 539887.08,
+   "ytd_prior_year_won_deals": 860660.48,
+   "prior_year_won_deals": 1281907.2,
+   "ytd_lost_deals": 2093410.07,
+   "future_pipeline_value": 29751.41,
+   "future_creation_value": 0,
+   "projected_sales_quote_visibility": 4616195.26
+  },
+  "c5": {
+   "ytd_won_deals": 1992926.48,
+   "ytd_prior_year_won_deals": 730427.45,
+   "prior_year_won_deals": 1534974.67,
+   "ytd_lost_deals": 1200449.35,
+   "future_pipeline_value": 466465.54,
+   "future_creation_value": 0,
+   "projected_sales_quote_visibility": 19930243.29
+  },
+  "c4": {
+   "ytd_won_deals": 1026245.44,
+   "ytd_prior_year_won_deals": 920915.08,
+   "prior_year_won_deals": 1774945.02,
+   "ytd_lost_deals": 989498.75,
+   "future_pipeline_value": 227408.91,
+   "future_creation_value": 0,
+   "projected_sales_quote_visibility": 10159273.52
+  }
+ },
+ "assocCases": [
+  {
+   "assocs": [
+    {
+     "companyId": "a",
+     "typeIds": [
+      5
+     ]
+    },
+    {
+     "companyId": "b",
+     "typeIds": [
+      3
+     ]
+    }
+   ],
+   "expected": "a"
+  },
+  {
+   "assocs": [
+    {
+     "companyId": "b",
+     "typeIds": [
+      3
+     ]
+    }
+   ],
+   "expected": "b"
+  },
+  {
+   "assocs": [
+    {
+     "companyId": "a",
+     "typeIds": [
+      3
+     ]
+    },
+    {
+     "companyId": "b",
+     "typeIds": [
+      4
+     ]
+    }
+   ],
+   "expected": null
+  },
+  {
+   "assocs": [
+    {
+     "companyId": "a",
+     "typeIds": [
+      5
+     ]
+    },
+    {
+     "companyId": "b",
+     "typeIds": [
+      5
+     ]
+    }
+   ],
+   "expected": null
+  },
+  {
+   "assocs": [],
+   "expected": null
+  }
+ ]
+}

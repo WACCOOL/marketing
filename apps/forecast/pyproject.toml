@@ -1,0 +1,32 @@
+[project]
+name = "wac-forecast"
+version = "0.1.0"
+description = "ML sales forecasting (third method): extraction, point-in-time backtest, scoring"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pandas>=2.2",
+    "pyarrow>=16",
+    "lightgbm>=4.3",
+    "scikit-learn>=1.5",
+    "httpx>=0.27",
+    "supabase>=2.5",
+    "python-dotenv>=1.0",
+    "boto3>=1.34",
+    "click>=8.1",
+]
+
+[project.scripts]
+wac-forecast = "wac_forecast.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wac_forecast"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
