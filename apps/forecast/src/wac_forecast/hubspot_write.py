@@ -96,8 +96,13 @@ def run_push(dry_run: bool, sample: int) -> None:
     deal_updates = build_deal_updates(per_deal)
 
     if sample:
-        company_updates = company_updates[:sample]
-        deal_updates = deal_updates[: sample * 4]
+        # Spot-check set = the LARGEST forecasts/EVs — recognizable accounts.
+        company_updates = sorted(
+            company_updates, key=lambda u: -u["properties"]["projected_sales_ml"]
+        )[:sample]
+        deal_updates = sorted(
+            deal_updates, key=lambda u: -u["properties"]["ml_expected_value"]
+        )[: sample * 4]
 
     print(f"prepared {len(company_updates):,} company + {len(deal_updates):,} deal updates")
     if dry_run:
