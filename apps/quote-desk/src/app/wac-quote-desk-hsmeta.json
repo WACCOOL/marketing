@@ -1,0 +1,24 @@
+{
+  "config": {
+    "auth": {
+      "type": "static",
+      "optionalScopes": [],
+      "requiredScopes": [
+        "crm.objects.contacts.read",
+        "crm.objects.deals.read"
+      ],
+      "conditionallyRequiredScopes": []
+    },
+    "name": "wac-quote-desk",
+    "description": "Quote Desk — request and track Zendesk quote tickets from the deal record.",
+    "isUserLevel": false,
+    "distribution": "PRIVATE",
+    "permittedUrls": {
+      "img": [],
+      "fetch": ["https://marketing.gowac.cc"],
+      "iframe": []
+    }
+  },
+  "uid": "wac-quote-desk",
+  "type": "app"
+}

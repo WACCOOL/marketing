@@ -1,0 +1,12 @@
+{
+  "config": {
+    "name": "Quote Desk",
+    "location": "crm.record.tab",
+    "entrypoint": "/app/cards/QuoteDeskCard.jsx",
+    "objectTypes": [
+      "deals"
+    ]
+  },
+  "uid": "quote-desk-card",
+  "type": "card"
+}
