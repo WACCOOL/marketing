@@ -6,12 +6,10 @@ import { serviceSupabase } from "./supabase.js";
 import {
   ZD,
   ZD_FIELDS,
-  ZD_QUOTES_GROUP,
   customFieldValue,
   parseSyncGroups,
   zd,
   zendeskTicketUrl,
-  type ZdGroupConfig,
 } from "./zendesk.js";
 
 /**
@@ -331,9 +329,12 @@ export async function syncZendeskTicket(
     notesPending: 0,
   };
 
-  // ---- deal adoption (Quotes group only) ---------------------------------
+  // ---- deal adoption (any synced group) ----------------------------------
+  // Quote tickets mostly live in the Quotes/Custom Quotes/Schonbek Quotes
+  // groups, but ANY ticket carrying the HubSpot-deal-ID field or an
+  // unambiguous SAP quote number deserves the deal link.
   const quoteNumber = customFieldValue(ticket, ZD_FIELDS.quoteNumber);
-  if (!result.dealId && ticket.group_id === ZD_QUOTES_GROUP) {
+  if (!result.dealId) {
     const fieldDealId = customFieldValue(ticket, ZD_FIELDS.hubspotDealId);
     if (fieldDealId && /^\d+$/.test(fieldDealId)) {
       result.dealId = fieldDealId;
@@ -380,6 +381,7 @@ export async function syncZendeskTicket(
     zendesk_ticket_id: String(ticketId),
     zendesk_ticket_url: zendeskTicketUrl(env, ticketId),
     zendesk_group: group.name,
+    ...(quoteNumber ? { sap_quote_number: quoteNumber } : {}),
   };
 
   if (!write(env)) {
