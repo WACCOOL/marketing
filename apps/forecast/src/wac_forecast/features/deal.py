@@ -24,8 +24,12 @@ from ..snapshot import deal_state_at, turnover_through, value_at
 DAY_MS = 86_400_000
 LABEL_WINDOW_MS = PIPELINE_FRESH_DAYS * DAY_MS
 
+# NOTE: stage_of_project is deliberately EXCLUDED — HubSpot holds only the
+# CURRENT SAP stage, so on historical snapshots it peeks at the future
+# (observed: backtest AUC 0.99). Revisit only with true point-in-time stage
+# history.
 CAT_FEATURES = [
-    "project_type", "opportunity_type", "quote_type", "stage_of_project",
+    "project_type", "opportunity_type", "quote_type",
     "sales_group", "state", "customization",
     "company_type", "company_sub_type",
 ]
@@ -99,6 +103,7 @@ def build_deal_features(
     d_prep: pd.DataFrame,
     li: pd.DataFrame,
     turnover: pd.DataFrame,
+    companies: pd.DataFrame,
     as_of_ms: float,
     data_end_ms: float | None = None,
 ) -> pd.DataFrame:
@@ -113,6 +118,13 @@ def build_deal_features(
          "won_ms", "all_rej_ms", "created_ms"]
         + [c for c in CAT_FEATURES if c in open_deals.columns]
     ].copy()
+
+    co = companies[["account_number_", "company_type", "company_sub_type"]].copy()
+    co["account_key"] = co["account_number_"].astype("string").str.strip().str.lstrip("0")
+    co = co.dropna(subset=["account_key"]).drop_duplicates("account_key").set_index("account_key")
+    deal_acct = X["account_number"].astype("string").str.strip().str.lstrip("0")
+    X["company_type"] = deal_acct.map(co["company_type"])
+    X["company_sub_type"] = deal_acct.map(co["company_sub_type"])
     X["age_days"] = (as_of_ms - X["created_ms"]) / DAY_MS
     X["log_value"] = np.log1p(X["value_at_d"].clip(lower=0))
     X["month"] = pd.Timestamp(as_of_ms, unit="ms", tz="UTC").month

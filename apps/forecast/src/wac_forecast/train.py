@@ -44,13 +44,13 @@ def load_prepared():
     return d_prep, li, companies, parents, turnover
 
 
-def build_deal_rows(d_prep, li, turnover, grid=None, data_end_ms: float | None = None) -> pd.DataFrame:
+def build_deal_rows(d_prep, li, turnover, companies, grid=None, data_end_ms: float | None = None) -> pd.DataFrame:
     grid = grid or SNAPSHOT_GRID
     if data_end_ms is None:
         data_end_ms = float(turnover["billing_ms"].max())
     frames = []
     for dt in grid:
-        X = build_deal_features(d_prep, li, turnover, _ms(dt), data_end_ms=data_end_ms)
+        X = build_deal_features(d_prep, li, turnover, companies, _ms(dt), data_end_ms=data_end_ms)
         X["snapshot"] = dt.strftime("%Y-%m-%d")
         frames.append(X)
         print(f"  deal rows {dt:%Y-%m}: {len(X):,} open deals ({int(X['labelable'].sum()):,} labelable)")
@@ -102,12 +102,17 @@ def build_company_rows(
     return rows
 
 
-def run_training() -> None:
+def run_training(reuse_deals: bool = False) -> None:
     print("loading prepared data…")
     d_prep, li, companies, parents, turnover = load_prepared()
 
-    print("building deal rows…")
-    deal_rows = build_deal_rows(d_prep, li, turnover)
+    cache = CONFIG.data_dir / "training" / "deal_rows.parquet"
+    if reuse_deals and cache.exists():
+        print(f"reusing cached deal rows ({cache})")
+        deal_rows = pd.read_parquet(cache)
+    else:
+        print("building deal rows…")
+        deal_rows = build_deal_rows(d_prep, li, turnover, companies)
 
     print("training win-prob…")
     win = train_win_prob(deal_rows, TRAIN_END, CALIB_END)

@@ -2,11 +2,14 @@
 
     forecast = previous_year_sales × (ytd_sales / prior_ytd_sales)
 
-Live it runs on the Power-BI-fed company props; historically those aren't
-stored, so the backtest reconstructs the same three quantities as-of-D from
-turnover_orders (billing_date ≤ D, qty-carrying rows only). Companies with no
-prior-YTD base fall back to the global ratio (a 0-denominator company would
-otherwise have no defined growth).
+One GLOBAL growth rate ("we have a sales growth rate then we use that rate
+against the prior years total") — per-company YTD ratios are catastrophically
+unstable (credit memos leave near-zero prior-YTD denominators; observed
+quadrillion-dollar forecasts). Live it runs on the Power-BI-fed company props;
+historically those aren't stored, so the backtest reconstructs the same
+quantities as-of-D from turnover_orders (billing_date ≤ D, qty-carrying rows
+only). Per-company numbers apply the global rate to each company's prior-year
+total.
 """
 
 from __future__ import annotations
@@ -54,7 +57,6 @@ def growth_rate_forecast(turnover: pd.DataFrame, as_of_ms: float) -> pd.DataFram
     global_ratio = (
         out["ytd"].sum() / out["prior_ytd"].sum() if out["prior_ytd"].sum() > 0 else 1.0
     )
-    ratio = (out["ytd"] / out["prior_ytd"]).where(out["prior_ytd"] > 0, global_ratio)
-    out["forecast"] = out["prior_full"] * ratio
+    out["forecast"] = out["prior_full"] * global_ratio
     out.attrs["global_ratio"] = global_ratio
     return out

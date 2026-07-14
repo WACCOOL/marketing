@@ -119,11 +119,12 @@ def backtest(ml: bool) -> None:
 
 
 @main.command()
-def train() -> None:
+@click.option("--reuse-deals", is_flag=True, help="reuse cached deal_rows.parquet")
+def train(reuse_deals: bool) -> None:
     """Train win-prob + company-sales models."""
     from .train import run_training
 
-    run_training()
+    run_training(reuse_deals=reuse_deals)
 
 
 @main.command()
@@ -136,18 +137,101 @@ def report() -> None:
 
 @main.command()
 def score() -> None:
-    """Score the current book with the latest artifacts (M3/M4)."""
-    raise SystemExit("score: not implemented yet (M3)")
+    """Score the current book with the latest models -> artifacts/score_latest."""
+    from datetime import datetime, timezone
+
+    from .features.company import parent_map
+    from .models.company_sales import CompanySalesModel
+    from .models.win_prob import WinProbModel
+    from .scoring import distribute_to_accounts, ml_forecast_at
+    from .train import load_prepared
+
+    model_dir = CONFIG.artifacts_dir / "models" / "latest"
+    win = WinProbModel.load(model_dir)
+    co = CompanySalesModel.load(model_dir)
+    d_prep, li, companies, parents, turnover = load_prepared()
+
+    now = datetime.now(timezone.utc)
+    ml = ml_forecast_at(now, win, co, d_prep, li, turnover, companies, parents)
+    per_account = distribute_to_accounts(
+        ml["per_parent"], turnover, parent_map(parents), now.timestamp() * 1000
+    )
+
+    out = CONFIG.artifacts_dir / "score_latest"
+    out.mkdir(parents=True, exist_ok=True)
+    ml["per_parent"].to_parquet(out / "per_parent.parquet")
+    per_account.to_parquet(out / "per_account.parquet")
+    ml["per_deal"].to_parquet(out / "per_deal.parquet")
+    print(
+        f"scored {len(ml['per_deal']):,} open deals, {len(ml['per_parent']):,} parents; "
+        f"total-year forecast ${ml['total']:,.0f} "
+        f"(sum of companies ${ml['sum_parents']:,.0f}, uplift {ml['uplift_share']*100:.1f}%)"
+    )
+    print(f"artifacts -> {out}")
+
+    # forecast_runs log + drift guardrail (skipped when Supabase creds absent).
+    if CONFIG.supabase_url and CONFIG.supabase_service_role_key:
+        from .extract.supabase_db import client as sb_client
+
+        db = sb_client()
+        prev = (
+            db.table("forecast_runs")
+            .select("total_forecast,run_at")
+            .eq("method", "ml")
+            .eq("forecast_year", now.year)
+            .order("run_at", desc=True)
+            .limit(1)
+            .execute()
+            .data
+        )
+        db.table("forecast_runs").insert(
+            {
+                "method": "ml",
+                "forecast_year": now.year,
+                "total_forecast": round(ml["total"], 2),
+                "sum_companies": round(ml["sum_parents"], 2),
+                "uplift_share": round(ml["uplift_share"], 4),
+                "n_companies": int(len(ml["per_parent"])),
+                "n_open_deals": int(len(ml["per_deal"])),
+                "model_version": win.meta.get("train_end", "unknown"),
+            }
+        ).execute()
+        if prev:
+            prev_total = float(prev[0]["total_forecast"])
+            if prev_total > 0:
+                move = abs(ml["total"] - prev_total) / prev_total
+                print(f"day-over-day total move: {move*100:.1f}%")
+                if move > 0.15:
+                    raise SystemExit(
+                        f"drift guardrail: total moved {move*100:.1f}% vs last run "
+                        f"— refusing to proceed (investigate before pushing)"
+                    )
 
 
 @main.command()
 @click.option("--dry-run", is_flag=True)
 @click.option("--sample", type=int, default=0)
 def push(dry_run: bool, sample: int) -> None:
-    """Write forecasts to HubSpot — gated behind Gates 1 & 2 (M3)."""
-    if not dry_run and not sample and not CONFIG.write_enabled:
-        raise SystemExit("push: refusing full write without FORECAST_WRITE=1 (Gate 2)")
-    raise SystemExit("push: not implemented yet (M3)")
+    """Write forecasts to HubSpot — gated behind Gates 1 & 2."""
+    from .hubspot_write import run_push
+
+    run_push(dry_run=dry_run, sample=sample)
+
+
+@main.command("models-upload")
+def models_upload() -> None:
+    """Upload artifacts/models/latest to R2 and point latest.txt at it."""
+    from .r2 import upload_models
+
+    upload_models(CONFIG.artifacts_dir / "models" / "latest")
+
+
+@main.command("models-download")
+def models_download() -> None:
+    """Download the current R2 model version into artifacts/models/latest."""
+    from .r2 import download_models
+
+    download_models(CONFIG.artifacts_dir / "models" / "latest")
 
 
 if __name__ == "__main__":

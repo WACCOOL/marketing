@@ -127,14 +127,16 @@ def build_company_features(
 
     # Company classification joined via account number, rolled to parent
     # (parent's own record wins; else the largest child's).
-    c = companies[["account_number_", "company_type", "company_sub_type", "national_account", "state"]].copy()
+    c = companies[
+        ["account_number_", "company_type", "company_sub_type", "buying_group", "national_account", "state"]
+    ].copy()
     c["account_key"] = c["account_number_"].astype("string").str.strip().str.lstrip("0")
     c = c.dropna(subset=["account_key"]).drop_duplicates("account_key")
     c["parent"] = to_parent(c["account_key"], pmap).values
     c["is_self"] = c["account_key"] == c["parent"]
     c = c.sort_values("is_self", ascending=False).drop_duplicates("parent")
     c = c.set_index("parent")
-    X = X.join(c[["company_type", "company_sub_type", "national_account", "state"]], how="left")
+    X = X.join(c[["company_type", "company_sub_type", "buying_group", "national_account", "state"]], how="left")
     X = X.rename(columns={"state": "state_c"})
     X["national_account_n"] = (
         X["national_account"].astype("string").str.lower().isin(["true", "yes", "1"]).astype(int)

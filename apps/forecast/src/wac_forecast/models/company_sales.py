@@ -76,7 +76,7 @@ def train_company_sales(
     p = {
         "objective": "tweedie",
         "tweedie_variance_power": 1.3,
-        "metric": "mae",
+        "metric": "tweedie",
         "learning_rate": 0.05,
         "num_leaves": 63,
         "min_data_in_leaf": 50,

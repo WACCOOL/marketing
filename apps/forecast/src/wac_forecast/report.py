@@ -96,6 +96,16 @@ def build_report() -> None:
     per_co = pd.DataFrame(rows)
     sections.append("<h2>Per-company accuracy (2025 snapshots vs realized FY-2025, parent grain)</h2>")
     sections.append(
+        "<p class=note><b>Leakage caveat:</b> the company model TRAINED on snapshots "
+        "≤ 2025-08 and validated on 2025-09…12, and every 2025 snapshot shares the same "
+        "FY-2025 target — so 2025 rows are optimistic for ML (Jan–Aug in-sample; Sep–Dec "
+        "validation). Only one complete year exists; the honest ML evidence is the "
+        "deal-level 2026 test slice below plus the 2026 total trajectory. Growth/QV need "
+        "no such caveat (formula methods). QV per-company is a quote-channel visibility "
+        "number rather than a per-company sales forecast — its poor WAPE here reflects "
+        "that scope mismatch as much as inaccuracy.</p>"
+    )
+    sections.append(
         per_co.pivot_table(index="as_of", columns="method").round(2).to_html()
     )
 

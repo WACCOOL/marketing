@@ -41,6 +41,35 @@ def new_customer_share(turnover: pd.DataFrame, ref_year: int, month: int) -> flo
     return float(new / total)
 
 
+def distribute_to_accounts(
+    per_parent: pd.DataFrame, turnover: pd.DataFrame, pmap: pd.Series, as_of_ms: float
+) -> pd.DataFrame:
+    """Parent forecasts → child accounts, pro-rata by trailing-12m sales
+    (an account with no trailing sales gets a share only if NO sibling has
+    any — then split equally isn't meaningful, so the parent key itself
+    carries the value)."""
+    from .snapshot import turnover_through
+
+    t = turnover_through(turnover, as_of_ms)
+    t12 = t[t["billing_ms"] > as_of_ms - 365 * 86_400_000].copy()
+    from .features.company import to_parent
+
+    t12["parent"] = to_parent(t12["account_key"], pmap).values
+    acct = t12.groupby(["parent", "account_key"])["sales_n"].sum().clip(lower=0)
+    parent_tot = acct.groupby(level=0).sum()
+    share = (acct / parent_tot).dropna()
+
+    rows = []
+    for parent, forecast in per_parent["forecast"].items():
+        if parent in share.index.get_level_values(0):
+            for (p, a), s in share.loc[[parent]].items():
+                rows.append({"account_key": a, "forecast": forecast * s})
+        else:
+            rows.append({"account_key": parent, "forecast": forecast})
+    out = pd.DataFrame(rows).groupby("account_key")["forecast"].sum().to_frame()
+    return out
+
+
 def ml_forecast_at(
     dt: datetime,
     win: WinProbModel,
@@ -53,7 +82,7 @@ def ml_forecast_at(
     uplift_ref_year: int = 2025,
 ) -> dict:
     D = _ms(dt)
-    deal_X = build_deal_features(d_prep, li, turnover, D)
+    deal_X = build_deal_features(d_prep, li, turnover, companies, D)
     ev = score_open_deal_ev(win, deal_X) if len(deal_X) else None
 
     co_X = build_company_features(turnover, companies, parents, ev, D)
