@@ -3,6 +3,9 @@ import {
   decideTicketAction,
   isFakeZendeskEmail,
   missingQuoteRequestFields,
+  taskTypeSpec,
+  WAC_TASK_TYPES,
+  QUOTE_REQUEST_FIELDS,
   type ZendeskStatus,
 } from "./quoteDesk.js";
 
@@ -10,67 +13,85 @@ const t = (id: number, status: ZendeskStatus) => ({ id, status });
 
 describe("decideTicketAction", () => {
   it("creates when there is no prior ticket", () => {
-    expect(decideTicketAction([], "new")).toEqual({ kind: "create" });
-    expect(decideTicketAction([], "revision")).toEqual({ kind: "create" });
+    expect(decideTicketAction([], false)).toEqual({ kind: "create" });
+    expect(decideTicketAction([], true)).toEqual({ kind: "create" });
   });
 
-  it("comments on the newest active ticket regardless of type", () => {
+  it("comments on the newest active ticket regardless of continuation", () => {
     const existing = [t(10, "closed"), t(20, "open"), t(30, "pending")];
-    expect(decideTicketAction(existing, "new")).toEqual({ kind: "comment", ticketId: 30 });
-    expect(decideTicketAction(existing, "followup_change")).toEqual({ kind: "comment", ticketId: 30 });
+    expect(decideTicketAction(existing, false)).toEqual({ kind: "comment", ticketId: 30 });
+    expect(decideTicketAction(existing, true)).toEqual({ kind: "comment", ticketId: 30 });
   });
 
   it("treats new/hold as active", () => {
-    expect(decideTicketAction([t(5, "new")], "revision")).toEqual({ kind: "comment", ticketId: 5 });
-    expect(decideTicketAction([t(5, "hold")], "new")).toEqual({ kind: "comment", ticketId: 5 });
+    expect(decideTicketAction([t(5, "new")], true)).toEqual({ kind: "comment", ticketId: 5 });
+    expect(decideTicketAction([t(5, "hold")], false)).toEqual({ kind: "comment", ticketId: 5 });
   });
 
   it("solved + continuation → comment (reopens the same task)", () => {
-    expect(decideTicketAction([t(7, "solved")], "revision")).toEqual({ kind: "comment", ticketId: 7 });
-    expect(decideTicketAction([t(7, "solved")], "followup_change")).toEqual({
-      kind: "comment",
-      ticketId: 7,
-    });
+    expect(decideTicketAction([t(7, "solved")], true)).toEqual({ kind: "comment", ticketId: 7 });
   });
 
   it("solved + new quote → fresh ticket (solved means done)", () => {
-    expect(decideTicketAction([t(7, "solved")], "new")).toEqual({ kind: "create" });
-    expect(decideTicketAction([t(7, "solved")], "custom")).toEqual({ kind: "create" });
+    expect(decideTicketAction([t(7, "solved")], false)).toEqual({ kind: "create" });
   });
 
   it("closed + continuation → linked follow-up ticket", () => {
-    expect(decideTicketAction([t(9, "closed")], "revision")).toEqual({ kind: "followup", sourceId: 9 });
-    expect(decideTicketAction([t(9, "closed")], "followup_change")).toEqual({
-      kind: "followup",
-      sourceId: 9,
-    });
+    expect(decideTicketAction([t(9, "closed")], true)).toEqual({ kind: "followup", sourceId: 9 });
   });
 
   it("closed + new quote → fresh unlinked ticket", () => {
-    expect(decideTicketAction([t(9, "closed")], "new")).toEqual({ kind: "create" });
+    expect(decideTicketAction([t(9, "closed")], false)).toEqual({ kind: "create" });
   });
 
   it("picks the NEWEST terminal ticket when several exist", () => {
-    const existing = [t(1, "closed"), t(2, "solved")];
-    // newest (2) is solved → comment path for continuations
-    expect(decideTicketAction(existing, "revision")).toEqual({ kind: "comment", ticketId: 2 });
-    const existing2 = [t(2, "solved"), t(3, "closed")];
-    expect(decideTicketAction(existing2, "revision")).toEqual({ kind: "followup", sourceId: 3 });
+    expect(decideTicketAction([t(1, "closed"), t(2, "solved")], true)).toEqual({
+      kind: "comment",
+      ticketId: 2,
+    });
+    expect(decideTicketAction([t(2, "solved"), t(3, "closed")], true)).toEqual({
+      kind: "followup",
+      sourceId: 3,
+    });
+  });
+});
+
+describe("task types", () => {
+  it("revisions are continuations; new quotes are not", () => {
+    expect(taskTypeSpec("quote_revision")?.continuation).toBe(true);
+    expect(taskTypeSpec("custom_quote_revision")?.continuation).toBe(true);
+    expect(taskTypeSpec("new_quote")?.continuation).toBe(false);
+    expect(taskTypeSpec("custom_quotation_review")?.continuation).toBe(false);
+    expect(taskTypeSpec("color_chip_request")?.continuation).toBe(false);
+  });
+
+  it("every referenced field exists in QUOTE_REQUEST_FIELDS", () => {
+    for (const tt of WAC_TASK_TYPES) {
+      for (const name of [...tt.required, ...tt.optional]) {
+        expect(QUOTE_REQUEST_FIELDS[name], `${tt.value} references ${name}`).toBeDefined();
+      }
+    }
+  });
+
+  it("continuation types require the SAP quote number; new types don't", () => {
+    for (const tt of WAC_TASK_TYPES) {
+      expect(tt.required.includes("sap_quote_number")).toBe(tt.continuation);
+    }
   });
 });
 
 describe("missingQuoteRequestFields", () => {
-  it("flags missing required fields per type", () => {
-    expect(missingQuoteRequestFields("followup_change", {})).toEqual([
+  it("flags missing required fields per task type", () => {
+    expect(missingQuoteRequestFields("quote_revision", {})).toEqual([
       "account_number",
       "sap_quote_number",
       "quote_request_notes",
     ]);
   });
 
-  it("passes a complete follow-up change", () => {
+  it("passes a complete revision", () => {
     expect(
-      missingQuoteRequestFields("followup_change", {
+      missingQuoteRequestFields("quote_revision", {
         account_number: "2013231",
         sap_quote_number: "25102316",
         quote_request_notes: "Please extend the expiration date to end of month.",
@@ -80,25 +101,18 @@ describe("missingQuoteRequestFields", () => {
 
   it("treats blank/whitespace values as missing", () => {
     expect(
-      missingQuoteRequestFields("revision", {
+      missingQuoteRequestFields("new_quote", {
         subject: "  ",
         account_number: "2013231",
-        sap_quote_number: null,
-        quote_request_notes: "reprice",
+        sales_group: "TLS",
+        quote_request_notes: "quote please",
+        quote_needed_by: null,
       }),
-    ).toEqual(["subject", "sap_quote_number"]);
+    ).toEqual(["subject", "quote_needed_by"]);
   });
 
-  it("requires sap_quote_number for revisions but not new quotes", () => {
-    const values = {
-      subject: "s",
-      account_number: "a",
-      how_can_we_help: "New Quote",
-      quote_request_notes: "n",
-      quote_needed_by: "2026-08-01",
-    };
-    expect(missingQuoteRequestFields("new", values)).toEqual([]);
-    expect(missingQuoteRequestFields("revision", values)).toContain("sap_quote_number");
+  it("rejects unknown task types", () => {
+    expect(missingQuoteRequestFields("nonsense", {})).toEqual(["request_type"]);
   });
 });
 
@@ -111,7 +125,7 @@ describe("isFakeZendeskEmail", () => {
   });
 
   it("flags Zendesk placeholder domains", () => {
-    expect(isFakeZendeskEmail("user123@waclighting.zendesk.com")).toBe(true);
+    expect(isFakeZendeskEmail("user123@wgroupsupport.zendesk.com")).toBe(true);
     expect(isFakeZendeskEmail("abc@anything.ZENDESK.com")).toBe(true);
     expect(isFakeZendeskEmail("someone@example.com")).toBe(true);
     expect(isFakeZendeskEmail("x@domain.invalid")).toBe(true);
@@ -122,7 +136,6 @@ describe("isFakeZendeskEmail", () => {
   it("passes real emails", () => {
     expect(isFakeZendeskEmail("eisaacson@texaslighting.com")).toBe(false);
     expect(isFakeZendeskEmail("davis.rothenberg@waclighting.com")).toBe(false);
-    // real domains that merely contain 'zendesk' before the TLD are fine
     expect(isFakeZendeskEmail("support@zendeskfans.io")).toBe(false);
   });
 });

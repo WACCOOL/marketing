@@ -1,9 +1,10 @@
 import {
   decideTicketAction,
   missingQuoteRequestFields,
+  taskTypeSpec,
   QUOTE_REQUEST_FIELDS,
-  QUOTE_REQUEST_TYPE_SPECS,
-  type QuoteRequestType,
+  QUOTE_TEAMS,
+  type QuoteTeam,
   type ZendeskStatus,
 } from "@wac/shared";
 import type { Env } from "./env.js";
@@ -39,7 +40,10 @@ const HS_PORTAL_ID = "46455872";
 export interface QuoteRequestPayload {
   requestId: string;
   dealId: string;
-  requestType: QuoteRequestType;
+  /** Quoting team — only "wac" is live; others are greyed out in the card. */
+  team: QuoteTeam;
+  /** Request type = how_can_we_help internal value (mirrors Zendesk task types). */
+  taskType: string;
   /** Submitting HubSpot user (server-appended by hubspot.fetch, verified). */
   requesterEmail: string;
   requesterName?: string;
@@ -62,29 +66,31 @@ export type QuoteRequestResult =
     };
 
 /**
- * v1 routing: every type lands in the Quotes group. The (Quotes) Category tag
- * stays "quotations" for all types until the real option tags for custom /
- * international are confirmed from the Zendesk field (an unknown tag value
- * fails ticket creation) — the request type is always carried in the subject
- * prefix + body, so the quoting team can still split the work. This table is
- * where the OA/international back-ends will diverge later.
+ * v1 routing: the WAC team's requests land in the Quotes group with category
+ * "quotations"; the task type itself is passed through to Zendesk's Task
+ * Type(s) field (same internal values). When the Schonbek and Custom /
+ * International back-ends exist they get their own entries here (different
+ * group / category / OA hand-off) without touching the card.
  */
-const REQUEST_TYPE_ROUTING: Record<QuoteRequestType, { subjectPrefix: string; category: string }> = {
-  new: { subjectPrefix: "Quote Request", category: "quotes_category_quotations" },
-  revision: { subjectPrefix: "Quote Revision", category: "quotes_category_quotations" },
-  followup_change: { subjectPrefix: "Quote Follow-Up", category: "quotes_category_quotations" },
-  custom: { subjectPrefix: "Custom Quote Request", category: "quotes_category_quotations" },
-  schonbek: { subjectPrefix: "Schonbek Quote Request", category: "quotes_category_quotations" },
-  international: { subjectPrefix: "International Quote Request", category: "quotes_category_quotations" },
+const TEAM_ROUTING: Record<QuoteTeam, { category: string } | null> = {
+  wac: { category: "quotes_category_quotations" },
+  schonbek: null, // greyed out in the card; Worker rejects
+  custom_international: null,
 };
 
 function dealUrl(dealId: string): string {
   return `https://app.hubspot.com/contacts/${HS_PORTAL_ID}/record/0-3/${dealId}`;
 }
 
+/** A field value rendered for the ticket body — option labels, not tag values. */
+function displayValue(name: string, value: string): string {
+  const opt = QUOTE_REQUEST_FIELDS[name]?.options?.find((o) => o.value === value);
+  return opt?.label ?? value;
+}
+
 /** Compose the ticket/comment body from the submitted fields. */
 function requestBody(payload: QuoteRequestPayload, dealName: string | null): string {
-  const spec = QUOTE_REQUEST_TYPE_SPECS[payload.requestType];
+  const spec = taskTypeSpec(payload.taskType)!;
   const lines: string[] = [
     `${spec.label} — requested by ${payload.requesterName || payload.requesterEmail} via Quote Desk`,
     `Deal: ${dealName ?? payload.dealId} (${dealUrl(payload.dealId)})`,
@@ -97,7 +103,7 @@ function requestBody(payload: QuoteRequestPayload, dealName: string | null): str
     if (value === undefined || String(value).trim() === "") continue;
     const label = QUOTE_REQUEST_FIELDS[name]?.label ?? name;
     if (name === "quote_request_notes") continue; // notes go last, unlabelled
-    lines.push(`${label}: ${String(value).trim()}`);
+    lines.push(`${label}: ${displayValue(name, String(value).trim())}`);
   }
   const notes = payload.fields.quote_request_notes?.trim();
   if (notes) lines.push("", notes);
@@ -105,19 +111,22 @@ function requestBody(payload: QuoteRequestPayload, dealName: string | null): str
 }
 
 /** Zendesk custom fields for a created ticket, from the submitted fields. */
-function zendeskCustomFields(payload: QuoteRequestPayload): { id: number; value: string }[] {
+function zendeskCustomFields(payload: QuoteRequestPayload, category: string): { id: number; value: string }[] {
   const f = payload.fields;
   const out: { id: number; value: string }[] = [
     { id: ZD_FIELDS.hubspotDealId, value: payload.dealId },
-    { id: ZD_FIELDS.category, value: REQUEST_TYPE_ROUTING[payload.requestType].category },
+    { id: ZD_FIELDS.category, value: category },
     { id: ZD_FIELDS.requestor, value: payload.requesterName || payload.requesterEmail },
+    // Task type passes through — the deal property and the Zendesk field share
+    // internal values (new_quote, quote_revision, …), as with the old form.
+    { id: ZD_FIELDS.taskTypes, value: payload.taskType },
   ];
   const put = (id: number, v: string | undefined) => {
     if (v && v.trim()) out.push({ id, value: v.trim() });
   };
   put(ZD_FIELDS.quoteNumber, f.sap_quote_number);
   put(ZD_FIELDS.accountNumber, f.account_number);
-  put(ZD_FIELDS.taskTypes, f.how_can_we_help);
+  put(ZD_FIELDS.repCode, f.sales_group);
   put(ZD_FIELDS.needDate, f.quote_needed_by);
   put(ZD_FIELDS.soNumber, f.so_number);
   put(ZD_FIELDS.poNumber, f.po_number);
@@ -163,7 +172,8 @@ async function writeBackDealProps(
   payload: QuoteRequestPayload,
   signal: AbortSignal,
 ): Promise<void> {
-  const properties: Record<string, string> = {};
+  // The request type IS the how_can_we_help deal property.
+  const properties: Record<string, string> = { how_can_we_help: payload.taskType };
   for (const [name, value] of Object.entries(payload.fields)) {
     if (!QUOTE_REQUEST_FIELDS[name]?.writeBack) continue;
     if (value === undefined || String(value).trim() === "") continue;
@@ -189,10 +199,20 @@ export async function createQuoteRequest(
   signal: AbortSignal,
 ): Promise<QuoteRequestResult> {
   if (!env.HUBSPOT_TOKEN) return { ok: false, status: 502, error: "HUBSPOT_TOKEN unset" };
-  if (!QUOTE_REQUEST_TYPE_SPECS[payload.requestType]) {
-    return { ok: false, status: 400, error: `unknown request type ${payload.requestType}` };
+  const team = QUOTE_TEAMS.find((tm) => tm.id === payload.team);
+  const routing = TEAM_ROUTING[payload.team];
+  if (!team || !team.enabled || !routing) {
+    return {
+      ok: false,
+      status: 400,
+      error: `${team?.label ?? payload.team} quoting isn't wired up yet — use the current process for those requests.`,
+    };
   }
-  const missing = missingQuoteRequestFields(payload.requestType, payload.fields);
+  const spec = taskTypeSpec(payload.taskType);
+  if (!spec) {
+    return { ok: false, status: 400, error: `unknown request type ${payload.taskType}` };
+  }
+  const missing = missingQuoteRequestFields(payload.taskType, payload.fields);
   if (missing.length) {
     return { ok: false, status: 422, error: "missing required fields", missing };
   }
@@ -227,9 +247,8 @@ export async function createQuoteRequest(
   const dealName: string | null = dealRes.data?.properties?.dealname ?? null;
 
   const existing = await dealQuoteTickets(env, sb, payload.dealId, signal);
-  const action = decideTicketAction(existing, payload.requestType);
+  const action = decideTicketAction(existing, spec.continuation);
   const body = requestBody(payload, dealName);
-  const routing = REQUEST_TYPE_ROUTING[payload.requestType];
 
   let zendeskTicketId: number;
 
@@ -248,7 +267,7 @@ export async function createQuoteRequest(
     }
     zendeskTicketId = action.ticketId;
   } else {
-    const subject = `${routing.subjectPrefix}: ${payload.fields.subject?.trim() || dealName || payload.dealId}`;
+    const subject = `${spec.label}: ${payload.fields.subject?.trim() || dealName || payload.dealId}`;
     const create = await zd(
       env,
       "POST",
@@ -260,7 +279,7 @@ export async function createQuoteRequest(
           group_id: ZD_QUOTES_GROUP,
           requester: { name: payload.requesterName || payload.requesterEmail, email: payload.requesterEmail },
           comment: { body, public: true },
-          custom_fields: zendeskCustomFields(payload),
+          custom_fields: zendeskCustomFields(payload, routing.category),
           ...(action.kind === "followup" ? { via_followup_source_id: action.sourceId } : {}),
         },
       },
@@ -282,7 +301,7 @@ export async function createQuoteRequest(
       request_id: payload.requestId,
       zd_group_id: ZD_QUOTES_GROUP,
       deal_id: payload.dealId,
-      request_type: payload.requestType,
+      request_type: payload.taskType,
       requester_email: payload.requesterEmail,
       quote_number: payload.fields.sap_quote_number || undefined,
       followup_of: action.kind === "followup" ? action.sourceId : undefined,

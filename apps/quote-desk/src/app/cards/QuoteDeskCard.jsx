@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Button,
-  Checkbox,
   Divider,
   Flex,
   Heading,
@@ -19,12 +18,13 @@ import {
 /**
  * Quote Desk — CRM card on Deal records.
  *
- * One front door for every quote request type (standard / revision / follow-up
- * change / custom / Schonbek / international). Replaces the prefilled HubSpot
- * form + make.com scenario: the card reads deal properties directly, blocks
- * submit until the required fields are complete, and the Worker
- * (marketing.gowac.cc) files the Zendesk ticket, mirrors it to a HubSpot
- * ticket, and writes corrected values back onto the deal.
+ * One front door for quote requests. The requester picks the QUOTING TEAM
+ * (WAC live; Schonbek and Custom/International greyed out until their
+ * back-ends exist) and the REQUEST TYPE, which mirrors Zendesk's task-type
+ * options (Standard Quotation / Custom Quotation / Revise Quotation / Revise
+ * Custom Quotation / Color Chip Request). Whether it's a revision is implied
+ * by the type — and the card defaults to Revise Quotation when the deal
+ * already carries an SAP quote number.
  *
  * The field contract is FETCHED from /api/quote-desk/spec (single source of
  * truth in @wac/shared) — don't hardcode required-field lists here.
@@ -40,6 +40,7 @@ const SUBMIT_TIMEOUT_MS = 45_000;
 const PREFILL_PROPS = [
   "dealname",
   "account_number",
+  "sales_group",
   "sap_quote_number",
   "quote_needed_by",
   "project_location",
@@ -81,13 +82,14 @@ hubspot.extend(({ context, actions }) => <QuoteDesk context={context} actions={a
 function QuoteDesk({ context, actions }) {
   const dealId = String(context.crm.objectId);
 
-  const [spec, setSpec] = useState(null); // {fields, types}
+  const [spec, setSpec] = useState(null); // {fields, teams, taskTypes}
   const [tickets, setTickets] = useState(null);
   const [contacts, setContacts] = useState([]);
   const [recipientContactId, setRecipientContactId] = useState("");
   const [loadError, setLoadError] = useState(null);
 
-  const [requestType, setRequestType] = useState("new");
+  const [team, setTeam] = useState("wac");
+  const [taskType, setTaskType] = useState("new_quote");
   const [values, setValues] = useState({});
   const [touched, setTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -122,6 +124,9 @@ function QuoteDesk({ context, actions }) {
       }
       prefill.subject = prefill.subject || props.dealname || "";
       setValues(prefill);
+      // A deal that already carries an SAP quote number is an EXISTING quote —
+      // default to a revision so the salesperson doesn't have to think about it.
+      if (prefill.sap_quote_number) setTaskType("quote_revision");
       refreshTickets();
       api(`/contacts?dealId=${dealId}`).then((res) => {
         if (res.ok) setContacts(res.data.contacts ?? []);
@@ -129,7 +134,8 @@ function QuoteDesk({ context, actions }) {
     })();
   }, [actions, refreshTickets]);
 
-  const typeSpec = spec ? spec.types[requestType] : null;
+  const teamSpec = spec ? spec.teams.find((tm) => tm.id === team) : null;
+  const typeSpec = spec ? spec.taskTypes.find((tt) => tt.value === taskType) : null;
   const missing = useMemo(() => {
     if (!typeSpec) return [];
     return typeSpec.required.filter((name) => !String(values[name] ?? "").trim());
@@ -141,7 +147,7 @@ function QuoteDesk({ context, actions }) {
 
   const submit = async () => {
     setTouched(true);
-    if (missing.length) return;
+    if (!teamSpec || !teamSpec.enabled || missing.length) return;
     setSubmitting(true);
     setResult(null);
     try {
@@ -151,7 +157,8 @@ function QuoteDesk({ context, actions }) {
         body: JSON.stringify({
           requestId,
           dealId,
-          requestType,
+          team,
+          taskType,
           requesterName: [context.user.firstName, context.user.lastName]
             .filter(Boolean)
             .join(" "),
@@ -188,11 +195,6 @@ function QuoteDesk({ context, actions }) {
   if (loadError) return <Alert title="Quote Desk" variant="error">{loadError}</Alert>;
   if (!spec) return <LoadingSpinner label="Loading Quote Desk…" />;
 
-  const typeOptions = Object.entries(spec.types).map(([value, t]) => ({
-    value,
-    label: t.label,
-  }));
-
   const renderField = (name, required) => {
     const field = spec.fields[name];
     if (!field) return null;
@@ -207,26 +209,14 @@ function QuoteDesk({ context, actions }) {
     };
     if (field.kind === "textarea") {
       return (
-        <TextArea {...common} value={values[name] ?? ""} onChange={setField(name)} rows={4} />
-      );
-    }
-    if (field.kind === "checkbox") {
-      return (
-        <Checkbox
-          key={name}
-          name={name}
-          checked={values[name] === "Yes"}
-          onChange={(checked) => setField(name)(checked ? "Yes" : "")}
-        >
-          {field.label}
-        </Checkbox>
+        <TextArea {...common} value={values[name] ?? ""} onChange={setField(name)} rows={3} />
       );
     }
     if (field.kind === "select" && field.options && field.options.length) {
       return (
         <Select
           {...common}
-          options={field.options.map((o) => ({ value: o, label: o }))}
+          options={[{ value: "", label: "—" }, ...field.options]}
           value={values[name] ?? ""}
           onChange={setField(name)}
         />
@@ -266,33 +256,56 @@ function QuoteDesk({ context, actions }) {
       <Divider />
       <Heading>New request</Heading>
       <Select
-        label="Request type"
-        name="requestType"
-        options={typeOptions}
-        value={requestType}
+        label="Quoting team"
+        name="team"
+        options={spec.teams.map((tm) => ({
+          value: tm.id,
+          label: tm.label,
+          disabled: !tm.enabled,
+        }))}
+        value={team}
         onChange={(v) => {
-          setRequestType(v);
-          setTouched(false);
+          setTeam(v);
           setResult(null);
         }}
       />
-      {typeSpec.required.map((name) => renderField(name, true))}
-      {typeSpec.optional.map((name) => renderField(name, false))}
-      {contacts.length ? (
-        <Select
-          label="Send quote to (optional)"
-          name="recipientContactId"
-          options={[
-            { value: "", label: "—" },
-            ...contacts.map((c) => ({
-              value: c.id,
-              label: c.email ? `${c.name} (${c.email})` : c.name,
-            })),
-          ]}
-          value={recipientContactId}
-          onChange={setRecipientContactId}
-        />
-      ) : null}
+      {teamSpec && !teamSpec.enabled ? (
+        <Alert title="Coming soon" variant="warning">
+          {teamSpec.label.replace(" (coming soon)", "")} quoting isn't wired up here yet —
+          keep using the current process for those requests.
+        </Alert>
+      ) : (
+        <>
+          <Select
+            label="Request type"
+            name="taskType"
+            options={spec.taskTypes.map((tt) => ({ value: tt.value, label: tt.label }))}
+            value={taskType}
+            onChange={(v) => {
+              setTaskType(v);
+              setTouched(false);
+              setResult(null);
+            }}
+          />
+          {typeSpec ? typeSpec.required.map((name) => renderField(name, true)) : null}
+          {typeSpec ? typeSpec.optional.map((name) => renderField(name, false)) : null}
+          {contacts.length ? (
+            <Select
+              label="Send quote to (optional)"
+              name="recipientContactId"
+              options={[
+                { value: "", label: "—" },
+                ...contacts.map((c) => ({
+                  value: c.id,
+                  label: c.email ? `${c.name} (${c.email})` : c.name,
+                })),
+              ]}
+              value={recipientContactId}
+              onChange={setRecipientContactId}
+            />
+          ) : null}
+        </>
+      )}
 
       {result && result.kind === "error" ? (
         <Alert title="Not submitted" variant="error">{result.message}</Alert>
@@ -304,7 +317,11 @@ function QuoteDesk({ context, actions }) {
       ) : null}
 
       <Flex direction="row" gap="sm" align="center">
-        <Button variant="primary" onClick={submit} disabled={submitting}>
+        <Button
+          variant="primary"
+          onClick={submit}
+          disabled={submitting || !teamSpec || !teamSpec.enabled}
+        >
           {submitting ? "Submitting…" : "Submit request"}
         </Button>
         {touched && missing.length ? (
