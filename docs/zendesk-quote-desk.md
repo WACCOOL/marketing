@@ -58,20 +58,19 @@ Migration 0041: applied 2026-07-14.
 4. Quote Desk app: `cd apps/quote-desk && hs project upload` (see its README);
    copy the app's client secret into `QUOTE_DESK_CLIENT_SECRET`.
 
-### Zendesk (Admin Center, modernforms.zendesk.com)
+### Zendesk (Admin Center, wgroupsupport.zendesk.com)
+
+Canonical subdomain is **wgroupsupport** (modernforms etc. are brands of the
+same instance) — agent ticket links use it.
 
 1. ~~API token~~ — done ("Hubspot_Sync", under Davis's account).
-2. Webhook (`Apps and integrations → Webhooks → Create webhook`): pick
-   **"Trigger or automation"** (NOT "Zendesk events"), then:
-   - Name: `Mirror to HubSpot`
-   - Endpoint URL: `https://marketing.gowac.cc/api/zendesk/webhook`
-   - Request method: `POST` · Request format: `JSON`
-   - Authentication: **None** (every webhook is HMAC-signed automatically;
-     that signature IS the auth)
-   - After creating: open the webhook → reveal the **signing secret** →
-     `wrangler secret put ZENDESK_WEBHOOK_SECRET` (from `apps/api`).
-   - Note: "Test webhook" returns 401 until the secret is set AND the PR is
-     deployed — expected.
+2. ~~Webhook~~ — DONE 2026-07-14 via API (the Admin Center wizard 500'd):
+   `Mirror to HubSpot`, id `01KXH29MRTMQN33CHZFG05HJFK`, POST/JSON, active.
+   Signing secret fetched via `GET /api/v2/webhooks/{id}/signing_secret` →
+   prod `ZENDESK_WEBHOOK_SECRET` + `.dev.vars`. End-to-end verified in prod:
+   signed test event for ticket 746932 → queued → consumer adopted deal
+   62346697378 via quote # 25103485, matched contact, computed stage,
+   `would_sync` (dark mode), mapping row written.
 3. Trigger (`Objects and rules → Business rules → Triggers → Create trigger`):
    - Name: `Mirror to HubSpot`
    - Conditions, **Meet ALL**: `Group` · `Is` · `Quotes`
