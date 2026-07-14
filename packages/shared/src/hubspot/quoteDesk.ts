@@ -61,6 +61,14 @@ export const QUOTE_REQUEST_FIELDS: Record<string, QuoteRequestFieldSpec> = {
     kind: "text",
     writeBack: true,
   },
+  // Rep code — the SAP sync derives sales_group from the deal's rep-code
+  // association, so the card only reads/collects it (no write-back that the
+  // next SAP push would fight).
+  sales_group: {
+    name: "sales_group",
+    label: "Rep Code",
+    kind: "text",
+  },
   quote_request_notes: {
     name: "quote_request_notes",
     label: "Request notes",
@@ -166,19 +174,29 @@ const STANDARD_OPTIONALS = [
   "po_number",
 ];
 
+const REVISION_OPTIONALS = [
+  "subject",
+  "quote_needed_by",
+  "discount_request",
+  "air_freight_pricing",
+  "do_you_need_submittal_layout_support",
+  "so_number",
+  "po_number",
+];
+
 export const WAC_TASK_TYPES: QuoteTaskTypeSpec[] = [
   {
     value: "new_quote",
     label: "Standard Quotation",
     continuation: false,
-    required: ["subject", "account_number", "quote_request_notes", "quote_needed_by"],
+    required: ["subject", "account_number", "sales_group", "quote_request_notes", "quote_needed_by"],
     optional: STANDARD_OPTIONALS,
   },
   {
     value: "custom_quotation_review",
     label: "Custom Quotation",
     continuation: false,
-    required: ["subject", "account_number", "quote_request_notes", "quote_needed_by"],
+    required: ["subject", "account_number", "sales_group", "quote_request_notes", "quote_needed_by"],
     optional: STANDARD_OPTIONALS,
   },
   {
@@ -186,20 +204,20 @@ export const WAC_TASK_TYPES: QuoteTaskTypeSpec[] = [
     label: "Revise Quotation",
     continuation: true,
     required: ["account_number", "sap_quote_number", "quote_request_notes"],
-    optional: ["subject", "quote_needed_by", "discount_request", "air_freight_pricing", "so_number", "po_number"],
+    optional: ["sales_group", ...REVISION_OPTIONALS],
   },
   {
     value: "custom_quote_revision",
     label: "Revise Custom Quotation",
     continuation: true,
     required: ["account_number", "sap_quote_number", "quote_request_notes"],
-    optional: ["subject", "quote_needed_by", "discount_request", "air_freight_pricing", "so_number", "po_number"],
+    optional: ["sales_group", ...REVISION_OPTIONALS],
   },
   {
     value: "color_chip_request",
     label: "Color Chip Request",
     continuation: false,
-    required: ["account_number", "quote_request_notes"],
+    required: ["account_number", "sales_group", "quote_request_notes"],
     optional: ["quote_needed_by", "project_location"],
   },
 ];

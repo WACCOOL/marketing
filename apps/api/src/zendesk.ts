@@ -120,6 +120,8 @@ export const ZD_FIELDS = {
   requestor: 1900007701225,
   /** "Project Location (Address)". */
   projectLocation: 1500004238902,
+  /** "Existing Rep Code/Agency". */
+  repCode: 1500004862421,
   /** "Urgency". */
   urgency: 1500003988262,
 } as const;

@@ -126,6 +126,7 @@ function zendeskCustomFields(payload: QuoteRequestPayload, category: string): { 
   };
   put(ZD_FIELDS.quoteNumber, f.sap_quote_number);
   put(ZD_FIELDS.accountNumber, f.account_number);
+  put(ZD_FIELDS.repCode, f.sales_group);
   put(ZD_FIELDS.needDate, f.quote_needed_by);
   put(ZD_FIELDS.soNumber, f.so_number);
   put(ZD_FIELDS.poNumber, f.po_number);

@@ -40,6 +40,7 @@ const SUBMIT_TIMEOUT_MS = 45_000;
 const PREFILL_PROPS = [
   "dealname",
   "account_number",
+  "sales_group",
   "sap_quote_number",
   "quote_needed_by",
   "project_location",
