@@ -54,6 +54,15 @@ interface ZdTicket {
   updated_at?: string;
 }
 
+interface ZdAttachment {
+  id: number;
+  file_name: string;
+  content_url: string;
+  content_type?: string;
+  size?: number;
+  inline?: boolean;
+}
+
 interface ZdComment {
   id: number;
   public: boolean;
@@ -61,6 +70,7 @@ interface ZdComment {
   plain_body?: string;
   html_body?: string;
   created_at: string;
+  attachments?: ZdAttachment[];
 }
 
 export interface SyncResult {
@@ -104,6 +114,81 @@ function noteBody(author: string, createdAt: string, plain: string): string {
   const when = createdAt.slice(0, 16).replace("T", " ");
   const body = esc(plain).replace(/\r?\n/g, "<br>");
   return `<strong>${esc(author)}</strong> <em>(Zendesk, ${esc(when)} UTC)</em><br><br>${body}`;
+}
+
+// Attachments above this size are linked in the note body instead of copied
+// into HubSpot Files (Workers memory + Files API practicality).
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+
+/**
+ * Copy a Zendesk comment attachment into HubSpot Files; returns the file id.
+ * Zendesk's content_url 302s to a presigned S3 URL that REJECTS an
+ * Authorization header, so the redirect is followed manually without auth.
+ */
+async function mirrorAttachment(
+  env: Env,
+  att: ZdAttachment,
+  signal: AbortSignal,
+): Promise<string | null> {
+  const auth = btoa(`${env.ZENDESK_EMAIL}/token:${env.ZENDESK_API_TOKEN}`);
+  let res = await fetch(att.content_url, {
+    headers: { authorization: `Basic ${auth}` },
+    redirect: "manual",
+    signal,
+  });
+  const location = res.headers.get("location");
+  if (res.status >= 300 && res.status < 400 && location) {
+    res = await fetch(location, { signal });
+  }
+  if (!res.ok) {
+    console.error(`[zendesk-sync] attachment ${att.id} download failed: ${res.status}`);
+    return null;
+  }
+  const blob = await res.blob();
+  if (blob.size > MAX_ATTACHMENT_BYTES) return null;
+
+  const form = new FormData();
+  form.append("file", blob, att.file_name || `zendesk-attachment-${att.id}`);
+  form.append("options", JSON.stringify({ access: "PRIVATE", overwrite: false }));
+  form.append("folderPath", "/zendesk-attachments");
+  const up = await fetch("https://api.hubapi.com/files/v3/files", {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.HUBSPOT_TOKEN}` },
+    body: form,
+    signal,
+  });
+  if (!up.ok) {
+    console.error(`[zendesk-sync] attachment ${att.id} upload failed: ${up.status}`, await up.text());
+    return null;
+  }
+  const data: { id?: string } = await up.json();
+  return data.id ? String(data.id) : null;
+}
+
+/** Mirror a comment's attachments; returns HubSpot file ids + not-copied leftovers. */
+async function mirrorAttachments(
+  env: Env,
+  comment: ZdComment,
+  signal: AbortSignal,
+): Promise<{ fileIds: string[]; skipped: ZdAttachment[] }> {
+  const fileIds: string[] = [];
+  const skipped: ZdAttachment[] = [];
+  for (const att of comment.attachments ?? []) {
+    if (att.inline) continue; // embedded signature images etc. — noise
+    if ((att.size ?? 0) > MAX_ATTACHMENT_BYTES) {
+      skipped.push(att);
+      continue;
+    }
+    try {
+      const id = await mirrorAttachment(env, att, signal);
+      if (id) fileIds.push(id);
+      else skipped.push(att);
+    } catch (e) {
+      console.error(`[zendesk-sync] attachment ${att.id} mirror failed:`, e);
+      skipped.push(att);
+    }
+  }
+  return { fileIds, skipped };
 }
 
 async function findDealByQuoteNumber(
@@ -383,6 +468,17 @@ export async function syncZendeskTicket(
         });
       }
       const author = authors.get(comment.author_id) ?? "Unknown";
+      // Copy attachments into HubSpot Files so they live on the note (and thus
+      // the ticket + deal). Oversized/failed ones become links in the body.
+      const { fileIds, skipped } = await mirrorAttachments(env, comment, signal);
+      let body = noteBody(author, comment.created_at, comment.plain_body ?? "");
+      if (skipped.length) {
+        body +=
+          "<br><br>" +
+          skipped
+            .map((a) => `<a href="${esc(a.content_url)}">Attachment: ${esc(a.file_name)}</a>`)
+            .join("<br>");
+      }
       const note = await hs(
         env.HUBSPOT_TOKEN,
         "POST",
@@ -390,7 +486,8 @@ export async function syncZendeskTicket(
         {
           properties: {
             hs_timestamp: comment.created_at,
-            hs_note_body: noteBody(author, comment.created_at, comment.plain_body ?? ""),
+            hs_note_body: body,
+            ...(fileIds.length ? { hs_attachment_ids: fileIds.join(";") } : {}),
           },
           associations,
         },
