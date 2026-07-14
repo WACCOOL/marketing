@@ -8,11 +8,14 @@ name: Material Bank Sync
 # once (data_ingestions ledger, source=material-bank), so a frequent cron is a
 # cheap no-op when nothing new landed.
 #
-# NOTE: the cron stays commented out until cutover (Make scenario disabled and
-# the sample run approved) — until then, run via workflow_dispatch.
+# Scheduled runs process the R2 relay inbox (--inbox): Material Bank's SFTP
+# whitelists source IPs, so the whitelisted Make.com relay ferries files into
+# R2 every 15 min and this cron picks them up. Switch scheduled runs back to
+# direct SFTP (drop the --inbox default below) if/when Material Bank
+# whitelists a static runner IP or API credentials arrive.
 on:
-  # schedule:
-  #   - cron: "23 */3 * * *" # every 3 hours, offset from turnover-sync's 7 */3
+  schedule:
+    - cron: "23 */3 * * *" # every 3 hours, offset from turnover-sync's 7 */3
   workflow_dispatch:
     inputs:
       sample:
@@ -80,6 +83,8 @@ jobs:
           MARKETING_APP_URL: https://marketing.gowac.cc
         run: |
           ARGS=""
+          # Cron runs have no inputs — they process the relay inbox.
+          if [ "${{ github.event_name }}" = "schedule" ]; then ARGS="--inbox"; fi
           if [ "${{ inputs.sample }}" = "true" ]; then ARGS="--sample"; fi
           if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           if [ -n "${{ inputs.limit }}" ]; then ARGS="$ARGS --limit ${{ inputs.limit }}"; fi
