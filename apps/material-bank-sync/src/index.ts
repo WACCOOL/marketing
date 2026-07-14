@@ -78,10 +78,11 @@ async function postOrder(order: MaterialBankOrder, dryRun: boolean): Promise<Ord
   let lastErr = "";
   for (let attempt = 0; attempt < POST_RETRIES; attempt++) {
     try {
+      const token = process.env.MATERIAL_BANK_TOKEN || env("REP_LOOKUP_TOKEN");
       const res = await fetch(url, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${env("REP_LOOKUP_TOKEN")}`,
+          authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
         body: JSON.stringify({ order, dryRun }),

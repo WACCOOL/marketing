@@ -16,13 +16,32 @@ export function constantTimeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-export function webhookAuthorized(c: {
+type WebhookCtx = {
   req: { header: (n: string) => string | undefined; query: (n: string) => string | undefined };
   env: AppBindings["Bindings"];
-}): boolean {
+};
+
+/** The caller-provided token, from whichever transport the caller can send. */
+function providedToken(c: WebhookCtx): string | undefined {
+  const bearer = (c.req.header("authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1];
+  return bearer ?? c.req.header("x-api-key") ?? c.req.query("key");
+}
+
+export function webhookAuthorized(c: WebhookCtx): boolean {
   const expected = c.env.REP_LOOKUP_TOKEN;
   if (!expected) return false; // closed until configured
-  const bearer = (c.req.header("authorization") ?? "").match(/^Bearer\s+(.+)$/i)?.[1];
-  const provided = bearer ?? c.req.header("x-api-key") ?? c.req.query("key");
+  const provided = providedToken(c);
   return !!provided && constantTimeEqual(provided, expected);
+}
+
+/**
+ * Material Bank endpoints accept the shared REP_LOOKUP_TOKEN or the
+ * MATERIAL_BANK_TOKEN (see env.ts for why two exist).
+ */
+export function materialBankAuthorized(c: WebhookCtx): boolean {
+  if (webhookAuthorized(c)) return true;
+  const alt = c.env.MATERIAL_BANK_TOKEN;
+  if (!alt) return false;
+  const provided = providedToken(c);
+  return !!provided && constantTimeEqual(provided, alt);
 }

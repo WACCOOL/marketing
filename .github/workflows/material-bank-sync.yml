@@ -72,6 +72,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           REP_LOOKUP_TOKEN: ${{ secrets.REP_LOOKUP_TOKEN }}
+          MATERIAL_BANK_TOKEN: ${{ secrets.MATERIAL_BANK_TOKEN }}
           MARKETING_APP_URL: https://marketing.gowac.cc
         run: |
           ARGS=""
