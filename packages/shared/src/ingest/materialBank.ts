@@ -8,12 +8,15 @@ import type { ParseError, ParseResult } from "./types.js";
  * hands the resulting object tree here; this module owns every shape hazard so
  * the mapping is unit-testable without any XML/SFTP dependency.
  *
- * Feed shape (from the retired Make.com scenario's mappings): `root.row[]` is one
- * element per sample ORDER; each carries the contact/company/address scalars and
- * a nested `row[]` of SKU line rows. The project fields (ProjectName, budget,
- * completion month/year, …) have been observed at BOTH levels depending on the
- * export, so scalars are looked up on the order element first and then inside
- * its nested rows ({@link pick}).
+ * Feed shape (verified against a live file 2026-07-14): `row` elements nest
+ * FOUR deep — root.row[] is a lead group (CONSIGNEE/CREATEDATE), containing
+ * row[] contact/company elements (CONTACT1*, Company, CompanyPractice,
+ * address, Title), each containing row[] ORDER elements (ORDERID), each
+ * containing row[] SKU line rows (SKU, QTYORIGINAL, Color, Project*). The
+ * parser walks the `row` tree recursively: contact/company/address scalars are
+ * INHERITED down the chain, and any element carrying an ORDERID is an order —
+ * so the flatter two-level shape the old Make.com scenario's mappings implied
+ * parses identically.
  *
  * XML parsers also collapse a single child element to a bare object (no array)
  * and wrap repeated leaf values in arrays — {@link asArray}/{@link firstText}
@@ -125,6 +128,17 @@ export function materialBankOrderElements(doc: unknown): Record<string, unknown>
   );
 }
 
+/** Contact/company/address scalars inherited down the nested-row chain. */
+const CONTEXT_FIELDS = [
+  "CONTACT1NAME", "CONTACT1EMAIL", "CONTACT1PHONE", "MOBILEPHONE",
+  "CONTACTPREFERENCE", "Title", "Company", "CompanyPractice",
+  "STREET1", "City", "State", "Zip", "Country",
+] as const;
+
+type Context = Partial<Record<(typeof CONTEXT_FIELDS)[number], string>>;
+
+const MAX_ROW_DEPTH = 8;
+
 /** Parse a whole XML-parsed Material Bank document into typed orders. */
 export function parseMaterialBank(doc: unknown): ParseResult<MaterialBankOrder> {
   const errors: ParseError[] = [];
@@ -134,14 +148,7 @@ export function parseMaterialBank(doc: unknown): ParseResult<MaterialBankOrder> 
   // split across elements has been observed in multi-project samples).
   const byId = new Map<string, MaterialBankOrder>();
 
-  materialBankOrderElements(doc).forEach((el, i) => {
-    const rowIndex = i + 1;
-    const orderId = pick(el, "ORDERID");
-    if (!orderId) {
-      errors.push({ rowIndex, messages: ["missing ORDERID"] });
-      return;
-    }
-
+  const emitOrder = (el: Record<string, unknown>, orderId: string, ctx: Context): void => {
     const lines: MaterialBankLine[] = [];
     for (const raw of asArray(el["row"])) {
       if (!raw || typeof raw !== "object") continue;
@@ -161,24 +168,26 @@ export function parseMaterialBank(doc: unknown): ParseResult<MaterialBankOrder> 
     const order: MaterialBankOrder = {
       orderId,
       contact: {
-        name: pick(el, "CONTACT1NAME"),
-        email: pick(el, "CONTACT1EMAIL")?.toLowerCase() ?? null,
-        phone: pick(el, "CONTACT1PHONE"),
-        mobilePhone: pick(el, "MOBILEPHONE"),
-        preference: pick(el, "CONTACTPREFERENCE"),
-        title: pick(el, "Title"),
+        name: ctx.CONTACT1NAME ?? null,
+        email: ctx.CONTACT1EMAIL?.toLowerCase() ?? null,
+        phone: ctx.CONTACT1PHONE ?? null,
+        mobilePhone: ctx.MOBILEPHONE ?? null,
+        preference: ctx.CONTACTPREFERENCE ?? null,
+        title: ctx.Title ?? null,
       },
       company: {
-        name: pick(el, "Company"),
-        practice: pick(el, "CompanyPractice"),
+        name: ctx.Company ?? null,
+        practice: ctx.CompanyPractice ?? null,
       },
       address: {
-        street1: pick(el, "STREET1"),
-        city: pick(el, "City"),
-        state: pick(el, "State"),
-        zip: pick(el, "Zip"),
-        country: pick(el, "Country"),
+        street1: ctx.STREET1 ?? null,
+        city: ctx.City ?? null,
+        state: ctx.State ?? null,
+        zip: ctx.Zip ?? null,
+        country: ctx.Country ?? null,
       },
+      // Project fields live on the SKU line rows in the live feed (order
+      // element first, then its lines — pick covers both).
       project: {
         name: pick(el, "ProjectName"),
         description: pick(el, "ProjectDescription"),
@@ -200,6 +209,34 @@ export function parseMaterialBank(doc: unknown): ParseResult<MaterialBankOrder> 
       }
     } else {
       byId.set(orderId, order);
+    }
+  };
+
+  /** Walk the nested-row tree; returns how many orders this subtree yielded. */
+  const visit = (el: Record<string, unknown>, inherited: Context, depth: number): number => {
+    if (depth > MAX_ROW_DEPTH) return 0;
+    const ctx: Context = { ...inherited };
+    for (const f of CONTEXT_FIELDS) {
+      const v = firstText(el[f]);
+      if (v != null) ctx[f] = v;
+    }
+    const orderId = firstText(el["ORDERID"]);
+    if (orderId) {
+      emitOrder(el, orderId, ctx);
+      return 1;
+    }
+    let found = 0;
+    for (const child of asArray(el["row"])) {
+      if (child && typeof child === "object") {
+        found += visit(child as Record<string, unknown>, ctx, depth + 1);
+      }
+    }
+    return found;
+  };
+
+  materialBankOrderElements(doc).forEach((el, i) => {
+    if (visit(el, {}, 0) === 0) {
+      errors.push({ rowIndex: i + 1, messages: ["missing ORDERID"] });
     }
   });
 
