@@ -35,15 +35,36 @@ export const MATERIAL_BANK_INBOX_PREFIX = "ingest/material-bank/inbox/";
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
+/** basename only, conservative charset, must be .xml; "" when invalid. */
+function cleanXmlName(raw: string): string {
+  const name = raw.split(/[\\/]/).pop()?.trim() ?? "";
+  return /^[\w .()-]+\.xml$/i.test(name) ? name : "";
+}
+
 materialBankRoutes.post("/material-bank/file", async (c) => {
   if (!authorized(c)) return c.json({ error: "unauthorized" }, 401);
-  const rawName = c.req.query("name") ?? "";
-  // basename only, conservative charset, must be .xml
-  const name = rawName.split(/[\\/]/).pop()?.trim() ?? "";
-  if (!name || !/^[\w .()-]+\.xml$/i.test(name)) {
-    return c.json({ error: "missing or invalid ?name= (expected a .xml filename)" }, 400);
+
+  // The file arrives either as the raw request body (?name= required) or as a
+  // multipart/form-data part named "file" (Make.com's HTTP module has no raw-
+  // binary body option — multipart is its lossless file transport; the part's
+  // own filename is the ?name= fallback).
+  let bytes: ArrayBuffer | null = null;
+  let name = cleanXmlName(c.req.query("name") ?? "");
+  const contentType = c.req.header("content-type") ?? "";
+  if (/multipart\/form-data/i.test(contentType)) {
+    const body = await c.req.parseBody();
+    const part = body["file"];
+    if (!(part instanceof File)) {
+      return c.json({ error: 'multipart body must carry the file in a field named "file"' }, 400);
+    }
+    bytes = await part.arrayBuffer();
+    if (!name) name = cleanXmlName(part.name);
+  } else {
+    bytes = await c.req.arrayBuffer();
   }
-  const bytes = await c.req.arrayBuffer();
+  if (!name) {
+    return c.json({ error: "missing or invalid file name (?name= or the multipart filename; expected *.xml)" }, 400);
+  }
   if (!bytes.byteLength) return c.json({ error: "empty body" }, 400);
   if (bytes.byteLength > MAX_FILE_BYTES) return c.json({ error: "file too large" }, 413);
 
@@ -51,7 +72,7 @@ materialBankRoutes.post("/material-bank/file", async (c) => {
   await c.env.ASSETS_BUCKET.put(key, bytes, {
     httpMetadata: { contentType: "text/xml" },
   });
-  return c.json({ stored: key, bytes: bytes.byteLength });
+  return c.json({ stored: key, name, bytes: bytes.byteLength });
 });
 
 materialBankRoutes.post("/material-bank/sync", async (c) => {
