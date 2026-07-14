@@ -179,9 +179,11 @@
     // Add more groups here (Customer Service, Schonbek Quotes, ...) as they're
     // brought into the mirror.
     "ZD_SYNC_GROUPS": "{\"1500002309801\":{\"name\":\"Quotes\",\"pipelineId\":\"0\",\"stages\":{\"new\":\"1\",\"open\":\"1399042079\",\"pending\":\"1399042080\",\"hold\":\"1399042080\",\"solved\":\"1399042081\",\"closed\":\"4\"}}}",
-    // Flip to "1" after the dark-launch week validates the mapping ("would
-    // write" logs + zendesk_tickets rows) — enables HubSpot ticket/note/contact
-    // writes in the mirror. See env.ts ZENDESK_SYNC_WRITE.
+    // Enables HubSpot ticket/note/contact writes in the Zendesk mirror
+    // (see env.ts ZENDESK_SYNC_WRITE). Flipped on by Davis 2026-07-14 after
+    // the live end-to-end verification. Must live HERE, not as a dashboard
+    // var — CI's wrangler deploy replaces dashboard vars on every push.
+    "ZENDESK_SYNC_WRITE": "1",
     // Derive deal amount from line items (Σ quantity × unit_price). DISABLED
     // 2026-07-07 after ~2.5h live: the quoting team zeroes quote_net_value
     // DELIBERATELY (e.g. resolution "QB Order Received Quote Not Referenced" —
