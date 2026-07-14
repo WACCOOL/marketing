@@ -39,6 +39,10 @@ on:
         description: "Read from the R2 relay inbox instead of SFTP (interim path while Material Bank's IP whitelist blocks GitHub runners)"
         type: boolean
         default: false
+      repair:
+        description: "Overwrite owners this sync itself mis-set (per the outcome ledger) with the current routing decision"
+        type: boolean
+        default: false
 
 concurrency:
   group: material-bank-sync
@@ -82,4 +86,5 @@ jobs:
           if [ -n "${{ inputs.file }}" ]; then ARGS="$ARGS --file ${{ inputs.file }}"; fi
           if [ "${{ inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
           if [ "${{ inputs.inbox }}" = "true" ]; then ARGS="$ARGS --inbox"; fi
+          if [ "${{ inputs.repair }}" = "true" ]; then ARGS="$ARGS --repair"; fi
           pnpm --filter @wac/material-bank-sync sync -- $ARGS

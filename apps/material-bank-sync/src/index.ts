@@ -73,7 +73,7 @@ interface OrderOutcome {
 
 /** POST one order to the Worker; retries transient failures. Never throws for
  * a processed-but-errored order (the Worker returns its outcome either way). */
-async function postOrder(order: MaterialBankOrder, dryRun: boolean): Promise<OrderOutcome> {
+async function postOrder(order: MaterialBankOrder, dryRun: boolean, repair: boolean): Promise<OrderOutcome> {
   const url = `${(process.env.MARKETING_APP_URL ?? "https://marketing.gowac.cc").replace(/\/+$/, "")}/api/hubspot/material-bank/sync`;
   let lastErr = "";
   for (let attempt = 0; attempt < POST_RETRIES; attempt++) {
@@ -85,7 +85,7 @@ async function postOrder(order: MaterialBankOrder, dryRun: boolean): Promise<Ord
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ order, dryRun }),
+        body: JSON.stringify({ order, dryRun, repair }),
         signal: AbortSignal.timeout(90_000),
       });
       const data = (await res.json().catch(() => null)) as OrderOutcome | null;
@@ -201,6 +201,7 @@ async function main(): Promise<void> {
   const inbox = has("--inbox");
   const limit = Number(stringArg("--limit") ?? "") || null;
   const dryRun = has("--dry-run");
+  const repair = has("--repair");
 
   // Needed up front for the inbox source; created lazily for the live-mode archive.
   let r2 = inbox ? makeS3() : null;
@@ -280,7 +281,7 @@ async function main(): Promise<void> {
       const counts: Record<string, number> = {};
       const orderErrors: { orderId: string; error: string }[] = [];
       for (const [i, order] of orders.entries()) {
-        const outcome = await postOrder(order, dryRun);
+        const outcome = await postOrder(order, dryRun, repair);
         counts[outcome.status] = (counts[outcome.status] ?? 0) + 1;
         console.log(
           `[material-bank-sync]   ${i + 1}/${orders.length} ${outcome.orderId}: ${outcome.status}` +

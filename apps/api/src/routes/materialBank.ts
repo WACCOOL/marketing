@@ -80,15 +80,16 @@ materialBankRoutes.post("/material-bank/sync", async (c) => {
   const body = (await c.req.json().catch(() => null)) as {
     order?: MaterialBankOrder;
     dryRun?: boolean;
+    repair?: boolean;
   } | null;
   const order = body?.order;
   if (!order || typeof order !== "object" || !order.orderId) {
-    return c.json({ error: "missing order (expected { order: MaterialBankOrder, dryRun? })" }, 400);
+    return c.json({ error: "missing order (expected { order: MaterialBankOrder, dryRun?, repair? })" }, 400);
   }
   const outcome = await processMaterialBankOrder(
     c.env,
     order,
-    { dryRun: !!body?.dryRun },
+    { dryRun: !!body?.dryRun, repair: !!body?.repair },
     AbortSignal.timeout(60_000),
   );
   return c.json(outcome, outcome.status === "error" ? 500 : 200);

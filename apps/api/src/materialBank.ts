@@ -98,11 +98,37 @@ export interface MaterialBankOutcome {
   projectType: string | null;
   lineItemsCreated: number;
   lineItemsExisting: number;
-  contactOwnerAction: "set" | "skipped_existing" | "skipped_no_contact" | "skipped_no_owner" | "dry_run";
+  contactOwnerAction: "set" | "repaired" | "skipped_existing" | "skipped_no_contact" | "skipped_no_owner" | "dry_run";
   filledProps: string[];
   fixActions: (FixAction & { scope?: string })[];
   dryRun: boolean;
   error?: string;
+}
+
+/**
+ * Prior recorded outcome for an order — the ledger the repair mode trusts.
+ * Repair overwrites an owner ONLY when the ledger shows this sync set it AND
+ * the record still carries exactly that value (i.e. no human changed it since).
+ */
+interface PriorOutcome {
+  ownerId: string | null;
+  dealOwnerWasSetByUs: boolean;
+  contactOwnerWasSetByUs: boolean;
+}
+
+async function loadPriorOutcome(sb: SupabaseClient, orderId: string): Promise<PriorOutcome | null> {
+  const { data } = await sb
+    .from("material_bank_outcomes")
+    .select("owner_id, contact_owner_action, actions")
+    .eq("order_id", orderId)
+    .maybeSingle();
+  if (!data) return null;
+  const filled = (data.actions as { filledProps?: string[] } | null)?.filledProps ?? [];
+  return {
+    ownerId: str(data.owner_id),
+    dealOwnerWasSetByUs: filled.includes("hubspot_owner_id"),
+    contactOwnerWasSetByUs: data.contact_owner_action === "set" || data.contact_owner_action === "repaired",
+  };
 }
 
 function str(v: unknown): string | null {
@@ -308,7 +334,7 @@ async function routeOwner(
 ): Promise<{ ownerId: string; source: string }> {
   // National-account override, like the event-lead flow.
   const domain = emailDomain(order.contact.email);
-  if (domain && (await isNationalAccountDomain(env, domain))) {
+  if (domain && (await isNationalAccountDomain(env, domain)).match) {
     return { ownerId: SARA, source: `national-account:${domain}` };
   }
 
@@ -468,10 +494,11 @@ async function recordOutcome(sb: SupabaseClient, o: MaterialBankOutcome): Promis
 export async function processMaterialBankOrder(
   env: Env,
   order: MaterialBankOrder,
-  opts: { dryRun?: boolean },
+  opts: { dryRun?: boolean; repair?: boolean },
   signal: AbortSignal,
 ): Promise<MaterialBankOutcome> {
   const dryRun = !!opts.dryRun;
+  const repair = !!opts.repair && !dryRun;
   const sb = serviceSupabase(env);
   const outcome: MaterialBankOutcome = {
     orderId: order.orderId,
@@ -614,6 +641,18 @@ export async function processMaterialBankOrder(
         if (k === "dealname") continue; // never rename an existing deal
         if (!str(existing.properties[k])) patch[k] = v;
       }
+      // REPAIR: overwrite an owner this sync itself set with a since-fixed
+      // routing decision — only when the ledger proves we set it AND the deal
+      // still carries exactly that value (a human's change is never touched).
+      const prior = repair ? await loadPriorOutcome(sb, order.orderId) : null;
+      if (
+        prior?.dealOwnerWasSetByUs &&
+        prior.ownerId &&
+        str(existing.properties.hubspot_owner_id) === prior.ownerId &&
+        ownerId !== prior.ownerId
+      ) {
+        patch.hubspot_owner_id = ownerId;
+      }
       outcome.filledProps = Object.keys(patch);
       const existingSkus = await existingDealSkus(token, existing.id, signal);
       const missingLines = order.lines.filter((l) => !existingSkus.has(l.sku));
@@ -641,9 +680,19 @@ export async function processMaterialBankOrder(
       outcome.status = outcome.filledProps.length || missingLines.length ? "updated" : "unchanged";
     }
 
-    // 6. Contact owner — only when the contact exists and is unowned.
+    // 6. Contact owner — only when the contact exists and is unowned, plus the
+    // repair case: the ledger shows we set it and it still holds our value.
     if (!dryRun && contactId && !outcome.contactCreated) {
-      if (contactOwnerId) {
+      let repairContactOwner = false;
+      if (contactOwnerId && repair) {
+        const prior = await loadPriorOutcome(sb, order.orderId);
+        repairContactOwner =
+          !!prior?.contactOwnerWasSetByUs &&
+          !!prior.ownerId &&
+          contactOwnerId === prior.ownerId &&
+          ownerId !== prior.ownerId;
+      }
+      if (contactOwnerId && !repairContactOwner) {
         outcome.contactOwnerAction = "skipped_existing";
       } else {
         const patch = await hs(
@@ -653,7 +702,7 @@ export async function processMaterialBankOrder(
           { properties: { hubspot_owner_id: ownerId } },
           signal,
         );
-        outcome.contactOwnerAction = patch.ok ? "set" : "skipped_no_owner";
+        outcome.contactOwnerAction = patch.ok ? (repairContactOwner ? "repaired" : "set") : "skipped_no_owner";
       }
     }
 
