@@ -32,7 +32,7 @@ export interface QuoteTeamSpec {
 }
 
 export const QUOTE_TEAMS: QuoteTeamSpec[] = [
-  { id: "wac", label: "WAC / Modern Forms / WAC Architectural", enabled: true },
+  { id: "wac", label: "WAC Architectural / WAC Lighting / Modern Forms", enabled: true },
   { id: "schonbek", label: "Schonbek (coming soon)", enabled: false },
   { id: "custom_international", label: "Custom / International (coming soon)", enabled: false },
 ];
