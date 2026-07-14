@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { QUOTE_REQUEST_FIELDS, QUOTE_REQUEST_TYPE_SPECS } from "@wac/shared";
+import { QUOTE_REQUEST_FIELDS, QUOTE_TEAMS, WAC_TASK_TYPES } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { constantTimeEqual } from "./webhookAuth.js";
 import {
@@ -113,7 +113,8 @@ quoteDeskRoutes.post("/requests", async (c) => {
   const payload: QuoteRequestPayload = {
     requestId,
     dealId,
-    requestType: String(body.requestType ?? "new") as QuoteRequestPayload["requestType"],
+    team: String(body.team ?? "wac") as QuoteRequestPayload["team"],
+    taskType: String(body.taskType ?? ""),
     requesterEmail: caller.email,
     requesterName: typeof body.requesterName === "string" ? body.requesterName : undefined,
     recipientContactId:
@@ -150,7 +151,7 @@ quoteDeskRoutes.get("/tickets", async (c) => {
  */
 quoteDeskRoutes.get("/spec", async (c) => {
   if (!(await hubspotSignatureValid(c, ""))) return c.json({ error: "unauthorized" }, 401);
-  return c.json({ fields: QUOTE_REQUEST_FIELDS, types: QUOTE_REQUEST_TYPE_SPECS });
+  return c.json({ fields: QUOTE_REQUEST_FIELDS, teams: QUOTE_TEAMS, taskTypes: WAC_TASK_TYPES });
 });
 
 quoteDeskRoutes.get("/contacts", async (c) => {
