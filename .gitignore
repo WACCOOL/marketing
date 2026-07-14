@@ -36,3 +36,8 @@ yarn-error.log*
 coverage/
 .turbo/
 .cache/
+
+# HubSpot CLI auth (contains the personal access key — repo is PUBLIC, never commit)
+hubspot.config.yml
+hubspot.config.yaml
+.hsaccount
