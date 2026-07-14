@@ -28,6 +28,9 @@ Setup notes:
 - **permittedUrls**: `hubspot.fetch` may only call URLs allowlisted in
   `src/app/app.json` (`https://marketing.gowac.cc`).
 - The card requires an **Enterprise** portal (private-app app cards).
-- `platformVersion` is pinned to `2023.2`; if `hs project upload` prompts to
-  migrate to a newer platform version, follow the CLI migration — the extension
-  code is version-agnostic, only the `*.json` config shapes change.
+- `platformVersion` is `2026.03` (migrated from 2023.2 → 2025.1 → 2026.03 on
+  2026-07-14 via `hs project migrate`). App config lives in
+  `src/app/wac-quote-desk-hsmeta.json` — the `permittedUrls.fetch` allowlist
+  there is what lets `hubspot.fetch` reach the Worker; on 2025.1 it was
+  silently dropped, which broke the card with 400s. Card config:
+  `src/app/cards/quote-desk-card-hsmeta.json`.
