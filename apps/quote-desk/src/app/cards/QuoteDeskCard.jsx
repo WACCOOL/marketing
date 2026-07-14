@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Accordion,
   Alert,
   Button,
-  Divider,
+  DateInput,
   Flex,
   Heading,
   Input,
@@ -64,6 +65,19 @@ const STATUS_VARIANT = {
 function randomId() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
   return `qd-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// Deal date properties are "YYYY-MM-DD" strings; DateInput speaks
+// {year, month (0-based), date} objects. Convert at the component boundary.
+function strToDate(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s ?? ""));
+  if (!m) return undefined;
+  return { year: Number(m[1]), month: Number(m[2]) - 1, date: Number(m[3]) };
+}
+function dateToStr(d) {
+  if (!d) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.year}-${p(d.month + 1)}-${p(d.date)}`;
 }
 
 async function api(path, init) {
@@ -222,15 +236,16 @@ function QuoteDesk({ context, actions }) {
         />
       );
     }
-    // date fields use a plain input (YYYY-MM-DD) — matches the deal property format
-    return (
-      <Input
-        {...common}
-        value={values[name] ?? ""}
-        placeholder={field.kind === "date" ? "YYYY-MM-DD" : undefined}
-        onChange={setField(name)}
-      />
-    );
+    if (field.kind === "date") {
+      return (
+        <DateInput
+          {...common}
+          value={strToDate(values[name])}
+          onChange={(v) => setField(name)(dateToStr(v))}
+        />
+      );
+    }
+    return <Input {...common} value={values[name] ?? ""} onChange={setField(name)} />;
   };
 
   return (
@@ -253,83 +268,85 @@ function QuoteDesk({ context, actions }) {
         </Flex>
       )}
 
-      <Divider />
-      <Heading>New request</Heading>
-      <Select
-        label="Quoting team"
-        name="team"
-        options={spec.teams.map((tm) => ({
-          value: tm.id,
-          label: tm.label,
-          disabled: !tm.enabled,
-        }))}
-        value={team}
-        onChange={(v) => {
-          setTeam(v);
-          setResult(null);
-        }}
-      />
-      {teamSpec && !teamSpec.enabled ? (
-        <Alert title="Coming soon" variant="warning">
-          {teamSpec.label.replace(" (coming soon)", "")} quoting isn't wired up here yet —
-          keep using the current process for those requests.
-        </Alert>
-      ) : (
-        <>
+      <Accordion title="Request a quote / update" defaultOpen={false}>
+        <Flex direction="column" gap="md">
           <Select
-            label="Request type"
-            name="taskType"
-            options={spec.taskTypes.map((tt) => ({ value: tt.value, label: tt.label }))}
-            value={taskType}
+            label="Quoting team"
+            name="team"
+            options={spec.teams.map((tm) => ({
+              value: tm.id,
+              label: tm.label,
+              disabled: !tm.enabled,
+            }))}
+            value={team}
             onChange={(v) => {
-              setTaskType(v);
-              setTouched(false);
+              setTeam(v);
               setResult(null);
             }}
           />
-          {typeSpec ? typeSpec.required.map((name) => renderField(name, true)) : null}
-          {typeSpec ? typeSpec.optional.map((name) => renderField(name, false)) : null}
-          {contacts.length ? (
-            <Select
-              label="Send quote to (optional)"
-              name="recipientContactId"
-              options={[
-                { value: "", label: "—" },
-                ...contacts.map((c) => ({
-                  value: c.id,
-                  label: c.email ? `${c.name} (${c.email})` : c.name,
-                })),
-              ]}
-              value={recipientContactId}
-              onChange={setRecipientContactId}
-            />
+          {teamSpec && !teamSpec.enabled ? (
+            <Alert title="Coming soon" variant="warning">
+              {teamSpec.label.replace(" (coming soon)", "")} quoting isn't wired up here yet —
+              keep using the current process for those requests.
+            </Alert>
+          ) : (
+            <>
+              <Select
+                label="Request type"
+                name="taskType"
+                options={spec.taskTypes.map((tt) => ({ value: tt.value, label: tt.label }))}
+                value={taskType}
+                onChange={(v) => {
+                  setTaskType(v);
+                  setTouched(false);
+                  setResult(null);
+                }}
+              />
+              {typeSpec ? typeSpec.required.map((name) => renderField(name, true)) : null}
+              {typeSpec ? typeSpec.optional.map((name) => renderField(name, false)) : null}
+              {contacts.length ? (
+                <Select
+                  label="Send quote to (optional)"
+                  name="recipientContactId"
+                  options={[
+                    { value: "", label: "—" },
+                    ...contacts.map((c) => ({
+                      value: c.id,
+                      label: c.email ? `${c.name} (${c.email})` : c.name,
+                    })),
+                  ]}
+                  value={recipientContactId}
+                  onChange={setRecipientContactId}
+                />
+              ) : null}
+            </>
+          )}
+
+          {result && result.kind === "error" ? (
+            <Alert title="Not submitted" variant="error">{result.message}</Alert>
           ) : null}
-        </>
-      )}
+          {result && result.kind === "success" ? (
+            <Alert title={resultTitle(result)} variant="success">
+              <Link href={result.zendeskUrl}>Zendesk ticket #{result.zendeskTicketId}</Link>
+            </Alert>
+          ) : null}
 
-      {result && result.kind === "error" ? (
-        <Alert title="Not submitted" variant="error">{result.message}</Alert>
-      ) : null}
-      {result && result.kind === "success" ? (
-        <Alert title={resultTitle(result)} variant="success">
-          <Link href={result.zendeskUrl}>Zendesk ticket #{result.zendeskTicketId}</Link>
-        </Alert>
-      ) : null}
-
-      <Flex direction="row" gap="sm" align="center">
-        <Button
-          variant="primary"
-          onClick={submit}
-          disabled={submitting || !teamSpec || !teamSpec.enabled}
-        >
-          {submitting ? "Submitting…" : "Submit request"}
-        </Button>
-        {touched && missing.length ? (
-          <Text variant="microcopy">
-            {missing.length} required field{missing.length > 1 ? "s" : ""} left
-          </Text>
-        ) : null}
-      </Flex>
+          <Flex direction="row" gap="sm" align="center">
+            <Button
+              variant="primary"
+              onClick={submit}
+              disabled={submitting || !teamSpec || !teamSpec.enabled}
+            >
+              {submitting ? "Submitting…" : "Submit request"}
+            </Button>
+            {touched && missing.length ? (
+              <Text variant="microcopy">
+                {missing.length} required field{missing.length > 1 ? "s" : ""} left
+              </Text>
+            ) : null}
+          </Flex>
+        </Flex>
+      </Accordion>
     </Flex>
   );
 }
