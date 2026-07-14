@@ -180,6 +180,13 @@ export interface Env {
   // territory-sync backfill also presents. When unset, those endpoints are closed.
   REP_LOOKUP_TOKEN?: string;
 
+  // Additional token accepted ONLY by the Material Bank endpoints
+  // (/api/hubspot/material-bank/*). Exists because the REP_LOOKUP_TOKEN value
+  // is unrecoverable outside the deployed secret (HubSpot masks it; local
+  // mirror went stale) — new callers (the Make.com file relay, the sync CLI)
+  // use this one instead of forcing a rotation across live HubSpot workflows.
+  MATERIAL_BANK_TOKEN?: string;
+
   // Minimum model confidence (0..1) required to WRITE a sub-type. Default 0.6.
   CLASSIFY_MIN_CONFIDENCE?: string;
   // Gemini model for sub-type classification. Default: gemini-2.5-flash.

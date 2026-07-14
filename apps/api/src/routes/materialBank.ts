@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { MaterialBankOrder } from "@wac/shared";
 import type { AppBindings } from "../auth.js";
 import { processMaterialBankOrder } from "../materialBank.js";
-import { webhookAuthorized } from "./webhookAuth.js";
+import { materialBankAuthorized } from "./webhookAuth.js";
 
 /**
  * Material Bank order intake, called by the apps/material-bank-sync CLI (which
@@ -28,7 +28,7 @@ import { webhookAuthorized } from "./webhookAuth.js";
  */
 export const materialBankRoutes = new Hono<AppBindings>();
 
-const authorized = webhookAuthorized;
+const authorized = materialBankAuthorized;
 
 /** R2 prefix the relay drops raw files into; the CLI's --inbox mode scans it. */
 export const MATERIAL_BANK_INBOX_PREFIX = "ingest/material-bank/inbox/";
