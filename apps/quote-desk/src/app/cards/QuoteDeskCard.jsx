@@ -165,10 +165,12 @@ function QuoteDesk({ context, actions }) {
     setSubmitting(true);
     setResult(null);
     try {
+      // hubspot.fetch takes the body as a plain OBJECT (it serializes it
+      // itself) — passing a pre-stringified JSON breaks the payload.
       const res = await api("/requests", {
         method: "POST",
         timeout: SUBMIT_TIMEOUT_MS,
-        body: JSON.stringify({
+        body: {
           requestId,
           dealId,
           team,
@@ -180,7 +182,7 @@ function QuoteDesk({ context, actions }) {
           recipientName:
             (contacts.find((c) => c.id === recipientContactId) || {}).name || undefined,
           fields: values,
-        }),
+        },
       });
       if (res.ok) {
         setResult({ kind: "success", ...res.data });
