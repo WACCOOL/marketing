@@ -172,9 +172,16 @@
     // deriveCreateDate; backfill via territory-sync --reconcile-deal-create-dates).
     // Unset to fall back to compute+log-only ("[createdate] would write ...").
     "DEAL_CREATEDATE_WRITE": "1",
-    // Zendesk mirror config is added at rollout (see env.ts):
-    //   "ZD_SYNC_GROUPS": "{\"1500002309801\":{\"name\":\"Quotes\",\"pipelineId\":\"…\",\"stages\":{…}}}"
-    //   "ZENDESK_SYNC_WRITE": "1"  (flip after the dark-launch week validates)
+    // Zendesk -> HubSpot mirror: group allowlist + pipeline/stage map. The
+    // portal allows only ONE ticket pipeline (Service Hub free tier), so every
+    // synced group shares pipeline 0 ("Zendesk Tickets", repurposed default;
+    // stages relabeled 2026-07-14) — segment by the zendesk_group ticket prop.
+    // Add more groups here (Customer Service, Schonbek Quotes, ...) as they're
+    // brought into the mirror.
+    "ZD_SYNC_GROUPS": "{\"1500002309801\":{\"name\":\"Quotes\",\"pipelineId\":\"0\",\"stages\":{\"new\":\"1\",\"open\":\"1399042079\",\"pending\":\"1399042080\",\"hold\":\"1399042080\",\"solved\":\"1399042081\",\"closed\":\"4\"}}}",
+    // Flip to "1" after the dark-launch week validates the mapping ("would
+    // write" logs + zendesk_tickets rows) — enables HubSpot ticket/note/contact
+    // writes in the mirror. See env.ts ZENDESK_SYNC_WRITE.
     // Derive deal amount from line items (Σ quantity × unit_price). DISABLED
     // 2026-07-07 after ~2.5h live: the quoting team zeroes quote_net_value
     // DELIBERATELY (e.g. resolution "QB Order Received Quote Not Referenced" —

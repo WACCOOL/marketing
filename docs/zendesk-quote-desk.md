@@ -29,58 +29,66 @@ What ships in the Worker (`apps/api`) + the HubSpot UI extension (`apps/quote-de
 
 ## Manual setup
 
-### Cloudflare
+### Cloudflare — DONE 2026-07-14
 
-```bash
-npx wrangler queues create wac-zendesk-sync
-npx wrangler queues create wac-zendesk-sync-dlq
-wrangler secret put ZENDESK_SUBDOMAIN     # e.g. waclighting
-wrangler secret put ZENDESK_EMAIL         # dedicated integration agent's login
-wrangler secret put ZENDESK_API_TOKEN
-wrangler secret put ZENDESK_WEBHOOK_SECRET
-wrangler secret put QUOTE_DESK_CLIENT_SECRET   # after the app exists (below)
-```
+- Queues `wac-zendesk-sync` + `wac-zendesk-sync-dlq` created.
+- Prod secrets set: `ZENDESK_SUBDOMAIN` (**modernforms** — the one Zendesk
+  instance for all brands), `ZENDESK_EMAIL` (Davis; swap to a dedicated
+  integration agent later if audit noise matters), `ZENDESK_API_TOKEN`
+  (Zendesk token named "Hubspot_Sync").
+- Still pending: `ZENDESK_WEBHOOK_SECRET` (after the webhook is created) and
+  `QUOTE_DESK_CLIENT_SECRET` (after `hs project upload`).
 
-Apply `supabase/migrations/0041_zendesk_tickets.sql`.
+Migration 0041: applied 2026-07-14.
 
-### HubSpot
+### HubSpot — pipeline/properties DONE 2026-07-14
 
-1. Private app (HUBSPOT_TOKEN): add ticket + note read/write scopes
-   (`crm.objects.tickets`, notes/engagements as named in the scope picker) and
-   contact write.
-2. Ticket pipelines: create "Quote Requests" (suggested stages: New → In
-   Progress → Waiting on Requester → Quoted → Closed) plus one pipeline per
-   additional synced group. Record every pipeline + stage id.
-3. Ticket properties (single-line text unless noted): `zendesk_ticket_id`
-   (enable "require unique values"), `zendesk_ticket_url`, `zendesk_group`.
+1. Scopes: `tickets` added; notes + contacts write were already covered by the
+   existing grants (verified empirically — note create/delete round-trip).
+2. **One-pipeline reality**: the portal allows a single ticket pipeline
+   (Service Hub free tier), so per-group pipelines are out. The default
+   pipeline (id `0`) was repurposed to **"Zendesk Tickets"** with stages:
+   New = `1`, In Progress = `1399042079`, Waiting on Requester = `1399042080`,
+   Solved = `1399042081` (closed state), Closed = `4`. All synced groups share
+   it; segment views/reports by the `zendesk_group` ticket property. If
+   Service Hub is ever upgraded, split into per-group pipelines and update
+   `ZD_SYNC_GROUPS`.
+3. Ticket properties created: `zendesk_ticket_id` (unique), `zendesk_ticket_url`,
+   `zendesk_group`, `quote_request_type`.
 4. Quote Desk app: `cd apps/quote-desk && hs project upload` (see its README);
    copy the app's client secret into `QUOTE_DESK_CLIENT_SECRET`.
 
-### Zendesk (Admin Center)
+### Zendesk (Admin Center, modernforms.zendesk.com)
 
-1. API token for a dedicated integration agent (`Apps and integrations → APIs`).
-2. Webhook → `https://marketing.gowac.cc/api/zendesk/webhook`, auth "none"
-   (the HMAC signature is the auth); reveal the signing secret →
-   `ZENDESK_WEBHOOK_SECRET`.
-3. Trigger "Mirror to HubSpot": conditions — Group is one of the allowlisted
-   customer-facing groups AND (comment is public OR status changed); action —
-   notify the webhook with body `{"ticket_id": {{ticket.id}}}` (ids only; the
-   Worker re-fetches the ticket + comments).
+1. ~~API token~~ — done ("Hubspot_Sync", under Davis's account).
+2. Webhook (`Apps and integrations → Webhooks → Create webhook`): pick
+   **"Trigger or automation"** (NOT "Zendesk events"), then:
+   - Name: `Mirror to HubSpot`
+   - Endpoint URL: `https://marketing.gowac.cc/api/zendesk/webhook`
+   - Request method: `POST` · Request format: `JSON`
+   - Authentication: **None** (every webhook is HMAC-signed automatically;
+     that signature IS the auth)
+   - After creating: open the webhook → reveal the **signing secret** →
+     `wrangler secret put ZENDESK_WEBHOOK_SECRET` (from `apps/api`).
+   - Note: "Test webhook" returns 401 until the secret is set AND the PR is
+     deployed — expected.
+3. Trigger (`Objects and rules → Business rules → Triggers → Create trigger`):
+   - Name: `Mirror to HubSpot`
+   - Conditions, **Meet ALL**: `Group` · `Is` · `Quotes`
+     (add more groups later as a Meet-ANY group block when expanding scope)
+   - Conditions, **Meet ANY**: `Ticket` · `Is` · `Created` — `Comment` · `Is` ·
+     `Public` — `Status` · `Changed`
+   - Actions: `Notify active webhook` → `Mirror to HubSpot`, JSON body:
+     `{"ticket_id": {{ticket.id}}}` (ids only; the Worker re-fetches the
+     ticket + comments).
+   - **Create the trigger only after the PR is deployed and
+     ZENDESK_WEBHOOK_SECRET is set** — otherwise every quote update piles up
+     401s and Zendesk's circuit breaker may disable the webhook.
 
-### Worker vars (at rollout)
+### Worker vars
 
-`ZD_SYNC_GROUPS` (JSON, keyed by Zendesk group id — the allowlist AND the
-pipeline map; internal groups excluded by omission):
-
-```json
-{
-  "1500002309801": {
-    "name": "Quotes",
-    "pipelineId": "<Quote Requests pipeline id>",
-    "stages": { "new": "…", "open": "…", "pending": "…", "hold": "…", "solved": "…", "closed": "…" }
-  }
-}
-```
+`ZD_SYNC_GROUPS` is set in `wrangler.jsonc` (Quotes → pipeline `0` with the
+real stage ids). Add more group entries as they're brought into the mirror.
 
 ## Rollout (dark launch)
 
