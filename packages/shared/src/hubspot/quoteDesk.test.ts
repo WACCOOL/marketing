@@ -104,6 +104,7 @@ describe("missingQuoteRequestFields", () => {
       missingQuoteRequestFields("new_quote", {
         subject: "  ",
         account_number: "2013231",
+        sales_group: "TLS",
         quote_request_notes: "quote please",
         quote_needed_by: null,
       }),
