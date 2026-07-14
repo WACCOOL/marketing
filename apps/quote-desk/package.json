@@ -1,0 +1,6 @@
+{
+  "name": "@wac/quote-desk",
+  "private": true,
+  "version": "0.0.1",
+  "description": "HubSpot developer project: Quote Desk CRM card on deal records. Deployed with the HubSpot CLI (hs project upload), NOT wrangler — excluded from the web/API deploy pipeline."
+}

@@ -2,6 +2,7 @@ import type { GenerationMessage } from "./generation.js";
 import type { GenerationContainer } from "./container.js";
 import type { IngestMessage } from "./ingest.js";
 import type { EventLeadBody } from "./eventLead.js";
+import type { ZendeskSyncMessage } from "./zendeskSyncQueue.js";
 
 export interface Env {
   SUPABASE_URL: string;
@@ -214,6 +215,41 @@ export interface Env {
   // flaky under some Docker/kernel setups; see workers-sdk#12965). MUST be unset
   // in production so the real container path is used.
   GENERATOR_URL?: string;
+
+  // --- Zendesk <-> HubSpot ticket mirror (zendeskSync.ts / quoteDesk.ts) ---
+  // Zendesk API-token basic auth: base64("{email}/token:{api_token}") against
+  // https://{subdomain}.zendesk.com. All three must be set or every Zendesk
+  // call returns a clear "not configured" error (mirror + card stay closed).
+  ZENDESK_SUBDOMAIN?: string;
+  ZENDESK_EMAIL?: string;
+  ZENDESK_API_TOKEN?: string;
+  // Signing secret of the Zendesk webhook (Admin Center -> Webhooks -> reveal
+  // secret). Verifies X-Zendesk-Webhook-Signature = base64(HMAC-SHA256(secret,
+  // timestamp + raw body)) on POST /api/zendesk/webhook. Unset = endpoint closed.
+  ZENDESK_WEBHOOK_SECRET?: string;
+  // Client secret of the "wac-quote-desk" HubSpot developer-project app.
+  // hubspot.fetch signs every card request with X-HubSpot-Signature-v3 using
+  // this secret; the /api/quote-desk/* routes verify it (and only then trust
+  // the server-appended userEmail query param as the submitting user). Unset =
+  // card endpoints closed.
+  QUOTE_DESK_CLIENT_SECRET?: string;
+  // Gate for HubSpot writes in the Zendesk mirror (tickets / notes / contacts /
+  // associations). When != "1" the sync computes matches, maintains the
+  // Supabase mapping, and logs "[zendesk-sync] would ..." — dark launch while
+  // the group->pipeline map and fake-email patterns are validated against real
+  // traffic. Zendesk-side writes from the Quote Desk card are NOT gated (the
+  // card replaces the make.com path 1:1).
+  ZENDESK_SYNC_WRITE?: string;
+  // JSON allowlist of the Zendesk groups that mirror to HubSpot, keyed by
+  // group id: { "<groupId>": { "name": "Quotes", "pipelineId": "…",
+  // "stages": { "new": "…", "open": "…", "pending": "…", "hold": "…",
+  // "solved": "…", "closed": "…" } } }. Internal groups (IT/HR) are excluded
+  // by omission. Unset = the whole mirror is off.
+  ZD_SYNC_GROUPS?: string;
+  // Zendesk mirror queue. The webhook/backfill/reconcile enqueue ticket ids;
+  // the wac-zendesk-sync consumer (max_concurrency 1 -> serial, rate-limit
+  // friendly on both APIs) processes them via zendeskSyncQueue.ts.
+  ZENDESK_SYNC_QUEUE: Queue<ZendeskSyncMessage>;
 
   // Outermost ceiling (ms) the queue consumer waits on a shot3d (3D app-shot /
   // cam-solve) render before aborting. A Max-tier render can take well over an

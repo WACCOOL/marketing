@@ -92,6 +92,10 @@ export const PATHS = {
   dealPipeline: `/crm/v3/pipelines/deals/${UNIVERSAL_PIPELINE_ID}`,
   dealPipelineStage: `/crm/v3/pipelines/deals/${UNIVERSAL_PIPELINE_ID}/stages`,
   leadCreate: "/crm/v3/objects/leads",
+  // Zendesk ticket mirror (zendeskSync.ts / quoteDesk.ts).
+  ticketCreate: "/crm/v3/objects/tickets",
+  noteCreate: "/crm/v3/objects/notes",
+  contactCreate: "/crm/v3/objects/contacts",
 };
 
 export const ASSOC = {
@@ -99,6 +103,11 @@ export const ASSOC = {
   lineItemToDeal: 20,
   companyToDeal: 6,
   contactToDeal: 4,
+  // HubSpot-defined defaults used by the Zendesk ticket mirror.
+  ticketToDeal: 28,
+  ticketToContact: 16,
+  noteToTicket: 228,
+  noteToDeal: 214,
 };
 
 const BATCH_SIZE = 100;

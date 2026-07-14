@@ -1,0 +1,12 @@
+{
+  "type": "crm-card",
+  "data": {
+    "title": "Quote Desk",
+    "uid": "quote-desk-card",
+    "location": "crm.record.tab",
+    "module": {
+      "file": "QuoteDeskCard.jsx"
+    },
+    "objectTypes": [{ "name": "deals" }]
+  }
+}

@@ -29,6 +29,8 @@ import { projectFocusRoutes } from "./routes/projectFocus.js";
 import { productFocusRoutes } from "./routes/productFocus.js";
 import { showroomOrderRoutes } from "./routes/showroomOrders.js";
 import { materialBankRoutes } from "./routes/materialBank.js";
+import { quoteDeskRoutes } from "./routes/quoteDesk.js";
+import { zendeskWebhookRoutes } from "./routes/zendeskWebhook.js";
 import { runShowroomOrdersSync } from "./showroomOrders.js";
 import { syncNationalAccountDomains } from "./nationalAccounts.js";
 import { makeProductAdapter } from "./saleslayer.js";
@@ -36,6 +38,8 @@ import { serviceSupabase } from "./supabase.js";
 import { updateJobStatus, type GenerationMessage } from "./generation.js";
 import { handleIngestBatch } from "./ingestQueue.js";
 import { handleEventLeadBatch } from "./eventLeadQueue.js";
+import { handleZendeskSyncBatch, type ZendeskSyncMessage } from "./zendeskSyncQueue.js";
+import { runZendeskReconcile } from "./zendeskReconcile.js";
 import type { IngestMessage } from "./ingest.js";
 import type { EventLeadBody } from "./eventLead.js";
 import { runGraphPull } from "./graphPull.js";
@@ -108,6 +112,8 @@ app.route("/api/hubspot", productFocusRoutes);
 app.route("/api/hubspot", showroomOrderRoutes);
 app.route("/api/hubspot", materialBankRoutes);
 app.route("/api/rep-codes", repCodeRoutes);
+app.route("/api/quote-desk", quoteDeskRoutes);
+app.route("/api/zendesk", zendeskWebhookRoutes);
 
 // Anything not handled by a /api/* route falls through to the SPA assets
 // (configured in wrangler.jsonc with not_found_handling: single-page-application).
@@ -122,6 +128,8 @@ app.all("*", async (c) => c.env.ASSETS.fetch(c.req.raw));
  *   - weekly Mon 06:30 UTC — recompute deal-stage probabilities (weighted pipeline)
  *   - every 30 minutes at :15/:45 — showroom PO orders sheets -> HubSpot deals
  *     (staggered off the :00/:30 Graph pull; gated on SHOWROOM_SYNC_ENABLED)
+ *   - daily 08:45 UTC — Zendesk mirror reconcile (re-enqueue tickets updated
+ *     in the last 48h; the net under webhook outages / circuit breaking)
  * Each branch is best-effort and logs rather than throwing so one blip doesn't
  * fail the invocation.
  */
@@ -155,6 +163,13 @@ async function scheduled(event: ScheduledController, env: Env): Promise<void> {
       await runShowroomOrdersSync(env, {}, AbortSignal.timeout(300_000));
     } catch (e) {
       console.error("[cron] showroom-orders sync failed", e);
+    }
+  }
+  if (event.cron === "45 8 * * *") {
+    try {
+      await runZendeskReconcile(env, AbortSignal.timeout(300_000));
+    } catch (e) {
+      console.error("[cron] zendesk reconcile failed", e);
     }
   }
 }
@@ -203,7 +218,7 @@ const CONTAINER_TIMEOUT_MS = 150_000;
 const SHOT3D_CONTAINER_TIMEOUT_MS_DEFAULT = 4_200_000;
 
 async function queue(
-  batch: MessageBatch<GenerationMessage | IngestMessage | EventLeadBody>,
+  batch: MessageBatch<GenerationMessage | IngestMessage | EventLeadBody | ZendeskSyncMessage>,
   env: Env,
 ): Promise<void> {
   // Marketing data ingestion runs on its own queue with independent retry/DLQ
@@ -214,6 +229,10 @@ async function queue(
   }
   if (batch.queue === "wac-event-leads") {
     await handleEventLeadBatch(batch as MessageBatch<EventLeadBody>, env);
+    return;
+  }
+  if (batch.queue === "wac-zendesk-sync") {
+    await handleZendeskSyncBatch(batch as MessageBatch<ZendeskSyncMessage>, env);
     return;
   }
 

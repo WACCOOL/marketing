@@ -1,0 +1,10 @@
+{
+  "name": "quote-desk-extensions",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Runtime dependencies for the Quote Desk UI extension (installed by HubSpot's project build, not pnpm).",
+  "dependencies": {
+    "@hubspot/ui-extensions": "latest",
+    "react": "^18.2.0"
+  }
+}
