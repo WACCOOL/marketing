@@ -116,6 +116,32 @@ describe("missingQuoteRequestFields", () => {
   });
 });
 
+describe("extractQuoteNumbers", () => {
+  it("passes clean numbers through", async () => {
+    const { extractQuoteNumbers } = await import("./quoteDesk.js");
+    expect(extractQuoteNumbers("25103158")).toEqual(["25103158"]);
+  });
+
+  it("strips trailing text", async () => {
+    const { extractQuoteNumbers } = await import("./quoteDesk.js");
+    expect(extractQuoteNumbers("25103158 VENTRIX")).toEqual(["25103158"]);
+    expect(extractQuoteNumbers("Quote# 25103158 (revised)")).toEqual(["25103158"]);
+  });
+
+  it("returns multiple candidates in order, deduped", async () => {
+    const { extractQuoteNumbers } = await import("./quoteDesk.js");
+    expect(extractQuoteNumbers("25100844  25100959")).toEqual(["25100844", "25100959"]);
+    expect(extractQuoteNumbers("25100844 / 25100844")).toEqual(["25100844"]);
+  });
+
+  it("ignores short digit runs and empty input", async () => {
+    const { extractQuoteNumbers } = await import("./quoteDesk.js");
+    expect(extractQuoteNumbers("rev 3 of 12")).toEqual([]);
+    expect(extractQuoteNumbers(null)).toEqual([]);
+    expect(extractQuoteNumbers("")).toEqual([]);
+  });
+});
+
 describe("isFakeZendeskEmail", () => {
   it("flags missing / malformed emails", () => {
     expect(isFakeZendeskEmail(undefined)).toBe(true);

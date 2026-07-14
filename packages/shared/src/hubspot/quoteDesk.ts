@@ -283,6 +283,29 @@ export function decideTicketAction(
 }
 
 // ---------------------------------------------------------------------------
+// Quote-number extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * The Zendesk "Quote Number" field is free text and agents put all sorts in it
+ * — "25103158 VENTRIX", "25100844  25100959", "SO 4515082". Pull out the
+ * plausible SAP quote numbers (7-10 digit runs) so deal matching can try each
+ * candidate instead of failing on the raw string.
+ */
+export function extractQuoteNumbers(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of String(raw).matchAll(/\d{7,10}/g)) {
+    if (!seen.has(m[0])) {
+      seen.add(m[0]);
+      out.push(m[0]);
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Fake-email guard
 // ---------------------------------------------------------------------------
 
