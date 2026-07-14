@@ -1,0 +1,79 @@
+name: Material Bank Sync
+
+# Material Bank drops XML sample-order files on its SFTP (/Outbound). This job
+# pulls anything new, archives it to R2, and POSTs each order to the Worker
+# (/api/hubspot/material-bank/sync), which dedupes, finds/creates the contact,
+# routes the deal + contact owner (lead tree + designer practice rules), and
+# creates the Pre-Qualified deal with line items. Files are processed exactly
+# once (data_ingestions ledger, source=material-bank), so a frequent cron is a
+# cheap no-op when nothing new landed.
+#
+# NOTE: the cron stays commented out until cutover (Make scenario disabled and
+# the sample run approved) — until then, run via workflow_dispatch.
+on:
+  # schedule:
+  #   - cron: "23 */3 * * *" # every 3 hours, offset from turnover-sync's 7 */3
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: "SFTP inventory + parse preview only (no writes)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Full decision trace per order via the Worker; no writes"
+        type: boolean
+        default: false
+      limit:
+        description: "Process only the first N orders per file (approval gate)"
+        type: string
+        default: ""
+      file:
+        description: "Restrict to one file name"
+        type: string
+        default: ""
+      force:
+        description: "Reprocess files even if already recorded"
+        type: boolean
+        default: false
+
+concurrency:
+  group: material-bank-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build material-bank-sync
+        run: pnpm --filter @wac/material-bank-sync build
+      - name: Run material bank sync
+        env:
+          MB_SFTP_HOST: ${{ secrets.MB_SFTP_HOST }}
+          MB_SFTP_PORT: ${{ secrets.MB_SFTP_PORT }}
+          MB_SFTP_USER: ${{ secrets.MB_SFTP_USER }}
+          MB_SFTP_PASSWORD: ${{ secrets.MB_SFTP_PASSWORD }}
+          MB_SFTP_PATH: ${{ secrets.MB_SFTP_PATH }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: wac-marketing-assets
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          REP_LOOKUP_TOKEN: ${{ secrets.REP_LOOKUP_TOKEN }}
+          MARKETING_APP_URL: https://marketing.gowac.cc
+        run: |
+          ARGS=""
+          if [ "${{ inputs.sample }}" = "true" ]; then ARGS="--sample"; fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          if [ -n "${{ inputs.limit }}" ]; then ARGS="$ARGS --limit ${{ inputs.limit }}"; fi
+          if [ -n "${{ inputs.file }}" ]; then ARGS="$ARGS --file ${{ inputs.file }}"; fi
+          if [ "${{ inputs.force }}" = "true" ]; then ARGS="$ARGS --force"; fi
+          pnpm --filter @wac/material-bank-sync sync -- $ARGS

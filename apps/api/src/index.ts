@@ -28,6 +28,7 @@ import { eventLeadRoutes } from "./routes/eventLeads.js";
 import { projectFocusRoutes } from "./routes/projectFocus.js";
 import { productFocusRoutes } from "./routes/productFocus.js";
 import { showroomOrderRoutes } from "./routes/showroomOrders.js";
+import { materialBankRoutes } from "./routes/materialBank.js";
 import { runShowroomOrdersSync } from "./showroomOrders.js";
 import { syncNationalAccountDomains } from "./nationalAccounts.js";
 import { makeProductAdapter } from "./saleslayer.js";
@@ -105,6 +106,7 @@ app.route("/api/hubspot", eventLeadRoutes);
 app.route("/api/hubspot", projectFocusRoutes);
 app.route("/api/hubspot", productFocusRoutes);
 app.route("/api/hubspot", showroomOrderRoutes);
+app.route("/api/hubspot", materialBankRoutes);
 app.route("/api/rep-codes", repCodeRoutes);
 
 // Anything not handled by a /api/* route falls through to the SPA assets

@@ -39,7 +39,7 @@ const DEDUP_WINDOW_MS = 2 * 60 * 1000;
 const FETCH_PROPS =
   "name,description,industry,website,domain,company_sub_type_simplified,company_sub_type,project_focus";
 
-export type ProjectFocusSource = "webhook" | "backfill" | "manual" | "event-lead";
+export type ProjectFocusSource = "webhook" | "backfill" | "manual" | "event-lead" | "material-bank";
 
 export type ProjectFocusStatus =
   | "classified"
@@ -156,6 +156,56 @@ async function classifyPass(
     promptTokens: r.usage?.promptTokens ?? 0,
     outputTokens: r.usage?.outputTokens ?? 0,
   };
+}
+
+export interface SiteFocusResult {
+  /** null = unverifiable (site unreachable, or the model wasn't confident). */
+  focus: ProjectFocusValue[] | null;
+  confidence: number | null;
+  websiteFetched: boolean;
+  promptTokens: number;
+  outputTokens: number;
+}
+
+/**
+ * Residential-vs-commercial verification for a firm that may not exist in HubSpot
+ * (e.g. a Material Bank order's design firm): crawl the site and classify from its
+ * actual content. The website IS the evidence here — no reachable site means no
+ * verification, so `focus: null` (the caller applies its own unverifiable default).
+ * Same confidence bars as {@link classifyProjectFocus}, including the higher
+ * Commercial threshold.
+ */
+export async function classifyProjectFocusForSite(
+  env: Env,
+  input: { name: string | null; website: string },
+): Promise<SiteFocusResult> {
+  const model = env.PROJECT_FOCUS_MODEL || env.CLASSIFY_MODEL || env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
+  const websiteText = await fetchWebsiteText(input.website);
+  if (!websiteText) {
+    return { focus: null, confidence: null, websiteFetched: false, promptTokens: 0, outputTokens: 0 };
+  }
+  const company: CompanyForClassify = {
+    name: input.name,
+    description: null,
+    industry: null,
+    domain: null,
+    website: input.website,
+  };
+  try {
+    const r = await classifyPass(env, company, websiteText, model);
+    const parsed = r.parsed;
+    if (!parsed || parsed.confidence < minConfidence(env)) {
+      return { focus: null, confidence: parsed?.confidence ?? null, websiteFetched: true, promptTokens: r.promptTokens, outputTokens: r.outputTokens };
+    }
+    const focus: ProjectFocusValue[] = [];
+    if (parsed.focus.includes("Commercial") && parsed.confidence >= commercialMinConfidence(env)) {
+      focus.push("Commercial");
+    }
+    if (parsed.focus.includes("Residential") || !focus.length) focus.unshift("Residential");
+    return { focus, confidence: parsed.confidence, websiteFetched: true, promptTokens: r.promptTokens, outputTokens: r.outputTokens };
+  } catch {
+    return { focus: null, confidence: null, websiteFetched: true, promptTokens: 0, outputTokens: 0 };
+  }
 }
 
 /**
