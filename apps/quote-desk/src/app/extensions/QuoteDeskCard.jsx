@@ -83,6 +83,8 @@ function QuoteDesk({ context, actions }) {
 
   const [spec, setSpec] = useState(null); // {fields, types}
   const [tickets, setTickets] = useState(null);
+  const [contacts, setContacts] = useState([]);
+  const [recipientContactId, setRecipientContactId] = useState("");
   const [loadError, setLoadError] = useState(null);
 
   const [requestType, setRequestType] = useState("new");
@@ -121,6 +123,9 @@ function QuoteDesk({ context, actions }) {
       prefill.subject = prefill.subject || props.dealname || "";
       setValues(prefill);
       refreshTickets();
+      api(`/contacts?dealId=${dealId}`).then((res) => {
+        if (res.ok) setContacts(res.data.contacts ?? []);
+      });
     })();
   }, [actions, refreshTickets]);
 
@@ -150,6 +155,9 @@ function QuoteDesk({ context, actions }) {
           requesterName: [context.user.firstName, context.user.lastName]
             .filter(Boolean)
             .join(" "),
+          recipientContactId: recipientContactId || undefined,
+          recipientName:
+            (contacts.find((c) => c.id === recipientContactId) || {}).name || undefined,
           fields: values,
         }),
       });
@@ -270,6 +278,21 @@ function QuoteDesk({ context, actions }) {
       />
       {typeSpec.required.map((name) => renderField(name, true))}
       {typeSpec.optional.map((name) => renderField(name, false))}
+      {contacts.length ? (
+        <Select
+          label="Send quote to (optional)"
+          name="recipientContactId"
+          options={[
+            { value: "", label: "—" },
+            ...contacts.map((c) => ({
+              value: c.id,
+              label: c.email ? `${c.name} (${c.email})` : c.name,
+            })),
+          ]}
+          value={recipientContactId}
+          onChange={setRecipientContactId}
+        />
+      ) : null}
 
       {result && result.kind === "error" ? (
         <Alert title="Not submitted" variant="error">{result.message}</Alert>

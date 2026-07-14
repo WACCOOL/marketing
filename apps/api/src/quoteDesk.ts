@@ -45,6 +45,8 @@ export interface QuoteRequestPayload {
   requesterName?: string;
   /** Optional deal-associated contact the quote should go to. */
   recipientContactId?: string;
+  /** Display name of that contact ("Send quote to" line in the ticket body). */
+  recipientName?: string;
   /** Field values keyed by deal property name (see @wac/shared QUOTE_REQUEST_FIELDS). */
   fields: Record<string, string>;
 }
@@ -87,8 +89,9 @@ function requestBody(payload: QuoteRequestPayload, dealName: string | null): str
     `${spec.label} — requested by ${payload.requesterName || payload.requesterEmail} via Quote Desk`,
     `Deal: ${dealName ?? payload.dealId} (${dealUrl(payload.dealId)})`,
     `HubSpot ID: ${payload.dealId}`,
-    "",
   ];
+  if (payload.recipientName) lines.push(`Send quote to: ${payload.recipientName}`);
+  lines.push("");
   for (const name of [...spec.required, ...spec.optional]) {
     const value = payload.fields[name];
     if (value === undefined || String(value).trim() === "") continue;
@@ -271,10 +274,12 @@ export async function createQuoteRequest(
 
   // Record the card's claim on this ticket BEFORE the mirror pass so origin /
   // request_type / request_id survive (syncZendeskTicket preserves origin).
+  // request_id is recorded for comment actions too: a retried submit (fetch
+  // retry after a timeout) hits the dupe-check above instead of re-commenting.
   const { error: upErr } = await sb.from("zendesk_tickets").upsert(
     {
       zendesk_ticket_id: zendeskTicketId,
-      request_id: action.kind === "comment" ? undefined : payload.requestId,
+      request_id: payload.requestId,
       zd_group_id: ZD_QUOTES_GROUP,
       deal_id: payload.dealId,
       request_type: payload.requestType,
@@ -300,9 +305,20 @@ export async function createQuoteRequest(
     console.error(`[quote-desk] inline mirror of ${zendeskTicketId} failed (webhook will repair):`, e);
   }
 
-  // Optional: associate the quote-recipient contact to the deal's HS ticket
-  // conversation is intentionally NOT done here — the recipient is recorded in
-  // the ticket body; contact association follows the requester rules in sync.
+  // Associate the quote-recipient contact (picked from the deal's contacts)
+  // to the mirrored ticket — best-effort, the body line is the real record.
+  if (hubspotTicketId && payload.recipientContactId && /^\d+$/.test(payload.recipientContactId)) {
+    const assoc = await hs(
+      env.HUBSPOT_TOKEN,
+      "PUT",
+      `/crm/v4/objects/tickets/${hubspotTicketId}/associations/default/contacts/${payload.recipientContactId}`,
+      undefined,
+      signal,
+    );
+    if (!assoc.ok) {
+      console.error(`[quote-desk] recipient association failed:`, assoc.status, assoc.data);
+    }
+  }
 
   return {
     ok: true,

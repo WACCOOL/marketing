@@ -118,6 +118,7 @@ quoteDeskRoutes.post("/requests", async (c) => {
     requesterName: typeof body.requesterName === "string" ? body.requesterName : undefined,
     recipientContactId:
       typeof body.recipientContactId === "string" ? body.recipientContactId : undefined,
+    recipientName: typeof body.recipientName === "string" ? body.recipientName : undefined,
     fields:
       body.fields && typeof body.fields === "object"
         ? Object.fromEntries(
