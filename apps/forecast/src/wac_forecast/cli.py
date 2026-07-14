@@ -169,11 +169,18 @@ def score() -> None:
     )
     print(f"artifacts -> {out}")
 
-    # forecast_runs log + drift guardrail (skipped when Supabase creds absent).
+    # forecast_runs log + drift guardrail (skipped when Supabase creds absent;
+    # a missing table — migration not yet applied — warns instead of failing
+    # so local scoring keeps working, but the drift guardrail then can't run).
     if CONFIG.supabase_url and CONFIG.supabase_service_role_key:
         from .extract.supabase_db import client as sb_client
 
         db = sb_client()
+        try:
+            db.table("forecast_runs").select("id").limit(1).execute()
+        except Exception as e:  # noqa: BLE001
+            print(f"[warn] forecast_runs unavailable ({e}); skipping run log + drift check")
+            return
         prev = (
             db.table("forecast_runs")
             .select("total_forecast,run_at")
