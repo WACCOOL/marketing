@@ -34,7 +34,7 @@ import type { Env } from "./env.js";
 import { serviceSupabase } from "./supabase.js";
 import { hs, PATHS, REP_OBJECT, resolveOwnerByName } from "./hubspotPush.js";
 import { emailDomain, isNationalAccountDomain, NATIONAL_ACCOUNT_PROP } from "./nationalAccounts.js";
-import { classifyProjectFocus } from "./projectFocus.js";
+import { classifyProjectFocus, classifyProjectFocusForSite } from "./projectFocus.js";
 import { classifyProductFocus } from "./productFocus.js";
 
 // ---------------------------------------------------------------------------
@@ -317,6 +317,10 @@ const COMPANY_FETCH_PROPS = [
   "inside_sales_rep_from_sap",
   "inside_sales_manager_1",
   "inside_sales_manager_2",
+  // For the commercial-designer hospitality check (site crawl + Gemini).
+  "name",
+  "domain",
+  "website",
 ];
 
 /** Read ALL the contact's associated companies: primary routing facts + ISR accounts. */
@@ -405,14 +409,16 @@ async function resolveProjectFocus(
   company: CompanyFacts | null,
   dryRun: boolean,
   signal: AbortSignal,
-): Promise<string | null> {
-  if (!company) return null;
-  if (company.projectFocus) return company.projectFocus;
-  if (normalizeCompanyType(company.subType) !== "Interior Designer") return null;
+): Promise<{ value: string | null; hospitality: boolean | null }> {
+  if (!company) return { value: null, hospitality: null };
+  if (company.projectFocus) return { value: company.projectFocus, hospitality: null };
+  if (normalizeCompanyType(company.subType) !== "Interior Designer") {
+    return { value: null, hospitality: null };
+  }
   // Some legacy sub-types embed the focus ("Interior Design Firm: Residential") —
   // authoritative, so use it instead of paying for a crawl.
   const fromSubType = projectFocusFromSubType(company.subType);
-  if (fromSubType) return fromSubType;
+  if (fromSubType) return { value: fromSubType, hospitality: null };
   try {
     const r = await classifyProjectFocus(env, serviceSupabase(env), {
       companyId: company.companyId,
@@ -422,9 +428,40 @@ async function resolveProjectFocus(
       // Let the classifier fetch its own complete prop set (name, account_number_,
       // website, etc.) — our company.props is only the routing subset.
     });
-    return r.value;
+    return { value: r.value, hospitality: r.hospitality };
   } catch (e) {
     console.error("[event-lead] just-in-time project-focus classify failed:", e);
+    return { value: null, hospitality: null };
+  }
+}
+
+/**
+ * Hospitality-focus signal for a COMMERCIAL interior designer (drives the
+ * Rudy-vs-spec split — see COMMERCIAL_DESIGNER_NODE). When the just-in-time
+ * project-focus classify already produced a verdict it's reused; otherwise
+ * (stored focus / sub-type-derived) the company site is crawled once here.
+ */
+async function resolveHospitalityFocus(
+  env: Env,
+  company: CompanyFacts | null,
+  companySubType: string | null,
+  projectFocus: string | null,
+  jitHospitality: boolean | null,
+): Promise<string | null> {
+  if (jitHospitality !== null) return jitHospitality ? "Hospitality" : null;
+  // Only relevant when the tree would hit the commercial-designer branch.
+  if (normalizeCompanyType(companySubType) !== "Interior Designer") return null;
+  if (!/commercial/i.test(projectFocus ?? "")) return null;
+  if (/hospitality/i.test(companySubType ?? "")) return "Hospitality";
+  const site = (company?.props?.website || company?.props?.domain || "").trim();
+  if (!site) return null;
+  try {
+    const verdict = await classifyProjectFocusForSite(env, {
+      name: company?.props?.name ?? null,
+      website: site,
+    });
+    return verdict.focus && verdict.hospitality ? "Hospitality" : null;
+  } catch {
     return null;
   }
 }
@@ -963,9 +1000,14 @@ export async function processEventLead(
     const companySubType = (company?.subType && company.subType.trim()) || contact.leadType || null;
     // Project focus: the classifier/stored value, else the focus embedded in the sub-type
     // ("Interior Design Firm: Commercial") — authoritative and works without a company.
-    const projectFocus =
-      (await resolveProjectFocus(env, company, dry, signal)) ?? projectFocusFromSubType(companySubType);
+    const pf = await resolveProjectFocus(env, company, dry, signal);
+    const projectFocus = pf.value ?? projectFocusFromSubType(companySubType);
     const productFocus = await resolveProductFocus(env, company, dry, signal);
+    // Hospitality signal (commercial designers only): Rudy gets the lead ONLY when
+    // the firm's hospitality focus is verified (site crawl + Gemini); else spec.
+    const hospitalityFocus = await resolveHospitalityFocus(
+      env, company, companySubType, projectFocus, pf.hospitality,
+    );
     // Brand: campaign first, then a brand ask in fresh at-show notes. For showroom/
     // distributor, fall back to the company's decorative/functional (Decorative→Modern
     // Forms, Functional→WAC); otherwise to the contact's top brand lead score.
@@ -982,6 +1024,7 @@ export async function processEventLead(
       brand,
       projectFocus,
       productFocus,
+      hospitalityFocus,
     };
     decisions = evaluateLeadOwnershipAll(facts);
   }
@@ -1009,14 +1052,17 @@ export async function processEventLead(
   });
   }
 
-  // Contact-owner rule: if the contact already has a known owner (and it isn't the Lana
-  // fallback), that owner also gets a lead — they're notified alongside the routed rep.
-  if (contact.ownerId && contact.ownerId !== FALLBACK_OWNER_ID && !targets.some((t) => t.resolved.ownerId === contact.ownerId)) {
-    targets.push({
-      d: { leaf: { kind: "person", name: "", label: "Existing contact owner (notified)" }, path: ["contact-owner"] },
-      resolved: { ownerId: contact.ownerId, source: "contact-owner" },
-      routingRepCode: targets[0]?.routingRepCode ?? null,
-    });
+  // Contact-owner-first (2026-07-15 routing change): a contact with a known
+  // owner other than Lana gets the lead — ONLY them. Beats the ISR/national-
+  // account overrides and the tree; Lana-owned contacts route normally.
+  if (contact.ownerId && contact.ownerId !== FALLBACK_OWNER_ID) {
+    targets = [
+      {
+        d: { leaf: { kind: "person", name: "", label: "Contact owner" }, path: ["contact-owner"] },
+        resolved: { ownerId: contact.ownerId, source: "contact-owner" },
+        routingRepCode: targets[0]?.routingRepCode ?? null,
+      },
+    ];
   }
 
   // Idempotency: owners who already have a lead for this contact + campaign are

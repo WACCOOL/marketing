@@ -54,6 +54,8 @@ export interface ProjectFocusResult {
   companyId: string;
   status: ProjectFocusStatus;
   focus: ProjectFocusValue[] | null;
+  /** Confident hospitality-focus verdict (null when not classified this run). */
+  hospitality: boolean | null;
   value: string | null;
   confidence: number | null;
   wrote: boolean;
@@ -161,6 +163,8 @@ async function classifyPass(
 export interface SiteFocusResult {
   /** null = unverifiable (site unreachable, or the model wasn't confident). */
   focus: ProjectFocusValue[] | null;
+  /** True when hospitality work is a verified focus (only meaningful when focus != null). */
+  hospitality: boolean;
   confidence: number | null;
   websiteFetched: boolean;
   promptTokens: number;
@@ -182,7 +186,7 @@ export async function classifyProjectFocusForSite(
   const model = env.PROJECT_FOCUS_MODEL || env.CLASSIFY_MODEL || env.GEMINI_TEXT_MODEL || "gemini-2.5-flash";
   const websiteText = await fetchWebsiteText(input.website);
   if (!websiteText) {
-    return { focus: null, confidence: null, websiteFetched: false, promptTokens: 0, outputTokens: 0 };
+    return { focus: null, hospitality: false, confidence: null, websiteFetched: false, promptTokens: 0, outputTokens: 0 };
   }
   const company: CompanyForClassify = {
     name: input.name,
@@ -195,16 +199,18 @@ export async function classifyProjectFocusForSite(
     const r = await classifyPass(env, company, websiteText, model);
     const parsed = r.parsed;
     if (!parsed || parsed.confidence < minConfidence(env)) {
-      return { focus: null, confidence: parsed?.confidence ?? null, websiteFetched: true, promptTokens: r.promptTokens, outputTokens: r.outputTokens };
+      return { focus: null, hospitality: false, confidence: parsed?.confidence ?? null, websiteFetched: true, promptTokens: r.promptTokens, outputTokens: r.outputTokens };
     }
     const focus: ProjectFocusValue[] = [];
     if (parsed.focus.includes("Commercial") && parsed.confidence >= commercialMinConfidence(env)) {
       focus.push("Commercial");
     }
     if (parsed.focus.includes("Residential") || !focus.length) focus.unshift("Residential");
-    return { focus, confidence: parsed.confidence, websiteFetched: true, promptTokens: r.promptTokens, outputTokens: r.outputTokens };
+    // Hospitality is held to the same higher bar as Commercial (it routes a person).
+    const hospitality = parsed.hospitality && parsed.confidence >= commercialMinConfidence(env);
+    return { focus, hospitality, confidence: parsed.confidence, websiteFetched: true, promptTokens: r.promptTokens, outputTokens: r.outputTokens };
   } catch {
-    return { focus: null, confidence: null, websiteFetched: true, promptTokens: 0, outputTokens: 0 };
+    return { focus: null, hospitality: false, confidence: null, websiteFetched: true, promptTokens: 0, outputTokens: 0 };
   }
 }
 
@@ -224,6 +230,7 @@ export async function classifyProjectFocus(
     companyId,
     status: "skipped",
     focus: null,
+    hospitality: null,
     value: null,
     confidence: null,
     wrote: false,
@@ -327,6 +334,8 @@ export async function classifyProjectFocus(
     }
   }
   const status: ProjectFocusStatus = confident ? "classified" : "defaulted";
+  // Hospitality is held to the Commercial bar (it routes to a person, not a channel).
+  const hospitality = confident ? parsed!.hospitality && parsed!.confidence >= commMin : null;
   await recordAttempt(sb, { company_id: companyId, result: value, confidence, model, source, status, wrote, prompt_tokens: promptTokens, output_tokens: outputTokens, inputs_hash: hash });
-  return { companyId, status, focus, value, confidence, wrote, promptTokens, outputTokens };
+  return { companyId, status, focus, hospitality, value, confidence, wrote, promptTokens, outputTokens };
 }

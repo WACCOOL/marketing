@@ -22,6 +22,12 @@ export type ProjectFocusValue = "Residential" | "Commercial";
 export interface ProjectFocusClassification {
   /** Subset of {Residential, Commercial}; never empty after {@link parseProjectFocus}. */
   focus: ProjectFocusValue[];
+  /**
+   * True when hospitality work (hotels, resorts, restaurants, bars, casinos,
+   * senior living) is a REAL focus of the firm. Routing sends commercial
+   * interior designers to the hospitality owner only when this is set.
+   */
+  hospitality: boolean;
   confidence: number;
   reasoning?: string;
 }
@@ -58,8 +64,11 @@ export function buildProjectFocusPrompt(input: {
     "  clearly dominates, return [\"Residential\"] even if the word 'commercial' appears.",
     "- A firm can do both — return both ONLY when each has real, focus-level evidence.",
     "- Prefer the website's actual project portfolio over a one-line self-description.",
+    '- Additionally set "hospitality": true ONLY when hospitality work — hotels, resorts,',
+    "  restaurants, bars, casinos, senior living — is a genuine focus (a dedicated practice",
+    "  or a portfolio of named hospitality projects), not a passing mention.",
     "",
-    'Respond with JSON ONLY: {"focus": ["Residential"] | ["Commercial"] | ["Residential","Commercial"], "confidence": <0..1>, "reasoning": "<short>"}.',
+    'Respond with JSON ONLY: {"focus": ["Residential"] | ["Commercial"] | ["Residential","Commercial"], "hospitality": true|false, "confidence": <0..1>, "reasoning": "<short>"}.',
     'Never return an empty focus array — if unsure, return ["Residential"] with low confidence.',
   ].join("\n");
 
@@ -114,5 +123,6 @@ export function parseProjectFocus(raw: string): ProjectFocusClassification | nul
   if (!Number.isFinite(confidence)) confidence = 0;
   confidence = Math.max(0, Math.min(1, confidence));
   const reasoning = typeof o.reasoning === "string" ? o.reasoning : undefined;
-  return { focus, confidence, reasoning };
+  const hospitality = o.hospitality === true || String(o.hospitality).toLowerCase() === "true";
+  return { focus, hospitality, confidence, reasoning };
 }

@@ -1731,6 +1731,11 @@ async function reownActiveDealsForRepCode(
             filters: [
               { propertyName: "sales_group", operator: "EQ", value: code },
               { propertyName: "hs_is_closed", operator: "EQ", value: "false" },
+              // Material Bank deals are owner-routed by their own rules
+              // (contact owner / designer / project signals — see
+              // materialBank.ts); territory re-owning must not sweep them
+              // even though a HubSpot workflow stamps sales_group on them.
+              { propertyName: "material_bank_order_id", operator: "NOT_HAS_PROPERTY" },
             ],
           },
         ],
