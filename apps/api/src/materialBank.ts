@@ -719,14 +719,20 @@ export async function processMaterialBankOrder(
         }
         if (machineSet && current !== ownerId) patch.hubspot_owner_id = ownerId;
       }
-      // Rudy-owned (hospitality) deals carry NO sales_group: hospitality stays
-      // his even after an SAP quote number lands (territory ownership follows
-      // sales_group from that moment — see reownActiveDealsForRepCode). The
-      // stamping workflow fires at creation, so this clears it on revisits.
+      // STICKY owners (2026-07-15): person-based ownership survives SAP quote
+      // adoption — hospitality (Rudy), national accounts (Sara), residential
+      // designers (Kalin), and contact-owner-first assignments. Their deals
+      // carry NO sales_group, because territory ownership follows sales_group
+      // the moment a quote number lands (see reownActiveDealsForRepCode).
+      // Lana (triage) and spec/tree rep-code owners are territory-based and
+      // DO hand off. The stamping workflow fires at creation, so this clears
+      // on revisits.
+      const sticky =
+        source.startsWith("contact-owner:") || [RUDY, SARA, KALIN].includes(ownerId);
       if (
-        ownerId === RUDY &&
+        sticky &&
         str(existing.properties.sales_group) &&
-        (str(existing.properties.hubspot_owner_id) === RUDY || patch.hubspot_owner_id === RUDY)
+        (str(existing.properties.hubspot_owner_id) === ownerId || patch.hubspot_owner_id === ownerId)
       ) {
         patch.sales_group = "";
       }
