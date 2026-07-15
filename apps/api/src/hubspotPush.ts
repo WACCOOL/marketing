@@ -1731,6 +1731,12 @@ async function reownActiveDealsForRepCode(
             filters: [
               { propertyName: "sales_group", operator: "EQ", value: code },
               { propertyName: "hs_is_closed", operator: "EQ", value: "false" },
+              // Territory ownership applies once SAP knows the deal — every
+              // SAP-pushed deal carries a quote number (it's the upsert key).
+              // Quote-less deals (Material Bank, showroom POs) are owner-
+              // routed by their own rules and must not be swept, even though
+              // a HubSpot workflow stamps sales_group on them at creation.
+              { propertyName: "sap_quote_number", operator: "HAS_PROPERTY" },
             ],
           },
         ],

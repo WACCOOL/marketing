@@ -6,12 +6,14 @@ import {
   evaluateLeadOwnership,
   fullProjectAddress,
   leadFactsFromMaterialBank,
+  materialBankProjectCategory,
   parseBudgetAmount,
   smartMatchToAllowedOptions,
   UNIVERSAL_PIPELINE_ID,
   DEAL_STAGE_IDS,
   type FixAction,
   type MaterialBankOrder,
+  type MaterialBankProjectCategory,
 } from "@wac/shared";
 import type { Env } from "./env.js";
 import { serviceSupabase } from "./supabase.js";
@@ -24,7 +26,7 @@ import {
   PATHS,
   withHeal,
 } from "./hubspotPush.js";
-import { FALLBACK_OWNER_ID, PERSON_OWNER_ID, resolveLeaf } from "./eventLead.js";
+import { FALLBACK_OWNER_ID, PERSON_OWNER_ID, repCodeObject, resolveLeaf } from "./eventLead.js";
 import { emailDomain, isNationalAccountDomain } from "./nationalAccounts.js";
 import { classifyProjectFocusForSite } from "./projectFocus.js";
 import { lookupRepCodesByZip } from "./routes/repCodes.js";
@@ -83,6 +85,10 @@ const DEAL_READ_PROPS = [
   "marketing_source",
   "project_type",
   "hubspot_owner_id",
+  // sales_group: a HubSpot workflow stamps the territory rep code onto new
+  // deals; the repair path uses it to recognize owners set by the territory
+  // re-owner (see reownActiveDealsForRepCode) as machine-set and correctable.
+  "sales_group",
 ];
 
 export interface MaterialBankOutcome {
@@ -119,14 +125,16 @@ interface PriorOutcome {
 async function loadPriorOutcome(sb: SupabaseClient, orderId: string): Promise<PriorOutcome | null> {
   const { data } = await sb
     .from("material_bank_outcomes")
-    .select("owner_id, contact_owner_action, actions")
+    .select("owner_id, status, contact_owner_action, actions")
     .eq("order_id", orderId)
     .maybeSingle();
   if (!data) return null;
   const filled = (data.actions as { filledProps?: string[] } | null)?.filledProps ?? [];
   return {
     ownerId: str(data.owner_id),
-    dealOwnerWasSetByUs: filled.includes("hubspot_owner_id"),
+    // Created deals get their owner at creation (filledProps only tracks the
+    // update path), so "created" also counts as owner-set-by-us.
+    dealOwnerWasSetByUs: filled.includes("hubspot_owner_id") || data.status === "created",
     contactOwnerWasSetByUs: data.contact_owner_action === "set" || data.contact_owner_action === "repaired",
   };
 }
@@ -326,21 +334,68 @@ async function resolveCompanyWebsite(
   return str(results[0]?.properties?.website) ?? str(results[0]?.properties?.domain);
 }
 
-async function routeOwner(
+/** Per-channel rep codes covering the contact's ZIP ({} when unknown). */
+async function zipRepCodes(env: Env, order: MaterialBankOrder): Promise<Record<string, string>> {
+  if (!order.address.zip) return {};
+  try {
+    return (await lookupRepCodesByZip(env, order.address.zip)).byChannel;
+  } catch (e) {
+    console.error(`[material-bank] rep-code zip lookup failed:`, e);
+    return {};
+  }
+}
+
+/**
+ * The spec rep covering the contact's ZIP (WAC Spec first — Material Bank
+ * carries no brand — then MF Spec); unresolvable → Lana via resolveLeaf.
+ */
+async function resolveSpecOwner(
   env: Env,
   token: string,
   order: MaterialBankOrder,
   signal: AbortSignal,
 ): Promise<{ ownerId: string; source: string }> {
-  // National-account override, like the event-lead flow.
+  const repCodes = await zipRepCodes(env, order);
+  const channel = repCodes["WAC Spec"] ? "WAC Spec" : "MF Spec";
+  const resolved = await resolveLeaf(
+    env,
+    token,
+    { kind: "repCode", channel, resolve: "owner", label: `spec by ZIP (${channel})` },
+    { repCodes },
+    undefined,
+    signal,
+  );
+  return { ownerId: resolved.ownerId ?? FALLBACK_OWNER_ID, source: `spec:${resolved.source}` };
+}
+
+async function routeOwner(
+  env: Env,
+  token: string,
+  order: MaterialBankOrder,
+  opts: { contactOwnerId: string | null; projectCategory: MaterialBankProjectCategory },
+  signal: AbortSignal,
+): Promise<{ ownerId: string; source: string }> {
+  // 0. Contact-owner-first: a known contact owner ALWAYS gets the deal —
+  //    unless that owner is Lana (the manual-triage bucket routes normally).
+  if (opts.contactOwnerId && opts.contactOwnerId !== FALLBACK_OWNER_ID) {
+    return { ownerId: opts.contactOwnerId, source: `contact-owner:${opts.contactOwnerId}` };
+  }
+
+  // 1. National-account override, like the event-lead flow.
   const domain = emailDomain(order.contact.email);
   if (domain && (await isNationalAccountDomain(env, domain)).match) {
     return { ownerId: SARA, source: `national-account:${domain}` };
   }
 
-  const routing = decideMaterialBankRouting(order.company.practice);
+  // 2. Designer rules (project signal → practice label → website verify).
+  const routing = decideMaterialBankRouting(order.company.practice, opts.projectCategory);
   if (routing.kind === "kalin") return { ownerId: KALIN, source: `designer:${routing.reason}` };
   if (routing.kind === "rudy") return { ownerId: RUDY, source: `designer:${routing.reason}` };
+  if (routing.kind === "lana") return { ownerId: FALLBACK_OWNER_ID, source: `lana:${routing.reason}` };
+  if (routing.kind === "spec") {
+    const spec = await resolveSpecOwner(env, token, order, signal);
+    return { ...spec, source: `${spec.source} (${routing.reason})` };
+  }
 
   if (routing.kind === "verify") {
     const site = await resolveCompanyWebsite(token, order, signal);
@@ -350,30 +405,24 @@ async function routeOwner(
         website: site,
       });
       if (verdict.focus) {
-        const commercial = verdict.focus.includes("Commercial");
-        return {
-          ownerId: commercial ? RUDY : KALIN,
-          source: `designer-verified:${commercial ? "commercial" : "residential"}:${site} (conf ${verdict.confidence ?? "?"})`,
-        };
+        const conf = `conf ${verdict.confidence ?? "?"}`;
+        if (verdict.hospitality) {
+          return { ownerId: RUDY, source: `designer-verified:hospitality:${site} (${conf})` };
+        }
+        if (verdict.focus.includes("Commercial")) {
+          const spec = await resolveSpecOwner(env, token, order, signal);
+          return { ...spec, source: `designer-verified:commercial→${spec.source}:${site} (${conf})` };
+        }
+        return { ownerId: KALIN, source: `designer-verified:residential:${site} (${conf})` };
       }
     }
-    const fallbackOwner = routing.unverifiable === "rudy" ? RUDY : KALIN;
-    return {
-      ownerId: fallbackOwner,
-      source: `designer-unverifiable:${routing.unverifiable}:${site ?? "no-site"}`,
-    };
+    // Can't tell residential vs commercial → manual triage.
+    return { ownerId: FALLBACK_OWNER_ID, source: `designer-unverifiable:lana:${site ?? "no-site"}` };
   }
 
-  // Standard lead-ownership tree; rep-code leaves resolve from the contact ZIP.
-  const decision = evaluateLeadOwnership(leadFactsFromMaterialBank(order));
-  let repCodes: Record<string, string> = {};
-  if (order.address.zip) {
-    try {
-      repCodes = (await lookupRepCodesByZip(env, order.address.zip)).byChannel;
-    } catch (e) {
-      console.error(`[material-bank] rep-code zip lookup failed:`, e);
-    }
-  }
+  // 3. Standard lead-ownership tree; rep-code leaves resolve from the contact ZIP.
+  const decision = evaluateLeadOwnership(leadFactsFromMaterialBank(order, opts.projectCategory));
+  const repCodes = await zipRepCodes(env, order);
   const resolved = await resolveLeaf(env, token, decision.leaf, { repCodes }, undefined, signal);
   return {
     ownerId: resolved.ownerId ?? FALLBACK_OWNER_ID,
@@ -560,8 +609,26 @@ export async function processMaterialBankOrder(
     }
     outcome.contactId = contactId;
 
-    // 3. Owner routing (used by contact create, deal create, and gentle update).
-    const { ownerId, source } = await routeOwner(env, token, order, signal);
+    // 3. project_type — classified BEFORE routing (the project's category
+    // drives the designer rules). An existing deal's value is reused; Gemini
+    // only runs when there's nothing on record.
+    const existingProjectType = existing ? str(existing.properties.project_type) : null;
+    if (!existingProjectType) {
+      outcome.projectType = await classifyProjectType(env, sb, order);
+    }
+    const projectCategory = materialBankProjectCategory(
+      order,
+      existingProjectType ?? outcome.projectType,
+    );
+
+    // 4. Owner routing (used by contact create, deal create, and gentle update).
+    const { ownerId, source } = await routeOwner(
+      env,
+      token,
+      order,
+      { contactOwnerId, projectCategory },
+      signal,
+    );
     outcome.ownerId = ownerId;
     outcome.ownerSource = source;
 
@@ -579,12 +646,6 @@ export async function processMaterialBankOrder(
       outcome.contactCreated = !!contactId;
       contactOwnerId = ownerId; // set at creation
       outcome.contactOwnerAction = "set";
-    }
-
-    // 4. project_type — only when we'd actually write it.
-    const needsProjectType = !existing || !str(existing.properties.project_type);
-    if (needsProjectType) {
-      outcome.projectType = await classifyProjectType(env, sb, order);
     }
 
     // 5. Deal write.
@@ -641,17 +702,39 @@ export async function processMaterialBankOrder(
         if (k === "dealname") continue; // never rename an existing deal
         if (!str(existing.properties[k])) patch[k] = v;
       }
-      // REPAIR: overwrite an owner this sync itself set with a since-fixed
-      // routing decision — only when the ledger proves we set it AND the deal
-      // still carries exactly that value (a human's change is never touched).
+      // REPAIR: overwrite a machine-set owner with the current routing
+      // decision. Machine-set means the deal still carries EITHER the value
+      // the ledger shows this sync wrote, OR the current owner of the rep
+      // code in the deal's sales_group (the territory re-owner's value — see
+      // reownActiveDealsForRepCode, which used to sweep MB deals). A value a
+      // human picked matches neither and is never touched.
       const prior = repair ? await loadPriorOutcome(sb, order.orderId) : null;
+      if (prior?.dealOwnerWasSetByUs && prior.ownerId && ownerId !== prior.ownerId) {
+        const current = str(existing.properties.hubspot_owner_id);
+        let machineSet = current === prior.ownerId;
+        const salesGroup = str(existing.properties.sales_group);
+        if (!machineSet && current && salesGroup) {
+          const rep = await repCodeObject(token, salesGroup, signal).catch(() => null);
+          machineSet = !!rep?.ownerId && current === rep.ownerId;
+        }
+        if (machineSet && current !== ownerId) patch.hubspot_owner_id = ownerId;
+      }
+      // STICKY owners (2026-07-15): person-based ownership survives SAP quote
+      // adoption — hospitality (Rudy), national accounts (Sara), residential
+      // designers (Kalin), and contact-owner-first assignments. Their deals
+      // carry NO sales_group, because territory ownership follows sales_group
+      // the moment a quote number lands (see reownActiveDealsForRepCode).
+      // Lana (triage) and spec/tree rep-code owners are territory-based and
+      // DO hand off. The stamping workflow fires at creation, so this clears
+      // on revisits.
+      const sticky =
+        source.startsWith("contact-owner:") || [RUDY, SARA, KALIN].includes(ownerId);
       if (
-        prior?.dealOwnerWasSetByUs &&
-        prior.ownerId &&
-        str(existing.properties.hubspot_owner_id) === prior.ownerId &&
-        ownerId !== prior.ownerId
+        sticky &&
+        str(existing.properties.sales_group) &&
+        (str(existing.properties.hubspot_owner_id) === ownerId || patch.hubspot_owner_id === ownerId)
       ) {
-        patch.hubspot_owner_id = ownerId;
+        patch.sales_group = "";
       }
       outcome.filledProps = Object.keys(patch);
       const existingSkus = await existingDealSkus(token, existing.id, signal);

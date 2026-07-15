@@ -92,7 +92,8 @@ export type Leaf =
 
 /** Dimensions the tree can switch on. */
 export type SwitchKey =
-  | "location" | "brand" | "country" | "companyType" | "role" | "projectFocus" | "productFocus";
+  | "location" | "brand" | "country" | "companyType" | "role" | "projectFocus" | "productFocus"
+  | "hospitalityFocus";
 
 export type LeadTreeNode =
   | { leaf: Leaf }
@@ -120,6 +121,13 @@ export interface LeadFacts {
   projectFocus: string | null;
   /** Associated company `product_focus` (raw multi-select, e.g. "Functional;Decorative"). */
   productFocus: string | null;
+  /**
+   * Hospitality-focus signal for commercial interior designers (site-crawl +
+   * Gemini verdict, or any text containing "hospitality"). Commercial designers
+   * route to the hospitality owner (Rudy) ONLY when this is set; otherwise they
+   * go to the spec channel. Optional so existing callers keep compiling.
+   */
+  hospitalityFocus?: string | null;
 }
 
 export interface LeadDecision {
@@ -403,22 +411,6 @@ const RESIDENTIAL_DESIGNER_NODE: LeadTreeNode = {
   default: { leaf: { kind: "fallback", reason: "residential designer brand gap" } },
 };
 
-/**
- * Commercial interior designer: MF/Schonbek → Hospitality (Rudy Soni, Contract MF);
- * WAC → WAC Spec (functional); MF Fans → MF Spec (decorative).
- */
-const COMMERCIAL_DESIGNER_NODE: LeadTreeNode = {
-  switch: "brand",
-  cases: {
-    "Modern Forms": person("Rudy Soni", "Commercial designer (MF) → Hospitality (Rudy)", "Contract MF"),
-    Schonbek: person("Rudy Soni", "Commercial designer (Schonbek) → Hospitality (Rudy)", "Contract MF"),
-    "WAC Lighting": channelOwner("WAC Spec", "Commercial designer (WAC) → WAC Spec"),
-    "WAC Architectural": channelOwner("WAC Spec", "Commercial designer (WAC Arch) → WAC Spec"),
-    "MF Fans": channelOwner("MF Spec", "Commercial designer (MF Fans) → MF Spec"),
-  },
-  default: { leaf: { kind: "fallback", reason: "commercial designer brand gap" } },
-};
-
 /** Commercial, non-interior-designer: functional/WAC → WAC Spec; decorative → MF Spec. */
 const COMMERCIAL_SPEC_NODE: LeadTreeNode = {
   switch: "brand",
@@ -430,6 +422,30 @@ const COMMERCIAL_SPEC_NODE: LeadTreeNode = {
     "MF Fans": channelOwner("MF Spec", "Commercial → MF Spec"),
   },
   default: { leaf: { kind: "fallback", reason: "commercial spec brand gap" } },
+};
+
+/**
+ * Commercial interior designer: Rudy (hospitality owner) ONLY when the firm's
+ * focus is verified hospitality (hotels/restaurants/resorts — site-crawl signal
+ * in {@link LeadFacts.hospitalityFocus}); every other commercial designer goes
+ * to the spec channel for the brand (per the 2026-07-15 routing change).
+ */
+const COMMERCIAL_DESIGNER_NODE: LeadTreeNode = {
+  switch: "hospitalityFocus",
+  cases: {
+    Hospitality: {
+      switch: "brand",
+      cases: {
+        "WAC Lighting": person("Rudy Soni", "Hospitality designer (WAC) → Rudy", "Contract WAC"),
+        "WAC Architectural": person("Rudy Soni", "Hospitality designer (WAC Arch) → Rudy", "Contract WAC"),
+        "Modern Forms": person("Rudy Soni", "Hospitality designer (MF) → Rudy", "Contract MF"),
+        Schonbek: person("Rudy Soni", "Hospitality designer (Schonbek) → Rudy", "Contract MF"),
+        "MF Fans": person("Rudy Soni", "Hospitality designer (MF Fans) → Rudy", "Contract MF"),
+      },
+      default: person("Rudy Soni", "Hospitality designer → Rudy", "Contract WAC"),
+    },
+  },
+  default: COMMERCIAL_SPEC_NODE,
 };
 
 /** Interior Designer (company or role) → project focus → brand. */
@@ -579,6 +595,10 @@ function canonicalFor(dim: SwitchKey, facts: LeadFacts): string {
       return normalizeProjectFocus(facts.projectFocus);
     case "productFocus":
       return normalizeProductFocus(facts.productFocus);
+    case "hospitalityFocus":
+      return /hospitality|hotel|resort|restaurant/i.test(facts.hospitalityFocus ?? "")
+        ? "Hospitality"
+        : "";
   }
 }
 

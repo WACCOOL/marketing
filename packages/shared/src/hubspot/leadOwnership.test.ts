@@ -160,17 +160,29 @@ describe("north america → company type", () => {
     ).toMatchObject({ kind: "repCode", channel: "WAC Showroom", resolve: "owner" });
   });
 
-  it("Interior Designer COMMERCIAL → Rudy (MF/Schonbek) / WAC Spec (others)", () => {
+  it("Interior Designer COMMERCIAL → spec by brand; Rudy ONLY with verified hospitality focus", () => {
     const id = (over: Partial<LeadFacts>) =>
       na({ companySubType: "Interior Designer / Decorator", projectFocus: "Commercial", ...over });
-    expect(id({ brand: "Modern Forms" })).toMatchObject({ kind: "person", name: "Rudy Soni" });
-    expect(id({ brand: "Schonbek" })).toMatchObject({ kind: "person", name: "Rudy Soni" });
+    // No hospitality signal → spec channels (2026-07-15 routing change).
+    expect(id({ brand: "Modern Forms" })).toMatchObject({ kind: "repCode", channel: "MF Spec" });
+    expect(id({ brand: "Schonbek" })).toMatchObject({ kind: "repCode", channel: "MF Spec" });
     expect(id({ brand: "WAC Lighting" })).toMatchObject({ kind: "repCode", channel: "WAC Spec" });
     expect(id({ brand: "Modern Forms Fans" })).toMatchObject({ kind: "repCode", channel: "MF Spec" });
     // "both" (multi-select) routes commercial too
     expect(id({ brand: "WAC", projectFocus: "Residential;Commercial" })).toMatchObject({
       kind: "repCode",
       channel: "WAC Spec",
+    });
+    // Verified hospitality focus → Rudy (per brand channel context).
+    expect(id({ brand: "Modern Forms", hospitalityFocus: "Hospitality" })).toMatchObject({
+      kind: "person",
+      name: "Rudy Soni",
+      channel: "Contract MF",
+    });
+    expect(id({ brand: "WAC Lighting", hospitalityFocus: "Hospitality" })).toMatchObject({
+      kind: "person",
+      name: "Rudy Soni",
+      channel: "Contract WAC",
     });
   });
 
@@ -336,12 +348,20 @@ describe("unknown-brand fan-out (evaluateLeadOwnershipAll)", () => {
     expect(all({ companySubType: "Lighting Designer", brand: "WAC" })).toHaveLength(1);
   });
 
-  it("Commercial designer + no brand → Rudy + WAC Spec + MF Spec", () => {
+  it("Commercial designer + no brand → WAC Spec + MF Spec (Rudy only via hospitality)", () => {
     const leaves = all({ companySubType: "Interior Designer / Decorator", projectFocus: "Commercial", brand: null });
-    expect(leaves).toHaveLength(3);
-    expect(leaves).toContainEqual(expect.objectContaining({ kind: "person", name: "Rudy Soni" }));
+    expect(leaves).toHaveLength(2);
     expect(leaves).toContainEqual(expect.objectContaining({ kind: "repCode", channel: "WAC Spec" }));
     expect(leaves).toContainEqual(expect.objectContaining({ kind: "repCode", channel: "MF Spec" }));
+
+    const hosp = all({
+      companySubType: "Interior Designer / Decorator",
+      projectFocus: "Commercial",
+      brand: null,
+      hospitalityFocus: "Hospitality",
+    });
+    // Hospitality designer: every brand branch is Rudy, deduped by channel.
+    expect(hosp.every((l) => l.kind === "person" && l.name === "Rudy Soni")).toBe(true);
   });
 
   it("no brand switch on path → single decision (Integrator)", () => {

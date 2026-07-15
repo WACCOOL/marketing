@@ -2,49 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   decideMaterialBankRouting,
   leadFactsFromMaterialBank,
+  materialBankProjectCategory,
 } from "./materialBankRouting.js";
 import { evaluateLeadOwnership } from "./leadOwnership.js";
 import type { MaterialBankOrder } from "../ingest/materialBank.js";
-
-describe("decideMaterialBankRouting", () => {
-  it.each([
-    ["Residential Interior Design", "kalin"],
-    ["Interior Designer - Residential", "kalin"],
-    ["residential", "kalin"],
-    ["Commercial Interior Design", "rudy"],
-    ["Interior Design: Commercial", "rudy"],
-  ])("%s → %s", (practice, kind) => {
-    expect(decideMaterialBankRouting(practice).kind).toBe(kind);
-  });
-
-  it("both labels → verify, unverifiable defaults to Rudy", () => {
-    const d = decideMaterialBankRouting("Commercial & Residential Interior Design");
-    expect(d).toMatchObject({ kind: "verify", unverifiable: "rudy" });
-  });
-
-  it("unlabeled designer → verify, unverifiable defaults to Kalin (residential default)", () => {
-    const d = decideMaterialBankRouting("Interior Designer");
-    expect(d).toMatchObject({ kind: "verify", unverifiable: "kalin" });
-    expect(decideMaterialBankRouting("Interior Design Firm")).toMatchObject({
-      kind: "verify",
-      unverifiable: "kalin",
-    });
-  });
-
-  it.each(["Architecture", "Architect", "Other", "", null])(
-    "non-designer practice %s → tree",
-    (practice) => {
-      expect(decideMaterialBankRouting(practice as string | null).kind).toBe("tree");
-    },
-  );
-
-  // "residential" appears inside other practice words? Guard the obvious ones.
-  it("does not misread architecture practices with residential in the name", () => {
-    // still a routing question, but a *labeled* one — residential architecture
-    // firms should reach Kalin only via the residential label, which is intended
-    expect(decideMaterialBankRouting("Residential Architecture").kind).toBe("kalin");
-  });
-});
 
 function order(over: {
   practice?: string | null;
@@ -52,6 +13,9 @@ function order(over: {
   country?: string | null;
   state?: string | null;
   zip?: string | null;
+  projectType?: string | null;
+  projectName?: string | null;
+  projectDescription?: string | null;
 }): MaterialBankOrder {
   return {
     orderId: "MB-1",
@@ -72,10 +36,10 @@ function order(over: {
       country: over.country ?? null,
     },
     project: {
-      name: null,
-      description: null,
+      name: over.projectName ?? null,
+      description: over.projectDescription ?? null,
       phase: null,
-      type: null,
+      type: over.projectType ?? null,
       budgetRaw: null,
       completionMonth: null,
       completionYear: null,
@@ -83,6 +47,63 @@ function order(over: {
     lines: [],
   };
 }
+
+describe("materialBankProjectCategory", () => {
+  it("classified HubSpot project_type wins", () => {
+    const o = order({ projectType: "office remodel" }); // raw text says commercial
+    expect(materialBankProjectCategory(o, "RESIDENTIAL - PRIVATE RESIDENCE")).toBe("residential");
+    expect(materialBankProjectCategory(o, "HOSPITALITY - HOTEL")).toBe("hospitality");
+    expect(materialBankProjectCategory(o, "RETAIL - CLOTHING")).toBe("commercial");
+    expect(materialBankProjectCategory(o, "C0MMERCIAL - MILITARY")).toBe("commercial"); // enum typo
+  });
+
+  it("falls back to raw project text, hospitality outranking", () => {
+    expect(materialBankProjectCategory(order({ projectType: "Single Family" }), null)).toBe("residential");
+    expect(materialBankProjectCategory(order({ projectName: "Marriott lobby refresh", projectType: "Hotel" }), null)).toBe("hospitality");
+    expect(
+      materialBankProjectCategory(order({ projectDescription: "New office headquarters" }), null),
+    ).toBe("commercial");
+    expect(materialBankProjectCategory(order({}), null)).toBeNull();
+    // "OTHER -" classification gives no signal
+    expect(materialBankProjectCategory(order({}), "OTHER -")).toBeNull();
+  });
+});
+
+describe("decideMaterialBankRouting", () => {
+  it("project signal wins for designers — residential project → Kalin even for commercial firms", () => {
+    expect(decideMaterialBankRouting("Commercial Interior Design", "residential").kind).toBe("kalin");
+    expect(decideMaterialBankRouting("Residential Interior Design", "hospitality").kind).toBe("rudy");
+    expect(decideMaterialBankRouting("Interior Designer", "commercial").kind).toBe("spec");
+  });
+
+  it("project signal does NOT hijack non-designers", () => {
+    expect(decideMaterialBankRouting("Architecture", "residential").kind).toBe("tree");
+    expect(decideMaterialBankRouting(null, "hospitality").kind).toBe("tree");
+  });
+
+  it.each([
+    ["Residential Interior Design", "kalin"],
+    ["Interior Designer - Residential", "kalin"],
+    ["Commercial Interior Design", "spec"], // Rudy only via hospitality now
+    ["Interior Design: Commercial", "spec"],
+    ["Hospitality Interior Design", "rudy"],
+  ])("no project signal: %s → %s", (practice, kind) => {
+    expect(decideMaterialBankRouting(practice, null).kind).toBe(kind);
+  });
+
+  it("both labels or unlabeled designer → verify (unverifiable handled as Lana by the api layer)", () => {
+    expect(decideMaterialBankRouting("Commercial & Residential Interior Design", null).kind).toBe("verify");
+    expect(decideMaterialBankRouting("Interior Designer", null).kind).toBe("verify");
+    expect(decideMaterialBankRouting("Interior Design Firm", null).kind).toBe("verify");
+  });
+
+  it.each(["Architecture", "Architect", "Other", "", null])(
+    "non-designer practice %s → tree",
+    (practice) => {
+      expect(decideMaterialBankRouting(practice as string | null, null).kind).toBe("tree");
+    },
+  );
+});
 
 describe("leadFactsFromMaterialBank + tree hand-off", () => {
   it("blank country with a state/zip counts as North America", () => {
@@ -103,6 +124,12 @@ describe("leadFactsFromMaterialBank + tree hand-off", () => {
     const decision = evaluateLeadOwnership(facts);
     // brand is unknown for Material Bank → Specifier default (MF Spec channel)
     expect(decision.leaf).toMatchObject({ kind: "repCode", channel: "MF Spec" });
+  });
+
+  it("hospitality project carries into the tree's hospitalityFocus fact", () => {
+    const facts = leadFactsFromMaterialBank(order({ state: "NY" }), "hospitality");
+    expect(facts.hospitalityFocus).toBe("Hospitality");
+    expect(leadFactsFromMaterialBank(order({}), "commercial").hospitalityFocus).toBeNull();
   });
 
   it("Canadian order routes to Lana", () => {
