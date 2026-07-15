@@ -719,6 +719,17 @@ export async function processMaterialBankOrder(
         }
         if (machineSet && current !== ownerId) patch.hubspot_owner_id = ownerId;
       }
+      // Rudy-owned (hospitality) deals carry NO sales_group: hospitality stays
+      // his even after an SAP quote number lands (territory ownership follows
+      // sales_group from that moment — see reownActiveDealsForRepCode). The
+      // stamping workflow fires at creation, so this clears it on revisits.
+      if (
+        ownerId === RUDY &&
+        str(existing.properties.sales_group) &&
+        (str(existing.properties.hubspot_owner_id) === RUDY || patch.hubspot_owner_id === RUDY)
+      ) {
+        patch.sales_group = "";
+      }
       outcome.filledProps = Object.keys(patch);
       const existingSkus = await existingDealSkus(token, existing.id, signal);
       const missingLines = order.lines.filter((l) => !existingSkus.has(l.sku));
