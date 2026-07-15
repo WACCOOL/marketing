@@ -26,7 +26,7 @@ import {
   PATHS,
   withHeal,
 } from "./hubspotPush.js";
-import { FALLBACK_OWNER_ID, PERSON_OWNER_ID, repCodeObject, resolveLeaf } from "./eventLead.js";
+import { FALLBACK_OWNER_ID, PERSON_OWNER_ID, resolveLeaf } from "./eventLead.js";
 import { emailDomain, isNationalAccountDomain } from "./nationalAccounts.js";
 import { classifyProjectFocusForSite } from "./projectFocus.js";
 import { lookupRepCodesByZip } from "./routes/repCodes.js";
@@ -112,31 +112,36 @@ export interface MaterialBankOutcome {
 }
 
 /**
- * Prior recorded outcome for an order — the ledger the repair mode trusts.
- * Repair overwrites an owner ONLY when the ledger shows this sync set it AND
- * the record still carries exactly that value (i.e. no human changed it since).
+ * Who wrote a record's CURRENT hubspot_owner_id, per HubSpot's own property
+ * history — the provenance the repair mode trusts. INTEGRATION means a machine
+ * (this sync, the territory re-owner, any API writer) set it → correctable;
+ * anything else (CRM_UI, workflows, imports) is treated as a person's decision
+ * and never touched. Returns null when the owner is blank or history is
+ * unavailable (repair then does nothing — fail-safe).
  */
-interface PriorOutcome {
-  ownerId: string | null;
-  dealOwnerWasSetByUs: boolean;
-  contactOwnerWasSetByUs: boolean;
+async function ownerWriteSource(
+  token: string,
+  objectPath: "0-3" | "0-1",
+  id: string,
+  signal: AbortSignal,
+): Promise<{ value: string; sourceType: string } | null> {
+  const res = await hs(
+    token,
+    "GET",
+    `/crm/v3/objects/${objectPath}/${encodeURIComponent(id)}?propertiesWithHistory=hubspot_owner_id`,
+    undefined,
+    signal,
+  );
+  if (!res.ok) return null;
+  const latest = res.data?.propertiesWithHistory?.hubspot_owner_id?.[0];
+  const value = str(latest?.value);
+  if (!value) return null;
+  return { value, sourceType: String(latest?.sourceType ?? "") };
 }
 
-async function loadPriorOutcome(sb: SupabaseClient, orderId: string): Promise<PriorOutcome | null> {
-  const { data } = await sb
-    .from("material_bank_outcomes")
-    .select("owner_id, status, contact_owner_action, actions")
-    .eq("order_id", orderId)
-    .maybeSingle();
-  if (!data) return null;
-  const filled = (data.actions as { filledProps?: string[] } | null)?.filledProps ?? [];
-  return {
-    ownerId: str(data.owner_id),
-    // Created deals get their owner at creation (filledProps only tracks the
-    // update path), so "created" also counts as owner-set-by-us.
-    dealOwnerWasSetByUs: filled.includes("hubspot_owner_id") || data.status === "created",
-    contactOwnerWasSetByUs: data.contact_owner_action === "set" || data.contact_owner_action === "repaired",
-  };
+/** Machine-written owner (API/integration) → the repair may re-derive it. */
+function isMachineWritten(src: { sourceType: string } | null): boolean {
+  return src?.sourceType === "INTEGRATION";
 }
 
 function str(v: unknown): string | null {
@@ -593,6 +598,10 @@ export async function processMaterialBankOrder(
     const email = order.contact.email;
     let contactId: string | null = null;
     let contactOwnerId: string | null = null;
+    // Repair: a MACHINE-written contact owner (this sync's earlier stamp) is
+    // re-derived — routing ignores it and recomputes from scratch; a human-
+    // assigned contact owner stays authoritative (contact-owner-first).
+    let contactOwnerMachineSet = false;
     if (email) {
       const found = await getContactByEmailExact(token, email, signal);
       if (found) {
@@ -605,6 +614,10 @@ export async function processMaterialBankOrder(
           signal,
         );
         contactOwnerId = rec.ok ? str(rec.data?.properties?.hubspot_owner_id) : null;
+        if (repair && contactOwnerId) {
+          const src = await ownerWriteSource(token, "0-1", contactId, signal);
+          contactOwnerMachineSet = isMachineWritten(src);
+        }
       }
     }
     outcome.contactId = contactId;
@@ -626,7 +639,9 @@ export async function processMaterialBankOrder(
       env,
       token,
       order,
-      { contactOwnerId, projectCategory },
+      // Machine-stamped contact owners don't self-perpetuate through
+      // contact-owner-first during a repair — route from scratch instead.
+      { contactOwnerId: contactOwnerMachineSet ? null : contactOwnerId, projectCategory },
       signal,
     );
     outcome.ownerId = ownerId;
@@ -702,22 +717,16 @@ export async function processMaterialBankOrder(
         if (k === "dealname") continue; // never rename an existing deal
         if (!str(existing.properties[k])) patch[k] = v;
       }
-      // REPAIR: overwrite a machine-set owner with the current routing
-      // decision. Machine-set means the deal still carries EITHER the value
-      // the ledger shows this sync wrote, OR the current owner of the rep
-      // code in the deal's sales_group (the territory re-owner's value — see
-      // reownActiveDealsForRepCode, which used to sweep MB deals). A value a
-      // human picked matches neither and is never touched.
-      const prior = repair ? await loadPriorOutcome(sb, order.orderId) : null;
-      if (prior?.dealOwnerWasSetByUs && prior.ownerId && ownerId !== prior.ownerId) {
-        const current = str(existing.properties.hubspot_owner_id);
-        let machineSet = current === prior.ownerId;
-        const salesGroup = str(existing.properties.sales_group);
-        if (!machineSet && current && salesGroup) {
-          const rep = await repCodeObject(token, salesGroup, signal).catch(() => null);
-          machineSet = !!rep?.ownerId && current === rep.ownerId;
+      // REPAIR: when the deal's ACTUAL owner differs from the current routing
+      // decision, overwrite it iff HubSpot's property history says a machine
+      // (integration/API — this sync's earlier rules, the territory re-owner)
+      // wrote it. A human-picked owner is never touched.
+      const currentOwner = str(existing.properties.hubspot_owner_id);
+      if (repair && currentOwner && currentOwner !== ownerId) {
+        const src = await ownerWriteSource(token, "0-3", existing.id, signal);
+        if (isMachineWritten(src) && src!.value === currentOwner) {
+          patch.hubspot_owner_id = ownerId;
         }
-        if (machineSet && current !== ownerId) patch.hubspot_owner_id = ownerId;
       }
       // STICKY owners (2026-07-15): person-based ownership survives SAP quote
       // adoption — hospitality (Rudy), national accounts (Sara), residential
@@ -764,17 +773,11 @@ export async function processMaterialBankOrder(
     }
 
     // 6. Contact owner — only when the contact exists and is unowned, plus the
-    // repair case: the ledger shows we set it and it still holds our value.
+    // repair case: a machine-written contact owner is re-derived alongside the
+    // deal so the two stay aligned.
     if (!dryRun && contactId && !outcome.contactCreated) {
-      let repairContactOwner = false;
-      if (contactOwnerId && repair) {
-        const prior = await loadPriorOutcome(sb, order.orderId);
-        repairContactOwner =
-          !!prior?.contactOwnerWasSetByUs &&
-          !!prior.ownerId &&
-          contactOwnerId === prior.ownerId &&
-          ownerId !== prior.ownerId;
-      }
+      const repairContactOwner =
+        repair && contactOwnerMachineSet && !!contactOwnerId && contactOwnerId !== ownerId;
       if (contactOwnerId && !repairContactOwner) {
         outcome.contactOwnerAction = "skipped_existing";
       } else {
