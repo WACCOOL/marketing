@@ -26,6 +26,23 @@ import {
   PATHS,
   withHeal,
 } from "./hubspotPush.js";
+import { REP_OBJECT } from "./hubspotPush.js";
+
+/** Remove every Rep Code association from a deal (all labels). Returns count. */
+async function removeRepCodeAssociations(
+  token: string,
+  dealId: string,
+  signal: AbortSignal,
+): Promise<number> {
+  const res = await hs(token, "GET", `/crm/v4/objects/0-3/${dealId}/associations/${REP_OBJECT}`, undefined, signal);
+  const ids = (res.ok ? res.data?.results ?? [] : [])
+    .map((r: any) => String(r?.toObjectId ?? ""))
+    .filter(Boolean);
+  for (const id of ids) {
+    await hs(token, "DELETE", `/crm/v4/objects/0-3/${dealId}/associations/${REP_OBJECT}/${id}`, undefined, signal);
+  }
+  return ids.length;
+}
 import { FALLBACK_OWNER_ID, PERSON_OWNER_ID, resolveLeaf } from "./eventLead.js";
 import { emailDomain, isNationalAccountDomain } from "./nationalAccounts.js";
 import { classifyProjectFocusForSite } from "./projectFocus.js";
@@ -104,6 +121,8 @@ export interface MaterialBankOutcome {
   projectType: string | null;
   lineItemsCreated: number;
   lineItemsExisting: number;
+  /** Rep Code associations stripped from a sticky-owner deal this run. */
+  repCodeAssocsRemoved: number;
   contactOwnerAction: "set" | "repaired" | "skipped_existing" | "skipped_no_contact" | "skipped_no_owner" | "dry_run";
   filledProps: string[];
   fixActions: (FixAction & { scope?: string })[];
@@ -536,7 +555,11 @@ async function recordOutcome(sb: SupabaseClient, o: MaterialBankOutcome): Promis
       project_type: o.projectType,
       line_items_created: o.lineItemsCreated,
       contact_owner_action: o.contactOwnerAction,
-      actions: { filledProps: o.filledProps, fixActions: o.fixActions },
+      actions: {
+        filledProps: o.filledProps,
+        fixActions: o.fixActions,
+        ...(o.repCodeAssocsRemoved ? { repCodeAssocsRemoved: o.repCodeAssocsRemoved } : {}),
+      },
       error: o.error ?? null,
       updated_at: new Date().toISOString(),
     },
@@ -566,6 +589,7 @@ export async function processMaterialBankOrder(
     projectType: null,
     lineItemsCreated: 0,
     lineItemsExisting: 0,
+    repCodeAssocsRemoved: 0,
     contactOwnerAction: dryRun ? "dry_run" : "skipped_no_contact",
     filledProps: [],
     fixActions: [],
@@ -755,6 +779,15 @@ export async function processMaterialBankOrder(
           await withHeal(token, signal, "deal", outcome.fixActions, patch, (p) =>
             hs(token, "PATCH", `/crm/v3/objects/0-3/${existing.id}`, { properties: p }, signal),
           );
+        }
+        // Sticky deals also shed their Rep Code ASSOCIATION (the workflow that
+        // stamps sales_group associates the rep-code record too — the "Current"
+        // card on the deal). Same reasoning as clearing sales_group.
+        if (
+          sticky &&
+          (str(existing.properties.hubspot_owner_id) === ownerId || patch.hubspot_owner_id === ownerId)
+        ) {
+          outcome.repCodeAssocsRemoved = await removeRepCodeAssociations(token, existing.id, signal);
         }
         outcome.lineItemsCreated = await createLineItems(token, existing.id, missingLines, signal);
         if (contactId) {
