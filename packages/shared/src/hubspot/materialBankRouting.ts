@@ -93,14 +93,17 @@ export function decideMaterialBankRouting(
   const isDesigner =
     residential || commercial || normalizeCompanyType(practice) === "Interior Designer";
 
-  // 1. The project's own signal wins for designers — a residential project goes
-  //    to Kalin even when the firm does commercial work.
+  // 1a. A hospitality PROJECT goes to Rudy no matter who's ordering —
+  //     architects, specifiers, designers alike.
+  if (projectCategory === "hospitality") {
+    return { kind: "rudy", reason: "hospitality project" };
+  }
+
+  // 1b. The remaining project signals apply to designers — a residential
+  //     project goes to Kalin even when the firm does commercial work.
   if (isDesigner && projectCategory) {
     if (projectCategory === "residential") {
       return { kind: "kalin", reason: `residential project (${projectCategory})` };
-    }
-    if (projectCategory === "hospitality") {
-      return { kind: "rudy", reason: "hospitality project" };
     }
     return { kind: "spec", reason: "commercial (non-hospitality) project" };
   }
