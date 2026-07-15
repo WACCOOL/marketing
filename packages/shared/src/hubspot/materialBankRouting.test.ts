@@ -76,9 +76,15 @@ describe("decideMaterialBankRouting", () => {
     expect(decideMaterialBankRouting("Interior Designer", "commercial").kind).toBe("spec");
   });
 
-  it("project signal does NOT hijack non-designers", () => {
+  it("a hospitality project goes to Rudy for ANY practice — architects and specifiers included", () => {
+    expect(decideMaterialBankRouting("Architecture", "hospitality").kind).toBe("rudy");
+    expect(decideMaterialBankRouting("Lighting Designer", "hospitality").kind).toBe("rudy");
+    expect(decideMaterialBankRouting(null, "hospitality").kind).toBe("rudy");
+  });
+
+  it("residential/commercial project signals do NOT hijack non-designers", () => {
     expect(decideMaterialBankRouting("Architecture", "residential").kind).toBe("tree");
-    expect(decideMaterialBankRouting(null, "hospitality").kind).toBe("tree");
+    expect(decideMaterialBankRouting("Architecture", "commercial").kind).toBe("tree");
   });
 
   it.each([
