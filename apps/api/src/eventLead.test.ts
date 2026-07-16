@@ -32,7 +32,10 @@ describe("ownerGateNoteHtml", () => {
   it("names the event, mentions the owner, and explains why there's no lead", () => {
     const html = ownerGateNoteHtml(base);
     expect(html).toContain("Event attendance — Lightovation 2026 Summer");
-    expect(html).toContain('<span data-at-mention data-owner-id="77005662">@Kalin Scott</span>');
+    // The portal's UI-created mention markup, verified against note 75912572601.
+    expect(html).toContain(
+      '<span data-mention-id="77005662" data-mention-name="Kalin Scott" style="color: #425b76;font-weight: 600;">@Kalin Scott</span>',
+    );
     expect(html).toContain("Jane Doe attended this event");
     expect(html).toContain("No lead was created");
     expect(html).not.toContain("At-show notes");
@@ -62,6 +65,6 @@ describe("ownerGateNoteHtml", () => {
     const html = ownerGateNoteHtml({ ...base, campaignName: "", ownerName: "" });
     expect(html).toContain("<strong>Event attendance</strong>");
     expect(html).toContain("Owned contact");
-    expect(html).not.toContain("data-at-mention");
+    expect(html).not.toContain("data-mention-id");
   });
 });

@@ -701,10 +701,11 @@ const escapeHtml = (s: string) =>
 
 /**
  * The owner-gate timeline note: tells the contact's owner their contact attended and
- * that no lead was created. The @mention span is best-effort — HubSpot renders it as
- * a highlighted mention (or plain "@Name" if the attributes are ignored). Note that
- * an API-created mention never triggers a bell/email; the note is in-app only,
- * visible on the contact record (accepted by Davis, 2026-07-16).
+ * that no lead was created. The @mention span replicates the portal's UI-created
+ * markup exactly (verified against note 75912572601: `data-mention-id`/`-name` +
+ * inline style); the caller also sets `hs_at_mentioned_owner_ids` on the note. The
+ * note is in-app, on the contact record (accepted by Davis, 2026-07-16 — HubSpot
+ * historically doesn't bell/email for API-created mentions).
  */
 export function ownerGateNoteHtml(opts: {
   campaignName: string;
@@ -716,7 +717,7 @@ export function ownerGateNoteHtml(opts: {
 }): string {
   const title = opts.campaignName ? `Event attendance — ${escapeHtml(opts.campaignName)}` : "Event attendance";
   const owner = opts.ownerName
-    ? `<span data-at-mention data-owner-id="${escapeHtml(opts.ownerId)}">@${escapeHtml(opts.ownerName)}</span> — your contact`
+    ? `<span data-mention-id="${escapeHtml(opts.ownerId)}" data-mention-name="${escapeHtml(opts.ownerName)}" style="color: #425b76;font-weight: 600;">@${escapeHtml(opts.ownerName)}</span> — your contact`
     : "Owned contact";
   const who = opts.contactName ? ` ${escapeHtml(opts.contactName)}` : "";
   const parts = [
@@ -936,13 +937,19 @@ async function attachRoutingNote(
   contactId: string,
   bodyHtml: string,
   signal: AbortSignal,
+  /** Owner id(s) @-mentioned in the body — mirrors what UI-created mention notes set. */
+  mentionedOwnerIds?: string,
 ): Promise<boolean> {
   const res = await hs(
     token,
     "POST",
     "/crm/v3/objects/notes",
     {
-      properties: { hs_note_body: bodyHtml, hs_timestamp: new Date().toISOString() },
+      properties: {
+        hs_note_body: bodyHtml,
+        hs_timestamp: new Date().toISOString(),
+        ...(mentionedOwnerIds ? { hs_at_mentioned_owner_ids: mentionedOwnerIds } : {}),
+      },
       associations: [
         {
           to: { id: contactId },
@@ -1044,7 +1051,7 @@ export async function processEventLead(
         ownerName: await ownerName(token, contact.ownerId, signal),
         atShowNotes: leadNotesText,
       });
-      ownerNotified = await attachRoutingNote(token, contactId, html, signal).catch(() => false);
+      ownerNotified = await attachRoutingNote(token, contactId, html, signal, contact.ownerId).catch(() => false);
       if (!ownerNotified) console.error(`[event-lead] ${contactId}: owner-gate note failed`);
     }
     return {
