@@ -66,7 +66,8 @@ lead at all** — the ISR / national-account overrides and the tree are all skip
 **Note on the contact** — "your contact attended [event], no lead was created" —
 records it, with the owner @-mentioned and any fresh at-show notes (§6). The note is
 in-app only: API-created @mentions render on the timeline but do **not** trigger
-HubSpot's bell/email (platform limitation, accepted 2026-07-16).
+HubSpot's bell/email — verified live 2026-07-16 (even with `hs_at_mentioned_owner_ids`
+set, no alert was delivered; accepted).
 
 The note is written once per contact + campaign (the `event_lead_outcomes` row
 remembers). At **major** events this gate is off and owned contacts get the
