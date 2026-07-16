@@ -62,20 +62,13 @@ immediately. A lists-API failure fails **open** (lead still created).
 
 At a **standard** event (§1), a contact whose owner is set (and isn't Lana) gets **no
 lead at all** — the ISR / national-account overrides and the tree are all skipped
-(`skippedReason: "owned"`, outcome status `skipped_owned`). Instead, their owner is
-notified:
+(`skippedReason: "owned"`, outcome status `skipped_owned`). Instead, a timeline
+**Note on the contact** — "your contact attended [event], no lead was created" —
+records it, with the owner @-mentioned and any fresh at-show notes (§6). The note is
+in-app only: API-created @mentions render on the timeline but do **not** trigger
+HubSpot's bell/email (platform limitation, accepted 2026-07-16).
 
-- A timeline **Note on the contact** — "your contact attended [event], no lead was
-  created" — with the owner @-mentioned and any fresh at-show notes (§6). Note:
-  API-created @mentions render on the timeline but do **not** trigger HubSpot's
-  bell/email (platform limitation).
-- The contact property **`event_lead_owner_notify`** is set to the campaign name. A
-  tiny HubSpot workflow (trigger: that property changed → *Send internal notification*
-  to the contact owner) turns it into a real ping. The value is deterministic per
-  campaign, so retries/re-enrollments never re-fire it. Until the property + workflow
-  exist in HubSpot, the write fails harmlessly (logged) and the note still lands.
-
-The note/ping is written once per contact + campaign (the `event_lead_outcomes` row
+The note is written once per contact + campaign (the `event_lead_outcomes` row
 remembers). At **major** events this gate is off and owned contacts get the
 contact-owner-first lead (§5).
 
@@ -173,7 +166,7 @@ Values are written to the company once and reused for every later attendee.
 ## 5. Contact-owner rules
 
 - **Standard events — owner gate (§2.2):** an owned contact (owner ≠ Lana) gets no
-  lead; their owner gets the note + notify ping instead.
+  lead; a timeline note on the contact tells their owner instead.
 - **Major events — contact-owner-first (2026-07-15):** a contact with a known owner
   other than Lana gets the lead assigned to that owner — and ONLY them. This beats
   the ISR/national-account overrides and the tree. Lana-owned contacts route
@@ -238,7 +231,7 @@ therefore shows on the contact record **and on every lead record** for that atte
 
 | Attendee | Situation | Outcome |
 |---|---|---|
-| Contact owned by Navita, standard event | Owner gate | **No lead** — note on the contact + notify ping to Navita (`skipped_owned`) |
+| Contact owned by Navita, standard event | Owner gate | **No lead** — note on the contact @-mentioning Navita (`skipped_owned`) |
 | Contact owned by Navita, **major** event | Contact-owner-first | 1 lead: Navita (only her — beats ISR/tree) |
 | Unowned contact with accounts `#MF10375` + `#2010375`, different ISRs | ISR override | 2 leads: Kamila (MF acct), Stephen (WAC acct) — Re-attempting, shared-with note |
 | Same, but fresh note says "WAC track lighting" | Brand ask narrows | Stephen only, note on the lead |
@@ -275,18 +268,10 @@ therefore shows on the contact record **and on every lead record** for that atte
 
 ### Manual HubSpot setup (owner gate)
 
-1. **Marketing-event property** — Settings → Properties → *Marketing Event* object:
-   single checkbox, internal name `leads_for_all_attendees`, label "Create leads for
-   ALL attendees (major event)". Leave unset for standard events; tick it when
-   creating a major event.
-2. **Contact property** — single-line text, internal name `event_lead_owner_notify`,
-   label "Event lead — owner notify". Written by the Worker; read by the workflow
-   below. (Until it exists the Worker's write fails harmlessly — logged only.)
-3. **Notify workflow** — contact-based: trigger = `event_lead_owner_notify` **is
-   known** (re-enrollment ON, on property *change*); action = **Send internal
-   notification** (in-app, optionally email) to the **contact owner**, e.g. "Your
-   contact [name] attended [property value] — no lead was created." This exists
-   because API-created note @mentions never trigger HubSpot notifications.
+**Marketing-event property** — Settings → Properties → *Marketing Event* object:
+single checkbox, internal name `leads_for_all_attendees`, label "Create leads for
+ALL attendees (major event)". Leave unset for standard events; tick it when
+creating a major event.
 - Owner ids, channel names, association type ids, windows (±14d notes) live at the
   top of `apps/api/src/eventLead.ts`; the routing tree lives in
   `packages/shared/src/hubspot/leadOwnership.ts` (unit-tested — `pnpm test`); the

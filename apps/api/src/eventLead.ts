@@ -8,7 +8,7 @@
  * and the campaign, and set the contact owner only when it's currently empty.
  *
  * Standard vs major events (2026-07-16): by default only UNOWNED contacts get leads —
- * an owned contact's owner is notified (note + property ping) instead. Setting the
+ * an owned contact gets a timeline note telling their owner instead. Setting the
  * `leads_for_all_attendees` checkbox on the marketing event routes every attendee
  * (see {@link ownedContactGate}).
  *
@@ -90,16 +90,6 @@ const NOTES_FRESH_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
  * Created manually in HubSpot: Settings → Properties → Marketing Events.
  */
 const EVENT_ALL_ATTENDEES_PROP = "leads_for_all_attendees";
-
-/**
- * Contact property written when the owner gate suppresses leads. A small HubSpot
- * workflow (trigger: this property changed → "Send internal notification" to the
- * contact owner) turns it into a real bell/email ping — API-created note @mentions
- * do NOT notify (long-standing HubSpot limitation). The value is the campaign name
- * (deterministic), so queue retries and re-enrollments for the same event don't
- * re-fire the workflow. Non-fatal (logged) until the property exists in HubSpot.
- */
-const OWNER_NOTIFY_PROP = "event_lead_owner_notify";
 
 /** Contact properties that drive routing. */
 const CONTACT_PROPS = {
@@ -697,11 +687,10 @@ async function eventLeadsForAllAttendees(
 
 /**
  * The owner gate (2026-07-16): STANDARD events create leads only for contacts without
- * a real owner — leads for owned contacts are suppressed and the owner is notified
- * instead (timeline note + {@link OWNER_NOTIFY_PROP}). Major events
- * ({@link EVENT_ALL_ATTENDEES_PROP} = true) route every attendee. Lana — the manual
- * fallback bucket — doesn't count as a real owner, same as the contact-owner-first
- * rule: her contacts still route normally.
+ * a real owner — leads for owned contacts are suppressed and a timeline note tells
+ * the owner instead. Major events ({@link EVENT_ALL_ATTENDEES_PROP} = true) route
+ * every attendee. Lana — the manual fallback bucket — doesn't count as a real owner,
+ * same as the contact-owner-first rule: her contacts still route normally.
  */
 export function ownedContactGate(ownerId: string, leadsForAllAttendees: boolean): boolean {
   return !leadsForAllAttendees && !!ownerId && ownerId !== FALLBACK_OWNER_ID;
@@ -713,9 +702,9 @@ const escapeHtml = (s: string) =>
 /**
  * The owner-gate timeline note: tells the contact's owner their contact attended and
  * that no lead was created. The @mention span is best-effort — HubSpot renders it as
- * a highlighted mention (or plain "@Name" if the attributes are ignored) but an
- * API-created mention never triggers the bell/email; {@link OWNER_NOTIFY_PROP} + a
- * tiny HubSpot workflow carry the actual notification.
+ * a highlighted mention (or plain "@Name" if the attributes are ignored). Note that
+ * an API-created mention never triggers a bell/email; the note is in-app only,
+ * visible on the contact record (accepted by Davis, 2026-07-16).
  */
 export function ownerGateNoteHtml(opts: {
   campaignName: string;
@@ -1036,9 +1025,9 @@ export async function processEventLead(
   const notesBrand = notesFresh ? brandFromNotes(contact.leadNotes) : null;
 
   // Owner gate: STANDARD events (no `leads_for_all_attendees` on the marketing event)
-  // create leads only for UNOWNED contacts. An owned contact's owner gets a timeline
-  // note + the OWNER_NOTIFY_PROP ping instead of a lead. Major events skip the gate
-  // and route every attendee (including the contact-owner-first lead below).
+  // create leads only for UNOWNED contacts. An owned contact gets a timeline note
+  // telling their owner instead of a lead. Major events skip the gate and route
+  // every attendee (including the contact-owner-first lead below).
   const leadsForAll = await eventLeadsForAllAttendees(token, marketingEventId, signal);
   if (ownedContactGate(contact.ownerId, leadsForAll)) {
     let ownerNotified = false;
@@ -1057,16 +1046,6 @@ export async function processEventLead(
       });
       ownerNotified = await attachRoutingNote(token, contactId, html, signal).catch(() => false);
       if (!ownerNotified) console.error(`[event-lead] ${contactId}: owner-gate note failed`);
-      // Deterministic per campaign → the notify workflow fires once per event.
-      const patch = await hs(
-        token,
-        "PATCH",
-        `${PATHS.contactLookup}${encodeURIComponent(contactId)}`,
-        { properties: { [OWNER_NOTIFY_PROP]: body.campaignName || "event" } },
-        signal,
-      );
-      // Expected to fail until the property is created in HubSpot — note still lands.
-      if (!patch.ok) console.error(`[event-lead] ${contactId}: ${OWNER_NOTIFY_PROP} write failed (${patch.status})`);
     }
     return {
       contactId,
