@@ -668,6 +668,10 @@ async function eventCampaign(
  * Is this a MAJOR event (leads for every attendee)? Reads the marketing event's
  * {@link EVENT_ALL_ATTENDEES_PROP} checkbox. Anything short of an affirmative read —
  * no event, missing property, fetch failure — means standard (gate on).
+ *
+ * Marketing events are NOT readable via `/crm/v3/objects/0-54/{id}` (the objects API
+ * rejects MARKETING_EVENT, as does search); custom properties come from the
+ * marketing-events API's `customProperties` array, keyed by the same object id.
  */
 async function eventLeadsForAllAttendees(
   token: string,
@@ -678,11 +682,15 @@ async function eventLeadsForAllAttendees(
   const res = await hs(
     token,
     "GET",
-    `/crm/v3/objects/${LEAD.marketingEventObjectType}/${encodeURIComponent(eventId)}?properties=${EVENT_ALL_ATTENDEES_PROP}`,
+    `/marketing/v3/marketing-events/${encodeURIComponent(eventId)}?properties=${EVENT_ALL_ATTENDEES_PROP}`,
     undefined,
     signal,
   );
-  return res.ok && String(res.data?.properties?.[EVENT_ALL_ATTENDEES_PROP] ?? "").toLowerCase() === "true";
+  if (!res.ok) return false;
+  const props = (res.data?.customProperties ?? []) as Array<Record<string, unknown>>;
+  return props.some(
+    (p) => p?.name === EVENT_ALL_ATTENDEES_PROP && String(p?.value ?? "").toLowerCase() === "true",
+  );
 }
 
 /**
