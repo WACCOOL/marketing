@@ -23,6 +23,8 @@ const PER_CONTACT_TIMEOUT_MS = 90_000;
 
 function outcomeStatus(res: EventLeadResult): string {
   if (res.skippedReason === "competitor") return "skipped_competitor";
+  // Owned contact at a standard event — owner notified instead of a lead.
+  if (res.skippedReason === "owned") return "skipped_owned";
   if (res.leads.some((l) => l.leadError)) return "error";
   if (!res.leads.length) return res.dedupedExisting > 0 ? "skipped_existing" : "no_owner";
   return "done";

@@ -7,6 +7,11 @@
  * HubSpot owner, create a Lead assigned to that owner, associate it to the contact
  * and the campaign, and set the contact owner only when it's currently empty.
  *
+ * Standard vs major events (2026-07-16): by default only UNOWNED contacts get leads —
+ * an owned contact gets a timeline note telling their owner instead. Setting the
+ * `leads_for_all_attendees` checkbox on the marketing event routes every attendee
+ * (see {@link ownedContactGate}).
+ *
  * Three leaf resolution modes (see leadOwnership.ts):
  *   - person  → a fixed owner (by id here, falling back to name/email resolution).
  *   - repCode → read the contact's `rep_code_<channel>` value, then assign either
@@ -76,6 +81,15 @@ const COMPETITOR_LIST_ID = "1966";
  * (older notes are from previous shows and must not leak onto this lead).
  */
 const NOTES_FRESH_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Marketing-event (0-54) custom single-checkbox property marking a MAJOR event:
+ * true → leads for EVERY attendee (the pre-gate behavior). Unset / false / event
+ * unresolved / fetch failure → STANDARD: leads only for contacts without a real
+ * owner (see {@link ownedContactGate}) — the flag only ever loosens the gate.
+ * Created manually in HubSpot: Settings → Properties → Marketing Events.
+ */
+const EVENT_ALL_ATTENDEES_PROP = "leads_for_all_attendees";
 
 /** Contact properties that drive routing. */
 const CONTACT_PROPS = {
@@ -177,8 +191,13 @@ export interface EventLeadResult {
   /** One per distinct owner. Multiple only when the brand was unknown (fan-out). */
   leads: ResolvedLead[];
   contactOwnerAction: "set" | "skipped_existing" | "skipped_no_owner" | "skipped_multiple";
-  /** Set when NO leads were created on purpose (e.g. a competitor-domain contact). */
-  skippedReason?: "competitor";
+  /**
+   * Set when NO leads were created on purpose: a competitor-domain contact, or an
+   * owned contact at a standard (non-major) event (see {@link ownedContactGate}).
+   */
+  skippedReason?: "competitor" | "owned";
+  /** Owner gate only: the owner-notification note landed (or already had, earlier). */
+  ownerNotified?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +665,96 @@ async function eventCampaign(
 }
 
 /**
+ * Is this a MAJOR event (leads for every attendee)? Reads the marketing event's
+ * {@link EVENT_ALL_ATTENDEES_PROP} checkbox. Anything short of an affirmative read —
+ * no event, missing property, fetch failure — means standard (gate on).
+ *
+ * Marketing events are NOT readable via `/crm/v3/objects/0-54/{id}` (the objects API
+ * rejects MARKETING_EVENT, as does search); custom properties come from the
+ * marketing-events API's `customProperties` array, keyed by the same object id.
+ */
+async function eventLeadsForAllAttendees(
+  token: string,
+  eventId: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (!eventId) return false;
+  const res = await hs(
+    token,
+    "GET",
+    `/marketing/v3/marketing-events/${encodeURIComponent(eventId)}?properties=${EVENT_ALL_ATTENDEES_PROP}`,
+    undefined,
+    signal,
+  );
+  if (!res.ok) return false;
+  const props = (res.data?.customProperties ?? []) as Array<Record<string, unknown>>;
+  return props.some(
+    (p) => p?.name === EVENT_ALL_ATTENDEES_PROP && String(p?.value ?? "").toLowerCase() === "true",
+  );
+}
+
+/**
+ * The owner gate (2026-07-16): STANDARD events create leads only for contacts without
+ * a real owner — leads for owned contacts are suppressed and a timeline note tells
+ * the owner instead. Major events ({@link EVENT_ALL_ATTENDEES_PROP} = true) route
+ * every attendee. Lana — the manual fallback bucket — doesn't count as a real owner,
+ * same as the contact-owner-first rule: her contacts still route normally.
+ */
+export function ownedContactGate(ownerId: string, leadsForAllAttendees: boolean): boolean {
+  return !leadsForAllAttendees && !!ownerId && ownerId !== FALLBACK_OWNER_ID;
+}
+
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/**
+ * The owner-gate timeline note: tells the contact's owner their contact attended and
+ * that no lead was created. The @mention span replicates the portal's UI-created
+ * markup exactly (verified against note 75912572601: `data-mention-id`/`-name` +
+ * inline style); the caller also sets `hs_at_mentioned_owner_ids` on the note. The
+ * note is in-app, on the contact record (accepted by Davis, 2026-07-16 — HubSpot
+ * historically doesn't bell/email for API-created mentions).
+ */
+export function ownerGateNoteHtml(opts: {
+  campaignName: string;
+  contactName: string;
+  ownerId: string;
+  ownerName: string;
+  /** Date-stamped fresh at-show notes ("" = none). */
+  atShowNotes: string;
+}): string {
+  const title = opts.campaignName ? `Event attendance — ${escapeHtml(opts.campaignName)}` : "Event attendance";
+  const owner = opts.ownerName
+    ? `<span data-mention-id="${escapeHtml(opts.ownerId)}" data-mention-name="${escapeHtml(opts.ownerName)}" style="color: #425b76;font-weight: 600;">@${escapeHtml(opts.ownerName)}</span> — your contact`
+    : "Owned contact";
+  const who = opts.contactName ? ` ${escapeHtml(opts.contactName)}` : "";
+  const parts = [
+    `<strong>${title}</strong><br>${owner}${who} attended this event. No lead was created (standard event — the contact already has an owner).`,
+  ];
+  if (opts.atShowNotes) parts.push(`<strong>At-show notes</strong> ${escapeHtml(opts.atShowNotes)}`);
+  return parts.join("<br><br>");
+}
+
+/**
+ * Has a previous pass already handled the owner gate for this contact + campaign?
+ * The `event_lead_outcomes` row (PK contact_id) remembers, so queue retries and
+ * workflow re-enrollments don't stack duplicate notes. Fails open — worst case is
+ * a duplicate note, never a missed one.
+ */
+async function ownerGateAlreadyNotified(env: Env, contactId: string, campaign: string): Promise<boolean> {
+  try {
+    const { data } = await serviceSupabase(env)
+      .from("event_lead_outcomes")
+      .select("status,campaign")
+      .eq("contact_id", contactId)
+      .maybeSingle();
+    return data?.status === "skipped_owned" && (data?.campaign ?? "") === campaign;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Auto-resolve the campaign from the contact's marketing-event history: the MOST RECENT
  * event (by occurrence) that maps to a campaign. Uses the marketing-events participations
  * API (attendance) + the native event→campaign association — no name-matching, and it
@@ -836,13 +945,19 @@ async function attachRoutingNote(
   contactId: string,
   bodyHtml: string,
   signal: AbortSignal,
+  /** Owner id(s) @-mentioned in the body — mirrors what UI-created mention notes set. */
+  mentionedOwnerIds?: string,
 ): Promise<boolean> {
   const res = await hs(
     token,
     "POST",
     "/crm/v3/objects/notes",
     {
-      properties: { hs_note_body: bodyHtml, hs_timestamp: new Date().toISOString() },
+      properties: {
+        hs_note_body: bodyHtml,
+        hs_timestamp: new Date().toISOString(),
+        ...(mentionedOwnerIds ? { hs_at_mentioned_owner_ids: mentionedOwnerIds } : {}),
+      },
       associations: [
         {
           to: { id: contactId },
@@ -923,6 +1038,43 @@ export async function processEventLead(
     ? `[${new Date(contact.leadNotesUpdatedAt).toISOString().slice(0, 10)}] ${contact.leadNotes}`
     : "";
   const notesBrand = notesFresh ? brandFromNotes(contact.leadNotes) : null;
+
+  // Owner gate: STANDARD events (no `leads_for_all_attendees` on the marketing event)
+  // create leads only for UNOWNED contacts. An owned contact gets a timeline note
+  // telling their owner instead of a lead. Major events skip the gate and route
+  // every attendee (including the contact-owner-first lead below).
+  const leadsForAll = await eventLeadsForAllAttendees(token, marketingEventId, signal);
+  if (ownedContactGate(contact.ownerId, leadsForAll)) {
+    let ownerNotified = false;
+    if (body.dryRun) {
+      // Same meaning as live — "the notification has landed" — just never writes.
+      ownerNotified = await ownerGateAlreadyNotified(env, contactId, body.campaignName ?? "");
+    } else if (await ownerGateAlreadyNotified(env, contactId, body.campaignName ?? "")) {
+      ownerNotified = true; // an earlier pass (re-enrollment / retry) already handled it
+    } else {
+      const html = ownerGateNoteHtml({
+        campaignName: body.campaignName ?? "",
+        contactName: contact.name || contact.email,
+        ownerId: contact.ownerId,
+        ownerName: await ownerName(token, contact.ownerId, signal),
+        atShowNotes: leadNotesText,
+      });
+      ownerNotified = await attachRoutingNote(token, contactId, html, signal, contact.ownerId).catch(() => false);
+      if (!ownerNotified) console.error(`[event-lead] ${contactId}: owner-gate note failed`);
+    }
+    return {
+      contactId,
+      nationalAccount,
+      campaignName: body.campaignName ?? null,
+      leadNotes: leadNotesText || null,
+      leadType,
+      dedupedExisting: 0,
+      leads: [],
+      contactOwnerAction: "skipped_existing",
+      skippedReason: "owned",
+      ownerNotified,
+    };
+  }
 
   type Target = {
     d: LeadDecision;
@@ -1055,6 +1207,8 @@ export async function processEventLead(
   // Contact-owner-first (2026-07-15 routing change): a contact with a known
   // owner other than Lana gets the lead — ONLY them. Beats the ISR/national-
   // account overrides and the tree; Lana-owned contacts route normally.
+  // (Only reachable at MAJOR events — the owner gate above returns earlier for
+  // owned contacts at standard events.)
   if (contact.ownerId && contact.ownerId !== FALLBACK_OWNER_ID) {
     targets = [
       {
