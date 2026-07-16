@@ -5,7 +5,7 @@ and everything that gets written along the way. This is the behavior of
 `POST /api/hubspot/event-lead` (code: `apps/api/src/eventLead.ts` +
 `packages/shared/src/hubspot/leadOwnership.ts`).
 
-**Last updated:** 2026-07-02 (PRs #95–#106).
+**Last updated:** 2026-07-16 (PRs #95–#106 + owner gate / standard-vs-major events).
 
 ---
 
@@ -21,16 +21,33 @@ most recent participation (by occurrence, skipping cancellations) whose event ha
 campaign → that event + its campaign. The event date also anchors the notes-freshness
 check (§6).
 
+### Standard vs major events
+
+The same workflow serves both — the difference is a custom **single checkbox on the
+marketing event**: `leads_for_all_attendees` ("Create leads for ALL attendees").
+
+- **Standard (checkbox unset/false — the default):** leads are created only for
+  contacts **without a real owner**. An owned contact's owner is *notified* instead
+  (§2.2) — no lead. Lana (the manual fallback bucket) doesn't count as a real owner;
+  her contacts route normally.
+- **Major (checkbox true):** every attendee routes — owned contacts get the
+  contact-owner-first lead (§5), unowned contacts route through the overrides/tree.
+
+Anything short of an affirmative read (event unresolved, property missing, fetch
+failure) means **standard** — the flag only ever loosens the gate. Marketing ticks
+the box when creating a major event; no workflow edits per event, ever.
+
 ---
 
 ## 2. Routing order (first match wins)
 
 ```
 1. Competitor gate      → no leads at all
-2. Inside-sales (ISR)   → lead(s) to the inside sales person(s)
-3. National account     → Sara Kruid
-4. Decision tree        → rep-code owners / fixed people (may fan out)
-   … then, always: contact-owner notification (§5)
+2. Owner gate           → standard event + owned contact → no leads; owner notified
+3. Inside-sales (ISR)   → lead(s) to the inside sales person(s)
+4. National account     → Sara Kruid
+5. Decision tree        → rep-code owners / fixed people (may fan out)
+   … then: contact-owner-first override (§5)
 ```
 
 ### 2.1 Competitor gate
@@ -41,7 +58,28 @@ no associated company with an account number → **no lead is created**
 exempts them. The list is checked live, so editing the list changes behavior
 immediately. A lists-API failure fails **open** (lead still created).
 
-### 2.2 Inside-sales override
+### 2.2 Owner gate (standard events)
+
+At a **standard** event (§1), a contact whose owner is set (and isn't Lana) gets **no
+lead at all** — the ISR / national-account overrides and the tree are all skipped
+(`skippedReason: "owned"`, outcome status `skipped_owned`). Instead, their owner is
+notified:
+
+- A timeline **Note on the contact** — "your contact attended [event], no lead was
+  created" — with the owner @-mentioned and any fresh at-show notes (§6). Note:
+  API-created @mentions render on the timeline but do **not** trigger HubSpot's
+  bell/email (platform limitation).
+- The contact property **`event_lead_owner_notify`** is set to the campaign name. A
+  tiny HubSpot workflow (trigger: that property changed → *Send internal notification*
+  to the contact owner) turns it into a real ping. The value is deterministic per
+  campaign, so retries/re-enrollments never re-fire it. Until the property + workflow
+  exist in HubSpot, the write fails harmlessly (logged) and the note still lands.
+
+The note/ping is written once per contact + campaign (the `event_lead_outcomes` row
+remembers). At **major** events this gate is off and owned contacts get the
+contact-owner-first lead (§5).
+
+### 2.3 Inside-sales override
 
 Every associated company (not just the primary) with an **account number** and an
 **inside sales person** routes the lead to that ISR, replacing all other routing.
@@ -58,13 +96,13 @@ Every associated company (not just the primary) with an **account number** and a
 - **National account + ISR:** the ISR owns the lead, and **Sara Kruid also gets her
   own lead** labeled "National account (notified)".
 
-### 2.3 National account (no ISR)
+### 2.4 National account (no ISR)
 
 Email domain in the national-account domain mirror (synced daily from
 `national_account = true` companies) **or** the primary company flagged → single lead
 to **Sara Kruid**.
 
-### 2.4 Decision tree
+### 2.5 Decision tree
 
 #### Location (first switch)
 
@@ -134,9 +172,12 @@ Values are written to the company once and reused for every later attendee.
 
 ## 5. Contact-owner rules
 
-- **Notification lead:** if the contact already has an owner (and it isn't Lana, the
-  fallback), that owner **also** gets a lead — "Existing contact owner (notified)" —
-  in addition to the routed owner(s). Deduped if they're already a routed owner.
+- **Standard events — owner gate (§2.2):** an owned contact (owner ≠ Lana) gets no
+  lead; their owner gets the note + notify ping instead.
+- **Major events — contact-owner-first (2026-07-15):** a contact with a known owner
+  other than Lana gets the lead assigned to that owner — and ONLY them. This beats
+  the ISR/national-account overrides and the tree. Lana-owned contacts route
+  normally in both cases.
 - **Setting the owner:** if the contact has *no* owner and routing produced exactly
   one owner, that owner is written onto the contact. Fan-outs (multiple owners)
   leave the contact owner untouched.
@@ -181,9 +222,12 @@ there are at-show notes — a Note is logged on the **contact**:
 > Leads created for:
 > • Kamila Rutkowska — Inside sales (acct MF10375)
 > • Stephen Henriquez — Inside sales (acct 2010375)
-> • Navita Phagoo — Existing contact owner (notified)
 >
 > **At-show notes** [2026-07-02] Asked about WAC track lighting pricing
+
+When the owner gate (§2.2) fires instead, the note reads "**Event attendance —
+[campaign]** — @Owner — your contact [name] attended this event. No lead was
+created (standard event — the contact already has an owner)."
 
 It's attached to the contact (HubSpot leads can't hold their own engagements) and
 therefore shows on the contact record **and on every lead record** for that attendee.
@@ -194,8 +238,10 @@ therefore shows on the contact record **and on every lead record** for that atte
 
 | Attendee | Situation | Outcome |
 |---|---|---|
-| Contact with accounts `#MF10375` + `#2010375`, different ISRs, owner = Navita | ISR override | 3 leads: Kamila (MF acct), Stephen (WAC acct), Navita (notified) — all Re-attempting, shared-with note |
-| Same, but fresh note says "WAC track lighting" | Brand ask narrows | Stephen only (+ Navita notified), note on the lead |
+| Contact owned by Navita, standard event | Owner gate | **No lead** — note on the contact + notify ping to Navita (`skipped_owned`) |
+| Contact owned by Navita, **major** event | Contact-owner-first | 1 lead: Navita (only her — beats ISR/tree) |
+| Unowned contact with accounts `#MF10375` + `#2010375`, different ISRs | ISR override | 2 leads: Kamila (MF acct), Stephen (WAC acct) — Re-attempting, shared-with note |
+| Same, but fresh note says "WAC track lighting" | Brand ask narrows | Stephen only, note on the lead |
 | Decorative lighting showroom, no accounts w/ ISR, no campaign brand | Tree | MF Showroom RSM (Decorative → Modern Forms) |
 | Electrical supply house | Tree | WAC Showroom owner (Functional) |
 | Residential interior designer, brand unknown | Fan-out | WAC Showroom owner + Kalin Scott |
@@ -216,9 +262,9 @@ therefore shows on the contact record **and on every lead record** for that atte
   skipped, so retries and workflow re-enrollments never create duplicates — they only
   fill in what's missing.
 - **Outcome audit:** every processed contact gets a row in the Supabase table
-  `event_lead_outcomes` (status: `done` / `skipped_competitor` / `skipped_existing` /
-  `no_owner` / `error`, plus the created leads, lead type, and any error). "Why didn't
-  X get a lead?" is a query against that table.
+  `event_lead_outcomes` (status: `done` / `skipped_competitor` / `skipped_owned` /
+  `skipped_existing` / `no_owner` / `error`, plus the created leads, lead type, and
+  any error). "Why didn't X get a lead?" is a query against that table.
 - **Testing:** `POST /api/hubspot/event-lead/sync` with `{"contactId": "...", "dryRun": true}`
   returns the full decision (owners, paths, campaign, lead type, notes) without
   creating anything.
@@ -226,6 +272,21 @@ therefore shows on the contact record **and on every lead record** for that atte
   rate limit needed** (the queue does the pacing).
 - Required private-app scopes: CRM objects (contacts/companies/leads/notes read+write),
   **lists read**, **marketing-events read**.
+
+### Manual HubSpot setup (owner gate)
+
+1. **Marketing-event property** — Settings → Properties → *Marketing Event* object:
+   single checkbox, internal name `leads_for_all_attendees`, label "Create leads for
+   ALL attendees (major event)". Leave unset for standard events; tick it when
+   creating a major event.
+2. **Contact property** — single-line text, internal name `event_lead_owner_notify`,
+   label "Event lead — owner notify". Written by the Worker; read by the workflow
+   below. (Until it exists the Worker's write fails harmlessly — logged only.)
+3. **Notify workflow** — contact-based: trigger = `event_lead_owner_notify` **is
+   known** (re-enrollment ON, on property *change*); action = **Send internal
+   notification** (in-app, optionally email) to the **contact owner**, e.g. "Your
+   contact [name] attended [property value] — no lead was created." This exists
+   because API-created note @mentions never trigger HubSpot notifications.
 - Owner ids, channel names, association type ids, windows (±14d notes) live at the
   top of `apps/api/src/eventLead.ts`; the routing tree lives in
   `packages/shared/src/hubspot/leadOwnership.ts` (unit-tested — `pnpm test`); the
