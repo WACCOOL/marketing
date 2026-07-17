@@ -59,6 +59,9 @@ jobs:
       - name: Run OA sync
         env:
           OA_API_SECRET: ${{ secrets.OA_API_SECRET }}
+          # JSON map of OA staff name -> HubSpot user email (employee roster —
+          # kept out of the public repo). Optional; owners fill-if-empty.
+          OA_OWNER_MAP: ${{ secrets.OA_OWNER_MAP }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}

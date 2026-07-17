@@ -6,6 +6,7 @@ import {
   OA_STAGE_LABELS,
   UNIVERSAL_PIPELINE_ID,
   oaCompanyProps,
+  oaDateTimeToMs,
   oaDateToHubspotDateTime,
   oaDealProps,
   oaDestination,
@@ -275,6 +276,9 @@ const DEAL_PROPS: PropDef[] = [
   { name: "oa_project_finished_date", label: "Project Finished Date (OA)", type: "date" },
   { name: "project_country", label: "Project Country", type: "string" },
   { name: "erp_source", label: "ERP Source", type: "enum", options: ["SAP", "OA"] },
+  { name: "oa_sales_staff", label: "OA Sales Staff", type: "string" },
+  { name: "oa_tech_support", label: "OA Tech Support", type: "string" },
+  { name: "oa_merchandiser", label: "OA Merchandiser", type: "string" },
 ];
 
 const COMPANY_PROPS: PropDef[] = [
@@ -489,6 +493,49 @@ export async function ensurePipelines(token: string, opts: { dryRun?: boolean } 
   };
 }
 
+// --- owners ------------------------------------------------------------------
+
+/**
+ * OA staff name -> HubSpot owner id, driven by the OA_OWNER_MAP env var
+ * (JSON: {"罗秀丽": "betty.luo@waclighting.com", ...}). Kept OUT of the repo —
+ * it's an employee roster and this repo is public. Names not in the map (or
+ * mapped to an email that isn't a HubSpot user yet) simply resolve to nothing;
+ * ownership fills in on later runs once the account exists, because owners are
+ * written fill-if-empty (create, or update when the deal is currently
+ * unowned) and NEVER overwrite a human assignment.
+ */
+async function loadOwnerIdByOaName(token: string): Promise<Map<string, string>> {
+  const raw = process.env.OA_OWNER_MAP;
+  if (!raw) return new Map();
+  let nameToEmail: Record<string, string>;
+  try {
+    nameToEmail = JSON.parse(raw) as Record<string, string>;
+  } catch (e) {
+    console.warn(`[oa-sync] OA_OWNER_MAP is not valid JSON — ignoring (${String(e).slice(0, 80)})`);
+    return new Map();
+  }
+  const ownerIdByEmail = new Map<string, string>();
+  let after: string | undefined;
+  do {
+    const res = await hs<{ results: { id: string; email?: string }[]; paging?: { next?: { after?: string } } }>(
+      token,
+      `/crm/v3/owners?limit=500${after ? `&after=${after}` : ""}`,
+    );
+    for (const o of res.results ?? []) if (o.email) ownerIdByEmail.set(o.email.toLowerCase(), o.id);
+    after = res.paging?.next?.after;
+  } while (after);
+  const map = new Map<string, string>();
+  const missing: string[] = [];
+  for (const [name, email] of Object.entries(nameToEmail)) {
+    const id = ownerIdByEmail.get(String(email).trim().toLowerCase());
+    if (id) map.set(name.trim(), id);
+    else missing.push(`${name}→${email}`);
+  }
+  if (missing.length) console.warn(`[oa-sync] OA_OWNER_MAP entries without a HubSpot user yet (will fill once accounts exist): ${missing.join(", ")}`);
+  console.log(`[oa-sync] owner map: ${map.size}/${Object.keys(nameToEmail).length} OA staff resolved to HubSpot owners`);
+  return map;
+}
+
 // --- staging model -----------------------------------------------------------
 
 export interface OaStagedRow {
@@ -508,6 +555,10 @@ interface QuoteUnit {
   /** The country/location the destination verdict was computed from (quote's own fields enriched by the joined project). */
   resolvedCountry: string | null;
   resolvedLocation: string | null;
+  /** Staff names from the joined project (Chinese display names from OA). */
+  salesStaff: string | null;
+  techSupport: string | null;
+  merchandiser: string | null;
   orderDetails: OaOrderDetail[];
   changed: boolean;
 }
@@ -580,6 +631,8 @@ export function buildQuoteUnits(rows: OaStagedRow[], opts: { force?: boolean } =
     const resolvedLocation = asId(quotation.project?.location ?? (project as { location?: unknown } | undefined)?.location) || null;
     const destination = oaDestination({ country: resolvedCountry, location: resolvedLocation });
 
+    const staffName = (k: string): string | null =>
+      asId((project as Record<string, { name?: unknown } | undefined> | undefined)?.[k]?.name) || null;
     units.push({
       quoteId,
       quotation,
@@ -587,6 +640,9 @@ export function buildQuoteUnits(rows: OaStagedRow[], opts: { force?: boolean } =
       destination,
       resolvedCountry,
       resolvedLocation,
+      salesStaff: staffName("salesStaff"),
+      techSupport: staffName("techSupport"),
+      merchandiser: staffName("merchandiser"),
       orderDetails: a.orderRows.map((r) => r.raw_json as OaOrderDetail),
       changed: (a.quoteRow ? changed(a.quoteRow) : false) || a.orderRows.some(changed),
     });
@@ -737,15 +793,28 @@ export async function pushOaToHubspot(sb: SupabaseClient, token: string, scope: 
   console.log(`[oa-sync] companies: ${createdCompanies.size} created, ${companyUpdates.length} updated (${accounts.length} referenced)`);
 
   // --- deals: resolve portal-wide, split create/update ----------------------
-  const existingDeals = await searchIds(token, "deals", "oa_quote_number", pushable.map((u) => u.quoteId), ["pipeline", "dealstage"]);
+  const existingDeals = await searchIds(token, "deals", "oa_quote_number", pushable.map((u) => u.quoteId), ["pipeline", "dealstage", "hubspot_owner_id"]);
   const stageIdFor = (label: string): string | undefined => pipelines.dealStageIdByLabel.get(label.toLowerCase());
+  const ownerIdByOaName = await loadOwnerIdByOaName(token);
+  const ownerFor = (u: QuoteUnit): string | undefined => (u.salesStaff ? ownerIdByOaName.get(u.salesStaff) : undefined);
 
   const dealCreates: { properties: Props }[] = [];
   const dealUpdates: { id: string; properties: Props }[] = [];
+  let ownersSet = 0;
   for (const u of pushable) {
     const props = oaDealProps(u.quotation);
+    if (u.salesStaff) props.oa_sales_staff = u.salesStaff;
+    if (u.techSupport) props.oa_tech_support = u.techSupport;
+    if (u.merchandiser) props.oa_merchandiser = u.merchandiser;
     const existing = existingDeals.get(u.quoteId);
     if (existing) {
+      // Owner fill-if-empty: never overwrite a human assignment (cross-border
+      // deals keep whatever owner the team set).
+      const owner = ownerFor(u);
+      if (owner && !existing["hubspot_owner_id"]) {
+        props.hubspot_owner_id = owner;
+        ownersSet++;
+      }
       dealUpdates.push({ id: existing.__id, properties: props });
       continue;
     }
@@ -757,6 +826,16 @@ export async function pushOaToHubspot(sb: SupabaseClient, token: string, scope: 
       pipeline: pipelines.dealPipelineId,
       erp_source: OA_ERP_SOURCE,
     };
+    // Backdate the CRM createdate to when the quote was actually created in OA
+    // (same policy as the domestic sync's earliest-SAP-signal backdating) —
+    // only settable at creation, and essential for the historical backfill.
+    const createdMs = oaDateTimeToMs(u.quotation.createDate ?? u.quotation.requestDate);
+    if (createdMs !== null) createProps.createdate = createdMs;
+    const owner = ownerFor(u);
+    if (owner) {
+      createProps.hubspot_owner_id = owner;
+      ownersSet++;
+    }
     if (stageId) createProps.dealstage = stageId;
     if (ordered) {
       const closeMs = u.orderDetails
@@ -776,7 +855,7 @@ export async function pushOaToHubspot(sb: SupabaseClient, token: string, scope: 
   }
   summary.deals = dealIdByQuote.size;
   summary.dealsCreated = createdDeals.size;
-  console.log(`[oa-sync] deals: ${createdDeals.size} created, ${dealUpdates.length} updated`);
+  console.log(`[oa-sync] deals: ${createdDeals.size} created, ${dealUpdates.length} updated, ${ownersSet} owners assigned`);
 
   // --- line items ------------------------------------------------------------
   const lineInputs = pushable.flatMap((u) =>

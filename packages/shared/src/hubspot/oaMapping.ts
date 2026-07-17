@@ -58,6 +58,7 @@ export interface OaQuotation {
   id?: string | null; // e.g. "QT2025120014" — the deal key
   quotationNo?: string | null;
   title?: string | null;
+  createDate?: string | null;
   project?: OaProject | null;
   customer?: OaCustomer | null;
   productList?: OaProduct[] | null;
