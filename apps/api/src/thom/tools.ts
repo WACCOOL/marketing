@@ -1,7 +1,19 @@
 import type { ClaudeTool } from "../anthropic.js";
 import { embedQuery } from "./embed.js";
 import { hubspotDispatch } from "./hubspotTools.js";
-import type { Citation, KeySpec, ProductCard, ToolContext, ToolOutput } from "./types.js";
+import type {
+  Citation,
+  FamilyCard,
+  FamilyMember,
+  KeySpec,
+  ProductCard,
+  ToolContext,
+  ToolOutput,
+} from "./types.js";
+
+/** Cap on how many family members ride on a single FamilyCard (the full count
+ *  is still reported via member_count). */
+export const MAX_FAMILY_MEMBERS = 12;
 
 /** Tool JSON schemas advertised to Claude. The cache breakpoint after the tool
  *  block is owned by agent.ts (withTailCache), which composes this set with the
@@ -44,6 +56,20 @@ export const TOOLS: ClaudeTool[] = [
         family: { type: "string", description: "Explicit product family." },
         category: { type: "string", description: "Explicit product category, e.g. 'Outdoor Track System'." },
         limit: { type: "integer", description: "Max results (default 60)." },
+      },
+    },
+  },
+  {
+    name: "get_family",
+    description:
+      "Return a whole product SYSTEM/family as ONE card (its member components) — for system/parts questions, not a single SKU. Use this when the user is asking about an entire system (e.g. an outdoor track system: channel + heads + transformer + connectors) so they get one family-level card representing the system rather than N separate product cards. Pass a sku to expand its family/category, or an explicit family/category.",
+    input_schema: {
+      type: "object",
+      properties: {
+        sku: { type: "string", description: "A product SKU whose family/category to expand into a system card." },
+        family: { type: "string", description: "Explicit product family." },
+        category: { type: "string", description: "Explicit product category, e.g. 'Outdoor Track System'." },
+        limit: { type: "integer", description: "Max members to fetch (default 60)." },
       },
     },
   },
@@ -128,6 +154,7 @@ async function getProduct(ctx: ToolContext, input: Record<string, unknown>): Pro
     .map((d) => ({ label: d.label ?? d.doc_type, url: d.url, doc_type: d.doc_type }));
 
   const card: ProductCard = {
+    kind: "product",
     sku: p.sku as string,
     name: (p.name as string) ?? null,
     brand: (p.brand as string) ?? null,
@@ -191,7 +218,15 @@ async function searchDocs(ctx: ToolContext, input: Record<string, unknown>): Pro
   return { content, cards: [], citations };
 }
 
-async function getRelated(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutput> {
+/**
+ * Resolve the family/category scope for a sibling/family lookup: prefer the
+ * explicit family/category on the input; otherwise expand a sku into its own
+ * family + category. Shared by get_related_products and get_family.
+ */
+async function resolveScope(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+): Promise<{ family: string | null; category: string | null; sku: string | null }> {
   let family = str(input.family);
   let category = str(input.category);
   const sku = str(input.sku);
@@ -204,6 +239,11 @@ async function getRelated(ctx: ToolContext, input: Record<string, unknown>): Pro
     family = str(data?.family);
     category = str(data?.category);
   }
+  return { family, category, sku };
+}
+
+async function getRelated(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutput> {
+  const { family, category, sku } = await resolveScope(ctx, input);
   if (!family && !category) {
     return { content: "get_related_products: provide a sku, family, or category.", cards: [], citations: [] };
   }
@@ -230,6 +270,120 @@ async function getRelated(ctx: ToolContext, input: Record<string, unknown>): Pro
   return { content: `${found.size} products in ${scope}:\n${list}`, cards: [], citations: [] };
 }
 
+interface FamilyRow {
+  sku: string;
+  name: string | null;
+  brand: string | null;
+  category: string | null;
+  family: string | null;
+  primary_image_url: string | null;
+  is_accessory: boolean | null;
+}
+
+/** Order rows host (non-accessory) first, then accessories; within each group
+ *  by category then name. Pure so the ordering is unit-testable. */
+export function orderFamilyRows(rows: FamilyRow[]): FamilyRow[] {
+  const rank = (r: FamilyRow) => (r.is_accessory ? 1 : 0);
+  const key = (v: string | null) => (v ?? "").toLowerCase();
+  return [...rows].sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      key(a.category).localeCompare(key(b.category)) ||
+      key(a.name).localeCompare(key(b.name)),
+  );
+}
+
+/** Build a FamilyCard from the raw member rows (already scoped to a family or
+ *  category). Pure — no I/O — so member assembly, ordering, the cap, and
+ *  representative-image / brand selection can be unit-tested directly. */
+export function buildFamilyCard(
+  scope: { family: string; category: string | null },
+  rows: FamilyRow[],
+  pdpBySku: Map<string, string>,
+): FamilyCard {
+  // Dedup by sku, preserving first occurrence.
+  const bySku = new Map<string, FamilyRow>();
+  for (const r of rows) if (r.sku && !bySku.has(r.sku)) bySku.set(r.sku, r);
+  const unique = orderFamilyRows([...bySku.values()]);
+  const shown = unique.slice(0, MAX_FAMILY_MEMBERS);
+  const members: FamilyMember[] = shown.map((r) => ({
+    sku: r.sku,
+    name: r.name ?? null,
+    role: r.category ?? null,
+    image_url: r.primary_image_url ?? null,
+    pdp_url: pdpBySku.get(r.sku) ?? null,
+  }));
+
+  // Representative image: first host with an image, else first member with one.
+  const hostWithImg = unique.find((r) => !r.is_accessory && r.primary_image_url);
+  const anyWithImg = unique.find((r) => r.primary_image_url);
+  const image_url = (hostWithImg ?? anyWithImg)?.primary_image_url ?? null;
+
+  // Brand: the first non-null member brand (host-first ordering makes this the
+  // host's brand when present).
+  const brand = unique.find((r) => str(r.brand))?.brand ?? null;
+
+  return {
+    kind: "family",
+    family: scope.family,
+    brand,
+    image_url,
+    category: scope.category,
+    members,
+    member_count: unique.length,
+  };
+}
+
+async function getFamily(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutput> {
+  const { family, category } = await resolveScope(ctx, input);
+  // Prefer family; fall back to category only when family is null.
+  const useFamily = !!family;
+  const col = useFamily ? "family" : "category";
+  const val = useFamily ? family : category;
+  if (!val) {
+    return { content: "get_family: provide a sku, family, or category.", cards: [], citations: [] };
+  }
+
+  const limit = Math.min(Number(input.limit) || 60, 100);
+  const { data, error } = await ctx.sb
+    .from("products")
+    .select("sku, name, brand, category, family, primary_image_url, is_accessory")
+    .eq(col, val)
+    .limit(limit);
+  if (error) return { content: `get_family error: ${error.message}`, cards: [], citations: [] };
+  const rows = (data ?? []) as FamilyRow[];
+  if (!rows.length) {
+    return { content: `No products found for ${col} "${val}".`, cards: [], citations: [] };
+  }
+
+  // Batch-fetch product-page URLs for the (deduped) member skus.
+  const skus = [...new Set(rows.map((r) => r.sku).filter(Boolean))];
+  const pdpBySku = new Map<string, string>();
+  if (skus.length) {
+    const { data: pdps } = await ctx.sb.from("pdp_urls").select("sku, url").in("sku", skus);
+    for (const p of (pdps ?? []) as { sku: string; url: string | null }[]) {
+      if (p.url) pdpBySku.set(p.sku, p.url);
+    }
+  }
+
+  const familyName = useFamily ? (val as string) : (category as string) ?? (val as string);
+  const card = buildFamilyCard({ family: familyName, category: category ?? null }, rows, pdpBySku);
+
+  const list = card.members
+    .map((m) => `- ${m.sku} — ${m.name ?? m.sku}${m.role ? ` (${m.role})` : ""}`)
+    .join("\n");
+  const more =
+    card.member_count > card.members.length
+      ? `\n(+${card.member_count - card.members.length} more not shown on the card)`
+      : "";
+  const content =
+    `System "${card.family}"${card.brand ? ` (${card.brand})` : ""} — ${card.member_count} member component(s):\n` +
+    list +
+    more;
+
+  return { content, cards: [card], citations: [] };
+}
+
 export async function dispatch(
   ctx: ToolContext,
   name: string,
@@ -245,6 +399,8 @@ export async function dispatch(
       return getProduct(ctx, input);
     case "get_related_products":
       return getRelated(ctx, input);
+    case "get_family":
+      return getFamily(ctx, input);
     case "search_docs":
       return searchDocs(ctx, input);
     default:

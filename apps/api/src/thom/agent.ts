@@ -14,7 +14,7 @@ import {
 import { internalSystem } from "./prompts.js";
 import { dispatch, TOOLS } from "./tools.js";
 import { HUBSPOT_TOOLS } from "./hubspotTools.js";
-import type { Citation, ProductCard, ThomUsage } from "./types.js";
+import type { Card, Citation, ThomUsage } from "./types.js";
 
 const MAX_STEPS = 5;
 const MAX_TOKENS = 2048;
@@ -39,7 +39,7 @@ export function withTailCache(tools: ClaudeTool[]): ClaudeTool[] {
 
 export interface ThomResult {
   text: string;
-  cards: ProductCard[];
+  cards: Card[];
   citations: Citation[];
   usage: ThomUsage;
 }
@@ -102,7 +102,7 @@ export async function runThom(
     ...opts.history,
     { role: "user", content: opts.userMessage },
   ];
-  const cards: ProductCard[] = [];
+  const cards: Card[] = [];
   const citations: Citation[] = [];
   let toolCallCount = 0;
   const usage: ThomUsage = {
@@ -195,10 +195,15 @@ function finalText(content: ClaudeContentBlock[]): string {
     .trim();
 }
 
-/** De-duplicate cards (by sku) and citations (by document_id+page) for the client. */
-export function dedupeCards(cards: ProductCard[]): ProductCard[] {
+/** De-duplicate cards and citations (by document_id+page) for the client.
+ *  Cards are keyed by kind so a product and a family never collide: products by
+ *  `product:${sku}`, families by `family:${family}`. */
+export function dedupeCards(cards: Card[]): Card[] {
   const seen = new Set<string>();
-  return cards.filter((c) => !seen.has(c.sku) && seen.add(c.sku));
+  return cards.filter((c) => {
+    const k = c.kind === "family" ? `family:${c.family}` : `product:${c.sku}`;
+    return !seen.has(k) && seen.add(k);
+  });
 }
 export function dedupeCitations(cites: Citation[]): Citation[] {
   const seen = new Set<string>();

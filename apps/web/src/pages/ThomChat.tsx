@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, ExternalLink, FileText, Loader2, Plus, Send } from "lucide-react";
+import { Bot, Boxes, ExternalLink, FileText, Loader2, Plus, Send } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import {
   sendChat,
+  type Card,
   type Citation,
+  type FamilyCard,
   type ProductCard,
   type ChatResponse,
 } from "../lib/thom.js";
@@ -12,7 +14,7 @@ import type { ApiError } from "../lib/api.js";
 interface Turn {
   role: "user" | "assistant";
   text: string;
-  cards?: ProductCard[];
+  cards?: Card[];
   citations?: Citation[];
   error?: boolean;
 }
@@ -195,7 +197,15 @@ function TurnView({ turn }: { turn: Turn }) {
         ) : (
           <div className="thom-text">{turn.text}</div>
         )}
-        {turn.cards?.map((c) => <CardView key={c.sku} card={c} />)}
+        {turn.cards?.map((c, i) =>
+          // Cards logged before the family feature have no `kind` — default to
+          // the product view so old conversations still render.
+          c.kind === "family" ? (
+            <FamilyCardView key={`family:${c.family}:${i}`} card={c} />
+          ) : (
+            <CardView key={`product:${c.sku}:${i}`} card={c} />
+          ),
+        )}
         {turn.citations && turn.citations.length > 0 && (
           <div className="thom-citations">
             {turn.citations.map((cite, i) => (
@@ -214,6 +224,56 @@ function TurnView({ turn }: { turn: Turn }) {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function FamilyCardView({ card }: { card: FamilyCard }) {
+  const extra = card.member_count - card.members.length;
+  const subhead = [card.brand, card.category].filter(Boolean).join(" · ");
+  return (
+    <div className="thom-card thom-family-card">
+      {card.image_url && (
+        <img className="thom-card-img" src={card.image_url} alt={card.family} loading="lazy" />
+      )}
+      <div className="thom-card-body">
+        <div className="thom-card-head">
+          <strong>
+            <Boxes size={14} /> {card.family}
+          </strong>
+          <span className="muted">
+            System{subhead ? ` · ${subhead}` : ""} · {card.member_count} component
+            {card.member_count === 1 ? "" : "s"}
+          </span>
+        </div>
+        <div className="thom-family-members">
+          {card.members.map((m) => {
+            const label = (
+              <>
+                <strong>{m.sku}</strong>
+                {m.name ? ` · ${m.name}` : ""}
+                {m.role ? <span className="muted"> · {m.role}</span> : null}
+              </>
+            );
+            return m.pdp_url ? (
+              <a
+                key={m.sku}
+                className="thom-family-member"
+                href={m.pdp_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {label}
+              </a>
+            ) : (
+              <span key={m.sku} className="thom-family-member">
+                {label}
+              </span>
+            );
+          })}
+          {extra > 0 && <span className="thom-family-more muted">+{extra} more</span>}
+        </div>
       </div>
     </div>
   );

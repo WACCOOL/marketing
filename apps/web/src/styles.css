@@ -1627,6 +1627,34 @@ button.slim {
 .thom-cite:hover {
   border-color: var(--accent);
 }
+.thom-family-card .thom-card-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.thom-family-members {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+.thom-family-member {
+  display: block;
+  padding: 6px 10px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  text-decoration: none;
+}
+a.thom-family-member:hover {
+  border-color: var(--accent);
+}
+.thom-family-more {
+  font-size: 12px;
+  padding: 2px 2px 0;
+}
 .thom-composer {
   display: flex;
   gap: 8px;

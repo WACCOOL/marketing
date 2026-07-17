@@ -14,7 +14,7 @@ export interface ToolContext {
 export interface ToolOutput {
   /** Text fed back to Claude as the tool_result. */
   content: string;
-  cards: ProductCard[];
+  cards: Card[];
   citations: Citation[];
 }
 
@@ -31,6 +31,7 @@ export interface DocDownload {
 
 /** A product card — image + key specs + PDP link + document downloads. */
 export interface ProductCard {
+  kind: "product";
   sku: string;
   name: string | null;
   brand: string | null;
@@ -39,6 +40,33 @@ export interface ProductCard {
   pdp_url: string | null;
   downloads: DocDownload[];
 }
+
+/** One component of a family/system, as it appears on a FamilyCard. */
+export interface FamilyMember {
+  sku: string;
+  name: string | null;
+  /** The member's role in the system (its category, e.g. "Channel"). */
+  role: string | null;
+  image_url: string | null;
+  pdp_url: string | null;
+}
+
+/** A family/system card — a whole product SYSTEM as ONE card, listing its
+ *  member components (channel + heads + transformer + connectors, etc.). */
+export interface FamilyCard {
+  kind: "family";
+  family: string;
+  brand: string | null;
+  image_url: string | null;
+  category: string | null;
+  members: FamilyMember[];
+  /** Total members found for the family (may exceed `members.length`, which is
+   *  capped for display). */
+  member_count: number;
+}
+
+/** Either kind of UI card the agent can emit. */
+export type Card = ProductCard | FamilyCard;
 
 /** A source citation back to the spec sheet / manual a claim came from. */
 export interface Citation {
