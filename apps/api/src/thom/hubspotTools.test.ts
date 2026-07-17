@@ -13,6 +13,7 @@ import {
   invoiceTotal,
   isOpenDeal,
   money,
+  newestSalesGroup,
   sinceMs,
 } from "./hubspotTools.js";
 import type { ToolContext } from "./types.js";
@@ -155,6 +156,39 @@ describe("invoiceTotal / filterInvoicesSince", () => {
   it("keeps only rows on/after the bound and drops undated rows", () => {
     const kept = filterInvoicesSince(rows, Date.UTC(2026, 3, 1));
     expect(kept.map((r) => r.id)).toEqual(["2"]);
+  });
+});
+
+describe("newestSalesGroup", () => {
+  it("picks the sales_group from the row with the newest billing_date", () => {
+    const rows = [
+      obj("1", { sales_group: "R100", billing_date: String(Date.UTC(2026, 0, 1)) }),
+      obj("2", { sales_group: "R200", billing_date: String(Date.UTC(2026, 5, 1)) }),
+      obj("3", { sales_group: "R150", billing_date: String(Date.UTC(2026, 2, 1)) }),
+    ];
+    expect(newestSalesGroup(rows)).toBe("R200");
+  });
+
+  it("falls back to po_date when billing_date is absent", () => {
+    const rows = [
+      obj("1", { sales_group: "R100", po_date: String(Date.UTC(2025, 0, 1)) }),
+      obj("2", { sales_group: "R200", po_date: String(Date.UTC(2026, 0, 1)) }),
+    ];
+    expect(newestSalesGroup(rows)).toBe("R200");
+  });
+
+  it("skips rows with a blank sales_group even if they are newer", () => {
+    const rows = [
+      obj("1", { sales_group: "R100", billing_date: String(Date.UTC(2026, 0, 1)) }),
+      obj("2", { sales_group: "", billing_date: String(Date.UTC(2026, 11, 1)) }),
+      obj("3", { sales_group: null, billing_date: String(Date.UTC(2026, 10, 1)) }),
+    ];
+    expect(newestSalesGroup(rows)).toBe("R100");
+  });
+
+  it("returns null when no row carries a sales_group", () => {
+    expect(newestSalesGroup([obj("1", { sales_group: null, billing_date: "123" })])).toBeNull();
+    expect(newestSalesGroup([])).toBeNull();
   });
 });
 

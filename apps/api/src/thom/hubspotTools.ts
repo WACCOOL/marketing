@@ -355,6 +355,33 @@ export function filterInvoicesSince(rows: HsObject[], boundMs: number | null): H
   });
 }
 
+/**
+ * The rep code (sales_group) servicing a customer, from that account's order or
+ * deal rows: the sales_group on the newest row (by billing_date, else po_date),
+ * skipping rows with a blank sales_group. Null when no row carries one.
+ *
+ * This is why "rep code for account X" resolves through orders/deals, not the
+ * rep-code object's own `account` property (which holds the rep AGENCY's account
+ * number, not the customer's).
+ */
+export function newestSalesGroup(rows: HsObject[]): string | null {
+  let bestGroup: string | null = null;
+  let bestMs = -Infinity;
+  for (const r of rows) {
+    const group = r.properties?.sales_group;
+    if (group == null || String(group).trim() === "") continue;
+    const dateRaw = r.properties?.billing_date ?? r.properties?.po_date ?? null;
+    const s = dateRaw != null ? String(dateRaw).trim() : "";
+    const ms = s ? (/^-?\d+$/.test(s) ? Number(s) : Date.parse(s)) : NaN;
+    const rank = Number.isFinite(ms) ? ms : -Infinity;
+    if (rank >= bestMs) {
+      bestMs = rank;
+      bestGroup = String(group).trim();
+    }
+  }
+  return bestGroup;
+}
+
 export function assembleRepCode(o: HsObject): string {
   const code = prop(o, "rep_code") ?? "(unknown)";
   const lines = [
@@ -551,16 +578,47 @@ async function getRepCode(token: string, input: Record<string, unknown>): Promis
     return text(assembleRepCode(rec));
   }
 
-  // By account: rep code records carry the agency `account` number.
-  const rows: HsObject[] = [];
-  for await (const r of searchAll(token, REP_CODE_OBJECT, [accountFilter("account", account)], props, {
-    maxResults: CAP_COMPANIES + 1,
-  })) {
-    rows.push(r);
+  // By account: the rep servicing a CUSTOMER account = the sales_group on that
+  // account's orders/deals — NOT the rep-code object's own `account` property,
+  // which holds the rep AGENCY's account number (copied from the Rep Agency
+  // company), so matching a customer account against it almost never hits.
+  const orderRows: HsObject[] = [];
+  for await (const o of searchAll(
+    token,
+    ORDER_OBJECT,
+    [accountFilter("customer_account", account)],
+    ["sales_group", "billing_date", "po_date", "hs_pipeline"],
+    { maxResults: 50 },
+  )) {
+    orderRows.push(o);
   }
-  if (!rows.length) return text("No rep code tied to that account.");
-  const { shown, moreNote } = capRows(rows, CAP_COMPANIES);
-  return text(shown.map(assembleRepCode).join("\n\n") + moreNote);
+  let repFromAccount = newestSalesGroup(orderRows);
+
+  // Fallback: newest deal's sales_group, reached via the company's associations.
+  if (!repFromAccount) {
+    const company = await resolveCompany(token, ["name"], input, ["deals"]);
+    const assoc = (company as { associations?: { deals?: { results?: { id: string }[] } } } | null)?.associations;
+    const dealIds = (assoc?.deals?.results ?? []).map((r) => r.id);
+    if (dealIds.length) {
+      const byId = await batchRead(token, DEAL_OBJECT, dealIds, ["sales_group", "createdate"]);
+      const dealRows = [...byId.values()].sort(
+        (a, b) => Number(b.properties?.createdate ?? 0) - Number(a.properties?.createdate ?? 0),
+      );
+      const hit = dealRows.find((d) => String(d.properties?.sales_group ?? "").trim() !== "");
+      repFromAccount = hit ? String(hit.properties!.sales_group).trim() : null;
+    }
+  }
+
+  if (!repFromAccount) {
+    return text("Couldn't determine a rep code from that account's orders or deals.");
+  }
+
+  const byCode = await batchRead(token, REP_CODE_OBJECT, [repFromAccount], props, { idProperty: "rep_code" });
+  const rec = byCode.get(repFromAccount);
+  if (!rec) {
+    return text(`Rep code ${repFromAccount} (from this account's orders); no rep-code detail record found.`);
+  }
+  return text(assembleRepCode(rec));
 }
 
 // --- dispatch ----------------------------------------------------------------
