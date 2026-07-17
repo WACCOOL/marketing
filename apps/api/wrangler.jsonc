@@ -218,7 +218,7 @@
     // Thom Bot — dark-launch flag for Sales Layer doc capture. "0" = discover +
     // log spec-sheet/manual coverage only (no writes); "1" = write kb_documents
     // + product_documents. Flip to "1" once apps/docs-ingest can extract them.
-    "THOM_DOC_CAPTURE": "0"
+    "THOM_DOC_CAPTURE": "1"
   },
 
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:

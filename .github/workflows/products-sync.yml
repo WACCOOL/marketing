@@ -37,4 +37,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          # Thom Bot: also resolve spec-sheet URLs into pdp_urls.spec_sheet_url
+          # (one extra PDP fetch per scraped product). Non-sensitive flag.
+          PDP_SPEC_SHEETS: "1"
         run: pnpm --filter @wac/products-sync sync ${{ inputs.dry_run && '-- --dry-run' || '' }}
