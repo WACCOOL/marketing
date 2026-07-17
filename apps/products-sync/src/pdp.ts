@@ -223,12 +223,18 @@ export async function resolvePdpUrls(
 
   const result = new Map<string, string>();
   const toScrape: { p: PdpProduct; brand: string; queries: string[] }[] = [];
+  // Fresh rows that predate spec-sheet resolution (spec_sheet_url still NULL) —
+  // resolve their spec sheet WITHOUT re-searching (reuse the cached slug).
+  const specBackfill: { p: PdpProduct; brand: string; cached: CacheRow }[] = [];
   for (const p of products) {
     const brand = canonicalBrand(p.brand);
     if (!brand || !DOMAIN[brand]) continue;
     const cached = cache.get(p.sku);
     if (cached && fresh(cached)) {
       result.set(p.sku, cached.url);
+      if (SPEC_SHEETS_ON && (cached.spec_sheet_url === null || cached.spec_sheet_url === undefined)) {
+        specBackfill.push({ p, brand, cached });
+      }
       continue;
     }
     const queries = [
@@ -275,5 +281,30 @@ export async function resolvePdpUrls(
     const { error } = await sb.from("pdp_urls").upsert(newRows.slice(i, i + 500), { onConflict: "sku" });
     if (error) throw new Error(`pdp_urls upsert failed: ${error.message}`);
   }
+
+  // One-time spec-sheet backfill for already-cached products. We store "" when
+  // none is found (attempted, none) so a product without a spec sheet isn't
+  // re-fetched every run — only genuine NULLs (never attempted) are processed.
+  if (SPEC_SHEETS_ON && specBackfill.length) {
+    const updates: CacheRow[] = [];
+    let filled = 0;
+    await mapWithConcurrency(specBackfill, PARALLELISM, async ({ p, brand, cached }) => {
+      let specUrl: string | null = null;
+      if (brand === "Schonbek") {
+        specUrl = schonbekSpecSheet(p.brand, p.sku);
+      } else if (cached.slug) {
+        const html = await fetchText(`https://${DOMAIN[brand]}/product/${cached.slug}/`);
+        specUrl = extractSpecSheet(brand, html, cached.slug);
+      }
+      if (specUrl) filled++;
+      updates.push({ ...cached, spec_sheet_url: specUrl ?? "" });
+    });
+    for (let i = 0; i < updates.length; i += 500) {
+      const { error } = await sb.from("pdp_urls").upsert(updates.slice(i, i + 500), { onConflict: "sku" });
+      if (error) throw new Error(`pdp_urls spec backfill upsert failed: ${error.message}`);
+    }
+    console.log(`[pdp] spec backfill: ${filled}/${specBackfill.length} cached products got a spec sheet`);
+  }
+
   return result;
 }

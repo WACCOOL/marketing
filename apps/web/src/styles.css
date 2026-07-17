@@ -1487,6 +1487,36 @@ button.slim {
   white-space: pre-wrap;
   line-height: 1.5;
 }
+.thom-md {
+  white-space: normal;
+}
+.thom-md p {
+  margin: 0 0 8px;
+}
+.thom-md p:last-child {
+  margin-bottom: 0;
+}
+.thom-md ul,
+.thom-md ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+.thom-md li {
+  margin: 2px 0;
+}
+.thom-md a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.thom-md strong {
+  font-weight: 600;
+}
+.thom-md code {
+  background: var(--panel-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
 .thom-thinking {
   display: inline-flex;
   align-items: center;
