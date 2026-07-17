@@ -53,6 +53,60 @@ const SKIP_SLUGS = new Set([
   "all", "products", "search", "category", "blog", "support", "yoast-seo-wordpress",
 ]);
 
+// Also resolve the spec-sheet URL (one extra PDP fetch per scraped product).
+// Dark until migration 0045 adds pdp_urls.spec_sheet_url; enable with
+// PDP_SPEC_SHEETS=1 once it's applied. Off => behaves exactly as before.
+const SPEC_SHEETS_ON = process.env.PDP_SPEC_SHEETS === "1";
+
+// Schonbek is search-only (no PDP scrape), so its spec sheet comes from a
+// per-sub-brand PHP template keyed on PPID. Mirrors WIES's
+// SPEC_SHEET_FALLBACK_TEMPLATES.Schonbek (SCHONBEK_SUB_BRAND_SLUGS).
+const SCHONBEK_SUB_BRAND_SLUGS: Record<string, string> = {
+  SIGNATURE: "signatureld",
+  BEYOND: "led-beyond1",
+  FOREVER: "forever",
+};
+
+/**
+ * Extract the spec-sheet URL a scrapeable brand's PDP actually links to
+ * (WIES tier 2). WAC embeds a WordPress dispatcher `?download=specsN`; Modern
+ * Forms embeds `data-ppid` for its dynamic-specsheet template (5 covers ~96%,
+ * HEAD-verified at ingest); AiSpire links a direct S3 `_SPSHT.pdf`, falling
+ * back to the install sheet (many AiSpire accessories ship only the latter).
+ */
+export function extractSpecSheet(
+  brand: string,
+  html: string | null,
+  slug: string | null,
+): string | null {
+  if (!html) return null;
+  if (brand === "WAC Lighting") {
+    const m = html.match(/\?download=specs[a-z0-9]+/i);
+    return m && slug ? `https://waclighting.com/product/${slug}/${m[0]}` : null;
+  }
+  if (brand === "Modern Forms") {
+    const m = html.match(/data-ppid="(\d+)"/);
+    return m ? `https://modernforms.com/dynamic-specsheet/?download=specs5&ppid=${m[1]}` : null;
+  }
+  if (brand === "AiSpire") {
+    const spec = html.match(/https:\/\/aispire\.s3[^"']+_SPSHT\.pdf/i);
+    if (spec) return spec[0];
+    const inst = html.match(/https:\/\/aispire\.s3[^"']+_INSSHT\.pdf/i);
+    return inst ? inst[0] : null;
+  }
+  return null;
+}
+
+/** Schonbek spec-sheet URL from its per-sub-brand PHP template (WIES tier 3).
+ *  `rawBrand` is the un-normalized Sales Layer code (SIGNATURE/BEYOND/FOREVER). */
+export function schonbekSpecSheet(
+  rawBrand: string | null | undefined,
+  ppid: string,
+): string | null {
+  const sub = rawBrand ? SCHONBEK_SUB_BRAND_SLUGS[rawBrand.trim().toUpperCase()] : undefined;
+  return sub ? `https://schonbek.com/downloads/specsheet/${sub}.php?ppid=${ppid}` : null;
+}
+
 export function canonicalBrand(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const up = raw.trim().toUpperCase();
@@ -141,6 +195,9 @@ interface CacheRow {
   slug: string | null;
   url: string;
   resolved_at: string;
+  // Only ever set when SPEC_SHEETS_ON, so the field is omitted from the upsert
+  // (and thus safe) until migration 0045 adds the column.
+  spec_sheet_url?: string | null;
 }
 
 /**
@@ -184,16 +241,32 @@ export async function resolvePdpUrls(
 
   const newRows: CacheRow[] = [];
   let scraped = 0;
+  let specs = 0;
   await mapWithConcurrency(toScrape, PARALLELISM, async ({ p, brand, queries }) => {
     const slug = SCRAPEABLE.has(brand) && queries.length ? await resolveSlug(brand, queries) : null;
     const url = buildUrl(brand, p.sku, slug);
     if (slug) scraped++;
     result.set(p.sku, url);
-    newRows.push({ sku: p.sku, brand, query: queries[0] ?? null, slug, url, resolved_at: iso() });
+    const row: CacheRow = { sku: p.sku, brand, query: queries[0] ?? null, slug, url, resolved_at: iso() };
+    if (SPEC_SHEETS_ON) {
+      // Schonbek: template from raw sub-brand + PPID (no PDP to scrape).
+      // Scrapeable brands: one extra fetch of the resolved PDP → tier-2 link.
+      let specUrl: string | null = null;
+      if (brand === "Schonbek") {
+        specUrl = schonbekSpecSheet(p.brand, p.sku);
+      } else if (slug) {
+        const pdpHtml = await fetchText(`https://${DOMAIN[brand]}/product/${slug}/`);
+        specUrl = extractSpecSheet(brand, pdpHtml, slug);
+      }
+      row.spec_sheet_url = specUrl;
+      if (specUrl) specs++;
+    }
+    newRows.push(row);
   });
 
   if (toScrape.length) {
-    console.log(`[pdp] resolved ${toScrape.length} products (${scraped} canonical slugs, ${toScrape.length - scraped} search fallback); ${cache.size} from cache`);
+    const specNote = SPEC_SHEETS_ON ? `, ${specs} spec sheets` : "";
+    console.log(`[pdp] resolved ${toScrape.length} products (${scraped} canonical slugs, ${toScrape.length - scraped} search fallback${specNote}); ${cache.size} from cache`);
   } else {
     console.log(`[pdp] ${result.size} product URLs all from cache`);
   }
