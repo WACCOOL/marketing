@@ -46,6 +46,16 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_AI_TOKEN: ${{ secrets.CF_AI_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Thom Bot — ZenDesk Help Center article capture (Step C), dark-launched.
+          # THOM_ZENDESK_ARTICLES stays unset/"0" until Davis adds the ZENDESK_*
+          # GitHub secrets (they exist as Cloudflare Worker secrets, not GH secrets)
+          # and flips it on.
+          ZENDESK_SUBDOMAIN: ${{ secrets.ZENDESK_SUBDOMAIN }}
+          ZENDESK_EMAIL: ${{ secrets.ZENDESK_EMAIL }}
+          ZENDESK_API_TOKEN: ${{ secrets.ZENDESK_API_TOKEN }}
+          THOM_ZENDESK_ARTICLES: ${{ secrets.THOM_ZENDESK_ARTICLES }}
+          ZENDESK_HC_BRAND_MAP: ${{ secrets.ZENDESK_HC_BRAND_MAP }}
+          ZENDESK_HC_LOCALE: ${{ secrets.ZENDESK_HC_LOCALE }}
         run: >-
           pnpm --filter @wac/docs-ingest ingest --
           ${{ inputs.dry_run && '--dry-run' || '' }}
