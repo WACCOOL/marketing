@@ -43,13 +43,15 @@ function env(name: string): string {
 interface Args {
   dryRun: boolean;
   skipPdp: boolean;
+  skipProducts: boolean;
   limit: number | null;
 }
 function parseArgs(argv: string[]): Args {
-  const a: Args = { dryRun: false, skipPdp: false, limit: null };
+  const a: Args = { dryRun: false, skipPdp: false, skipProducts: false, limit: null };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--dry-run") a.dryRun = true;
     else if (argv[i] === "--skip-pdp") a.skipPdp = true;
+    else if (argv[i] === "--skip-products") a.skipProducts = true;
     else if (argv[i] === "--limit") a.limit = Number(argv[++i]);
   }
   return a;
@@ -156,6 +158,72 @@ async function syncPdpSpecSheets(sb: SupabaseClient, dryRun: boolean): Promise<n
     if (error) throw new Error(`product_documents upsert failed: ${error.message}`);
   }
   return byUrl.size;
+}
+
+// --- Step A2: backfill product embeddings -----------------------------------
+
+/**
+ * Embed the product catalog into products.embedding so product_semantic_search
+ * actually does SEMANTIC matching (without this it silently runs lexical-only —
+ * e.g. "outdoor track" wouldn't find products named "H Track / J2 Track").
+ * Only fills NULLs, so it's a one-time backfill then near-zero each run. The
+ * daily Sales Layer sync omits `embedding` from its upsert, so it preserves
+ * these; new products come back NULL and get embedded on the next run.
+ */
+function productText(r: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (r.name) parts.push(String(r.name));
+  if (r.brand) parts.push(`Brand: ${r.brand}`);
+  if (r.category) parts.push(`Category: ${r.category}`);
+  if (r.family) parts.push(`Family: ${r.family}`);
+  const variants = Array.isArray(r.variants) ? (r.variants as Record<string, unknown>[]) : [];
+  const descriptors = new Set<string>();
+  for (const v of variants.slice(0, 12)) {
+    for (const k of ["finish", "cct_desc", "beam_desc"]) {
+      const val = v[k];
+      if (typeof val === "string" && val.trim()) descriptors.add(val.trim());
+    }
+  }
+  if (descriptors.size) parts.push([...descriptors].join(", "));
+  return parts.join(". ").slice(0, 1000);
+}
+
+async function backfillProductEmbeddings(
+  sb: SupabaseClient,
+  cf: CfCreds,
+  dryRun: boolean,
+): Promise<number> {
+  let total = 0;
+  for (;;) {
+    const { data, error } = await sb
+      .from("products")
+      .select("sku, name, brand, category, family, variants")
+      .is("embedding", null)
+      .limit(200);
+    if (error) throw new Error(`products read failed: ${error.message}`);
+    const rows = (data ?? []) as Record<string, unknown>[];
+    if (!rows.length) break;
+    if (dryRun) {
+      console.log(`[docs-ingest] (dry-run) ${rows.length}+ products need embeddings`);
+      return rows.length;
+    }
+    const vecs = await embed(cf, rows.map(productText));
+    await mapPool(
+      rows.map((r, i) => ({ sku: String(r.sku), vec: vecs[i]! })),
+      8,
+      async ({ sku, vec }) => {
+        const { error: uErr } = await sb
+          .from("products")
+          .update({ embedding: toVectorLiteral(vec) })
+          .eq("sku", sku);
+        if (uErr) throw new Error(`product embedding update ${sku}: ${uErr.message}`);
+      },
+    );
+    total += rows.length;
+    console.log(`[docs-ingest] embedded ${total} products…`);
+    if (rows.length < 200) break;
+  }
+  return total;
 }
 
 // --- Step B: extract + embed pending docs -----------------------------------
@@ -315,6 +383,10 @@ async function main(): Promise<void> {
   if (!args.skipPdp) {
     const added = await syncPdpSpecSheets(sb, args.dryRun);
     console.log(`[docs-ingest] step A: ${added} re-derived spec sheets folded into the KB`);
+  }
+  if (!args.skipProducts) {
+    const embedded = await backfillProductEmbeddings(sb, cf, args.dryRun);
+    console.log(`[docs-ingest] step A2: ${embedded} product embeddings backfilled`);
   }
   const counts = await processPending(sb, cf, claude, args.limit, args.dryRun);
   console.log(
