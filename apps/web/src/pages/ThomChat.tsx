@@ -1,0 +1,192 @@
+import { useEffect, useRef, useState } from "react";
+import { Bot, ExternalLink, FileText, Loader2, Send } from "lucide-react";
+import {
+  sendChat,
+  type Citation,
+  type ProductCard,
+  type ChatResponse,
+} from "../lib/thom.js";
+import type { ApiError } from "../lib/api.js";
+
+interface Turn {
+  role: "user" | "assistant";
+  text: string;
+  cards?: ProductCard[];
+  citations?: Citation[];
+  error?: boolean;
+}
+
+const EXAMPLES = [
+  "What's the lumen output and CRI of SKU 2095?",
+  "I need a warm-dim 3-inch downlight for a damp bathroom — what do you recommend?",
+  "What's the cutout size for the Aurora trimless downlight?",
+  "A client wants something like a Lutron Ketra — what WAC product is closest?",
+];
+
+export function ThomChat() {
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [turns, busy]);
+
+  async function send(text: string) {
+    const message = text.trim();
+    if (!message || busy) return;
+    setInput("");
+    setTurns((t) => [...t, { role: "user", text: message }]);
+    setBusy(true);
+    try {
+      const res: ChatResponse = await sendChat(message, conversationId);
+      setConversationId(res.conversationId);
+      setTurns((t) => [
+        ...t,
+        { role: "assistant", text: res.answer, cards: res.cards, citations: res.citations },
+      ]);
+    } catch (e) {
+      const err = e as ApiError;
+      setTurns((t) => [
+        ...t,
+        {
+          role: "assistant",
+          text:
+            err?.status === 503
+              ? "Thom isn't configured yet (no API key)."
+              : `Sorry — something went wrong (${err?.error ?? "unknown error"}).`,
+          error: true,
+        },
+      ]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      void send(input);
+    }
+  }
+
+  return (
+    <div className="thom">
+      <header className="thom-head">
+        <div className="thom-title">
+          <Bot size={20} /> <span>Thom</span>
+        </div>
+        <p className="muted">Your WAC Group lighting expert — products, specs, manuals, and recommendations.</p>
+      </header>
+
+      <div className="thom-scroll" ref={scrollRef}>
+        {turns.length === 0 ? (
+          <div className="thom-empty">
+            <Bot size={40} className="thom-empty-icon" />
+            <h2>Ask Thom anything about WAC Group products</h2>
+            <p className="muted">Specs, spec sheets, install manuals, lighting design, or a competitor match.</p>
+            <div className="thom-examples">
+              {EXAMPLES.map((ex) => (
+                <button key={ex} className="thom-example" onClick={() => void send(ex)}>
+                  {ex}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          turns.map((turn, i) => <TurnView key={i} turn={turn} />)
+        )}
+        {busy && (
+          <div className="thom-turn assistant">
+            <div className="thom-bubble thom-thinking">
+              <Loader2 size={16} className="spin" /> Thom is thinking…
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="thom-composer">
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Ask about a product, spec, or recommendation…  (Enter to send, Shift+Enter for a new line)"
+          rows={2}
+          disabled={busy}
+        />
+        <button className="primary thom-send" onClick={() => void send(input)} disabled={busy || !input.trim()}>
+          <Send size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TurnView({ turn }: { turn: Turn }) {
+  return (
+    <div className={`thom-turn ${turn.role}`}>
+      <div className={`thom-bubble${turn.error ? " thom-error" : ""}`}>
+        <div className="thom-text">{turn.text}</div>
+        {turn.cards?.map((c) => <CardView key={c.sku} card={c} />)}
+        {turn.citations && turn.citations.length > 0 && (
+          <div className="thom-citations">
+            {turn.citations.map((cite, i) => (
+              <a
+                key={`${cite.document_id}-${i}`}
+                className="thom-cite"
+                href={cite.url ?? undefined}
+                target="_blank"
+                rel="noreferrer"
+                title={cite.title ?? cite.doc_type}
+              >
+                <FileText size={12} />
+                {cite.title ?? cite.doc_type}
+                {cite.page != null ? ` p.${cite.page}` : ""}
+              </a>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CardView({ card }: { card: ProductCard }) {
+  return (
+    <div className="thom-card">
+      {card.image_url && <img className="thom-card-img" src={card.image_url} alt={card.name ?? card.sku} loading="lazy" />}
+      <div className="thom-card-body">
+        <div className="thom-card-head">
+          <strong>{card.name ?? card.sku}</strong>
+          <span className="muted">
+            {card.sku}
+            {card.brand ? ` · ${card.brand}` : ""}
+          </span>
+        </div>
+        {card.key_specs.length > 0 && (
+          <ul className="thom-specs">
+            {card.key_specs.map((s) => (
+              <li key={s.label}>
+                <span className="muted">{s.label}</span> {s.value}
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="thom-card-links">
+          {card.pdp_url && (
+            <a className="thom-chip" href={card.pdp_url} target="_blank" rel="noreferrer">
+              <ExternalLink size={12} /> View product
+            </a>
+          )}
+          {card.downloads.map((d) => (
+            <a key={d.url} className="thom-chip" href={d.url} target="_blank" rel="noreferrer">
+              <FileText size={12} /> {d.label}
+            </a>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
