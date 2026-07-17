@@ -1523,6 +1523,21 @@ button.slim {
   gap: 8px;
   color: var(--muted);
 }
+/* Blinking caret shown at the tail of the streaming answer. */
+.thom-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: thom-blink 1s steps(2, start) infinite;
+}
+@keyframes thom-blink {
+  to {
+    visibility: hidden;
+  }
+}
 .spin {
   animation: thom-spin 1s linear infinite;
 }

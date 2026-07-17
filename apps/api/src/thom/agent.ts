@@ -2,16 +2,20 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Env } from "../env.js";
 import {
   claudeMessages,
+  claudeMessagesStream,
   claudeModel,
   claudeRouterModel,
   type ClaudeContentBlock,
   type ClaudeMessage,
   type ClaudeResponse,
   type ClaudeServerTool,
+  type ClaudeServerToolUseBlock,
+  type ClaudeStreamEvent,
   type ClaudeTextBlock,
   type ClaudeTool,
   type ClaudeToolResultBlock,
   type ClaudeToolUseBlock,
+  type ClaudeUsage,
 } from "../anthropic.js";
 import { internalSystem } from "./prompts.js";
 import { dispatch, TOOLS } from "./tools.js";
@@ -315,4 +319,242 @@ export function dedupeCitations(cites: Citation[]): Citation[] {
     const k = `${c.document_id}|${c.page ?? ""}`;
     return !seen.has(k) && seen.add(k);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Streaming (SSE) — token-by-token final answer.
+// ---------------------------------------------------------------------------
+
+/** Events yielded by runThomStream to the route (which frames them as SSE).
+ *  `text` streams the final answer token-by-token; `cards`/`citations` land
+ *  right before `final`, which carries the whole answer + usage for logging. */
+export type ThomStreamEvent =
+  | { type: "text"; text: string }
+  | { type: "cards"; cards: Card[] }
+  | { type: "citations"; citations: Citation[] }
+  | { type: "final"; text: string; usage: ThomUsage };
+
+/**
+ * Rebuild one assistant turn from its streamed events. PURE and testable: the
+ * production loop forwards `text` events live for token streaming AND feeds the
+ * same events here to reconstruct the assistant `content` array — so history,
+ * pause resume, and subsequent turns match the non-streaming path exactly.
+ *
+ * Blocks arrive strictly in order (block N fully, then block N+1), so a running
+ * text buffer is flushed into a text block whenever a non-text block opens or a
+ * text block stops. tool_use / server_tool_use inputs are the accumulated
+ * input_json_delta parsed at block_stop (JSON.parse, default `{}`).
+ * web_search_tool_result blocks arrive whole and are pushed verbatim.
+ */
+export function reconstructTurn(events: ClaudeStreamEvent[]): {
+  content: ClaudeContentBlock[];
+  text: string;
+  stopReason: string;
+  usage: ClaudeUsage | null;
+} {
+  const content: ClaudeContentBlock[] = [];
+  // Partially-built tool blocks, keyed by their stream index.
+  const tools = new Map<
+    number,
+    { kind: "tool_use" | "server_tool_use"; id: string; name: string; json: string }
+  >();
+  let pendingText = "";
+  let text = "";
+  let stopReason = "end_turn";
+  let usage: ClaudeUsage | null = null;
+
+  const flushText = () => {
+    if (pendingText) {
+      content.push({ type: "text", text: pendingText });
+      pendingText = "";
+    }
+  };
+
+  for (const ev of events) {
+    switch (ev.type) {
+      case "text":
+        pendingText += ev.text;
+        text += ev.text;
+        break;
+      case "tool_use_start":
+        flushText();
+        tools.set(ev.index, { kind: "tool_use", id: ev.id, name: ev.name, json: "" });
+        break;
+      case "server_tool_use_start":
+        flushText();
+        tools.set(ev.index, { kind: "server_tool_use", id: ev.id, name: ev.name, json: "" });
+        break;
+      case "tool_input_delta": {
+        const t = tools.get(ev.index);
+        if (t) t.json += ev.partial_json;
+        break;
+      }
+      case "web_search_result":
+        flushText();
+        content.push(ev.content);
+        break;
+      case "block_stop": {
+        const t = tools.get(ev.index);
+        if (t) {
+          content.push(
+            t.kind === "server_tool_use"
+              ? ({ type: "server_tool_use", id: t.id, name: t.name, input: safeJson(t.json) } as ClaudeServerToolUseBlock)
+              : ({ type: "tool_use", id: t.id, name: t.name, input: safeJson(t.json) } as ClaudeToolUseBlock),
+          );
+          tools.delete(ev.index);
+        } else {
+          flushText(); // a text block ended
+        }
+        break;
+      }
+      case "done":
+        stopReason = ev.stopReason;
+        usage = ev.usage;
+        break;
+    }
+  }
+  flushText(); // any trailing text with no explicit block_stop before "done"
+  return { content, text, stopReason, usage };
+}
+
+/** Parse accumulated input_json_delta; default to `{}` on empty/malformed. */
+function safeJson(json: string): Record<string, unknown> {
+  try {
+    return json ? (JSON.parse(json) as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Streaming twin of runThom: same bounded tool-use loop, same per-turn model
+ * tiering, same serverTools, same MAX_STEPS / MAX_PAUSE_CONTINUATIONS, same
+ * client-tool dispatch, same web-citation collection — but streams the final
+ * answer token-by-token. Forwards `text` events live AND reconstructs each
+ * assistant turn so history matches the non-streaming path exactly.
+ */
+export async function* runThomStream(
+  env: Env,
+  sb: SupabaseClient,
+  opts: { history: ClaudeMessage[]; userMessage: string },
+): AsyncGenerator<ThomStreamEvent> {
+  const system = internalSystem();
+  const tools = withTailCache(crmEnabled(env) ? [...TOOLS, ...HUBSPOT_TOOLS] : TOOLS);
+  const serverTools = buildWebSearchTools(env);
+  const messages: ClaudeMessage[] = [
+    ...opts.history,
+    { role: "user", content: opts.userMessage },
+  ];
+  const cards: Card[] = [];
+  const citations: Citation[] = [];
+  let toolCallCount = 0;
+  const usage: ThomUsage = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    model: claudeRouterModel(env),
+    escalated: false,
+  };
+
+  let step = 0;
+  let pauseCount = 0;
+  while (step < MAX_STEPS) {
+    const escalate =
+      tieringEnabled(env) &&
+      shouldEscalate({
+        toolCallCount,
+        docPassageCount: citations.length,
+        productCount: cards.length,
+        userMessage: opts.userMessage,
+      });
+    const model = escalate ? claudeModel(env) : claudeRouterModel(env);
+    usage.model = model; // last write wins → reflects the answering turn
+    if (escalate) usage.escalated = true;
+
+    // Stream this turn: forward text live for token streaming, and collect the
+    // raw events so reconstructTurn can rebuild the assistant content array.
+    const events: ClaudeStreamEvent[] = [];
+    for await (const ev of claudeMessagesStream(env, {
+      system,
+      messages,
+      tools,
+      serverTools,
+      model,
+      maxTokens: MAX_TOKENS,
+    })) {
+      events.push(ev);
+      if (ev.type === "text") yield { type: "text", text: ev.text };
+    }
+
+    const turn = reconstructTurn(events);
+    if (turn.usage) {
+      usage.input_tokens += turn.usage.input_tokens;
+      usage.output_tokens += turn.usage.output_tokens;
+      usage.cache_read_input_tokens += turn.usage.cache_read_input_tokens;
+    }
+
+    // Echo the assistant turn back so history + pause resume + subsequent turns
+    // match the non-streaming path.
+    messages.push({ role: "assistant", content: turn.content });
+    citations.push(...collectWebCitations(turn.content));
+
+    const action = loopAction({ stop_reason: turn.stopReason, content: turn.content });
+
+    if (action === "pause") {
+      if (++pauseCount > MAX_PAUSE_CONTINUATIONS) break;
+      continue;
+    }
+
+    if (action === "final") {
+      console.log(
+        `[thom] streamed model=${usage.model} escalated=${usage.escalated} ` +
+          `toolCalls=${toolCallCount} docPassages=${citations.length} products=${cards.length}`,
+      );
+      const deduped = dedupeCards(cards);
+      const dedupedCites = dedupeCitations(citations);
+      if (deduped.length) yield { type: "cards", cards: deduped };
+      if (dedupedCites.length) yield { type: "citations", citations: dedupedCites };
+      yield { type: "final", text: finalText(turn.content), usage };
+      return;
+    }
+
+    // action === "dispatch": client tools only (server web_search never reaches
+    // dispatch — it has no client tool_use block).
+    const toolUses = turn.content.filter(
+      (b): b is ClaudeToolUseBlock => b.type === "tool_use",
+    );
+    toolCallCount += toolUses.length;
+    const results: ClaudeToolResultBlock[] = [];
+    for (const tu of toolUses) {
+      try {
+        const out = await dispatch({ env, sb }, tu.name, tu.input);
+        cards.push(...out.cards);
+        citations.push(...out.citations);
+        results.push({ type: "tool_result", tool_use_id: tu.id, content: out.content });
+      } catch (e) {
+        results.push({
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content: `Tool error: ${e instanceof Error ? e.message : String(e)}`,
+          is_error: true,
+        });
+      }
+    }
+    messages.push({ role: "user", content: results });
+    step++;
+  }
+
+  console.log(
+    `[thom] streamed model=${usage.model} escalated=${usage.escalated} ` +
+      `toolCalls=${toolCallCount} docPassages=${citations.length} products=${cards.length} (max-steps)`,
+  );
+  const deduped = dedupeCards(cards);
+  const dedupedCites = dedupeCitations(citations);
+  if (deduped.length) yield { type: "cards", cards: deduped };
+  if (dedupedCites.length) yield { type: "citations", citations: dedupedCites };
+  yield {
+    type: "final",
+    text: "I couldn't finish that in a reasonable number of steps — try narrowing the question.",
+    usage,
+  };
 }
