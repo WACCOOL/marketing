@@ -237,24 +237,18 @@ export function oaDestination(fields: {
   const location = String(fields.location ?? "").trim();
   const all = [country, location].filter(Boolean);
   const isChina = (s: string) => CHINA_WORDS.test(s) || CHINA_PLACES.test(s);
+  if (all.length === 0) return "unknown"; // no destination data at all — fail closed
   // Non-mainland markers win over China matches ACROSS fields, not just within
   // one: OA records Hong Kong projects as country "China" + location "HK"
   // (seen live 2026-07-17), and per the business rule HK/Macau/Taiwan ship
   // international.
   if (all.some((s) => NON_MAINLAND.test(s))) return "international";
-  if (all.some(isChina)) {
-    // Conflicting fields (seen live: country "China" + location "Pakistan"/
-    // "Korea") mean OA's country field can't be trusted for this record —
-    // plausibly a real international shipment. Fail closed as UNKNOWN (still
-    // skipped, but surfaced for review) rather than mislabeling it domestic.
-    if (all.some((s) => !isChina(s))) return "unknown";
-    return "china";
-  }
-  // An explicit non-China country is decisive even if we can't recognize the
-  // free-text location; a bare unrecognized location is NOT (could be a
-  // Chinese city we don't list).
-  if (country) return "international";
-  return "unknown";
+  // Davis's rule (2026-07-17): exclude ONLY when every destination field we
+  // have says China. OA's country field is unreliable (country "China" +
+  // location "Pakistan" is a real international shipment), so any non-China
+  // field wins.
+  if (all.every(isChina)) return "china";
+  return "international";
 }
 
 /**

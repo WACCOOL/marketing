@@ -139,22 +139,22 @@ describe("oaDestination", () => {
     expect(oaDestination({ country: "TW, China" })).toBe("international");
   });
 
-  it("flags China-vs-other field conflicts as unknown for review, not domestic", () => {
-    expect(oaDestination({ country: "China", location: "Pakistan" })).toBe("unknown");
-    expect(oaDestination({ country: "China", location: "Korea" })).toBe("unknown");
-    expect(oaDestination({ country: "Korea", location: "Shanghai" })).toBe("unknown");
+  it("excludes only when EVERY available field says China (Davis 2026-07-17)", () => {
+    expect(oaDestination({ country: "China", location: "Pakistan" })).toBe("international");
+    expect(oaDestination({ country: "China", location: "Korea" })).toBe("international");
     expect(oaDestination({ country: "China", location: "China" })).toBe("china");
-    expect(oaDestination({ country: "CHINA" })).toBe("china");
+    expect(oaDestination({ country: "CHINA" })).toBe("china"); // only field we have says China
+    expect(oaDestination({ location: "Shanghai" })).toBe("china");
   });
 
-  it("fails closed: blank or unrecognized bare locations are unknown", () => {
+  it("fails closed only when there is no destination data at all", () => {
     expect(oaDestination({})).toBe("unknown");
     expect(oaDestination({ location: "" })).toBe("unknown");
-    expect(oaDestination({ location: "seoul" })).toBe("unknown"); // no country given
+    expect(oaDestination({ location: "seoul" })).toBe("international");
   });
 
   it("reads project fields from a quotation", () => {
-    expect(oaDestinationOf(DETAIL.quotation as OaQuotation)).toBe("unknown"); // "korea" is a bare location
+    expect(oaDestinationOf(DETAIL.quotation as OaQuotation)).toBe("international"); // location "korea"
     expect(
       oaDestinationOf({ project: { country: "korea", location: "seoul" } } as OaQuotation),
     ).toBe("international");
