@@ -6,15 +6,35 @@ import {
   type ClaudeContentBlock,
   type ClaudeMessage,
   type ClaudeTextBlock,
+  type ClaudeTool,
   type ClaudeToolResultBlock,
   type ClaudeToolUseBlock,
 } from "../anthropic.js";
 import { internalSystem } from "./prompts.js";
 import { dispatch, TOOLS } from "./tools.js";
+import { HUBSPOT_TOOLS } from "./hubspotTools.js";
 import type { Citation, ProductCard, ThomUsage } from "./types.js";
 
 const MAX_STEPS = 5;
 const MAX_TOKENS = 2048;
+
+/** The internal CRM tools are only offered when a read token is configured. */
+function crmEnabled(env: Env): boolean {
+  return !!env.HUBSPOT_READ_TOKEN;
+}
+
+/**
+ * Put a single cache breakpoint on the LAST tool of the composed array without
+ * mutating the shared TOOLS/HUBSPOT_TOOLS constants: strip cache_control from
+ * every tool (a stray mid-array breakpoint stops the prefix from caching), then
+ * clone the tail and mark it. Pure — returns a fresh array of fresh objects.
+ */
+export function withTailCache(tools: ClaudeTool[]): ClaudeTool[] {
+  const out = tools.map(({ cache_control: _drop, ...t }) => ({ ...t }) as ClaudeTool);
+  const last = out[out.length - 1];
+  if (last) last.cache_control = { type: "ephemeral" };
+  return out;
+}
 
 export interface ThomResult {
   text: string;
@@ -36,6 +56,9 @@ export async function runThom(
 ): Promise<ThomResult> {
   const model = claudeRouterModel(env);
   const system = internalSystem();
+  // internal surface only — CRM tools ride the internal agent, gated on the
+  // read token, with the cache breakpoint re-homed to the composed tail.
+  const tools = withTailCache(crmEnabled(env) ? [...TOOLS, ...HUBSPOT_TOOLS] : TOOLS);
   const messages: ClaudeMessage[] = [
     ...opts.history,
     { role: "user", content: opts.userMessage },
@@ -48,7 +71,7 @@ export async function runThom(
     const res = await claudeMessages(env, {
       system,
       messages,
-      tools: TOOLS,
+      tools,
       model,
       maxTokens: MAX_TOKENS,
     });

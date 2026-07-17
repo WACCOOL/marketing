@@ -1,5 +1,23 @@
 /** Structured, UI-renderable pieces the agent emits alongside its prose. */
 
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { Env } from "../env.js";
+
+/** Shared tool-execution context. Lives here (not tools.ts) so both tools.ts
+ *  and hubspotTools.ts can import it without a circular dependency. */
+export interface ToolContext {
+  env: Env;
+  sb: SupabaseClient;
+}
+
+/** A tool's result: text fed back to Claude, plus any UI cards/citations. */
+export interface ToolOutput {
+  /** Text fed back to Claude as the tool_result. */
+  content: string;
+  cards: ProductCard[];
+  citations: Citation[];
+}
+
 export interface KeySpec {
   label: string;
   value: string;
