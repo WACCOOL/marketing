@@ -13,6 +13,21 @@ SALES_LAYER_SECRET_KEY=
 # Pin the exact product field that holds the brand if auto-discovery picks wrong
 # (the sync logs which field it used and how many products got a brand).
 # SALES_LAYER_BRAND_FIELD=
+# Thom Bot — pin the Sales Layer file fields holding spec-sheet/manual PDFs
+# (comma-separated) if auto-discovery picks wrong. Confirm real names via
+# GET /api/products/_schema as an admin.
+# SALES_LAYER_DOC_FIELDS=
+# Thom Bot — Anthropic API key (Claude chat brain). Leave blank to keep chat
+# routes closed ("not configured"). Prod: `wrangler secret put ANTHROPIC_API_KEY`.
+ANTHROPIC_API_KEY=
+# Optional model overrides (defaults in src/anthropic.ts: Haiku router,
+# Sonnet escalation).
+# ANTHROPIC_ROUTER_MODEL=
+# ANTHROPIC_MODEL=
+# Thom Bot — READ-ONLY HubSpot private-app token for the internal bot's CRM
+# tools. A SEPARATE app from HUBSPOT_TOKEN with read-only scopes — the bot must
+# be incapable of CRM writes. Prod: `wrangler secret put HUBSPOT_READ_TOKEN`.
+HUBSPOT_READ_TOKEN=
 # Phase 2b — R2 S3-API creds forwarded into the generation Container so it can
 # write generated assets. Create an R2 API token (Object Read & Write) in the
 # Cloudflare dashboard. Endpoint is https://<account_id>.r2.cloudflarestorage.com

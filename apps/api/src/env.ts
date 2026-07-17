@@ -3,6 +3,7 @@ import type { GenerationContainer } from "./container.js";
 import type { IngestMessage } from "./ingest.js";
 import type { EventLeadBody } from "./eventLead.js";
 import type { ZendeskSyncMessage } from "./zendeskSyncQueue.js";
+import type { ThomIngestMessage } from "./thomIngest.js";
 
 export interface Env {
   SUPABASE_URL: string;
@@ -59,6 +60,13 @@ export interface Env {
   // Optional override pinning the exact Sales Layer product field that holds the
   // brand. When unset, the adapter auto-discovers it from common field names.
   SALES_LAYER_BRAND_FIELD?: string;
+  // Thom Bot — comma-separated override pinning the Sales Layer file fields
+  // that hold spec-sheet / manual PDFs (e.g. "spec_sheet,installation_manual").
+  // When unset, the sync auto-discovers from common field names; this is the
+  // safety valve if discovery picks wrong (the sync logs which fields it used
+  // and how many products got documents). Field names are confirmed against
+  // GET /api/products/_schema before launch.
+  SALES_LAYER_DOC_FIELDS?: string;
   // Phase 2 (Product Information) — optional overrides pinning the exact
   // raw_json field that holds existing romance copy / the raw CCT value. When
   // unset, both are auto-discovered from common field names.
@@ -250,6 +258,30 @@ export interface Env {
   // the wac-zendesk-sync consumer (max_concurrency 1 -> serial, rate-limit
   // friendly on both APIs) processes them via zendeskSyncQueue.ts.
   ZENDESK_SYNC_QUEUE: Queue<ZendeskSyncMessage>;
+
+  // --- Thom Bot (chat assistant) ---
+  // Anthropic API key for the Thom chat brain (Claude). Optional so the Worker
+  // boots without it — chat routes return a clear "not configured" error, the
+  // same posture as GEMINI_API_KEY. Set via `wrangler secret put ANTHROPIC_API_KEY`.
+  ANTHROPIC_API_KEY?: string;
+  // Model overrides. Router/default model handles routing + simple lookups
+  // (a Haiku-class id); the escalation model handles multi-doc synthesis
+  // (a Sonnet-class id). Defaults live in anthropic.ts.
+  ANTHROPIC_ROUTER_MODEL?: string;
+  ANTHROPIC_MODEL?: string;
+  // READ-ONLY HubSpot private-app token for Thom's internal CRM tools (deals /
+  // companies / orders / rep codes). DELIBERATELY a separate app from
+  // HUBSPOT_TOKEN: Thom ingests untrusted text (tickets, web results), so the
+  // bot's credential must be INCAPABLE of writes no matter what a bug or an
+  // injected instruction asks for. Never hand HUBSPOT_TOKEN to the bot.
+  HUBSPOT_READ_TOKEN?: string;
+  // Workers AI — bge-m3 embeddings (1024-dim) for KB + product hybrid search.
+  // Used at query time (embed the question) and by the ingest pipeline.
+  AI: Ai;
+  // Thom knowledge-ingestion queue (Tier A). Syncs enqueue discovered docs;
+  // the wac-thom-ingest consumer (thomIngest.ts) fetches/hashes/stores them
+  // as kb_documents pending_extract. Heavy parsing lives in apps/docs-ingest.
+  THOM_INGEST_QUEUE: Queue<ThomIngestMessage>;
 
   // Outermost ceiling (ms) the queue consumer waits on a shot3d (3D app-shot /
   // cam-solve) render before aborting. A Max-tier render can take well over an
