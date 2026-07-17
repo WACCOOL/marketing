@@ -7,6 +7,7 @@ import {
   UNIVERSAL_PIPELINE_ID,
   oaCompanyProps,
   oaDateTimeToMs,
+  oaDateToHubspotDate,
   oaDateToHubspotDateTime,
   oaDealProps,
   oaDestination,
@@ -559,6 +560,7 @@ interface QuoteUnit {
   salesStaff: string | null;
   techSupport: string | null;
   merchandiser: string | null;
+  projectFinishedDate: string | null;
   orderDetails: OaOrderDetail[];
   changed: boolean;
 }
@@ -643,6 +645,8 @@ export function buildQuoteUnits(rows: OaStagedRow[], opts: { force?: boolean } =
       salesStaff: staffName("salesStaff"),
       techSupport: staffName("techSupport"),
       merchandiser: staffName("merchandiser"),
+      projectFinishedDate:
+        asId(quotation.project?.finishedDate ?? (project as { finishedDate?: unknown } | undefined)?.finishedDate) || null,
       orderDetails: a.orderRows.map((r) => r.raw_json as OaOrderDetail),
       changed: (a.quoteRow ? changed(a.quoteRow) : false) || a.orderRows.some(changed),
     });
@@ -806,6 +810,14 @@ export async function pushOaToHubspot(sb: SupabaseClient, token: string, scope: 
     if (u.salesStaff) props.oa_sales_staff = u.salesStaff;
     if (u.techSupport) props.oa_tech_support = u.techSupport;
     if (u.merchandiser) props.oa_merchandiser = u.merchandiser;
+    // Standalone quote payloads carry no project object — enrich from the
+    // title-joined project so quote-only deals still get project fields.
+    if (u.resolvedCountry && !props.project_country) props.project_country = u.resolvedCountry;
+    if (u.resolvedLocation && !props.project_location) props.project_location = u.resolvedLocation;
+    if (!props.oa_project_finished_date) {
+      const fin = oaDateToHubspotDate(u.projectFinishedDate);
+      if (fin !== null) props.oa_project_finished_date = fin;
+    }
     const existing = existingDeals.get(u.quoteId);
     if (existing) {
       // Owner fill-if-empty: never overwrite a human assignment (cross-border
