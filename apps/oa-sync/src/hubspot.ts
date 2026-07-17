@@ -663,8 +663,8 @@ export async function pushOaToHubspot(sb: SupabaseClient, token: string, scope: 
       continue;
     }
     const ordered = u.orderDetails.length > 0;
-    const stageLabel = ordered ? OA_STAGE_LABELS.closedWon : (oaStageForStatus(u.status) ?? OA_STAGE_LABELS.bidding);
-    const stageId = stageIdFor(stageLabel) ?? stageIdFor(OA_STAGE_LABELS.bidding);
+    const stageLabel = ordered ? OA_STAGE_LABELS.buy : (oaStageForStatus(u.status) ?? OA_STAGE_LABELS.bid);
+    const stageId = stageIdFor(stageLabel) ?? stageIdFor(OA_STAGE_LABELS.bid);
     const createProps: Props = {
       ...props,
       pipeline: pipelines.dealPipelineId,

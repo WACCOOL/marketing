@@ -144,12 +144,12 @@ describe("oaDestination", () => {
 describe("oaStageForStatus", () => {
   it("maps the draft status vocabulary onto mirrored stage labels", () => {
     expect(oaStageForStatus("New Lead")).toBe(OA_STAGE_LABELS.prequal);
-    expect(oaStageForStatus("Re-design")).toBe(OA_STAGE_LABELS.db);
-    expect(oaStageForStatus("Price negotiation")).toBe(OA_STAGE_LABELS.bidding);
-    expect(oaStageForStatus("  ON  HOLD ")).toBe(OA_STAGE_LABELS.bidding);
-    expect(oaStageForStatus("Construction")).toBe(OA_STAGE_LABELS.awarded);
-    expect(oaStageForStatus("Complete")).toBe(OA_STAGE_LABELS.closedWon);
-    expect(oaStageForStatus("Cancellation")).toBe(OA_STAGE_LABELS.closedLost);
+    expect(oaStageForStatus("Re-design")).toBe(OA_STAGE_LABELS.spec);
+    expect(oaStageForStatus("Price negotiation")).toBe(OA_STAGE_LABELS.bid);
+    expect(oaStageForStatus("  ON  HOLD ")).toBe(OA_STAGE_LABELS.bid);
+    expect(oaStageForStatus("Construction")).toBe(OA_STAGE_LABELS.commit);
+    expect(oaStageForStatus("Complete")).toBe(OA_STAGE_LABELS.buy);
+    expect(oaStageForStatus("Cancellation")).toBe(OA_STAGE_LABELS.lost);
   });
 
   it("returns null for unknown statuses", () => {

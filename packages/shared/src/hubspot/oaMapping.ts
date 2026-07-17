@@ -115,19 +115,22 @@ export const OA_DEAL_PIPELINE_LABEL = "International";
 export const OA_ORDERS_PIPELINE_LABEL = "International Orders";
 
 /**
- * Mirrored stage labels — MUST match the domestic Universal pipeline labels
- * (packages/shared/src/hubspot/dealStage.ts) so shared projects can move
+ * Mirrored stage labels — MUST match the domestic Universal pipeline's CURRENT
+ * labels (verified against the live portal 2026-07-17: Pre-Qualified /
+ * Planning / Spec / Bid / Commit / Buy / Lost) so shared projects can move
  * between pipelines without stage-vocabulary drift. The International pipeline
- * is created by cloning these labels (+ probabilities) from Universal.
+ * is created by cloning Universal's stages (+ probabilities) at runtime, so
+ * creation self-updates on renames — but the LOOKUPS below go by these labels,
+ * so a future Universal rename must be mirrored here.
  */
 export const OA_STAGE_LABELS = {
   prequal: "Pre-Qualified",
   planning: "Planning",
-  db: "Design & Budgeting",
-  bidding: "Bidding & Negotiating",
-  awarded: "Awarded",
-  closedWon: "Closed Won",
-  closedLost: "Closed Lost",
+  spec: "Spec",
+  bid: "Bid",
+  commit: "Commit",
+  buy: "Buy",
+  lost: "Lost",
 } as const;
 
 export type OaStageLabel = (typeof OA_STAGE_LABELS)[keyof typeof OA_STAGE_LABELS];
@@ -261,38 +264,38 @@ const STATUS_TO_STAGE: Record<string, OaStageLabel> = {
   "new lead": OA_STAGE_LABELS.prequal,
   tba: OA_STAGE_LABELS.prequal,
 
-  design: OA_STAGE_LABELS.db,
-  "re-design": OA_STAGE_LABELS.db,
-  redesign: OA_STAGE_LABELS.db,
-  "submit specification": OA_STAGE_LABELS.db,
-  "submit lighting calculation": OA_STAGE_LABELS.db,
+  design: OA_STAGE_LABELS.spec,
+  "re-design": OA_STAGE_LABELS.spec,
+  redesign: OA_STAGE_LABELS.spec,
+  "submit specification": OA_STAGE_LABELS.spec,
+  "submit lighting calculation": OA_STAGE_LABELS.spec,
 
-  "waiting tender": OA_STAGE_LABELS.bidding,
-  tender: OA_STAGE_LABELS.bidding,
-  "re-tender": OA_STAGE_LABELS.bidding,
-  retender: OA_STAGE_LABELS.bidding,
-  offer: OA_STAGE_LABELS.bidding,
-  "price negotiation": OA_STAGE_LABELS.bidding,
-  "post tender-negotiation": OA_STAGE_LABELS.bidding,
-  "post tender-review sample": OA_STAGE_LABELS.bidding,
-  "follow up": OA_STAGE_LABELS.bidding,
-  pending: OA_STAGE_LABELS.bidding,
-  "on hold": OA_STAGE_LABELS.bidding,
-  delay: OA_STAGE_LABELS.bidding,
+  "waiting tender": OA_STAGE_LABELS.bid,
+  tender: OA_STAGE_LABELS.bid,
+  "re-tender": OA_STAGE_LABELS.bid,
+  retender: OA_STAGE_LABELS.bid,
+  offer: OA_STAGE_LABELS.bid,
+  "price negotiation": OA_STAGE_LABELS.bid,
+  "post tender-negotiation": OA_STAGE_LABELS.bid,
+  "post tender-review sample": OA_STAGE_LABELS.bid,
+  "follow up": OA_STAGE_LABELS.bid,
+  pending: OA_STAGE_LABELS.bid,
+  "on hold": OA_STAGE_LABELS.bid,
+  delay: OA_STAGE_LABELS.bid,
 
-  construction: OA_STAGE_LABELS.awarded,
+  construction: OA_STAGE_LABELS.commit,
 
-  complete: OA_STAGE_LABELS.closedWon,
+  complete: OA_STAGE_LABELS.buy,
 
-  cancellation: OA_STAGE_LABELS.closedLost,
-  cancelled: OA_STAGE_LABELS.closedLost,
-  canceled: OA_STAGE_LABELS.closedLost,
+  cancellation: OA_STAGE_LABELS.lost,
+  cancelled: OA_STAGE_LABELS.lost,
+  canceled: OA_STAGE_LABELS.lost,
 };
 
 /**
  * Map an OA project status to the mirrored stage label for a NEW deal, or
- * null when unknown (caller falls back to Bidding & Negotiating for open
- * quotes). Order existence overrides this entirely (=> Closed Won).
+ * null when unknown (caller falls back to Bid for open quotes). Order
+ * existence overrides this entirely (=> Buy, the closed-won stage).
  */
 export function oaStageForStatus(status: unknown): OaStageLabel | null {
   if (status === null || status === undefined) return null;
