@@ -39,6 +39,7 @@ import { updateJobStatus, type GenerationMessage } from "./generation.js";
 import { handleIngestBatch } from "./ingestQueue.js";
 import { handleEventLeadBatch } from "./eventLeadQueue.js";
 import { handleZendeskSyncBatch, type ZendeskSyncMessage } from "./zendeskSyncQueue.js";
+import { handleThomIngestBatch, type ThomIngestMessage } from "./thomIngest.js";
 import { runZendeskReconcile } from "./zendeskReconcile.js";
 import type { IngestMessage } from "./ingest.js";
 import type { EventLeadBody } from "./eventLead.js";
@@ -218,7 +219,9 @@ const CONTAINER_TIMEOUT_MS = 150_000;
 const SHOT3D_CONTAINER_TIMEOUT_MS_DEFAULT = 4_200_000;
 
 async function queue(
-  batch: MessageBatch<GenerationMessage | IngestMessage | EventLeadBody | ZendeskSyncMessage>,
+  batch: MessageBatch<
+    GenerationMessage | IngestMessage | EventLeadBody | ZendeskSyncMessage | ThomIngestMessage
+  >,
   env: Env,
 ): Promise<void> {
   // Marketing data ingestion runs on its own queue with independent retry/DLQ
@@ -233,6 +236,10 @@ async function queue(
   }
   if (batch.queue === "wac-zendesk-sync") {
     await handleZendeskSyncBatch(batch as MessageBatch<ZendeskSyncMessage>, env);
+    return;
+  }
+  if (batch.queue === "wac-thom-ingest") {
+    await handleThomIngestBatch(batch as MessageBatch<ThomIngestMessage>, env);
     return;
   }
 

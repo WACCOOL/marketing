@@ -36,6 +36,13 @@
     }
   ],
 
+  // Workers AI — Thom Bot embeddings (@cf/baai/bge-m3, 1024-dim) for the
+  // kb_chunks / products hybrid search. Near-free and edge-local; no API key.
+  // In `wrangler dev` this runs against the real Workers AI service.
+  "ai": {
+    "binding": "AI"
+  },
+
   "r2_buckets": [
     {
       // Created with: npx wrangler r2 bucket create wac-marketing-assets
@@ -101,7 +108,8 @@
       { "binding": "GENERATION_QUEUE", "queue": "wac-generation" },
       { "binding": "INGEST_QUEUE", "queue": "wac-ingest" },
       { "binding": "EVENT_LEAD_QUEUE", "queue": "wac-event-leads" },
-      { "binding": "ZENDESK_SYNC_QUEUE", "queue": "wac-zendesk-sync" }
+      { "binding": "ZENDESK_SYNC_QUEUE", "queue": "wac-zendesk-sync" },
+      { "binding": "THOM_INGEST_QUEUE", "queue": "wac-thom-ingest" }
     ],
     "consumers": [
       {
@@ -144,6 +152,20 @@
         "max_retries": 3,
         "max_concurrency": 1,
         "dead_letter_queue": "wac-zendesk-sync-dlq"
+      },
+      // Thom Bot knowledge ingestion (Tier A: fetch + hash + R2 store only —
+      // heavy PDF parsing lives in the apps/docs-ingest CLI). Low concurrency:
+      // the first Sales Layer doc sweep enqueues thousands of PDFs in a burst
+      // and the Sales Layer CDN shouldn't be hammered.
+      // Create with: npx wrangler queues create wac-thom-ingest
+      //         and: npx wrangler queues create wac-thom-ingest-dlq
+      {
+        "queue": "wac-thom-ingest",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "max_concurrency": 2,
+        "dead_letter_queue": "wac-thom-ingest-dlq"
       }
     ]
   },

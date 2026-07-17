@@ -58,7 +58,7 @@ export const DEAL_STAGE_IDS = {
   closedLost: "1054295855",
 } as const;
 
-const STAGE_LABELS: Record<string, string> = {
+export const STAGE_LABELS: Record<string, string> = {
   [DEAL_STAGE_IDS.prequal]: "Pre-Qualified",
   [DEAL_STAGE_IDS.planning]: "Planning",
   [DEAL_STAGE_IDS.db]: "Design & Budgeting",

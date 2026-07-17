@@ -28,6 +28,7 @@ export const FEATURES = [
   { key: "image", label: "Image Generation" },
   { key: "ppt", label: "PPT Generator" },
   { key: "product", label: "Product Info" },
+  { key: "thom", label: "Thom Bot" },
   { key: "data", label: "Data" },
   { key: "utm-vocab", label: "Sources & Mediums" },
   { key: "ppt-templates", label: "PPT Templates" },
@@ -53,7 +54,10 @@ export function isFeatureKey(value: string): value is FeatureKey {
  */
 export const DEFAULT_FEATURES: Record<"rep" | "internal", FeatureKey[]> = {
   rep: ["image", "ppt"],
-  internal: ["utm", "image", "ppt", "product"],
+  // Thom is internal+admin only by decision: its CRM tools read HubSpot deals/
+  // companies/orders, data reps are deliberately walled off from (no territory
+  // scoping exists). Rep access is a future schema+RLS project, not a toggle.
+  internal: ["utm", "image", "ppt", "product", "thom"],
 };
 
 /** One per-user override row (presence overrides the role default). */
@@ -110,6 +114,7 @@ export const ROUTE_FEATURE: Record<string, FeatureKey> = {
   "/ppt/images": "ppt",
   "/ppt/templates": "ppt-templates",
   "/products": "product",
+  "/thom": "thom",
   "/product-info/romance": "product",
   "/product-info/seo": "product",
   "/product-info/normalization": "product",
@@ -130,6 +135,7 @@ export const FEATURE_LANDING: Record<FeatureKey, string> = {
   image: "/app-image",
   ppt: "/ppt/builder",
   product: "/products",
+  thom: "/thom",
   data: "/data/ingestions",
   "utm-vocab": "/utm-vocab",
   "ppt-templates": "/ppt/templates",
@@ -143,6 +149,7 @@ const LANDING_ORDER: FeatureKey[] = [
   "image",
   "ppt",
   "product",
+  "thom",
   "data",
   "library",
   "utm-vocab",

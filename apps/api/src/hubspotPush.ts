@@ -35,8 +35,12 @@ import {
   toHubspotDate,
   toNumber,
   weightedAverageProbability,
+  ASSOC,
+  PATHS,
+  hs,
   type ExistingDealState,
   type FixAction,
+  type HsResponse,
   type InsideSalesResolvers,
   type RepCodeSchema,
   type StageOpenCounts,
@@ -64,8 +68,6 @@ import {
  * (Separate from hubspot.ts, which is the read-only campaign adapter.)
  */
 
-const HS_BASE = "https://api.hubapi.com";
-
 /**
  * Universal Pipeline (deals) + its stages — canonical ids live in
  * @wac/shared/hubspot/dealStage.ts (shared with the territory-sync close-date
@@ -75,44 +77,14 @@ const HS_BASE = "https://api.hubapi.com";
 export { UNIVERSAL_PIPELINE_ID } from "@wac/shared";
 export const DEAL_STAGES = DEAL_STAGE_IDS;
 
-export const PATHS = {
-  dealSearch: "/crm/v3/objects/0-3/search",
-  dealUpsert: "/crm/v3/objects/0-3/batch/upsert",
-  dealUpdate: "/crm/v3/objects/0-3/batch/update",
-  lineItemUpsert: "/crm/v3/objects/line_items/batch/upsert",
-  lineItemToDeal: "/crm/v4/associations/line_items/0-3/batch/create",
-  companyToDeal: "/crm/v4/associations/companies/0-3/batch/create",
-  contactToDeal: "/crm/v4/associations/contacts/0-3/batch/create",
-  companyUpsert: "/crm/v3/objects/companies/batch/upsert",
-  companyLookup: "/crm/v3/objects/companies/",
-  companySearch: "/crm/v3/objects/companies/search",
-  contactLookup: "/crm/v3/objects/contacts/",
-  contactSearch: "/crm/v3/objects/contacts/search",
-  owners: "/crm/v3/owners",
-  dealPipeline: `/crm/v3/pipelines/deals/${UNIVERSAL_PIPELINE_ID}`,
-  dealPipelineStage: `/crm/v3/pipelines/deals/${UNIVERSAL_PIPELINE_ID}/stages`,
-  leadCreate: "/crm/v3/objects/leads",
-  // Zendesk ticket mirror (zendeskSync.ts / quoteDesk.ts).
-  ticketCreate: "/crm/v3/objects/tickets",
-  noteCreate: "/crm/v3/objects/notes",
-  contactCreate: "/crm/v3/objects/contacts",
-};
-
-export const ASSOC = {
-  category: "HUBSPOT_DEFINED",
-  lineItemToDeal: 20,
-  companyToDeal: 6,
-  contactToDeal: 4,
-  // HubSpot-defined defaults used by the Zendesk ticket mirror.
-  ticketToDeal: 28,
-  ticketToContact: 16,
-  noteToTicket: 228,
-  noteToDeal: 214,
-};
+// The HTTP core (hs), path map, and association ids moved to
+// @wac/shared/hubspot/client.ts so every app shares one HubSpot client.
+// Re-exported here so this module's 11 in-worker importers are unchanged.
+export { ASSOC, PATHS, hs } from "@wac/shared";
+export type { HsResponse } from "@wac/shared";
 
 const BATCH_SIZE = 100;
 const INTER_BATCH_MS = 250;
-const MAX_RATE_LIMIT_RETRIES = 6;
 const MAX_FIX_RETRIES = 3;
 
 export interface AssocSkip {
@@ -129,52 +101,8 @@ export interface PushOutcome {
   assocSkips: AssocSkip[];
 }
 
-interface HsResponse {
-  ok: boolean;
-  status: number;
-  data: any;
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-/** One HubSpot call with 429 backoff. Returns parsed body + status (never throws on non-2xx). */
-export async function hs(
-  token: string,
-  method: string,
-  path: string,
-  body: unknown | undefined,
-  signal: AbortSignal,
-): Promise<HsResponse> {
-  let attempt = 0;
-  for (;;) {
-    const res = await fetch(`${HS_BASE}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/json",
-        accept: "application/json",
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal,
-    });
-    const text = await res.text();
-    let data: any = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = text;
-    }
-    if (res.status === 429 && attempt < MAX_RATE_LIMIT_RETRIES) {
-      const ra = Number(res.headers.get("retry-after"));
-      const wait = Number.isFinite(ra) && ra > 0 ? ra * 1000 : Math.min(10_000, 500 * 2 ** attempt);
-      await delay(wait);
-      attempt++;
-      continue;
-    }
-    return { ok: res.ok, status: res.status, data };
-  }
 }
 
 /** A HubSpot error we couldn't heal — carries status + body for outcome recording. */

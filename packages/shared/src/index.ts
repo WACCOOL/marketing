@@ -24,6 +24,7 @@ export * from "./ingest/customerParents.js";
 export * from "./ingest/riskCodes.js";
 export * from "./ingest/sales.js";
 export * from "./ingest/materialBank.js";
+export * from "./hubspot/client.js";
 export * from "./hubspot/mapping.js";
 export * from "./hubspot/heal.js";
 export * from "./hubspot/dealStage.js";
