@@ -214,7 +214,11 @@
     // side), so pass-through is correct and line sums are quoted-not-ordered
     // value. Kept at "0" (compute+log-only) pending a rethink with quoting —
     // do not delete the dealAmount machinery.
-    "DEAL_AMOUNT_DERIVE_WRITE": "0"
+    "DEAL_AMOUNT_DERIVE_WRITE": "0",
+    // Thom Bot — dark-launch flag for Sales Layer doc capture. "0" = discover +
+    // log spec-sheet/manual coverage only (no writes); "1" = write kb_documents
+    // + product_documents. Flip to "1" once apps/docs-ingest can extract them.
+    "THOM_DOC_CAPTURE": "0"
   },
 
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:

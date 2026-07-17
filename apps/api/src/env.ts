@@ -60,13 +60,16 @@ export interface Env {
   // Optional override pinning the exact Sales Layer product field that holds the
   // brand. When unset, the adapter auto-discovers it from common field names.
   SALES_LAYER_BRAND_FIELD?: string;
-  // Thom Bot — comma-separated override pinning the Sales Layer file fields
-  // that hold spec-sheet / manual PDFs (e.g. "spec_sheet,installation_manual").
-  // When unset, the sync auto-discovers from common field names; this is the
-  // safety valve if discovery picks wrong (the sync logs which fields it used
-  // and how many products got documents). Field names are confirmed against
-  // GET /api/products/_schema before launch.
+  // Thom Bot — comma-separated override of the Sales Layer file fields that
+  // hold spec-sheet / manual PDFs. Defaults to the confirmed live-connector
+  // fields "specsheet_pdf,inst_sheet"; set this to add more (e.g. ftc_label_pdf)
+  // without a code change. See docs/thom-bot-deferred-sources.
   SALES_LAYER_DOC_FIELDS?: string;
+  // Thom Bot — dark-launch flag for Sales Layer doc capture (writes kb_documents
+  // + product_documents during the product sync). Unset/"0" = discover + log
+  // coverage only, no writes; "1" = capture. Kept off until the ingest pipeline
+  // (apps/docs-ingest) is ready to extract the pending_extract rows.
+  THOM_DOC_CAPTURE?: string;
   // Phase 2 (Product Information) — optional overrides pinning the exact
   // raw_json field that holds existing romance copy / the raw CCT value. When
   // unset, both are auto-discovered from common field names.

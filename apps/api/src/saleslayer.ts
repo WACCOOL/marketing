@@ -80,6 +80,20 @@ interface VariantRow {
   ip_rating: string | null; // ziprat
 }
 
+/**
+ * A document (spec sheet / install manual) discovered on a Sales Layer file
+ * field. `hash` is the connector's md5 (position 1 of `[STATUS, hash, URL]`) —
+ * the content-identity key that dedupes shared family docs and drives
+ * re-extraction when a file changes. In-memory only; not stored on `products`.
+ */
+export interface ProductDoc {
+  field: string;
+  url: string;
+  hash: string | null;
+  docType: string; // 'spec_sheet' | 'manual' | ...
+  label: string;
+}
+
 export interface ProductCacheRow {
   sku: string;
   sl_id: string | null;
@@ -103,6 +117,9 @@ export interface ProductCacheRow {
   variants: VariantRow[];
   variant_search: string | null;
   raw_json: Record<string, unknown>;
+  /** Spec-sheet / manual PDFs for this product (product + variant level,
+   * merged and de-duplicated by URL). Populated only when doc capture runs. */
+  docs: ProductDoc[];
 }
 
 /**
@@ -133,7 +150,12 @@ const BRAND_FIELD_CANDIDATES = [
 
 export interface ProductAdapter {
   /** Pull the full catalog and refresh the local cache. */
-  sync(): Promise<{ upserted: number; pruned: number; variants: number }>;
+  sync(): Promise<{
+    upserted: number;
+    pruned: number;
+    variants: number;
+    docs: number;
+  }>;
   /** Return the upstream field schema (types) for products/variants/categories. */
   fetchSchema(): Promise<unknown>;
 }
@@ -202,10 +224,12 @@ export function makeProductAdapter(env: Env): ProductAdapter {
     async sync() {
       ensureCreds();
 
+      const docFields = docFieldsFrom(env);
       let schema: Record<string, SchemaEntry[]> | null = null;
       const categoryName = new Map<string, string>(); // internal ID -> name
       const products = new Map<string, ProductCacheRow>(); // internal ID -> row
       const variantsByProduct = new Map<string, VariantRow[]>();
+      const variantDocsByProduct = new Map<string, ProductDoc[]>();
       // Remember which field we pulled brand from, logged once for observability
       // so an admin can pin it via SALES_LAYER_BRAND_FIELD if discovery is wrong.
       let discoveredBrandField: string | null = null;
@@ -249,6 +273,7 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             variants: [],
             variant_search: null,
             raw_json: stripImages(p),
+            docs: collectDocs(p, docFields),
           });
         }
 
@@ -278,6 +303,12 @@ export function makeProductAdapter(env: Env): ProductAdapter {
           const list = variantsByProduct.get(productId) ?? [];
           list.push(variant);
           variantsByProduct.set(productId, list);
+          const vdocs = collectDocs(v, docFields);
+          if (vdocs.length) {
+            const dl = variantDocsByProduct.get(productId) ?? [];
+            dl.push(...vdocs);
+            variantDocsByProduct.set(productId, dl);
+          }
         }
 
         url = body.next_page;
@@ -309,6 +340,17 @@ export function makeProductAdapter(env: Env): ProductAdapter {
         // that carries one (the photometric throw is shared across finishes).
         if (!product.ies_url) {
           product.ies_url = vlist.find((v) => v.ies_url)?.ies_url ?? null;
+        }
+
+        // Merge variant-level docs into the product's doc set (deduped by URL).
+        const vdocs = variantDocsByProduct.get(id) ?? [];
+        if (vdocs.length) {
+          const byUrl = new Set(product.docs.map((d) => d.url));
+          for (const d of vdocs) {
+            if (byUrl.has(d.url)) continue;
+            byUrl.add(d.url);
+            product.docs.push(d);
+          }
         }
 
         // Searchable text: variant SKUs / ids / finishes.
@@ -352,7 +394,7 @@ export function makeProductAdapter(env: Env): ProductAdapter {
 
       // A 0-length pull almost always means a transient/auth error rather than
       // an empty catalog — bail without wiping the cache.
-      if (rows.length === 0) return { upserted: 0, pruned: 0, variants: 0 };
+      if (rows.length === 0) return { upserted: 0, pruned: 0, variants: 0, docs: 0 };
 
       const brandCount = rows.filter((r) => r.brand).length;
       console.log(
@@ -365,6 +407,20 @@ export function makeProductAdapter(env: Env): ProductAdapter {
 
       const iesCount = rows.filter((r) => r.ies_url).length;
       console.log(`[products] ${iesCount}/${rows.length} products have an IES file`);
+
+      // Doc coverage from Sales Layer alone — logged every sync (independent of
+      // the capture flag) so the spec-sheet gap is visible. Many products have
+      // NO spec sheet in Sales Layer (generated dynamically by the brand sites;
+      // WIES Studio holds those URLs — see docs/thom-bot-deferred-sources).
+      const withSpec = rows.filter((r) =>
+        r.docs.some((d) => d.docType === "spec_sheet"),
+      ).length;
+      const withManual = rows.filter((r) =>
+        r.docs.some((d) => d.docType === "manual"),
+      ).length;
+      console.log(
+        `[products] docs (Sales Layer): ${withSpec}/${rows.length} have a spec sheet, ${withManual} have an install manual`,
+      );
 
       const admin = serviceSupabase(env);
       const syncedAt = new Date().toISOString();
@@ -400,10 +456,26 @@ export function makeProductAdapter(env: Env): ProductAdapter {
         .select("id");
       if (pruneErr) throw new Error(`products prune failed: ${pruneErr.message}`);
 
+      // Thom Bot doc capture — dark-launched behind THOM_DOC_CAPTURE. Runs AFTER
+      // the product sync has fully succeeded and is wrapped so a doc-write error
+      // can never fail the daily product sync (docs are best-effort).
+      let docs = 0;
+      if (env.THOM_DOC_CAPTURE === "1") {
+        try {
+          docs = await captureDocs(admin, rows);
+          console.log(`[products] captured ${docs} distinct documents (Thom KB)`);
+        } catch (e) {
+          console.warn(
+            `[products] doc capture failed (non-fatal): ${String(e).slice(0, 200)}`,
+          );
+        }
+      }
+
       return {
         upserted: rows.length,
         pruned: pruned?.length ?? 0,
         variants: variantCount,
+        docs,
       };
     },
   };
@@ -586,6 +658,203 @@ function stripImages(row: Record<string, unknown>): Record<string, unknown> {
     out[k] = val;
   }
   return out;
+}
+
+// -----------------------------------------------------------------------------
+// Document capture (Thom Bot) — spec sheets & install manuals
+// -----------------------------------------------------------------------------
+
+/**
+ * Sales Layer FILE-type fields that carry Thom-ingestible PDFs, confirmed
+ * against the live connector schema (2026-07). Both exist on products AND
+ * variants. Others exist but are deferred (see docs/thom-bot-deferred-sources):
+ * `dim_report` ships `.zip` not PDF; `ftc_label_pdf` is sparse; `ies_files`/
+ * `revit` are binary. Override with the SALES_LAYER_DOC_FIELDS env (CSV).
+ */
+const DEFAULT_DOC_FIELDS = ["specsheet_pdf", "inst_sheet"];
+
+export function docFieldsFrom(env: Env): string[] {
+  const override = env.SALES_LAYER_DOC_FIELDS?.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return override && override.length ? override : DEFAULT_DOC_FIELDS;
+}
+
+/** Map a Sales Layer file-field name to a Thom doc_type + button label. */
+export function docTypeForField(field: string): { docType: string; label: string } {
+  if (/spec/i.test(field)) return { docType: "spec_sheet", label: "Specification Sheet" };
+  if (/inst|manual/i.test(field)) return { docType: "manual", label: "Installation Manual" };
+  if (/ftc/i.test(field)) return { docType: "ftc_label", label: "Lighting Facts Label" };
+  if (/dim/i.test(field)) return { docType: "dim_report", label: "Dimensional Report" };
+  return { docType: "document", label: "Document" };
+}
+
+interface FileEntry {
+  hash: string | null;
+  url: string;
+}
+
+/**
+ * Pull `{hash, url}` pairs out of a connector FILE field. Shape is
+ * `[[STATUS, hash, URL], ...]` (position 1 = md5 hash, position 2 = URL), but
+ * a single field may arrive as one bare `[STATUS, hash, URL]` entry too — both
+ * are handled. Unlike extractImageUrls (which discards everything but the URL),
+ * this keeps the hash, the natural change-detection key. The `>1` length guard
+ * skips the single-char `"M"`/`"D"` status flag when picking the hash.
+ */
+export function extractFileEntries(v: unknown): FileEntry[] {
+  const out: FileEntry[] = [];
+  if (!Array.isArray(v)) return out;
+  const entries = v.some((e) => Array.isArray(e)) ? v : [v];
+  for (const entry of entries) {
+    if (!Array.isArray(entry)) continue;
+    let url: string | null = null;
+    let hash: string | null = null;
+    for (const el of entry) {
+      if (typeof el !== "string") continue;
+      if (/^https?:\/\//i.test(el)) {
+        if (!url) url = el;
+      } else if (el.length > 1 && !hash) {
+        hash = el;
+      }
+    }
+    if (url) out.push({ hash, url });
+  }
+  return out;
+}
+
+/** All docs across the given file fields for one row, de-duplicated by URL. */
+export function collectDocs(
+  row: Record<string, unknown>,
+  fields: string[],
+): ProductDoc[] {
+  const out: ProductDoc[] = [];
+  const seen = new Set<string>();
+  for (const field of fields) {
+    const { docType, label } = docTypeForField(field);
+    for (const { hash, url } of extractFileEntries(row[field])) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push({ field, url, hash, docType, label });
+    }
+  }
+  return out;
+}
+
+/**
+ * Write the discovered docs into the Thom knowledge base:
+ *  - `kb_documents` keyed by content hash (`external_id`), so ONE row per unique
+ *    file (shared family sheets dedupe) — a changed file = new hash = a fresh
+ *    `pending_extract` row the ingest CLI picks up. `status` is omitted from the
+ *    payload so new rows default to `pending_extract` and unchanged rows keep
+ *    their existing status (no needless re-extraction).
+ *  - `product_documents` fans each file out to every SKU that references it.
+ * Idempotent upserts; a `synced_at`-based prune of superseded links is deferred
+ * (docs/thom-bot-deferred-sources). Returns the count of distinct documents.
+ */
+async function captureDocs(
+  admin: ReturnType<typeof serviceSupabase>,
+  rows: ProductCacheRow[],
+): Promise<number> {
+  interface DistinctDoc {
+    extId: string;
+    docType: string;
+    url: string;
+    hash: string | null;
+    brand: string | null;
+    title: string;
+  }
+  const distinct = new Map<string, DistinctDoc>(); // extId -> doc
+  const links: {
+    extId: string;
+    sku: string;
+    family: string | null;
+    docType: string;
+    label: string;
+    url: string;
+  }[] = [];
+
+  for (const r of rows) {
+    for (const d of r.docs) {
+      const extId = d.hash ?? d.url; // hash is the content identity; url fallback
+      if (!distinct.has(extId)) {
+        distinct.set(extId, {
+          extId,
+          docType: d.docType,
+          url: d.url,
+          hash: d.hash,
+          brand: r.brand,
+          title: `${r.name} — ${d.label}`,
+        });
+      }
+      links.push({
+        extId,
+        sku: r.sku,
+        family: r.family,
+        docType: d.docType,
+        label: d.label,
+        url: d.url,
+      });
+    }
+  }
+  if (!distinct.size) return 0;
+
+  const CHUNK = 300;
+
+  // 1) Upsert kb_documents; collect the id per external_id.
+  const idByExtId = new Map<string, string>();
+  const docRows = [...distinct.values()];
+  for (let i = 0; i < docRows.length; i += CHUNK) {
+    const chunk = docRows.slice(i, i + CHUNK).map((d) => ({
+      source_system: "sales_layer",
+      external_id: d.extId,
+      doc_type: d.docType,
+      scope: "public",
+      brand: d.brand,
+      title: d.title,
+      url: d.url,
+      content_hash: d.hash,
+    }));
+    const { data, error } = await admin
+      .from("kb_documents")
+      .upsert(chunk, { onConflict: "source_system,external_id" })
+      .select("id, external_id");
+    if (error) throw new Error(`kb_documents upsert failed: ${error.message}`);
+    for (const row of data ?? []) {
+      idByExtId.set(row.external_id as string, row.id as string);
+    }
+  }
+
+  // 2) Upsert product_documents (dedup by (document_id, product_sku) so one
+  //    payload never hits the same conflict key twice).
+  const linkSeen = new Set<string>();
+  const linkRows: Record<string, unknown>[] = [];
+  for (const l of links) {
+    const document_id = idByExtId.get(l.extId);
+    if (!document_id) continue;
+    const key = `${document_id}|${l.sku}`;
+    if (linkSeen.has(key)) continue;
+    linkSeen.add(key);
+    linkRows.push({
+      document_id,
+      product_sku: l.sku,
+      family: l.family,
+      doc_type: l.docType,
+      label: l.label,
+      url: l.url,
+      scope: "public",
+    });
+  }
+  for (let i = 0; i < linkRows.length; i += CHUNK) {
+    const { error } = await admin
+      .from("product_documents")
+      .upsert(linkRows.slice(i, i + CHUNK), {
+        onConflict: "document_id,product_sku",
+      });
+    if (error) throw new Error(`product_documents upsert failed: ${error.message}`);
+  }
+
+  return distinct.size;
 }
 
 const ENTITIES: Record<string, string> = {
