@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, ExternalLink, FileText, Loader2, Send } from "lucide-react";
+import { Bot, ExternalLink, FileText, Loader2, Plus, Send } from "lucide-react";
 import {
   sendChat,
   type Citation,
@@ -23,16 +23,58 @@ const EXAMPLES = [
   "A client wants something like a Lutron Ketra — what WAC product is closest?",
 ];
 
+// Persist the active conversation so navigating away and back doesn't lose it.
+const STORAGE_KEY = "thom.activeConversation.v1";
+interface Persisted {
+  turns: Turn[];
+  conversationId: string | null;
+}
+function loadPersisted(): Persisted | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as Persisted) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function ThomChat() {
-  const [turns, setTurns] = useState<Turn[]>([]);
+  const persisted = loadPersisted();
+  const [turns, setTurns] = useState<Turn[]>(persisted?.turns ?? []);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(
+    persisted?.conversationId ?? null,
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turns, busy]);
+
+  // Persist across navigation / remount.
+  useEffect(() => {
+    try {
+      if (turns.length) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ turns, conversationId }));
+      } else {
+        localStorage.removeItem(STORAGE_KEY);
+      }
+    } catch {
+      // storage full / unavailable — non-fatal
+    }
+  }, [turns, conversationId]);
+
+  function newChat() {
+    setTurns([]);
+    setConversationId(null);
+    setInput("");
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  }
 
   async function send(text: string) {
     const message = text.trim();
@@ -75,8 +117,15 @@ export function ThomChat() {
   return (
     <div className="thom">
       <header className="thom-head">
-        <div className="thom-title">
-          <Bot size={20} /> <span>Thom</span>
+        <div className="thom-head-row">
+          <div className="thom-title">
+            <Bot size={20} /> <span>Thom</span>
+          </div>
+          {turns.length > 0 && (
+            <button className="secondary thom-new" onClick={newChat}>
+              <Plus size={14} /> New chat
+            </button>
+          )}
         </div>
         <p className="muted">Your WAC Group lighting expert — products, specs, manuals, and recommendations.</p>
       </header>
