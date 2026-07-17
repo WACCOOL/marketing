@@ -12,6 +12,7 @@ export interface DocDownload {
   doc_type: string;
 }
 export interface ProductCard {
+  kind: "product";
   sku: string;
   name: string | null;
   brand: string | null;
@@ -20,6 +21,25 @@ export interface ProductCard {
   pdp_url: string | null;
   downloads: DocDownload[];
 }
+export interface FamilyMember {
+  sku: string;
+  name: string | null;
+  role: string | null;
+  image_url: string | null;
+  pdp_url: string | null;
+}
+export interface FamilyCard {
+  kind: "family";
+  family: string;
+  brand: string | null;
+  image_url: string | null;
+  category: string | null;
+  members: FamilyMember[];
+  member_count: number;
+}
+/** Either kind of card. Cards logged before the family feature have no `kind`;
+ *  treat missing/`"product"` as a ProductCard on the client. */
+export type Card = ProductCard | FamilyCard;
 export interface Citation {
   document_id: string;
   title: string | null;
@@ -30,7 +50,7 @@ export interface Citation {
 export interface ChatResponse {
   conversationId: string;
   answer: string;
-  cards: ProductCard[];
+  cards: Card[];
   citations: Citation[];
 }
 
