@@ -2,14 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { Bot, Boxes, ExternalLink, FileText, Globe, Loader2, Plus, Send } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import {
-  sendChat,
+  chatStream,
   type Card,
   type Citation,
   type FamilyCard,
   type ProductCard,
-  type ChatResponse,
 } from "../lib/thom.js";
-import type { ApiError } from "../lib/api.js";
 
 interface Turn {
   role: "user" | "assistant";
@@ -41,6 +39,19 @@ function loadPersisted(): Persisted | null {
   }
 }
 
+/** Immutably replace the most recent assistant turn (the in-progress one). */
+function updateLastAssistant(turns: Turn[], fn: (t: Turn) => Turn): Turn[] {
+  const next = turns.slice();
+  for (let i = next.length - 1; i >= 0; i--) {
+    const turn = next[i];
+    if (turn && turn.role === "assistant") {
+      next[i] = fn(turn);
+      break;
+    }
+  }
+  return next;
+}
+
 export function ThomChat() {
   const persisted = loadPersisted();
   const [turns, setTurns] = useState<Turn[]>(persisted?.turns ?? []);
@@ -50,10 +61,15 @@ export function ThomChat() {
     persisted?.conversationId ?? null,
   );
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Holds the in-flight stream so New chat / unmount can cancel it.
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turns, busy]);
+
+  // Abort any in-flight stream on unmount.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   // Persist across navigation / remount.
   useEffect(() => {
@@ -69,6 +85,9 @@ export function ThomChat() {
   }, [turns, conversationId]);
 
   function newChat() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setBusy(false);
     setTurns([]);
     setConversationId(null);
     setInput("");
@@ -83,31 +102,47 @@ export function ThomChat() {
     const message = text.trim();
     if (!message || busy) return;
     setInput("");
-    setTurns((t) => [...t, { role: "user", text: message }]);
+    // User turn + an empty in-progress assistant turn we stream deltas into.
+    setTurns((t) => [...t, { role: "user", text: message }, { role: "assistant", text: "" }]);
     setBusy(true);
-    try {
-      const res: ChatResponse = await sendChat(message, conversationId);
-      setConversationId(res.conversationId);
-      setTurns((t) => [
-        ...t,
-        { role: "assistant", text: res.answer, cards: res.cards, citations: res.citations },
-      ]);
-    } catch (e) {
-      const err = e as ApiError;
-      setTurns((t) => [
-        ...t,
-        {
-          role: "assistant",
-          text:
-            err?.status === 503
-              ? "Thom isn't configured yet (no API key)."
-              : `Sorry — something went wrong (${err?.error ?? "unknown error"}).`,
-          error: true,
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    await chatStream(
+      message,
+      conversationId,
+      {
+        onMeta: (id) => setConversationId(id),
+        onDelta: (delta) =>
+          setTurns((t) =>
+            updateLastAssistant(t, (turn) => ({ ...turn, text: turn.text + delta })),
+          ),
+        onCards: (cards) =>
+          setTurns((t) => updateLastAssistant(t, (turn) => ({ ...turn, cards }))),
+        onCitations: (citations) =>
+          setTurns((t) => updateLastAssistant(t, (turn) => ({ ...turn, citations }))),
+        onDone: () => {
+          setBusy(false);
+          abortRef.current = null;
         },
-      ]);
-    } finally {
-      setBusy(false);
-    }
+        onError: (err) =>
+          setTurns((t) =>
+            updateLastAssistant(t, () => ({
+              role: "assistant",
+              text:
+                err.status === 503
+                  ? "Thom isn't configured yet (no API key)."
+                  : `Sorry — something went wrong (${err.error ?? "unknown error"}).`,
+              error: true,
+            })),
+          ),
+      },
+      controller.signal,
+    );
+    // If the stream ended without a done/error (e.g. dropped), clear busy.
+    setBusy(false);
+    abortRef.current = null;
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -148,14 +183,13 @@ export function ThomChat() {
             </div>
           </div>
         ) : (
-          turns.map((turn, i) => <TurnView key={i} turn={turn} />)
-        )}
-        {busy && (
-          <div className="thom-turn assistant">
-            <div className="thom-bubble thom-thinking">
-              <Loader2 size={16} className="spin" /> Thom is thinking…
-            </div>
-          </div>
+          turns.map((turn, i) => (
+            <TurnView
+              key={i}
+              turn={turn}
+              streaming={busy && i === turns.length - 1 && turn.role === "assistant"}
+            />
+          ))
         )}
       </div>
 
@@ -176,7 +210,18 @@ export function ThomChat() {
   );
 }
 
-function TurnView({ turn }: { turn: Turn }) {
+function TurnView({ turn, streaming = false }: { turn: Turn; streaming?: boolean }) {
+  // An in-progress assistant turn with no text yet → show the thinking bubble
+  // (kept until the first token arrives).
+  if (turn.role === "assistant" && streaming && !turn.text) {
+    return (
+      <div className="thom-turn assistant">
+        <div className="thom-bubble thom-thinking">
+          <Loader2 size={16} className="spin" /> Thom is thinking…
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={`thom-turn ${turn.role}`}>
       <div className={`thom-bubble${turn.error ? " thom-error" : ""}`}>
@@ -193,6 +238,7 @@ function TurnView({ turn }: { turn: Turn }) {
             >
               {turn.text}
             </ReactMarkdown>
+            {streaming && <span className="thom-cursor" aria-hidden="true" />}
           </div>
         ) : (
           <div className="thom-text">{turn.text}</div>

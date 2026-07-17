@@ -270,18 +270,24 @@ export type ClaudeStreamEvent =
   | { type: "text"; text: string }
   | { type: "tool_use_start"; index: number; id: string; name: string }
   | { type: "tool_input_delta"; index: number; partial_json: string }
+  // Server-side (Anthropic-hosted) tool call, e.g. web_search. Accumulate its
+  // input_json_delta like a normal tool; it never reaches client dispatch.
+  | { type: "server_tool_use_start"; index: number; id: string; name: string }
+  // A web_search_tool_result block, captured whole from content_block_start so
+  // the reconstructor can rebuild it into assistant history verbatim.
+  | { type: "web_search_result"; index: number; content: ClaudeWebSearchToolResultBlock }
   | { type: "block_stop"; index: number }
   | { type: "done"; stopReason: string; usage: ClaudeUsage | null };
 
 /**
  * Streaming call. Yields text deltas as they arrive (for SSE pass-through to
  * the chat UI) and a terminal "done" event carrying stop_reason + usage for
- * conversation logging. Tool-use blocks are surfaced too so the agent loop
- * can stream AND detect tool calls in one pass.
- *
- * NOTE: this parser does NOT yet handle server_tool_use / web_search_tool_result
- * blocks or the pause_turn stop_reason — the SSE feature owns that. runThom uses
- * the non-streaming claudeMessages path, which handles both (see agent.ts).
+ * conversation logging. Client tool-use blocks are surfaced so the agent loop
+ * can stream AND detect tool calls in one pass; server-tool blocks
+ * (server_tool_use + web_search_tool_result) are surfaced too so the loop can
+ * rebuild history and compose web_search with streaming. The pause_turn
+ * stop_reason forwards through the terminal "done" event (from message_delta),
+ * so runThomStream can resume a paused server-tool turn exactly like runThom.
  */
 export async function* claudeMessagesStream(
   env: Env,
@@ -320,7 +326,13 @@ export async function* claudeMessagesStream(
           type?: string;
           index?: number;
           message?: { usage?: Partial<ClaudeUsage> };
-          content_block?: { type?: string; id?: string; name?: string };
+          content_block?: {
+            type?: string;
+            id?: string;
+            name?: string;
+            tool_use_id?: string;
+            content?: ClaudeWebSearchToolResultBlock["content"];
+          };
           delta?: {
             type?: string;
             text?: string;
@@ -349,6 +361,28 @@ export async function* claudeMessagesStream(
                 index: event.index ?? 0,
                 id: cb.id,
                 name: cb.name,
+              };
+            } else if (cb?.type === "server_tool_use" && cb.id && cb.name) {
+              // Server-executed tool (web_search). Its input_json_delta is
+              // handled by the shared content_block_delta case below.
+              yield {
+                type: "server_tool_use_start",
+                index: event.index ?? 0,
+                id: cb.id,
+                name: cb.name,
+              };
+            } else if (cb?.type === "web_search_tool_result") {
+              // Server-tool RESULT: the content (result array, or the single
+              // error object) arrives whole in content_block_start — capture it
+              // and rebuild the block so history matches the non-streaming path.
+              yield {
+                type: "web_search_result",
+                index: event.index ?? 0,
+                content: {
+                  type: "web_search_tool_result",
+                  tool_use_id: cb.tool_use_id ?? "",
+                  content: cb.content ?? [],
+                },
               };
             }
             break;
