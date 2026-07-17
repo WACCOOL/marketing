@@ -12,6 +12,7 @@ import {
   oaLineItems,
   oaLineKey,
   oaOrderProps,
+  oaProjectNameCandidates,
   oaRecordHash,
   oaStageForStatus,
   type OaOrderDetail,
@@ -133,6 +134,11 @@ describe("oaDestination", () => {
     expect(oaDestination({ country: "China", location: "Beijing" })).toBe("china");
   });
 
+  it("treats TW as non-mainland too", () => {
+    expect(oaDestination({ country: "China TW" })).toBe("international");
+    expect(oaDestination({ country: "TW, China" })).toBe("international");
+  });
+
   it("flags China-vs-other field conflicts as unknown for review, not domestic", () => {
     expect(oaDestination({ country: "China", location: "Pakistan" })).toBe("unknown");
     expect(oaDestination({ country: "China", location: "Korea" })).toBe("unknown");
@@ -152,6 +158,22 @@ describe("oaDestination", () => {
     expect(
       oaDestinationOf({ project: { country: "korea", location: "seoul" } } as OaQuotation),
     ).toBe("international");
+  });
+});
+
+describe("oaProjectNameCandidates", () => {
+  it("tries exact, QT-suffix-stripped, then last-dash-stripped names", () => {
+    expect(oaProjectNameCandidates("AR Residence")).toEqual(["AR Residence"]);
+    expect(oaProjectNameCandidates("Qatar_QT1")).toContain("Qatar");
+    expect(oaProjectNameCandidates("Russian Art Center-4")).toContain("Russian Art Center");
+    expect(oaProjectNameCandidates("萬豪酒店——QT1")).toContain("萬豪酒店");
+    expect(oaProjectNameCandidates("萬豪酒店- QT1")).toContain("萬豪酒店");
+    expect(oaProjectNameCandidates("Doha Qatar_qt2")).toContain("Doha Qatar");
+    expect(oaProjectNameCandidates("")).toEqual([]);
+  });
+
+  it("keeps the exact title first so a real '-0623' project name still wins", () => {
+    expect(oaProjectNameCandidates("Ton Chan residence-0623")[0]).toBe("Ton Chan residence-0623");
   });
 });
 

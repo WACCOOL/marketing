@@ -213,7 +213,7 @@ export type OaDestination = "china" | "international" | "unknown";
  * are checked BEFORE the China patterns so "Taiwan, China" style strings
  * classify as international.
  */
-const NON_MAINLAND = /\b(hong\s*kong|hongkong|hk|macau|macao|taiwan|taipei)\b|香港|澳门|澳門|台湾|臺灣/i;
+const NON_MAINLAND = /\b(hong\s*kong|hongkong|hk|macau|macao|taiwan|taipei|tw)\b|香港|澳门|澳門|台湾|臺灣/i;
 
 const CHINA_WORDS =
   /\b(china|prc|cn|chn)\b|中国|中华|中國/i;
@@ -255,6 +255,30 @@ export function oaDestination(fields: {
   // Chinese city we don't list).
   if (country) return "international";
   return "unknown";
+}
+
+/**
+ * Candidate project names for a quote title, most-specific first. Quote titles
+ * are typically the project name plus a quotation suffix ("projectA-1",
+ * "Qatar_QT1", "萬豪酒店——QT1" — live-verified 2026-07-17), so the join tries
+ * the exact title, then progressively strips trailing "QT/Q + digits" (or
+ * bare-digit) segments, then the last dash-delimited segment.
+ */
+export function oaProjectNameCandidates(title: unknown): string[] {
+  const t = String(title ?? "").trim();
+  if (!t) return [];
+  const out = [t];
+  let s = t;
+  for (let i = 0; i < 3; i++) {
+    const next = s.replace(/[\s_\-–—]+(?:qt|q)?\s*\d*$/i, "").trim();
+    if (next && next !== s) {
+      out.push(next);
+      s = next;
+    } else break;
+  }
+  const lastDash = t.replace(/[-–—][^-–—]*$/, "").trim();
+  if (lastDash && !out.includes(lastDash)) out.push(lastDash);
+  return out;
 }
 
 /** Convenience: extract destination fields from a quotation/order payload. */
