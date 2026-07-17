@@ -32,6 +32,7 @@ import {
   Sun,
   Upload,
   Webhook,
+  Bot,
   type LucideIcon,
 } from "lucide-react";
 import { type FeatureKey } from "@wac/shared";
@@ -117,6 +118,7 @@ const NAV: NavEntry[] = [
 // The cross-tool Asset Library (gated by the `library` feature) and the Admin
 // page (admins only — managing access is inherently an admin function).
 const ADMIN_ENTRIES: NavLeaf[] = [
+  { to: "/thom", label: "Thom Bot", icon: Bot, feature: "thom" },
   { to: "/library", label: "Asset Library", icon: FolderOpen, feature: "library" },
   { to: "/admin", label: "Admin", icon: ShieldCheck },
 ];
