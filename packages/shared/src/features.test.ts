@@ -21,6 +21,12 @@ describe("computeFeatures", () => {
     expect(computeFeatures("internal")).toEqual(DEFAULT_FEATURES.internal);
   });
 
+  it("grants internal users the Thom Knowledge (thom-content) feature by default", () => {
+    expect(computeFeatures("internal")).toContain("thom-content");
+    // Reps do not get it.
+    expect(computeFeatures("rep")).not.toContain("thom-content");
+  });
+
   it("adds a feature via an allow override", () => {
     expect(computeFeatures("rep", [{ feature: "utm", allowed: true }])).toContain(
       "utm",
@@ -66,6 +72,7 @@ describe("featureForPath", () => {
     expect(featureForPath("/builder")).toBe("utm");
     expect(featureForPath("/ppt/templates")).toBe("ppt-templates");
     expect(featureForPath("/data/pricing")).toBe("pricing");
+    expect(featureForPath("/thom-content")).toBe("thom-content");
   });
   it("returns null for unrestricted routes", () => {
     expect(featureForPath("/admin")).toBeNull();

@@ -14,6 +14,7 @@ export * from "./stageprob.js";
 export * from "./ppt.js";
 export * from "./sse.js";
 export * from "./annuity.js";
+export * from "./ingest/chunk.js";
 export * from "./ingest/registry.js";
 export * from "./ingest/types.js";
 export * from "./ingest/headers.js";

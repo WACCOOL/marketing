@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   Aperture,
+  BookOpen,
   Box,
   ChevronLeft,
   Database,
@@ -119,6 +120,7 @@ const NAV: NavEntry[] = [
 // page (admins only — managing access is inherently an admin function).
 const ADMIN_ENTRIES: NavLeaf[] = [
   { to: "/thom", label: "Thom Bot", icon: Bot, feature: "thom" },
+  { to: "/thom-content", label: "Thom Knowledge", icon: BookOpen, feature: "thom-content" },
   { to: "/library", label: "Asset Library", icon: FolderOpen, feature: "library" },
   { to: "/admin", label: "Admin", icon: ShieldCheck },
 ];
