@@ -276,7 +276,6 @@ const STATUS_TO_STAGE: Record<string, OaStageLabel> = {
   "submit lighting calculation": OA_STAGE_LABELS.spec,
 
   "waiting tender": OA_STAGE_LABELS.bid,
-  tender: OA_STAGE_LABELS.bid,
   "re-tender": OA_STAGE_LABELS.bid,
   retender: OA_STAGE_LABELS.bid,
   offer: OA_STAGE_LABELS.bid,
@@ -288,12 +287,11 @@ const STATUS_TO_STAGE: Record<string, OaStageLabel> = {
   "on hold": OA_STAGE_LABELS.bid,
   delay: OA_STAGE_LABELS.bid,
 
-  // Commit strictly means "order promised but PO not yet received" (Davis
-  // 2026-07-17) — none of the known OA statuses clearly means that, so nothing
-  // maps to Commit yet. Construction just means the project is being built
-  // (still chasing the order), so it stays in Bid; once a PO exists, OA has an
-  // order record and the order-exists override lands the deal in Buy anyway.
-  construction: OA_STAGE_LABELS.bid,
+  // Commit = "order promised but PO not yet received" (Davis 2026-07-17).
+  // Davis's call: Tender and Construction land here; once a PO exists OA has
+  // an order record and the order-exists override moves the deal to Buy.
+  tender: OA_STAGE_LABELS.commit,
+  construction: OA_STAGE_LABELS.commit,
 
   complete: OA_STAGE_LABELS.buy,
 
