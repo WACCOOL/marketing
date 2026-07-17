@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Env } from "../env.js";
 import {
   claudeMessages,
+  claudeModel,
   claudeRouterModel,
   type ClaudeContentBlock,
   type ClaudeMessage,
@@ -43,6 +44,45 @@ export interface ThomResult {
   usage: ThomUsage;
 }
 
+/** Signals fed to the escalation predicate, all monotonically non-decreasing
+ *  across the loop (evidence only accumulates), so once we cross a threshold we
+ *  stay escalated — no flapping between models mid-conversation. */
+export interface EscalationState {
+  /** Total tool calls dispatched so far this turn. */
+  toolCallCount: number;
+  /** Distinct source passages (citations) gathered so far. */
+  docPassageCount: number;
+  /** Product cards gathered so far. */
+  productCount: number;
+  /** The user's message for this turn (intent detection). */
+  userMessage: string;
+}
+
+// Genuine comparison / superlative intent. Deliberately TIGHT: a bare
+// "... or ...?" matches almost any question ("downlights or track heads?") and
+// would over-escalate, so it's intentionally excluded.
+const COMPARISON_INTENT =
+  /\b(vs\.?|versus|compared? to|comparison|difference between|which (is|one is) (better|best)|better than)\b/i;
+
+/**
+ * Whether this turn is "hard" enough to warrant the stronger model. Pure and
+ * monotonic in the accumulated evidence: multi-doc synthesis (2+ passages),
+ * multi-product work (2+ cards), a long tool chain (3+ calls), or an explicit
+ * comparison once we have at least one tool result to compare against.
+ */
+export function shouldEscalate(s: EscalationState): boolean {
+  if (s.docPassageCount >= 2) return true;
+  if (s.productCount >= 2) return true;
+  if (s.toolCallCount >= 3) return true;
+  if (COMPARISON_INTENT.test(s.userMessage) && s.toolCallCount >= 1) return true;
+  return false;
+}
+
+/** Model tiering is ON unless THOM_TIERING is explicitly "0" (safe rollback). */
+export function tieringEnabled(env: Env): boolean {
+  return env.THOM_TIERING !== "0";
+}
+
 /**
  * Run one internal Thom turn: a bounded tool-use loop over the retrieval tools.
  * Non-streaming (v1) — returns the final answer plus the product cards and
@@ -54,7 +94,6 @@ export async function runThom(
   sb: SupabaseClient,
   opts: { history: ClaudeMessage[]; userMessage: string },
 ): Promise<ThomResult> {
-  const model = claudeRouterModel(env);
   const system = internalSystem();
   // internal surface only — CRM tools ride the internal agent, gated on the
   // read token, with the cache breakpoint re-homed to the composed tail.
@@ -65,9 +104,32 @@ export async function runThom(
   ];
   const cards: ProductCard[] = [];
   const citations: Citation[] = [];
-  const usage: ThomUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, model };
+  let toolCallCount = 0;
+  const usage: ThomUsage = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    model: claudeRouterModel(env),
+    escalated: false,
+  };
 
   for (let step = 0; step < MAX_STEPS; step++) {
+    // Decide the model for THIS turn from the evidence accumulated so far.
+    // Monotonic: once a threshold trips we stay on the stronger model. The
+    // escalated turn is a prompt-cache miss (cache is per-model) — the intended
+    // cost of a better answer.
+    const escalate =
+      tieringEnabled(env) &&
+      shouldEscalate({
+        toolCallCount,
+        docPassageCount: citations.length,
+        productCount: cards.length,
+        userMessage: opts.userMessage,
+      });
+    const model = escalate ? claudeModel(env) : claudeRouterModel(env);
+    usage.model = model; // last write wins → reflects the answering turn
+    if (escalate) usage.escalated = true;
+
     const res = await claudeMessages(env, {
       system,
       messages,
@@ -86,9 +148,14 @@ export async function runThom(
       (b): b is ClaudeToolUseBlock => b.type === "tool_use",
     );
     if (res.stop_reason !== "tool_use" || toolUses.length === 0) {
+      console.log(
+        `[thom] answered model=${usage.model} escalated=${usage.escalated} ` +
+          `toolCalls=${toolCallCount} docPassages=${citations.length} products=${cards.length}`,
+      );
       return { text: finalText(res.content), cards, citations, usage };
     }
 
+    toolCallCount += toolUses.length;
     const results: ClaudeToolResultBlock[] = [];
     for (const tu of toolUses) {
       try {
@@ -108,6 +175,10 @@ export async function runThom(
     messages.push({ role: "user", content: results });
   }
 
+  console.log(
+    `[thom] answered model=${usage.model} escalated=${usage.escalated} ` +
+      `toolCalls=${toolCallCount} docPassages=${citations.length} products=${cards.length} (max-steps)`,
+  );
   return {
     text: "I couldn't finish that in a reasonable number of steps — try narrowing the question.",
     cards,

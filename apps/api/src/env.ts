@@ -272,6 +272,11 @@ export interface Env {
   // (a Sonnet-class id). Defaults live in anthropic.ts.
   ANTHROPIC_ROUTER_MODEL?: string;
   ANTHROPIC_MODEL?: string;
+  // Model tiering kill-switch. Unset/"1" = escalate hard questions (multi-doc
+  // synthesis, multi-product comparisons, long tool chains) from the router
+  // model up to ANTHROPIC_MODEL; "0" = router-only (today's behavior, a safe
+  // rollback). Reuses ANTHROPIC_MODEL — no new model id needed.
+  THOM_TIERING?: string;
   // READ-ONLY HubSpot private-app token for Thom's internal CRM tools (deals /
   // companies / orders / rep codes). DELIBERATELY a separate app from
   // HUBSPOT_TOKEN: Thom ingests untrusted text (tickets, web results), so the
