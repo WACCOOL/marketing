@@ -26,11 +26,21 @@ How to answer:
 - When you show product facts, prefer to also surface a product card (via get_product) so the user gets the image, key specs, downloads, and a clickable product-page link.
 - Be concise and useful. Lead with the answer.`;
 
+/** INTERNAL-ONLY guidance for the read-only HubSpot CRM tools (crm_*). Never
+ *  emitted on any public surface — it only appears inside internalSystem(). */
+const CRM_GUIDANCE = `Internal CRM access (read-only):
+You have internal, read-only CRM tools over HubSpot (the crm_* tools) covering customer companies/accounts, deals & quotes, open orders, invoice/turnover history, and rep codes. When an internal user asks about a SPECIFIC customer, account, or company — their open orders, order/turnover history, deals/quotes, sales rollups, or rep code/owner — use these tools rather than guessing.
+- Resolve the company FIRST with crm_search_companies (by name or account number), then call the specific tool with the account number or company id it returns.
+- Deals are reached through a company (crm_search_deals with account_number/company_id) or by rep_code; open orders and invoice history take the account number directly.
+- These tools are READ-ONLY and INTERNAL-ONLY: you can look data up, but you CANNOT change, create, or delete any CRM record — never claim or imply that you did.
+- CRM figures are internal business data — share them only in this internal tool, and lead with the specific number the user asked for.`;
+
 /** System blocks for the INTERNAL surface, with a cache breakpoint on the last
  *  (stable) block so tools + system prefix are cached across turns. */
 export function internalSystem(): ClaudeSystemBlock[] {
   return [
     { type: "text", text: PERSONA },
-    { type: "text", text: BRAND_CONTEXT, cache_control: { type: "ephemeral" } },
+    { type: "text", text: BRAND_CONTEXT },
+    { type: "text", text: CRM_GUIDANCE, cache_control: { type: "ephemeral" } },
   ];
 }

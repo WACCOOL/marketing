@@ -1,11 +1,12 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Env } from "../env.js";
 import type { ClaudeTool } from "../anthropic.js";
 import { embedQuery } from "./embed.js";
-import type { Citation, KeySpec, ProductCard } from "./types.js";
+import { hubspotDispatch } from "./hubspotTools.js";
+import type { Citation, KeySpec, ProductCard, ToolContext, ToolOutput } from "./types.js";
 
-/** Tool JSON schemas advertised to Claude. cache_control on the last tool so
- *  the whole tool block joins the cached prefix. */
+/** Tool JSON schemas advertised to Claude. The cache breakpoint after the tool
+ *  block is owned by agent.ts (withTailCache), which composes this set with the
+ *  internal-only HUBSPOT_TOOLS and marks the tail — so nothing here carries a
+ *  static cache_control that could strand a mid-array breakpoint. */
 export const TOOLS: ClaudeTool[] = [
   {
     name: "search_products",
@@ -58,21 +59,8 @@ export const TOOLS: ClaudeTool[] = [
       },
       required: ["query"],
     },
-    cache_control: { type: "ephemeral" },
   },
 ];
-
-export interface ToolContext {
-  env: Env;
-  sb: SupabaseClient;
-}
-
-export interface ToolOutput {
-  /** Text fed back to Claude as the tool_result. */
-  content: string;
-  cards: ProductCard[];
-  citations: Citation[];
-}
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
@@ -247,6 +235,9 @@ export async function dispatch(
   name: string,
   input: Record<string, unknown>,
 ): Promise<ToolOutput> {
+  // Internal CRM tools (see hubspotTools.ts) are namespaced crm_* and only
+  // reach dispatch when agent.ts composed them onto the tool set.
+  if (name.startsWith("crm_")) return hubspotDispatch(ctx, name, input);
   switch (name) {
     case "search_products":
       return searchProducts(ctx, input);
