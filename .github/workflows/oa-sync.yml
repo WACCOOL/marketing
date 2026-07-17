@@ -1,0 +1,76 @@
+name: OA Sync
+
+# OA (international ERP) → HubSpot: quotes→Deals (International pipeline),
+# orders→Orders (International Orders pipeline), customers→Companies — pull,
+# stage in Supabase oa_records, push changed non-China-destination records.
+# One-way v1; see apps/oa-sync.
+#
+# The hourly cron stays DISABLED until the sample-first rollout is approved
+# (unit tests → --sample → --dry-run → scoped sample push → verify → backfill);
+# until then runs are manual via workflow_dispatch.
+on:
+  # schedule:
+  #   - cron: "17 * * * *" # hourly — enable after the rollout is approved
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: "Print raw pages of every OA endpoint (no writes)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Pull + diff + preview push payloads (no writes)"
+        type: boolean
+        default: false
+      push_only:
+        description: "Skip OA pull; push current staging to HubSpot"
+        type: boolean
+        default: false
+      force:
+        description: "Re-fetch details and re-push unchanged records"
+        type: boolean
+        default: false
+      quotes:
+        description: "Comma-separated OA quotation ids to scope the push to"
+        type: string
+        default: ""
+      orders:
+        description: "Comma-separated OA order ids to scope to"
+        type: string
+        default: ""
+
+concurrency:
+  group: oa-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build oa-sync
+        run: pnpm --filter @wac/oa-sync build
+      - name: Run OA sync
+        env:
+          OA_API_SECRET: ${{ secrets.OA_API_SECRET }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+        # Default (cron/dispatch with no inputs): pull + stage + push changed.
+        run: |
+          if [ "${{ inputs.sample }}" = "true" ]; then
+            pnpm --filter @wac/oa-sync sync -- --sample
+          else
+            pnpm --filter @wac/oa-sync sync -- \
+              ${{ inputs.dry_run == true && '--dry-run' || '' }} \
+              ${{ inputs.push_only == true && '--push-only' || '' }} \
+              ${{ inputs.force == true && '--force' || '' }} \
+              ${{ inputs.quotes != '' && format('--quotes {0}', inputs.quotes) || '' }} \
+              ${{ inputs.orders != '' && format('--orders {0}', inputs.orders) || '' }}
+          fi

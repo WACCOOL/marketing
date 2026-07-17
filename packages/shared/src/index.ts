@@ -43,6 +43,7 @@ export * from "./hubspot/materialBankRouting.js";
 export * from "./hubspot/companyClassifyOverrides.js";
 export * from "./hubspot/productFocus.js";
 export * from "./hubspot/quoteDesk.js";
+export * from "./hubspot/oaMapping.js";
 export * from "./showroom/registry.js";
 export * from "./showroom/parse.js";
 export * from "./showroom/map.js";
