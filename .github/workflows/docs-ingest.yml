@@ -1,0 +1,52 @@
+name: Docs Ingest
+
+# Thom Bot Tier-B ingestion: fetch the pending spec sheets + manuals (captured
+# by the saleslayer doc capture and the products-sync spec-sheet resolver),
+# extract text (born-digital + Claude-vision fallback), chunk, embed via Workers
+# AI, and fill kb_chunks. Resumable (the row status is the checkpoint), so a
+# capped run just resumes next time. Daily after products-sync (which writes the
+# re-derived spec-sheet URLs).
+on:
+  schedule:
+    - cron: "0 11 * * *" # daily 11:00 UTC (after the 09:00 products-sync)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (count pending, no writes)"
+        type: boolean
+        default: false
+      limit:
+        description: "Max documents to process this run (blank = all)"
+        type: string
+        default: ""
+
+concurrency:
+  group: docs-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build docs-ingest
+        run: pnpm --filter @wac/docs-ingest build
+      - name: Run docs ingest
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_AI_TOKEN: ${{ secrets.CF_AI_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: >-
+          pnpm --filter @wac/docs-ingest ingest --
+          ${{ inputs.dry_run && '--dry-run' || '' }}
+          ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }}
