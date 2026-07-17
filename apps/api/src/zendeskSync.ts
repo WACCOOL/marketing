@@ -80,6 +80,9 @@ export interface SyncResult {
     | "synced"
     | "would_sync";
   group?: string;
+  /** The ticket's ZenDesk group id (once the ticket was fetched) — lets the
+   *  sync-queue consumer piggyback KB-ticket capture without re-fetching. */
+  groupId?: number | null;
   error?: string;
   dealId?: string | null;
   dealMatch?: "deal_id_field" | "quote_number" | "existing" | "none" | "ambiguous";
@@ -308,7 +311,7 @@ export async function syncZendeskTicket(
   }
   const ticket: ZdTicket = tRes.data.ticket;
   const group = ticket.group_id ? groups.get(ticket.group_id) : undefined;
-  if (!group) return { ticketId, action: "skipped_group" };
+  if (!group) return { ticketId, action: "skipped_group", groupId: ticket.group_id ?? null };
 
   const sb = sbIn ?? serviceSupabase(env);
   const { data: existingRow } = await sb
@@ -321,6 +324,7 @@ export async function syncZendeskTicket(
     ticketId,
     action: write(env) ? "synced" : "would_sync",
     group: group.name,
+    groupId: ticket.group_id ?? null,
     dealId: existingRow?.deal_id ?? null,
     dealMatch: existingRow?.deal_id ? "existing" : "none",
     contactId: existingRow?.contact_id ?? null,

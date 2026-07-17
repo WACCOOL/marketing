@@ -1,5 +1,6 @@
 import type { Env } from "./env.js";
 import { ZD, parseSyncGroups, zd } from "./zendesk.js";
+import { buildTicketIngestMessage, parseTicketGroups } from "./thomTickets.js";
 
 /**
  * Drift repair + backfill for the Zendesk -> HubSpot mirror. Both walk the
@@ -87,5 +88,44 @@ export async function runZendeskReconcile(env: Env, signal: AbortSignal): Promis
     }
   }
   console.log(`[zendesk-reconcile] enqueued ${result.enqueued} ticket(s)`, JSON.stringify(result.groups));
+  return result;
+}
+
+/** How far back the KB-ticket sweep looks (hours). Overlaps the daily cadence so
+ *  a webhook miss on the previous day is still caught. */
+const THOM_TICKET_SWEEP_HOURS = 26;
+
+/**
+ * Thom KB-ticket reconcile sweep (dark-launched behind THOM_ZENDESK_TICKETS):
+ * the safety net under webhook misses for internal-ticket ingestion. For each
+ * group in THOM_TICKET_GROUPS (SEPARATE from ZD_SYNC_GROUPS), list tickets
+ * updated in the last N hours and enqueue them onto THOM_INGEST_QUEUE, whose
+ * consumer upserts a pointer row (idempotent, so re-enqueuing is free). No-op
+ * when the flag is off or no KB groups are configured.
+ */
+export async function runThomTicketSweep(env: Env, signal: AbortSignal): Promise<SweepResult> {
+  const result: SweepResult = { groups: {}, enqueued: 0 };
+  if (env.THOM_ZENDESK_TICKETS !== "1") return result;
+  const groups = parseTicketGroups(env.THOM_TICKET_GROUPS);
+  if (groups.size === 0) return result;
+  for (const groupId of groups) {
+    try {
+      const ids = await sweepQuery(
+        env,
+        `type:ticket group_id:${groupId} updated>${THOM_TICKET_SWEEP_HOURS}hours`,
+        signal,
+      );
+      result.groups[String(groupId)] = ids.length;
+      for (const ticketId of ids) {
+        await env.THOM_INGEST_QUEUE.send(buildTicketIngestMessage(env, ticketId));
+        result.enqueued++;
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error(`[thom-ticket-sweep] group ${groupId} sweep failed:`, msg);
+      result.error = msg;
+    }
+  }
+  console.log(`[thom-ticket-sweep] enqueued ${result.enqueued} ticket(s)`, JSON.stringify(result.groups));
   return result;
 }

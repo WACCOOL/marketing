@@ -1,6 +1,7 @@
 import type { Env } from "./env.js";
 import { serviceSupabase } from "./supabase.js";
 import { syncZendeskTicket } from "./zendeskSync.js";
+import { maybeEnqueueKbTicket } from "./thomTickets.js";
 
 /**
  * wac-zendesk-sync queue consumer.
@@ -39,6 +40,11 @@ export async function handleZendeskSyncBatch(
     try {
       const res = await syncZendeskTicket(env, ticketId, AbortSignal.timeout(PER_TICKET_TIMEOUT_MS), sb);
       if (res.action === "error") throw new Error(res.error ?? "sync error");
+      // Piggyback Thom's KB-ticket capture (dark-launched behind
+      // THOM_ZENDESK_TICKETS): reuse the group id syncZendeskTicket already
+      // resolved so an eligible ticket also enqueues onto THOM_INGEST_QUEUE for
+      // a pointer-row upsert. Best-effort — never fails the mirror.
+      await maybeEnqueueKbTicket(env, ticketId, res.groupId);
       message.ack();
     } catch (e) {
       const errMessage = e instanceof Error ? e.message : String(e);

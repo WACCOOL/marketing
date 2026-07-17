@@ -76,7 +76,7 @@ export const TOOLS: ClaudeTool[] = [
   {
     name: "search_docs",
     description:
-      "Search the CONTENTS of spec sheets, installation manuals, curated WAC marketing overviews/positioning/FAQs, AND WAC Help Center (support) articles for a specific fact (cutout size, dimming compatibility, mounting, torque, wiring, exact photometrics), WAC's own product/brand/system positioning and messaging, or how-to / troubleshooting / warranty / support guidance. Returns matching passages with the document + link for citation.",
+      "Search the CONTENTS of spec sheets, installation manuals, curated WAC marketing overviews/positioning/FAQs, WAC Help Center (support) articles, AND internal support-ticket resolutions (how a real customer issue was diagnosed and fixed) for a specific fact (cutout size, dimming compatibility, mounting, torque, wiring, exact photometrics), WAC's own product/brand/system positioning and messaging, or how-to / troubleshooting / warranty / support guidance. Returns matching passages with the document + link for citation.",
     input_schema: {
       type: "object",
       properties: {
@@ -185,7 +185,10 @@ async function searchDocs(ctx: ToolContext, input: Record<string, unknown>): Pro
     query_embedding: embedding,
     query_text: query,
     scope_filter: null, // internal surface: RLS gates; sees public + internal
-    doc_types: ["spec_sheet", "manual", "marketing", "zendesk_article"],
+    // zendesk_ticket rows are scope='internal' — a future public surface passing
+    // scope_filter='public' excludes them; this internal agent (scope_filter=null)
+    // sees them under RLS.
+    doc_types: ["spec_sheet", "manual", "marketing", "zendesk_article", "zendesk_ticket"],
     brand_filter: str(input.brand),
     match_count: 8,
   });

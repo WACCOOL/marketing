@@ -56,6 +56,11 @@ jobs:
           THOM_ZENDESK_ARTICLES: ${{ secrets.THOM_ZENDESK_ARTICLES }}
           ZENDESK_HC_BRAND_MAP: ${{ secrets.ZENDESK_HC_BRAND_MAP }}
           ZENDESK_HC_LOCALE: ${{ secrets.ZENDESK_HC_LOCALE }}
+          # Internal-ticket capture is gated Worker-side (THOM_ZENDESK_TICKETS);
+          # the CLI extracts whatever zendesk_ticket rows are pending regardless,
+          # reusing the ZENDESK_* creds above to read the ticket + public comments
+          # (which it PII-redacts before embedding). Passed through for parity.
+          THOM_ZENDESK_TICKETS: ${{ secrets.THOM_ZENDESK_TICKETS }}
         run: >-
           pnpm --filter @wac/docs-ingest ingest --
           ${{ inputs.dry_run && '--dry-run' || '' }}

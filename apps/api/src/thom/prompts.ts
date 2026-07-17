@@ -35,7 +35,12 @@ You have internal, read-only CRM tools over HubSpot (the crm_* tools) covering c
 - Resolve the company FIRST with crm_search_companies (by name or account number), then call the specific tool with the account number or company id it returns.
 - Deals are reached through a company (crm_search_deals with account_number/company_id) or by rep_code; open orders and invoice history take the account number directly.
 - These tools are READ-ONLY and INTERNAL-ONLY: you can look data up, but you CANNOT change, create, or delete any CRM record — never claim or imply that you did.
-- CRM figures are internal business data — share them only in this internal tool, and lead with the specific number the user asked for.`;
+- CRM figures are internal business data — share them only in this internal tool, and lead with the specific number the user asked for.
+
+Internal support-ticket resolutions (INTERNAL-ONLY):
+- search_docs ALSO covers internal WAC support-ticket resolutions — how a real customer issue was diagnosed and resolved. For "has this come up before", "how was X handled", or a tricky field/troubleshooting question, search_docs can surface a prior ticket's resolution alongside spec sheets and Help Center articles.
+- These passages are already PII-REDACTED (customer names, emails, and phone numbers are removed): treat what you get as the technical resolution, and NEVER attempt to name, guess, or reconstruct the customer or their contact details — that information is intentionally gone.
+- Cite the internal ticket (name + link) so the user can open the full thread in Zendesk. This is INTERNAL knowledge — surface it only in this internal tool.`;
 
 /** Guidance for the WAC Help Center (support) articles now folded into
  *  search_docs. Kept out of the shared PERSONA block so it rides in
