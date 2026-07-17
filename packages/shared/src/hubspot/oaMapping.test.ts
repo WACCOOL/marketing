@@ -5,6 +5,7 @@ import {
   oaCurrency,
   oaDateTimeToMs,
   oaDateToHubspotDate,
+  oaDateToHubspotDateTime,
   oaDealProps,
   oaCompanyProps,
   oaDestination,
@@ -80,10 +81,14 @@ describe("oa dates", () => {
     expect(oaDateTimeToMs("2025-12-26 16:14:10")).toBe(Date.UTC(2025, 11, 26, 8, 14, 10));
   });
 
-  it("maps any date/datetime to noon UTC of the China-local day", () => {
-    const noon = Date.UTC(2026, 0, 22) + 43_200_000;
-    expect(oaDateToHubspotDate("2026-01-22 00:00:00")).toBe(noon);
-    expect(oaDateToHubspotDate("2026-01-22")).toBe(noon);
+  it("maps date properties to midnight UTC (HubSpot rejects anything else)", () => {
+    const midnight = Date.UTC(2026, 0, 22);
+    expect(oaDateToHubspotDate("2026-01-22 00:00:00")).toBe(midnight);
+    expect(oaDateToHubspotDate("2026-01-22")).toBe(midnight);
+  });
+
+  it("maps datetime properties (closedate) to noon UTC so US timezones show the right day", () => {
+    expect(oaDateToHubspotDateTime("2026-01-22 00:00:00")).toBe(Date.UTC(2026, 0, 22) + 43_200_000);
   });
 
   it("rejects blanks and sentinels", () => {
@@ -221,7 +226,7 @@ describe("oaDealProps", () => {
       requested_by: "kim",
       deal_currency_code: "USD",
     });
-    expect(props.quote_creation_date).toBe(Date.UTC(2025, 11, 25) + 43_200_000);
+    expect(props.quote_creation_date).toBe(Date.UTC(2025, 11, 25));
   });
 
   it("skips blank fields (remarks is empty in the fixture) and never emits SAP keys", () => {
@@ -270,7 +275,7 @@ describe("oaOrderProps", () => {
       oa_order_remark: "仅仅OA测试流程",
       hs_currency_code: "USD",
     });
-    expect(props.expected_delivery_date).toBe(Date.UTC(2026, 0, 22) + 43_200_000);
+    expect(props.expected_delivery_date).toBe(Date.UTC(2026, 0, 22));
   });
 
   it("never writes the SAP-owned order keys", () => {

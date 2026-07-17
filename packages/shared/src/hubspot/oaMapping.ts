@@ -172,12 +172,24 @@ export function oaDateTimeToMs(v: unknown): number | null {
 }
 
 /**
- * OA date/datetime -> HubSpot date-property value: NOON UTC on the China-local
- * calendar day. Noon, not midnight — midnight-UTC values render as the
- * previous day in US timezones on datetime-typed properties (the closedate
- * lesson), and noon displays identically on true date-typed properties.
+ * OA date/datetime -> HubSpot DATE-property value: MIDNIGHT UTC on the
+ * China-local calendar day. HubSpot REJECTS non-midnight values on date-typed
+ * properties ("... is at 12:0:0.0 UTC, not midnight!" — hit live 2026-07-17),
+ * and date-typed properties render timezone-free, so midnight is safe here.
  */
 export function oaDateToHubspotDate(v: unknown): number | null {
+  const p = parseOaDate(v);
+  if (!p) return null;
+  return Date.UTC(p.y, p.mo - 1, p.d);
+}
+
+/**
+ * OA date/datetime -> HubSpot DATETIME-property value (closedate): NOON UTC on
+ * the China-local day. Datetime properties accept any instant but render in
+ * the viewer's timezone — midnight UTC displays as the PREVIOUS day in US
+ * timezones (the closedate lesson), so noon it is.
+ */
+export function oaDateToHubspotDateTime(v: unknown): number | null {
   const p = parseOaDate(v);
   if (!p) return null;
   return Date.UTC(p.y, p.mo - 1, p.d) + NOON_MS;

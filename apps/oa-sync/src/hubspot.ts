@@ -6,7 +6,7 @@ import {
   OA_STAGE_LABELS,
   UNIVERSAL_PIPELINE_ID,
   oaCompanyProps,
-  oaDateToHubspotDate,
+  oaDateToHubspotDateTime,
   oaDealProps,
   oaDestination,
   oaLineItems,
@@ -168,6 +168,30 @@ async function batchUpdate(token: string, obj: string, inputs: { id: string; pro
   }
 }
 
+/**
+ * batchUpsert whose returned map is guaranteed complete: if the upsert
+ * response omitted results (seen live: an empty/async response right after
+ * the key property was first created — no error, just no results), the
+ * missing keys are re-resolved by unique idProperty so association building
+ * never silently drops records.
+ */
+async function batchUpsertResolving(
+  token: string,
+  obj: string,
+  inputs: { idProperty: string; id: string; properties: Props }[],
+): Promise<Map<string, string>> {
+  if (inputs.length === 0) return new Map();
+  const map = await batchUpsert(token, obj, inputs);
+  if (map.size < inputs.length) {
+    const keyProp = inputs[0]!.idProperty;
+    const missing = inputs.filter((i) => !map.has(i.id)).map((i) => i.id);
+    console.warn(`[oa-sync] ${obj} upsert returned ${map.size}/${inputs.length} ids — re-resolving ${missing.length} by ${keyProp}`);
+    const extra = await resolveIds(token, obj, keyProp, missing);
+    for (const [k, v] of extra) map.set(k, v.__id);
+  }
+  return map;
+}
+
 interface AssocType {
   typeId: number;
   category: "HUBSPOT_DEFINED" | "USER_DEFINED";
@@ -315,12 +339,59 @@ async function ensureProps(token: string, obj: "deals" | "companies" | "orders" 
                   options: (d.options ?? []).map((o) => ({ label: o, value: o })),
                 }
               : { type: "string", fieldType: "text" };
-    await hs(token, `/crm/v3/properties/${obj}`, {
-      method: "POST",
-      body: JSON.stringify({ name: d.name, label: d.label, groupName: GROUP, ...hsType, ...(d.unique ? { hasUniqueValue: true } : {}) }),
-    });
+    const body = { name: d.name, label: d.label, groupName: GROUP, ...hsType };
+    try {
+      await hs(token, `/crm/v3/properties/${obj}`, {
+        method: "POST",
+        body: JSON.stringify({ ...body, ...(d.unique ? { hasUniqueValue: true } : {}) }),
+      });
+    } catch (e) {
+      // A previously ARCHIVED same-name property blocks unique recreation
+      // ("Can't update existing non-unique property to be unique") until it is
+      // permanently purged in the UI. Fall back to non-unique — deal resolution
+      // uses the search API and doesn't depend on the unique constraint.
+      if (!d.unique || !String(e).includes("non-unique property to be unique")) throw e;
+      console.warn(`[oa-sync] ${obj}.${d.name}: cannot recreate as unique while an archived copy exists — creating NON-unique. Purge the archived property (Settings → Properties → Archived) and recreate to restore the constraint.`);
+      await hs(token, `/crm/v3/properties/${obj}`, { method: "POST", body: JSON.stringify(body) });
+    }
     console.log(`[oa-sync] created ${obj} property ${d.name}`);
   }
+}
+
+/**
+ * Resolve object ids by ANY property via the search API — unlike
+ * resolveIds/batch-read this works on non-unique properties (needed for
+ * deals.oa_quote_number, which can't be unique while its archived
+ * predecessor lingers). Search indexing lags writes by seconds, which is fine
+ * for an hourly cron; within a run the create/update split uses returned ids.
+ */
+async function searchIds(token: string, obj: string, prop: string, values: string[], extraProps: string[] = []): Promise<Map<string, Record<string, string> & { __id: string }>> {
+  const map = new Map<string, Record<string, string> & { __id: string }>();
+  const uniq = [...new Set(values.filter(Boolean))];
+  for (let i = 0; i < uniq.length; i += BATCH) {
+    const batch = uniq.slice(i, i + BATCH);
+    try {
+      const res = await hs<{ results: { id: string; properties: Record<string, string> }[] }>(
+        token,
+        `/crm/v3/objects/${obj}/search`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            filterGroups: [{ filters: [{ propertyName: prop, operator: "IN", values: batch }] }],
+            properties: [prop, ...extraProps],
+            limit: 200,
+          }),
+        },
+      );
+      for (const r of res.results ?? []) {
+        const key = r.properties[prop];
+        if (key && !map.has(key)) map.set(key, { ...r.properties, __id: r.id });
+      }
+    } catch (e) {
+      console.warn(`[oa-sync] ${obj} search resolve batch failed: ${String(e).slice(0, 160)}`);
+    }
+  }
+  return map;
 }
 
 // --- pipelines ---------------------------------------------------------------
@@ -666,7 +737,7 @@ export async function pushOaToHubspot(sb: SupabaseClient, token: string, scope: 
   console.log(`[oa-sync] companies: ${createdCompanies.size} created, ${companyUpdates.length} updated (${accounts.length} referenced)`);
 
   // --- deals: resolve portal-wide, split create/update ----------------------
-  const existingDeals = await resolveIds(token, "deals", "oa_quote_number", pushable.map((u) => u.quoteId), ["pipeline", "dealstage"]);
+  const existingDeals = await searchIds(token, "deals", "oa_quote_number", pushable.map((u) => u.quoteId), ["pipeline", "dealstage"]);
   const stageIdFor = (label: string): string | undefined => pipelines.dealStageIdByLabel.get(label.toLowerCase());
 
   const dealCreates: { properties: Props }[] = [];
@@ -689,7 +760,7 @@ export async function pushOaToHubspot(sb: SupabaseClient, token: string, scope: 
     if (stageId) createProps.dealstage = stageId;
     if (ordered) {
       const closeMs = u.orderDetails
-        .map((d) => oaDateToHubspotDate(d.createDate))
+        .map((d) => oaDateToHubspotDateTime(d.createDate))
         .filter((n): n is number => n !== null)
         .sort((a, b) => a - b)[0];
       if (closeMs !== undefined) createProps.closedate = closeMs;
@@ -711,9 +782,8 @@ export async function pushOaToHubspot(sb: SupabaseClient, token: string, scope: 
   const lineInputs = pushable.flatMap((u) =>
     oaLineItems(u.quotation).map((l) => ({ idProperty: "oa_line_key", id: l.key, properties: l.props, _quote: u.quoteId })),
   );
-  const lineIdByKey = lineInputs.length
-    ? await batchUpsert(token, "line_items", lineInputs.map(({ _quote, ...x }) => x))
-    : new Map<string, string>();
+  console.log(`[oa-sync] line items: ${lineInputs.length} from ${pushable.filter((u) => (u.quotation.productList ?? []).length > 0).length} quotes with product lists`);
+  const lineIdByKey = await batchUpsertResolving(token, "line_items", lineInputs.map(({ _quote, ...x }) => x));
   summary.lineItems = lineIdByKey.size;
 
   // Line → Deal.
@@ -735,9 +805,7 @@ export async function pushOaToHubspot(sb: SupabaseClient, token: string, scope: 
       return { idProperty: "oa_order_id", id: asId(d.id), properties, _quote: u.quoteId };
     }),
   );
-  const orderIdByOaId = orderInputs.length
-    ? await batchUpsert(token, "orders", orderInputs.map(({ _quote, ...x }) => x))
-    : new Map<string, string>();
+  const orderIdByOaId = await batchUpsertResolving(token, "orders", orderInputs.map(({ _quote, ...x }) => x));
   summary.orders = orderIdByOaId.size;
 
   // Order → Line Item (this quote's lines), Order → Company, Order → Deal.
