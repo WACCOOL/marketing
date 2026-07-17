@@ -287,6 +287,20 @@ export interface Env {
   // Hard cap on web_search calls per turn (Anthropic max_uses). Parsed as an
   // int, default 3, clamped to 1–5 so a bad value can't uncork billing.
   THOM_WEB_SEARCH_MAX_USES?: string;
+  // Thom Bot — dark-launch flag for ZenDesk Help Center ARTICLE capture in the
+  // docs-ingest CLI (apps/docs-ingest). Unset/"0" = no article capture; "1" =
+  // list published articles and fold them into kb_documents/kb_chunks so Thom's
+  // search_docs can cite support articles. Reuses the ZENDESK_* creds above.
+  // (Consumed by the Node CLI via process.env; declared here so the Thom env
+  // surface is documented in one place.)
+  THOM_ZENDESK_ARTICLES?: string;
+  // JSON map of ZenDesk Help Center section_id / category_id -> brand string
+  // ("WAC Lighting" | "Modern Forms" | "Schonbek" | "AiSpire"), e.g.
+  // { "360001": "WAC Lighting" }. Drives kb_documents.brand for captured
+  // articles; a label matching a brand name is the fallback. Unset = brand null.
+  ZENDESK_HC_BRAND_MAP?: string;
+  // Help Center locale to ingest (default "en-us"). Consumed by the docs-ingest CLI.
+  ZENDESK_HC_LOCALE?: string;
   // READ-ONLY HubSpot private-app token for Thom's internal CRM tools (deals /
   // companies / orders / rep codes). DELIBERATELY a separate app from
   // HUBSPOT_TOKEN: Thom ingests untrusted text (tickets, web results), so the

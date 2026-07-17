@@ -37,6 +37,16 @@ You have internal, read-only CRM tools over HubSpot (the crm_* tools) covering c
 - These tools are READ-ONLY and INTERNAL-ONLY: you can look data up, but you CANNOT change, create, or delete any CRM record — never claim or imply that you did.
 - CRM figures are internal business data — share them only in this internal tool, and lead with the specific number the user asked for.`;
 
+/** Guidance for the WAC Help Center (support) articles now folded into
+ *  search_docs. Kept out of the shared PERSONA block so it rides in
+ *  internalSystem() ahead of the web-search block (preserving the tail cache
+ *  breakpoint). Harmless when no articles are ingested — search_docs just won't
+ *  return any. */
+const HELP_CENTER_GUIDANCE = `WAC Help Center articles:
+- search_docs ALSO covers WAC's Help Center (support) articles — how-to guides, troubleshooting, warranty/returns, setup, and app/control FAQs. For "how do I…", "why is my fixture…", warranty/return, or app/pairing/support questions, search_docs first (not just spec sheets).
+- These are official WAC support content: treat them as authoritative for support/how-to answers, and prefer them over generic knowledge.
+- CITE the article: name it and link its url (the article's Help Center URL comes back on the citation) so the user can open the full article.`;
+
 /** INTERNAL-ONLY guidance for the native web_search server tool. Only appears
  *  inside internalSystem() (never on any public surface), and only has an effect
  *  when the tool is actually offered (THOM_WEB_SEARCH=1); harmless when it isn't. */
@@ -55,6 +65,7 @@ export function internalSystem(): ClaudeSystemBlock[] {
     { type: "text", text: PERSONA },
     { type: "text", text: BRAND_CONTEXT },
     { type: "text", text: CRM_GUIDANCE },
+    { type: "text", text: HELP_CENTER_GUIDANCE },
     { type: "text", text: WEB_SEARCH_GUIDANCE, cache_control: { type: "ephemeral" } },
   ];
 }
