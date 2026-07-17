@@ -433,6 +433,9 @@ interface QuoteUnit {
   quotation: OaQuotation;
   status: string | null;
   destination: "china" | "international" | "unknown";
+  /** The country/location the destination verdict was computed from (quote's own fields enriched by the joined project). */
+  resolvedCountry: string | null;
+  resolvedLocation: string | null;
   orderDetails: OaOrderDetail[];
   changed: boolean;
 }
@@ -496,16 +499,17 @@ export function buildQuoteUnits(rows: OaStagedRow[], opts: { force?: boolean } =
       projectByName.get(asId(quotation.project?.name)) ??
       projectByName.get(asId(quotation.title));
     const status = asId(quotation.status ?? quotation.project?.status ?? (project as { status?: unknown } | undefined)?.status) || null;
-    const destination = oaDestination({
-      country: asId(quotation.project?.country ?? (project as { country?: unknown } | undefined)?.country) || null,
-      location: asId(quotation.project?.location ?? (project as { location?: unknown } | undefined)?.location) || null,
-    });
+    const resolvedCountry = asId(quotation.project?.country ?? (project as { country?: unknown } | undefined)?.country) || null;
+    const resolvedLocation = asId(quotation.project?.location ?? (project as { location?: unknown } | undefined)?.location) || null;
+    const destination = oaDestination({ country: resolvedCountry, location: resolvedLocation });
 
     units.push({
       quoteId,
       quotation,
       status,
       destination,
+      resolvedCountry,
+      resolvedLocation,
       orderDetails: a.orderRows.map((r) => r.raw_json as OaOrderDetail),
       changed: (a.quoteRow ? changed(a.quoteRow) : false) || a.orderRows.some(changed),
     });
@@ -603,7 +607,7 @@ export async function pushOaToHubspot(sb: SupabaseClient, token: string, scope: 
     if (domestic.length || unknown.length) {
       console.log(
         "[oa-sync] DRY RUN — skipped destinations sample:",
-        [...domestic, ...unknown].slice(0, 10).map((u) => ({ quote: u.quoteId, dest: u.destination, country: u.quotation.project?.country ?? null, location: u.quotation.project?.location ?? null })),
+        [...domestic, ...unknown].slice(0, 10).map((u) => ({ quote: u.quoteId, dest: u.destination, country: u.resolvedCountry, location: u.resolvedLocation })),
       );
     }
     await ensurePipelines(token, { dryRun: true });

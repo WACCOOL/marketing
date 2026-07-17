@@ -127,6 +127,20 @@ describe("oaDestination", () => {
     expect(oaDestination({ location: "Macau" })).toBe("international");
   });
 
+  it("lets a non-mainland location beat a 'China' country (OA styles HK that way)", () => {
+    expect(oaDestination({ country: "China", location: "HK" })).toBe("international");
+    expect(oaDestination({ country: "China", location: "香港" })).toBe("international");
+    expect(oaDestination({ country: "China", location: "Beijing" })).toBe("china");
+  });
+
+  it("flags China-vs-other field conflicts as unknown for review, not domestic", () => {
+    expect(oaDestination({ country: "China", location: "Pakistan" })).toBe("unknown");
+    expect(oaDestination({ country: "China", location: "Korea" })).toBe("unknown");
+    expect(oaDestination({ country: "Korea", location: "Shanghai" })).toBe("unknown");
+    expect(oaDestination({ country: "China", location: "China" })).toBe("china");
+    expect(oaDestination({ country: "CHINA" })).toBe("china");
+  });
+
   it("fails closed: blank or unrecognized bare locations are unknown", () => {
     expect(oaDestination({})).toBe("unknown");
     expect(oaDestination({ location: "" })).toBe("unknown");

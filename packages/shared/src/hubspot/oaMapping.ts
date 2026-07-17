@@ -213,7 +213,7 @@ export type OaDestination = "china" | "international" | "unknown";
  * are checked BEFORE the China patterns so "Taiwan, China" style strings
  * classify as international.
  */
-const NON_MAINLAND = /\b(hong\s*kong|hongkong|hk|macau|macao|taiwan|taipei)\b|香港|澳门|台湾|臺灣/i;
+const NON_MAINLAND = /\b(hong\s*kong|hongkong|hk|macau|macao|taiwan|taipei)\b|香港|澳门|澳門|台湾|臺灣/i;
 
 const CHINA_WORDS =
   /\b(china|prc|cn|chn)\b|中国|中华|中國/i;
@@ -235,10 +235,20 @@ export function oaDestination(fields: {
 }): OaDestination {
   const country = String(fields.country ?? "").trim();
   const location = String(fields.location ?? "").trim();
-  for (const s of [country, location]) {
-    if (!s) continue;
-    if (NON_MAINLAND.test(s)) return "international";
-    if (CHINA_WORDS.test(s) || CHINA_PLACES.test(s)) return "china";
+  const all = [country, location].filter(Boolean);
+  const isChina = (s: string) => CHINA_WORDS.test(s) || CHINA_PLACES.test(s);
+  // Non-mainland markers win over China matches ACROSS fields, not just within
+  // one: OA records Hong Kong projects as country "China" + location "HK"
+  // (seen live 2026-07-17), and per the business rule HK/Macau/Taiwan ship
+  // international.
+  if (all.some((s) => NON_MAINLAND.test(s))) return "international";
+  if (all.some(isChina)) {
+    // Conflicting fields (seen live: country "China" + location "Pakistan"/
+    // "Korea") mean OA's country field can't be trusted for this record —
+    // plausibly a real international shipment. Fail closed as UNKNOWN (still
+    // skipped, but surfaced for review) rather than mislabeling it domestic.
+    if (all.some((s) => !isChina(s))) return "unknown";
+    return "china";
   }
   // An explicit non-China country is decisive even if we can't recognize the
   // free-text location; a bare unrecognized location is NOT (could be a

@@ -63,7 +63,14 @@ async function loadStaged(sb: SupabaseClient): Promise<Map<string, { oa_update_d
   return map;
 }
 
-async function stage(sb: SupabaseClient, inputs: StageInput[]): Promise<number> {
+async function stage(sb: SupabaseClient, rawInputs: StageInput[]): Promise<number> {
+  // Dedupe within the run (last wins) — e.g. projects are keyed by name and
+  // OA has duplicate project names; a same-key pair in one upsert batch is a
+  // Postgres "cannot affect row a second time" error.
+  const inputs = [...new Map(rawInputs.map((r) => [`${r.record_type}:${r.oa_id}`, r])).values()];
+  if (inputs.length < rawInputs.length) {
+    console.warn(`[oa-sync] deduped ${rawInputs.length - inputs.length} same-key records within this pull`);
+  }
   let staged = 0;
   for (let i = 0; i < inputs.length; i += 200) {
     const batch = inputs.slice(i, i + 200).map((r) => ({
