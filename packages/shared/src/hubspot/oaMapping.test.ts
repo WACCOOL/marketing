@@ -147,7 +147,8 @@ describe("oaStageForStatus", () => {
     expect(oaStageForStatus("Re-design")).toBe(OA_STAGE_LABELS.spec);
     expect(oaStageForStatus("Price negotiation")).toBe(OA_STAGE_LABELS.bid);
     expect(oaStageForStatus("  ON  HOLD ")).toBe(OA_STAGE_LABELS.bid);
-    expect(oaStageForStatus("Construction")).toBe(OA_STAGE_LABELS.commit);
+    // Commit = "order promised, PO pending" — Construction doesn't imply that.
+    expect(oaStageForStatus("Construction")).toBe(OA_STAGE_LABELS.bid);
     expect(oaStageForStatus("Complete")).toBe(OA_STAGE_LABELS.buy);
     expect(oaStageForStatus("Cancellation")).toBe(OA_STAGE_LABELS.lost);
   });

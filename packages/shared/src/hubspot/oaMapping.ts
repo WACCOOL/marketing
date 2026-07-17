@@ -288,7 +288,12 @@ const STATUS_TO_STAGE: Record<string, OaStageLabel> = {
   "on hold": OA_STAGE_LABELS.bid,
   delay: OA_STAGE_LABELS.bid,
 
-  construction: OA_STAGE_LABELS.commit,
+  // Commit strictly means "order promised but PO not yet received" (Davis
+  // 2026-07-17) — none of the known OA statuses clearly means that, so nothing
+  // maps to Commit yet. Construction just means the project is being built
+  // (still chasing the order), so it stays in Bid; once a PO exists, OA has an
+  // order record and the order-exists override lands the deal in Buy anyway.
+  construction: OA_STAGE_LABELS.bid,
 
   complete: OA_STAGE_LABELS.buy,
 
