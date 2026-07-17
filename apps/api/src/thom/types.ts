@@ -53,5 +53,9 @@ export interface ThomUsage {
   input_tokens: number;
   output_tokens: number;
   cache_read_input_tokens: number;
+  /** The model that produced the ANSWERING turn (last write wins in the loop).
+   *  Reflects the escalation model when a hard question was tiered up. */
   model: string;
+  /** True when the loop escalated to the stronger model on any turn. */
+  escalated: boolean;
 }
