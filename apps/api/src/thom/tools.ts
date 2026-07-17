@@ -33,6 +33,20 @@ export const TOOLS: ClaudeTool[] = [
     },
   },
   {
+    name: "get_related_products",
+    description:
+      "List the OTHER products in the same family or category as a product — e.g. every component of a track SYSTEM (channel, track heads, transformer/power supply, connectors, joiners, end caps, covers). Use this to build a complete parts/component list for a project. Pass a sku to find its siblings, or an explicit family/category.",
+    input_schema: {
+      type: "object",
+      properties: {
+        sku: { type: "string", description: "A product SKU whose family/category to expand." },
+        family: { type: "string", description: "Explicit product family." },
+        category: { type: "string", description: "Explicit product category, e.g. 'Outdoor Track System'." },
+        limit: { type: "integer", description: "Max results (default 60)." },
+      },
+    },
+  },
+  {
     name: "search_docs",
     description:
       "Search the CONTENTS of spec sheets and installation manuals for a specific fact (cutout size, dimming compatibility, mounting, torque, wiring, exact photometrics). Returns matching passages with the document + page for citation.",
@@ -189,6 +203,45 @@ async function searchDocs(ctx: ToolContext, input: Record<string, unknown>): Pro
   return { content, cards: [], citations };
 }
 
+async function getRelated(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutput> {
+  let family = str(input.family);
+  let category = str(input.category);
+  const sku = str(input.sku);
+  if (sku && !family && !category) {
+    const { data } = await ctx.sb
+      .from("products")
+      .select("family, category")
+      .eq("sku", sku)
+      .maybeSingle();
+    family = str(data?.family);
+    category = str(data?.category);
+  }
+  if (!family && !category) {
+    return { content: "get_related_products: provide a sku, family, or category.", cards: [], citations: [] };
+  }
+  const limit = Math.min(Number(input.limit) || 60, 100);
+  const found = new Map<string, { sku: string; name: string; category: string | null }>();
+  for (const [col, val] of [
+    ["family", family],
+    ["category", category],
+  ] as const) {
+    if (!val) continue;
+    const { data, error } = await ctx.sb
+      .from("products")
+      .select("sku, name, category")
+      .eq(col, val)
+      .limit(limit);
+    if (error) continue;
+    for (const r of (data ?? []) as { sku: string; name: string; category: string | null }[]) {
+      if (r.sku !== sku) found.set(r.sku, r);
+    }
+  }
+  if (!found.size) return { content: "No related products found.", cards: [], citations: [] };
+  const scope = [family && `family "${family}"`, category && `category "${category}"`].filter(Boolean).join(" / ");
+  const list = [...found.values()].map((r) => `- ${r.sku} — ${r.name}`).join("\n");
+  return { content: `${found.size} products in ${scope}:\n${list}`, cards: [], citations: [] };
+}
+
 export async function dispatch(
   ctx: ToolContext,
   name: string,
@@ -199,6 +252,8 @@ export async function dispatch(
       return searchProducts(ctx, input);
     case "get_product":
       return getProduct(ctx, input);
+    case "get_related_products":
+      return getRelated(ctx, input);
     case "search_docs":
       return searchDocs(ctx, input);
     default:

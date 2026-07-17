@@ -97,6 +97,7 @@ async function syncPdpSpecSheets(sb: SupabaseClient, dryRun: boolean): Promise<n
       .from("pdp_urls")
       .select("sku, brand, spec_sheet_url")
       .not("spec_sheet_url", "is", null)
+      .neq("spec_sheet_url", "") // "" = resolver attempted, none found
       .range(from, from + 999);
     if (error) throw new Error(`pdp_urls read failed: ${error.message}`);
     const rows = (data ?? []) as PdpRow[];

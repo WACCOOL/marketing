@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Bot, ExternalLink, FileText, Loader2, Plus, Send } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import {
   sendChat,
   type Citation,
@@ -177,7 +178,23 @@ function TurnView({ turn }: { turn: Turn }) {
   return (
     <div className={`thom-turn ${turn.role}`}>
       <div className={`thom-bubble${turn.error ? " thom-error" : ""}`}>
-        <div className="thom-text">{turn.text}</div>
+        {turn.role === "assistant" ? (
+          <div className="thom-text thom-md">
+            <ReactMarkdown
+              components={{
+                a: ({ href, children }) => (
+                  <a href={href} target="_blank" rel="noreferrer">
+                    {children}
+                  </a>
+                ),
+              }}
+            >
+              {turn.text}
+            </ReactMarkdown>
+          </div>
+        ) : (
+          <div className="thom-text">{turn.text}</div>
+        )}
         {turn.cards?.map((c) => <CardView key={c.sku} card={c} />)}
         {turn.citations && turn.citations.length > 0 && (
           <div className="thom-citations">
