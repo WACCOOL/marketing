@@ -151,4 +151,66 @@ export class ZendeskReader {
     const body = (await this.get(path)) as { article?: ZendeskArticle };
     return body?.article ?? null;
   }
+
+  /**
+   * Fetch one support ticket + its side-loaded users (`?include=users` gives the
+   * requester/submitter names needed for name redaction). Used by the ticket
+   * extraction branch; NO ticket body is ever persisted — the subject + PUBLIC
+   * comment bodies are redacted, then chunked/embedded.
+   */
+  async getTicket(id: string | number): Promise<{ ticket: ZendeskTicket; users: ZendeskUser[] } | null> {
+    const body = (await this.get(`/api/v2/tickets/${id}.json?include=users`)) as {
+      ticket?: ZendeskTicket;
+      users?: ZendeskUser[];
+    };
+    if (!body?.ticket) return null;
+    return { ticket: body.ticket, users: Array.isArray(body.users) ? body.users : [] };
+  }
+
+  /**
+   * Fetch a ticket's PUBLIC comments + side-loaded users (author names). Internal
+   * agent notes are excluded here — the KB embeds the public conversation only
+   * (and even those are PII-redacted before embedding).
+   */
+  async getTicketComments(
+    id: string | number,
+  ): Promise<{ comments: ZendeskTicketComment[]; users: ZendeskUser[] }> {
+    const body = (await this.get(`/api/v2/tickets/${id}/comments.json?include=users`)) as {
+      comments?: ZendeskTicketComment[];
+      users?: ZendeskUser[];
+    };
+    const all = Array.isArray(body?.comments) ? body!.comments! : [];
+    return {
+      comments: all.filter((c) => c.public),
+      users: Array.isArray(body?.users) ? body!.users! : [],
+    };
+  }
+}
+
+/** The subset of a ZenDesk ticket the extraction pass reads (never persisted). */
+export interface ZendeskTicket {
+  id: number;
+  subject?: string;
+  description?: string;
+  requester_id?: number;
+  submitter_id?: number;
+  collaborator_ids?: number[];
+  email_cc_ids?: number[];
+  updated_at?: string;
+}
+
+export interface ZendeskTicketComment {
+  id: number;
+  public: boolean;
+  author_id: number;
+  plain_body?: string;
+  body?: string;
+  html_body?: string;
+  created_at?: string;
+}
+
+export interface ZendeskUser {
+  id: number;
+  name?: string;
+  email?: string;
 }

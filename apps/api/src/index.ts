@@ -42,7 +42,7 @@ import { handleIngestBatch } from "./ingestQueue.js";
 import { handleEventLeadBatch } from "./eventLeadQueue.js";
 import { handleZendeskSyncBatch, type ZendeskSyncMessage } from "./zendeskSyncQueue.js";
 import { handleThomIngestBatch, type ThomIngestMessage } from "./thomIngest.js";
-import { runZendeskReconcile } from "./zendeskReconcile.js";
+import { runZendeskReconcile, runThomTicketSweep } from "./zendeskReconcile.js";
 import type { IngestMessage } from "./ingest.js";
 import type { EventLeadBody } from "./eventLead.js";
 import { runGraphPull } from "./graphPull.js";
@@ -134,7 +134,8 @@ app.all("*", async (c) => c.env.ASSETS.fetch(c.req.raw));
  *   - every 30 minutes at :15/:45 — showroom PO orders sheets -> HubSpot deals
  *     (staggered off the :00/:30 Graph pull; gated on SHOWROOM_SYNC_ENABLED)
  *   - daily 08:45 UTC — Zendesk mirror reconcile (re-enqueue tickets updated
- *     in the last 48h; the net under webhook outages / circuit breaking)
+ *     in the last 48h; the net under webhook outages / circuit breaking), plus
+ *     the Thom KB internal-ticket sweep (dark-launched behind THOM_ZENDESK_TICKETS)
  * Each branch is best-effort and logs rather than throwing so one blip doesn't
  * fail the invocation.
  */
@@ -175,6 +176,14 @@ async function scheduled(event: ScheduledController, env: Env): Promise<void> {
       await runZendeskReconcile(env, AbortSignal.timeout(300_000));
     } catch (e) {
       console.error("[cron] zendesk reconcile failed", e);
+    }
+    // Thom KB internal-ticket sweep (dark-launched behind THOM_ZENDESK_TICKETS):
+    // catch webhook misses for ticket ingestion. Separate try so a failure here
+    // never masks the mirror reconcile above.
+    try {
+      await runThomTicketSweep(env, AbortSignal.timeout(300_000));
+    } catch (e) {
+      console.error("[cron] thom ticket sweep failed", e);
     }
   }
 }

@@ -301,6 +301,17 @@ export interface Env {
   ZENDESK_HC_BRAND_MAP?: string;
   // Help Center locale to ingest (default "en-us"). Consumed by the docs-ingest CLI.
   ZENDESK_HC_LOCALE?: string;
+  // Thom Bot — dark-launch flag for ZenDesk INTERNAL-TICKET capture. Unset/"0" =
+  // no ticket capture (no piggyback enqueue, no reconcile sweep, consumer drops
+  // ticket messages); "1" = capture eligible tickets as INTERNAL-scope pointer
+  // rows (NO body in kb_documents; the redacted body lands as kb_chunks via the
+  // docs-ingest extraction pass). Enforced in CODE at every seam, not just docs.
+  THOM_ZENDESK_TICKETS?: string;
+  // KB allowlist of ZenDesk group ids whose INTERNAL tickets feed Thom's KB —
+  // JSON array ([123,456]) or CSV ("123,456"). DELIBERATELY SEPARATE from
+  // ZD_SYNC_GROUPS: which groups' tickets are knowledge is a different decision
+  // from which groups mirror to HubSpot. Unset/empty = capture off.
+  THOM_TICKET_GROUPS?: string;
   // READ-ONLY HubSpot private-app token for Thom's internal CRM tools (deals /
   // companies / orders / rep codes). DELIBERATELY a separate app from
   // HUBSPOT_TOKEN: Thom ingests untrusted text (tickets, web results), so the

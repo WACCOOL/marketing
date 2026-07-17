@@ -12,7 +12,47 @@ import {
 import { embed, toVectorLiteral, type CfCreds } from "./embed.js";
 import { extractPdf, type ClaudeCfg } from "./extract.js";
 import { htmlToText } from "./html.js";
-import { ZendeskReader, zendeskCredsFromEnv } from "./zendesk.js";
+import { redactTicketText } from "./redact.js";
+import {
+  ZendeskReader,
+  zendeskCredsFromEnv,
+  type ZendeskTicketComment,
+  type ZendeskUser,
+} from "./zendesk.js";
+
+const ZENDESK_TICKET_DOC_TYPE = "zendesk_ticket";
+
+/**
+ * Assemble the REDACTED body for a ticket: subject + PUBLIC comment bodies,
+ * concatenated, with requester/CC/author display names + emails/phones/
+ * signatures stripped BEFORE it is returned (so only redacted text is ever
+ * chunked/embedded). Reads nothing else; never persists the raw text.
+ */
+async function extractTicketText(
+  zd: ZendeskReader,
+  externalId: string,
+): Promise<string> {
+  const t = await zd.getTicket(externalId);
+  if (!t) throw new Error("zendesk ticket gone");
+  const { comments, users } = await zd.getTicketComments(externalId);
+
+  // Names to redact: every side-loaded user (requester, submitter, CCs, comment
+  // authors) — the ticket + comments users arrays cover all of them.
+  const names = new Set<string>();
+  const collect = (list: ZendeskUser[]) => {
+    for (const u of list) if (u?.name) names.add(u.name);
+  };
+  collect(t.users);
+  collect(users);
+
+  const parts: string[] = [];
+  if (t.ticket.subject) parts.push(t.ticket.subject);
+  for (const c of comments as ZendeskTicketComment[]) {
+    const raw = c.plain_body ?? (c.html_body ? htmlToText(c.html_body) : c.body ?? "");
+    if (raw.trim()) parts.push(raw);
+  }
+  return redactTicketText(parts.join("\n\n"), [...names]);
+}
 
 /**
  * Thom Bot document ingestion (Tier B) — the heavy, out-of-band pass that makes
@@ -428,6 +468,13 @@ async function processDoc(
       if (!article) return await fail("zendesk article gone");
       text = htmlToText(article.body ?? "");
       method = "zendesk_article";
+    } else if (doc.doc_type === ZENDESK_TICKET_DOC_TYPE) {
+      // Internal support ticket: subject + PUBLIC comments, PII-REDACTED before
+      // it ever becomes `text` (nothing unredacted reaches kb_chunks). The
+      // pointer row is scope='internal', so its chunks inherit internal scope.
+      if (!zd) return await fail("zendesk reader not configured");
+      text = await extractTicketText(zd, doc.external_id);
+      method = "zendesk_ticket";
     } else {
       if (!doc.url) return await fail("no url");
       const bytes = await fetchPdf(doc.url);
