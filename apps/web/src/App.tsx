@@ -15,6 +15,7 @@ import { UtmQr } from "./pages/UtmQr.js";
 import { VocabAdmin } from "./pages/VocabAdmin.js";
 import { Products } from "./pages/Products.js";
 import { ThomChat } from "./pages/ThomChat.js";
+import { ThomContentAdmin } from "./pages/ThomContentAdmin.js";
 import { AppImage } from "./pages/AppImage.js";
 import {
   NormalizationPage,
@@ -130,6 +131,10 @@ function Shell() {
           <Route path="/short-links" element={<Navigate to="/utm-qr" replace />} />
           <Route path="/products" element={gate("product", <Products />)} />
           <Route path="/thom" element={gate("thom", <ThomChat />)} />
+          <Route
+            path="/thom-content"
+            element={gate("thom-content", <ThomContentAdmin />)}
+          />
           <Route
             path="/product-info"
             element={<Navigate to="/product-info/romance" replace />}

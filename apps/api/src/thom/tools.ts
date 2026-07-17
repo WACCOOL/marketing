@@ -76,7 +76,7 @@ export const TOOLS: ClaudeTool[] = [
   {
     name: "search_docs",
     description:
-      "Search the CONTENTS of spec sheets and installation manuals for a specific fact (cutout size, dimming compatibility, mounting, torque, wiring, exact photometrics). Returns matching passages with the document + page for citation.",
+      "Search the CONTENTS of spec sheets, installation manuals, AND curated WAC marketing overviews/positioning/FAQs for a specific fact (cutout size, dimming compatibility, mounting, torque, wiring, exact photometrics) or WAC's own product/brand/system positioning and messaging. Returns matching passages with the document + page for citation.",
     input_schema: {
       type: "object",
       properties: {
@@ -185,7 +185,7 @@ async function searchDocs(ctx: ToolContext, input: Record<string, unknown>): Pro
     query_embedding: embedding,
     query_text: query,
     scope_filter: null, // internal surface: RLS gates; sees public + internal
-    doc_types: ["spec_sheet", "manual"],
+    doc_types: ["spec_sheet", "manual", "marketing"],
     brand_filter: str(input.brand),
     match_count: 8,
   });

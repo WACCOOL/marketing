@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { chunkText, estimateTokens } from "./chunk.js";
+import { chunkText, estimateTokens } from "@wac/shared";
 import { embed, toVectorLiteral, type CfCreds } from "./embed.js";
 import { extractPdf, type ClaudeCfg } from "./extract.js";
 
@@ -235,6 +235,8 @@ interface PendingDoc {
   scope: string;
   doc_type: string;
   brand: string | null;
+  source_system: string;
+  external_id: string;
 }
 
 function isPdf(bytes: Uint8Array): boolean {
@@ -283,9 +285,32 @@ async function processDoc(
   };
 
   try {
-    if (!doc.url) return await fail("no url");
-    const bytes = await fetchPdf(doc.url);
-    const { text, pages, method } = await extractPdf(bytes, claude);
+    // Marketing custom content (source_system='marketing_admin') has no PDF: its
+    // authored markdown lives in marketing_content.body, keyed by external_id.
+    // This is the docs-ingest fallback for the in-Worker on-save embed (which
+    // leaves the row pending_extract if Workers AI throws). Everything else is a
+    // PDF fetched from its url.
+    let text: string;
+    let pages = 1;
+    let method = "marketing";
+    if (doc.source_system === "marketing_admin") {
+      const { data: mc, error: mcErr } = await sb
+        .from("marketing_content")
+        .select("body, status")
+        .eq("id", doc.external_id)
+        .maybeSingle();
+      if (mcErr) return await fail(`marketing_content read: ${mcErr.message}`);
+      if (!mc) return await fail("marketing_content row gone");
+      if (mc.status !== "published") return await fail("marketing_content not published");
+      text = String(mc.body ?? "");
+    } else {
+      if (!doc.url) return await fail("no url");
+      const bytes = await fetchPdf(doc.url);
+      const extracted = await extractPdf(bytes, claude);
+      text = extracted.text;
+      pages = extracted.pages;
+      method = extracted.method;
+    }
     if (!text) return await fail("no extractable text");
     const chunks = chunkText(text);
     if (!chunks.length) return await fail("no chunks");
@@ -349,7 +374,7 @@ async function processPending(
     const take = Math.min(EXTRACT_BATCH, remaining);
     const { data, error } = await sb
       .from("kb_documents")
-      .select("id, url, scope, doc_type, brand")
+      .select("id, url, scope, doc_type, brand, source_system, external_id")
       .eq("status", "pending_extract")
       .order("created_at", { ascending: true })
       .limit(take);
