@@ -64,9 +64,24 @@ export interface ClaudeTool {
   cache_control?: ClaudeCacheControl;
 }
 
+/**
+ * A server-side (Anthropic-hosted) tool such as web_search. Anthropic executes
+ * these — they never reach dispatch(). Rendered AFTER the client `tools` so the
+ * withTailCache breakpoint (on the last CLIENT tool) stays intact.
+ */
+export interface ClaudeServerTool {
+  type: string;
+  name: string;
+  max_uses?: number;
+  allowed_domains?: string[];
+  blocked_domains?: string[];
+}
+
 export interface ClaudeTextBlock {
   type: "text";
   text: string;
+  /** Web-search citations attached by the server to a cited text block. */
+  citations?: ClaudeWebSearchResultLocation[];
 }
 
 export interface ClaudeThinkingBlock {
@@ -89,11 +104,51 @@ export interface ClaudeToolResultBlock {
   is_error?: boolean;
 }
 
+// --- Server-tool (web_search) blocks ----------------------------------------
+// Anthropic executes web_search server-side: the model emits a server_tool_use
+// block (NOT a client tool_use, so it never reaches dispatch()), and the server
+// appends a web_search_tool_result. Web-tool errors return HTTP 200 with the
+// error shape below — never a thrown exception.
+
+export interface ClaudeServerToolUseBlock {
+  type: "server_tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+export interface ClaudeWebSearchResult {
+  type: "web_search_result";
+  url: string;
+  title: string;
+  page_age?: string | null;
+  encrypted_content?: string;
+}
+
+export interface ClaudeWebSearchResultLocation {
+  type: "web_search_result_location";
+  url: string;
+  title: string;
+  cited_text?: string;
+  encrypted_index?: string;
+}
+
+export interface ClaudeWebSearchToolResultBlock {
+  type: "web_search_tool_result";
+  tool_use_id: string;
+  /** Success → an ARRAY of results; failure → a single error OBJECT. */
+  content:
+    | ClaudeWebSearchResult[]
+    | { type: "web_search_tool_result_error"; error_code: string };
+}
+
 export type ClaudeContentBlock =
   | ClaudeTextBlock
   | ClaudeThinkingBlock
   | ClaudeToolUseBlock
-  | ClaudeToolResultBlock;
+  | ClaudeToolResultBlock
+  | ClaudeServerToolUseBlock
+  | ClaudeWebSearchToolResultBlock;
 
 export interface ClaudeMessage {
   role: "user" | "assistant";
@@ -124,6 +179,10 @@ export interface ClaudeRequestOpts {
   system: ClaudeSystemBlock[];
   messages: ClaudeMessage[];
   tools?: ClaudeTool[];
+  /** Server-side (Anthropic-hosted) tools, e.g. web_search. Rendered AFTER the
+   *  client `tools` so the withTailCache breakpoint on the last client tool is
+   *  unaffected. */
+  serverTools?: ClaudeServerTool[];
   model?: string;
   maxTokens?: number;
   timeoutMs?: number;
@@ -134,12 +193,15 @@ export interface ClaudeRequestOpts {
 // ---------------------------------------------------------------------------
 
 function buildBody(env: Env, opts: ClaudeRequestOpts, stream: boolean): string {
+  // Client tools FIRST, server tools (web_search) AFTER — keeps the
+  // withTailCache breakpoint (on the last CLIENT tool) at a stable position.
+  const tools = [...(opts.tools ?? []), ...(opts.serverTools ?? [])];
   return JSON.stringify({
     model: opts.model || claudeRouterModel(env),
     max_tokens: opts.maxTokens ?? 4096,
     system: opts.system,
     messages: opts.messages,
-    ...(opts.tools?.length ? { tools: opts.tools } : {}),
+    ...(tools.length ? { tools } : {}),
     ...(stream ? { stream: true } : {}),
   });
 }
@@ -216,6 +278,10 @@ export type ClaudeStreamEvent =
  * the chat UI) and a terminal "done" event carrying stop_reason + usage for
  * conversation logging. Tool-use blocks are surfaced too so the agent loop
  * can stream AND detect tool calls in one pass.
+ *
+ * NOTE: this parser does NOT yet handle server_tool_use / web_search_tool_result
+ * blocks or the pause_turn stop_reason — the SSE feature owns that. runThom uses
+ * the non-streaming claudeMessages path, which handles both (see agent.ts).
  */
 export async function* claudeMessagesStream(
   env: Env,

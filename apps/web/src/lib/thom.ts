@@ -41,6 +41,9 @@ export interface FamilyCard {
  *  treat missing/`"product"` as a ProductCard on the client. */
 export type Card = ProductCard | FamilyCard;
 export interface Citation {
+  /** "web" for open-web sources (web_search); absent/"doc" for spec-sheet /
+   *  manual citations. */
+  kind?: "doc" | "web";
   document_id: string;
   title: string | null;
   doc_type: string;

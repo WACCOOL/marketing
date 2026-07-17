@@ -6,6 +6,8 @@ import {
   claudeRouterModel,
   type ClaudeContentBlock,
   type ClaudeMessage,
+  type ClaudeResponse,
+  type ClaudeServerTool,
   type ClaudeTextBlock,
   type ClaudeTool,
   type ClaudeToolResultBlock,
@@ -18,6 +20,14 @@ import type { Card, Citation, ThomUsage } from "./types.js";
 
 const MAX_STEPS = 5;
 const MAX_TOKENS = 2048;
+// Hard ceiling on pause_turn continuations per turn — bounds the server-tool
+// loop without consuming the client-tool MAX_STEPS budget.
+const MAX_PAUSE_CONTINUATIONS = 3;
+
+// The web_search tool-type variant valid for the ROUTER (Haiku-class) model the
+// loop starts on. The newer web_search_20260209 requires Sonnet-5/Opus tier, so
+// it must NOT be the default here even though the loop can escalate.
+const WEB_SEARCH_TOOL_TYPE = "web_search_20250305";
 
 /** The internal CRM tools are only offered when a read token is configured. */
 function crmEnabled(env: Env): boolean {
@@ -83,6 +93,73 @@ export function tieringEnabled(env: Env): boolean {
   return env.THOM_TIERING !== "0";
 }
 
+// --- web_search gate (INTERNAL-ONLY, dark-launched) -------------------------
+
+/** Web search is OFF unless THOM_WEB_SEARCH is explicitly "1" (per-search
+ *  billing → dark-launch). Enforced here, not just in the prompt. */
+export function webSearchEnabled(env: Env): boolean {
+  return env.THOM_WEB_SEARCH === "1";
+}
+
+/** Per-turn cap on web_search calls (Anthropic max_uses): THOM_WEB_SEARCH_MAX_USES
+ *  parsed as an int, default 3, clamped to 1–5. */
+export function webSearchMaxUses(env: Env): number {
+  const n = Number.parseInt(env.THOM_WEB_SEARCH_MAX_USES ?? "", 10);
+  if (!Number.isFinite(n)) return 3;
+  return Math.min(5, Math.max(1, n));
+}
+
+/** The server tools to offer this turn: [] when disabled, else a single capped
+ *  web_search entry. Basic (Haiku-tier) variant — see WEB_SEARCH_TOOL_TYPE. */
+export function buildWebSearchTools(env: Env): ClaudeServerTool[] {
+  if (!webSearchEnabled(env)) return [];
+  return [{ type: WEB_SEARCH_TOOL_TYPE, name: "web_search", max_uses: webSearchMaxUses(env) }];
+}
+
+/**
+ * Collect the open-web sources from an assistant turn as `kind:"web"` Citations.
+ * Prefers `web_search_result_location` entries on text blocks (the sources the
+ * model actually CITED); falls back to enumerating the raw web_search_tool_result
+ * array only when nothing was cited. The error shape (a single object with
+ * error_code) is guarded — it's skipped, never enumerated. document_id=url so
+ * dedupeCitations dedupes web results correctly.
+ */
+export function collectWebCitations(content: ClaudeContentBlock[]): Citation[] {
+  const out: Citation[] = [];
+  const seen = new Set<string>();
+  const add = (url: string | undefined, title: string | null | undefined) => {
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    out.push({ kind: "web", document_id: url, title: title ?? null, doc_type: "web", page: null, url });
+  };
+
+  for (const b of content) {
+    if (b.type === "text" && b.citations) {
+      for (const c of b.citations) {
+        if (c.type === "web_search_result_location") add(c.url, c.title);
+      }
+    }
+  }
+  if (out.length === 0) {
+    for (const b of content) {
+      // Success content is an ARRAY of results; the error shape is a single
+      // OBJECT ({error_code}) — Array.isArray skips it (returns nothing).
+      if (b.type === "web_search_tool_result" && Array.isArray(b.content)) {
+        for (const r of b.content) add(r.url, r.title);
+      }
+    }
+  }
+  return out;
+}
+
+/** What the loop should do with a response: resume a paused server-tool turn,
+ *  dispatch client tools, or treat it as the final answer. Pure for testing. */
+export function loopAction(res: Pick<ClaudeResponse, "stop_reason" | "content">): "final" | "dispatch" | "pause" {
+  if (res.stop_reason === "pause_turn") return "pause";
+  const hasToolUse = res.content.some((b) => b.type === "tool_use");
+  return res.stop_reason === "tool_use" && hasToolUse ? "dispatch" : "final";
+}
+
 /**
  * Run one internal Thom turn: a bounded tool-use loop over the retrieval tools.
  * Non-streaming (v1) — returns the final answer plus the product cards and
@@ -98,6 +175,10 @@ export async function runThom(
   // internal surface only — CRM tools ride the internal agent, gated on the
   // read token, with the cache breakpoint re-homed to the composed tail.
   const tools = withTailCache(crmEnabled(env) ? [...TOOLS, ...HUBSPOT_TOOLS] : TOOLS);
+  // internal surface only — web_search is gated (THOM_WEB_SEARCH=1) and capped;
+  // [] when disabled so nothing is sent and there's no billing. Rendered AFTER
+  // the client tools so the withTailCache breakpoint is unaffected.
+  const serverTools = buildWebSearchTools(env);
   const messages: ClaudeMessage[] = [
     ...opts.history,
     { role: "user", content: opts.userMessage },
@@ -113,7 +194,12 @@ export async function runThom(
     escalated: false,
   };
 
-  for (let step = 0; step < MAX_STEPS; step++) {
+  // A pure pause_turn continuation does NOT consume the client-tool MAX_STEPS
+  // budget; it's bounded separately by MAX_PAUSE_CONTINUATIONS so the loop
+  // always terminates.
+  let step = 0;
+  let pauseCount = 0;
+  while (step < MAX_STEPS) {
     // Decide the model for THIS turn from the evidence accumulated so far.
     // Monotonic: once a threshold trips we stay on the stronger model. The
     // escalated turn is a prompt-cache miss (cache is per-model) — the intended
@@ -134,6 +220,7 @@ export async function runThom(
       system,
       messages,
       tools,
+      serverTools,
       model,
       maxTokens: MAX_TOKENS,
     });
@@ -144,10 +231,21 @@ export async function runThom(
     // Echo the assistant turn back for the next iteration.
     messages.push({ role: "assistant", content: res.content });
 
-    const toolUses = res.content.filter(
-      (b): b is ClaudeToolUseBlock => b.type === "tool_use",
-    );
-    if (res.stop_reason !== "tool_use" || toolUses.length === 0) {
+    // Gather any open-web sources the server cited/returned this turn (deduped
+    // at the end by document_id=url).
+    citations.push(...collectWebCitations(res.content));
+
+    const action = loopAction(res);
+
+    // pause_turn: the server tool loop paused mid-turn. Resume by re-sending the
+    // messages with the assistant content already appended — do NOT add a
+    // "Continue" user turn. Bounded, and doesn't spend a client-tool step.
+    if (action === "pause") {
+      if (++pauseCount > MAX_PAUSE_CONTINUATIONS) break;
+      continue;
+    }
+
+    if (action === "final") {
       console.log(
         `[thom] answered model=${usage.model} escalated=${usage.escalated} ` +
           `toolCalls=${toolCallCount} docPassages=${citations.length} products=${cards.length}`,
@@ -155,6 +253,11 @@ export async function runThom(
       return { text: finalText(res.content), cards, citations, usage };
     }
 
+    // action === "dispatch": client tools only (server web_search never reaches
+    // dispatch — it has no client tool_use block).
+    const toolUses = res.content.filter(
+      (b): b is ClaudeToolUseBlock => b.type === "tool_use",
+    );
     toolCallCount += toolUses.length;
     const results: ClaudeToolResultBlock[] = [];
     for (const tu of toolUses) {
@@ -173,6 +276,7 @@ export async function runThom(
       }
     }
     messages.push({ role: "user", content: results });
+    step++;
   }
 
   console.log(

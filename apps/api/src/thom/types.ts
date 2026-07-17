@@ -68,8 +68,11 @@ export interface FamilyCard {
 /** Either kind of UI card the agent can emit. */
 export type Card = ProductCard | FamilyCard;
 
-/** A source citation back to the spec sheet / manual a claim came from. */
+/** A source citation back to the spec sheet / manual a claim came from, or an
+ *  open-web source when Thom used web_search. `kind` is optional — absent means
+ *  a doc citation (the original, cataloged behavior). */
 export interface Citation {
+  kind?: "doc" | "web";
   document_id: string;
   title: string | null;
   doc_type: string;

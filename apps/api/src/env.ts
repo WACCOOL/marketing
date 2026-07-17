@@ -277,6 +277,16 @@ export interface Env {
   // model up to ANTHROPIC_MODEL; "0" = router-only (today's behavior, a safe
   // rollback). Reuses ANTHROPIC_MODEL — no new model id needed.
   THOM_TIERING?: string;
+  // Thom web_search gate (INTERNAL-ONLY, dark-launched). Anthropic's native
+  // server-side web_search runs as a LAST RESORT for things the catalog /
+  // spec-sheets can't answer (competitor specs, obscure codes). OFF by default
+  // — every search is billed per-use, so this dark-launches like THOM_DOC_CAPTURE:
+  // unset/"0" = disabled (no server tool sent); "1" = enabled. Enforced in CODE
+  // (buildWebSearchTools returns [] when off), not just the prompt.
+  THOM_WEB_SEARCH?: string;
+  // Hard cap on web_search calls per turn (Anthropic max_uses). Parsed as an
+  // int, default 3, clamped to 1–5 so a bad value can't uncork billing.
+  THOM_WEB_SEARCH_MAX_USES?: string;
   // READ-ONLY HubSpot private-app token for Thom's internal CRM tools (deals /
   // companies / orders / rep codes). DELIBERATELY a separate app from
   // HUBSPOT_TOKEN: Thom ingests untrusted text (tickets, web results), so the

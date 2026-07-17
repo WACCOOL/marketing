@@ -36,12 +36,24 @@ You have internal, read-only CRM tools over HubSpot (the crm_* tools) covering c
 - These tools are READ-ONLY and INTERNAL-ONLY: you can look data up, but you CANNOT change, create, or delete any CRM record — never claim or imply that you did.
 - CRM figures are internal business data — share them only in this internal tool, and lead with the specific number the user asked for.`;
 
+/** INTERNAL-ONLY guidance for the native web_search server tool. Only appears
+ *  inside internalSystem() (never on any public surface), and only has an effect
+ *  when the tool is actually offered (THOM_WEB_SEARCH=1); harmless when it isn't. */
+const WEB_SEARCH_GUIDANCE = `Open-web search (LAST RESORT):
+You may have a web_search tool. It is a LAST RESORT — use it ONLY for things the catalog and spec sheets genuinely can't answer: a COMPETITOR's specs, an obscure/one-off product code, or an edge case no WAC document covers.
+- ALWAYS try search_products / get_product / search_docs FIRST. For WAC Group's OWN products, specs, spec sheets, and manuals, use those tools — NEVER web_search. You have that data; the web version may be stale or wrong.
+- Only reach for web_search after the catalog tools come up empty AND the answer requires outside-the-catalog information.
+- Anything you get from the web is "based on publicly available info — verify before quoting." Say so.`;
+
 /** System blocks for the INTERNAL surface, with a cache breakpoint on the last
- *  (stable) block so tools + system prefix are cached across turns. */
+ *  (stable) block so tools + system prefix are cached across turns. The web-search
+ *  block is internal-only and lands LAST, so the breakpoint stays on the final
+ *  block. */
 export function internalSystem(): ClaudeSystemBlock[] {
   return [
     { type: "text", text: PERSONA },
     { type: "text", text: BRAND_CONTEXT },
-    { type: "text", text: CRM_GUIDANCE, cache_control: { type: "ephemeral" } },
+    { type: "text", text: CRM_GUIDANCE },
+    { type: "text", text: WEB_SEARCH_GUIDANCE, cache_control: { type: "ephemeral" } },
   ];
 }

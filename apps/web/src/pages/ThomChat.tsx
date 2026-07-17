@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Boxes, ExternalLink, FileText, Loader2, Plus, Send } from "lucide-react";
+import { Bot, Boxes, ExternalLink, FileText, Globe, Loader2, Plus, Send } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import {
   sendChat,
@@ -217,7 +217,7 @@ function TurnView({ turn }: { turn: Turn }) {
                 rel="noreferrer"
                 title={cite.title ?? cite.doc_type}
               >
-                <FileText size={12} />
+                {cite.kind === "web" ? <Globe size={12} /> : <FileText size={12} />}
                 {cite.title ?? cite.doc_type}
                 {cite.page != null ? ` p.${cite.page}` : ""}
               </a>
