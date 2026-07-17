@@ -486,9 +486,15 @@ export function buildQuoteUnits(rows: OaStagedRow[], opts: { force?: boolean } =
     const quotation: OaQuotation = { ...(quoteRowJson ?? {}), ...(embedded ?? {}) };
     if (!quotation.id) quotation.id = quoteId;
 
+    // Live-schema reality (sampled 2026-07-17): standalone quote payloads have
+    // NO project object — the quote title equals the project name (created
+    // 1:1), so the title is the join key. Projects also have no id; they are
+    // staged keyed by name, and project.country (list-only field) is the
+    // authoritative ship-to for the destination gate.
     const project =
       projectById.get(asId(quotation.project?.id ?? (quotation as { projectId?: unknown }).projectId)) ??
-      projectByName.get(asId(quotation.project?.name));
+      projectByName.get(asId(quotation.project?.name)) ??
+      projectByName.get(asId(quotation.title));
     const status = asId(quotation.status ?? quotation.project?.status ?? (project as { status?: unknown } | undefined)?.status) || null;
     const destination = oaDestination({
       country: asId(quotation.project?.country ?? (project as { country?: unknown } | undefined)?.country) || null,

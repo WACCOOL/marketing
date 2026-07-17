@@ -260,6 +260,11 @@ export function oaDestinationOf(q: OaQuotation | null | undefined): OaDestinatio
 // status always lands in the oa_project_status property).
 // ---------------------------------------------------------------------------
 
+// NOTE (2026-07-17 live sample): the /quotes endpoint returns NUMERIC status
+// codes ("2","6","9","12","14","22"), not the labels below — the code→label
+// vocabulary is an open ask to Eason. Unknown statuses fall back to Bid, and
+// the raw code is preserved in oa_project_status either way; add numeric keys
+// here once the vocabulary lands.
 const STATUS_TO_STAGE: Record<string, OaStageLabel> = {
   "new lead": OA_STAGE_LABELS.prequal,
   tba: OA_STAGE_LABELS.prequal,
