@@ -25,7 +25,7 @@
       // then paste the printed id below (this placeholder must be replaced
       // before the first deploy).
       "binding": "THOM_KV",
-      "id": "REPLACE_WITH_THOM_KV_NAMESPACE_ID"
+      "id": "b239959348444c7cb1aec9d305332dae"
     }
   ],
 
@@ -56,10 +56,13 @@
     // own origin "https://thom.gowac.cc" (the widget's same-origin fetches to
     // /api/turnstile + /api/chat/stream carry Origin: thom.gowac.cc, so the API
     // gate only passes when it is listed). Empty = only localhost dev works.
-    "ALLOWED_ORIGINS": "",
+    // Starter value = the widget's own origin only (enables self-testing at
+    // thom.gowac.cc). ADD each approved brand-site origin here, comma-separated,
+    // to let those sites embed the bubble.
+    "ALLOWED_ORIGINS": "https://thom.gowac.cc",
     // PUBLIC Turnstile site key (NOT a secret) — served to the widget by
-    // GET /api/config so it can render the challenge. Davis fills the real key.
-    "TURNSTILE_SITE_KEY": ""
+    // GET /api/config so it can render the challenge.
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAD4vXVdLx1q6v5MY"
   },
 
   // Secrets — set via `wrangler secret put`, NEVER in this file or CI:
