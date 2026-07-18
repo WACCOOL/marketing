@@ -233,11 +233,12 @@
     // knowledge. Deliberately a SUBSET of ZD_SYNC_GROUPS (the transactional
     // Quotes/Orders/CS groups are excluded); broaden here to add more.
     "THOM_TICKET_GROUPS": "21558279834135,21558279824663,1500001314462,1500002309841,4415933935127,1500002479082,1500001316682",
-    // Thom photometrics tools (get_photometrics + lighting_requirement),
-    // dark-launched. "0" = tools NOT offered to the model; "1" = composed onto
-    // the internal tool set. Precompute (apps/photometrics-sync) can run + fill
-    // product_photometrics independently; flip to "1" once metrics are populated.
-    "THOM_PHOTOMETRICS": "0",
+    // Thom photometrics tools (get_photometrics + lighting_requirement).
+    // "0" = tools NOT offered to the model; "1" = composed onto the internal tool
+    // set. ENABLED 2026-07-18. lighting_requirement is pure; get_photometrics
+    // reads product_photometrics (populated by the apps/photometrics-sync backfill)
+    // and returns "not computed yet" for any SKU not yet in that table.
+    "THOM_PHOTOMETRICS": "1",
     // Thom layout tool (plan_layout: lighting layouts + track BOM).
     // "0" = tool NOT offered to the model; "1" = composed onto the internal tool
     // set. Uses the track_systems/track_components seed (migrations 0049/0050);
