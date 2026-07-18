@@ -17,6 +17,11 @@ apps/forecast/artifacts/
 dist/
 dist-harness/
 build/
+# Thom widget build output. `apps/thom-bot/public` is produced by
+# `pnpm --filter @wac/thom-bot build:widget` (Vite → ../public, which also copies
+# the hand-authored embed.js + landing page from apps/thom-bot/widget/public).
+# The SOURCE of truth is apps/thom-bot/widget/ — the served bundle is generated.
+apps/thom-bot/public/
 .wrangler/
 .dev.vars
 .dev.vars.*

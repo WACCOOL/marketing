@@ -29,13 +29,20 @@
     }
   ],
 
-  // Reserved for the embeddable widget (S5). Stub ./public dir with a
-  // placeholder for now so `wrangler deploy` has an assets directory; the
-  // built widget bundle will land here later. The Worker owns /api/* +
-  // /_health; anything else falls through to the static widget.
+  // The embeddable widget (S5). `pnpm --filter @wac/thom-bot build:widget`
+  // builds the Vite app in ./widget into ./public (and copies the hand-authored
+  // embed.js loader + landing page from ./widget/public). The Worker owns
+  // /api/* + /_health (run_worker_first forces the Worker ahead of the asset
+  // tree for those); every other path falls through to the static assets:
+  //   /embed.js        → the host-site loader script
+  //   /widget          → the chat widget (served from /widget.html via
+  //                      html_handling auto)
+  // NOTE: ./public is a BUILD OUTPUT (git-ignored). Run build:widget before
+  // `wrangler deploy` (CI does this) or the directory is empty.
   "assets": {
     "directory": "./public",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/_health"]
   },
 
   "vars": {
@@ -43,9 +50,16 @@
     "THOM_PHOTOMETRICS": "1",
     "THOM_LAYOUT": "1",
     "THOM_TIERING": "1",
-    // Comma-separated embed allowlist — Davis fills this with the approved
-    // brand-site origins before launch (empty = only localhost dev works).
-    "ALLOWED_ORIGINS": ""
+    // Comma-separated embed allowlist — Davis fills this before launch. It must
+    // contain BOTH the approved brand-site origins (drives the CSP
+    // frame-ancestors that lets those sites embed the iframe) AND the widget's
+    // own origin "https://thom.gowac.cc" (the widget's same-origin fetches to
+    // /api/turnstile + /api/chat/stream carry Origin: thom.gowac.cc, so the API
+    // gate only passes when it is listed). Empty = only localhost dev works.
+    "ALLOWED_ORIGINS": "",
+    // PUBLIC Turnstile site key (NOT a secret) — served to the widget by
+    // GET /api/config so it can render the challenge. Davis fills the real key.
+    "TURNSTILE_SITE_KEY": ""
   },
 
   // Secrets — set via `wrangler secret put`, NEVER in this file or CI:

@@ -35,6 +35,12 @@ export interface PublicEnv extends ThomEnv {
   TURNSTILE_SECRET: string;
   SESSION_SECRET: string;
 
+  // --- Turnstile PUBLIC site key. NOT a secret: it ships to the browser so the
+  //     widget can render the Turnstile challenge. Served to the widget via
+  //     GET /api/config. Lives in wrangler.jsonc `vars` (Davis fills the real
+  //     key), never in `wrangler secret put`. ---
+  TURNSTILE_SITE_KEY?: string;
+
   // --- Embed allowlist (comma-separated origins). Drives the widget embed
   //     check AND the CSP frame-ancestors header. Unset = none in prod
   //     (localhost still allowed for dev). ---

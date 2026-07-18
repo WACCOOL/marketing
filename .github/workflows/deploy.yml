@@ -7,6 +7,7 @@ on:
       - "apps/web/**"
       - "apps/api/**"
       - "apps/generator/**"
+      - "apps/thom-bot/**"
       - "packages/shared/**"
       - "pnpm-lock.yaml"
       - ".github/workflows/deploy.yml"
@@ -65,3 +66,41 @@ jobs:
           else
             pnpm exec wrangler deploy --containers-rollout none
           fi
+
+  # PUBLIC Thom Bot Worker (wac-thom-bot) + its embeddable widget. Independent of
+  # the api/web deploy (its own custom domain thom.gowac.cc, no Container). The
+  # widget is built into apps/thom-bot/public first, then the Worker + assets ship
+  # together. Guarded so it can't fail the pipeline before Davis provisions the KV
+  # namespace / vars / secrets — it self-skips while the KV id is a placeholder,
+  # and the deploy step is continue-on-error for any other missing-config case.
+  deploy-thom-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Thom widget
+        run: pnpm --filter @wac/thom-bot build:widget
+
+      - name: Deploy Thom Bot Worker + widget assets
+        working-directory: apps/thom-bot
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if grep -q "REPLACE_WITH_THOM_KV_NAMESPACE_ID" wrangler.jsonc; then
+            echo "THOM_KV id is still the placeholder — skipping wac-thom-bot deploy"
+            echo "until the KV namespace + vars/secrets are provisioned. See MEMORY / docs."
+            exit 0
+          fi
+          pnpm exec wrangler deploy

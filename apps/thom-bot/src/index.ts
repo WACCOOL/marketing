@@ -36,6 +36,22 @@ const app = new Hono<{ Bindings: PublicEnv }>();
 
 app.get("/_health", (c) => c.text("ok"));
 
+/**
+ * GET /api/config — public runtime config for the widget.
+ * Returns the PUBLIC Turnstile site key so the widget can render the challenge.
+ * Origin-gated, but the widget's own same-origin fetch is always allowed: the
+ * widget page is served by this Worker, so its config request is either
+ * Origin-less (same-origin GET) or carries the Worker's own origin. Cross-origin
+ * callers must still be on the embed allowlist.
+ */
+app.get("/api/config", (c) => {
+  const origin = c.req.header("Origin") ?? null;
+  const selfOrigin = new URL(c.req.url).origin;
+  const ok = !origin || origin === selfOrigin || originAllowed(c.env, origin);
+  if (!ok) return c.json({ error: "origin not allowed" }, 403);
+  return c.json({ turnstileSiteKey: c.env.TURNSTILE_SITE_KEY ?? "" });
+});
+
 /** CF-Connecting-IP, or "" when absent (local dev). */
 function callerIp(c: Context<{ Bindings: PublicEnv }>): string {
   return c.req.header("CF-Connecting-IP") ?? "";
