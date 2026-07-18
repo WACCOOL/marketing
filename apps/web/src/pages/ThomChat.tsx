@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   Bot,
   Boxes,
@@ -22,6 +22,7 @@ import {
   type Citation,
   type ConversationSummary,
   type FamilyCard,
+  type LayoutCard,
   type ProductCard,
 } from "../lib/thom.js";
 
@@ -377,7 +378,9 @@ function TurnView({ turn, streaming = false }: { turn: Turn; streaming?: boolean
         {turn.cards?.map((c, i) =>
           // Cards logged before the family feature have no `kind` — default to
           // the product view so old conversations still render.
-          c.kind === "family" ? (
+          c.kind === "layout" ? (
+            <LayoutCardView key={`layout:${i}`} card={c} />
+          ) : c.kind === "family" ? (
             <FamilyCardView key={`family:${c.family}:${i}`} card={c} />
           ) : (
             <CardView key={`product:${c.sku}:${i}`} card={c} />
@@ -453,6 +456,155 @@ function FamilyCardView({ card }: { card: FamilyCard }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function LayoutCardView({ card }: { card: LayoutCard }) {
+  const { summary: s, plan, space } = card;
+  const title = card.product.name ?? card.product.sku ?? card.product.family ?? "Layout";
+  const kindLabel =
+    card.layoutKind === "track" ? "Track layout" : card.layoutKind === "linear" ? "Linear layout" : "Grid layout";
+
+  // Summary chips — only show the ones that apply to this layout kind.
+  const chips: { label: string; value: string }[] = [];
+  if (s.headCount > 0) chips.push({ label: "Heads", value: String(s.headCount) });
+  if (s.runs != null && s.headsPerRun != null)
+    chips.push({ label: "Layout", value: `${s.runs} run × ${s.headsPerRun}` });
+  if (s.headSpacingFt != null) chips.push({ label: "Spacing", value: `${s.headSpacingFt.toFixed(1)} ft` });
+  if (s.totalTrackFt != null && s.totalTrackFt > 0)
+    chips.push({ label: "Track", value: `${s.totalTrackFt.toFixed(0)} ft` });
+  if (s.avgFc > 0) chips.push({ label: "Avg", value: `${s.avgFc.toFixed(1)} fc` });
+  if (s.uniformity > 0) chips.push({ label: "Avg:min", value: s.uniformity.toFixed(2) });
+  if (s.totalWatts > 0) chips.push({ label: "Watts", value: `${s.totalWatts.toFixed(0)} W` });
+  if (s.circuits != null) chips.push({ label: "Circuits", value: String(s.circuits) });
+  if (s.transformerCount != null && s.transformerCount > 0)
+    chips.push({ label: "Transformers", value: String(s.transformerCount) });
+
+  // Group BOM lines by role for the table.
+  const groups = new Map<string, LayoutCard["bom"]["lines"]>();
+  for (const l of card.bom.lines) {
+    const g = groups.get(l.role) ?? [];
+    g.push(l);
+    groups.set(l.role, g);
+  }
+
+  return (
+    <div className="thom-card thom-layout-card">
+      <div className="thom-card-body">
+        <div className="thom-card-head">
+          <strong>
+            <Boxes size={14} /> {title}
+          </strong>
+          <span className="muted">
+            {kindLabel} · {space.lengthFt}×{space.widthFt} ft · {space.mountingHeightFt} ft mount
+          </span>
+        </div>
+
+        {chips.length > 0 && (
+          <div className="thom-layout-chips">
+            {chips.map((c) => (
+              <span key={c.label} className="thom-layout-chip">
+                <span className="muted">{c.label}</span> {c.value}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {plan && <LayoutPlanSvg plan={plan} space={space} />}
+
+        {card.bom.lines.length > 0 && (
+          <table className="thom-layout-bom">
+            <tbody>
+              {[...groups.entries()].map(([role, lines]) => (
+                <Fragment key={role}>
+                  <tr className="thom-layout-bom-role">
+                    <td colSpan={3}>{role}</td>
+                  </tr>
+                  {lines.map((l, i) => (
+                    <tr key={`${role}-${i}`}>
+                      <td className="thom-layout-bom-sku">{l.sku ?? "—"}</td>
+                      <td>{l.description}</td>
+                      <td className="thom-layout-bom-qty">{l.qty}</td>
+                    </tr>
+                  ))}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {card.warnings.length > 0 && (
+          <ul className="thom-layout-warnings">
+            {card.warnings.map((w, i) => (
+              <li key={i} className="muted">
+                {w}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="thom-layout-note muted">Estimate — verify in AGi32 / Ventrix.</p>
+      </div>
+    </div>
+  );
+}
+
+/** Top-down room plan drawn from normalized 0..1 coords: heatmap rects,
+ *  track runs (thick lines), and head dots. Pure React SVG — no external libs,
+ *  no dangerouslySetInnerHTML. */
+function LayoutPlanSvg({
+  plan,
+  space,
+}: {
+  plan: NonNullable<LayoutCard["plan"]>;
+  space: LayoutCard["space"];
+}) {
+  const W = 260;
+  const aspect = space.lengthFt > 0 && space.widthFt > 0 ? space.lengthFt / space.widthFt : 1;
+  const H = Math.max(120, Math.min(360, W * aspect));
+  const hm = plan.heatmap;
+  const span = hm ? Math.max(1e-6, hm.max - hm.min) : 1;
+
+  return (
+    <svg className="thom-layout-svg" viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Top-down layout plan">
+      {/* heatmap */}
+      {hm &&
+        hm.values.map((row, r) =>
+          row.map((v, c) => {
+            const op = 0.06 + 0.5 * ((v - hm.min) / span);
+            return (
+              <rect
+                key={`h-${r}-${c}`}
+                x={(c / hm.cols) * W}
+                y={(r / hm.rows) * H}
+                width={W / hm.cols + 0.5}
+                height={H / hm.rows + 0.5}
+                fill="var(--accent)"
+                opacity={op}
+              />
+            );
+          }),
+        )}
+      {/* room outline */}
+      <rect x={0.5} y={0.5} width={W - 1} height={H - 1} fill="none" stroke="var(--border)" strokeWidth={1} />
+      {/* track runs */}
+      {plan.runs.map((run, i) => (
+        <line
+          key={`run-${i}`}
+          x1={run.x1 * W}
+          y1={run.y1 * H}
+          x2={run.x2 * W}
+          y2={run.y2 * H}
+          stroke="var(--text)"
+          strokeWidth={2.5}
+          strokeLinecap="round"
+          opacity={0.5}
+        />
+      ))}
+      {/* heads */}
+      {plan.heads.map((h, i) => (
+        <circle key={`d-${i}`} cx={h.x * W} cy={h.y * H} r={3.2} fill="var(--accent)" />
+      ))}
+    </svg>
   );
 }
 

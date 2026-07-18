@@ -201,7 +201,11 @@ describe("dedupeCards (mixed)", () => {
     ];
     const out = dedupeCards(cards);
     expect(out).toHaveLength(3);
-    expect(out.map((c) => (c.kind === "family" ? `family:${c.family}` : `product:${c.sku}`))).toEqual([
+    expect(
+      out.map((c) =>
+        c.kind === "family" ? `family:${c.family}` : c.kind === "layout" ? "layout" : `product:${c.sku}`,
+      ),
+    ).toEqual([
       "product:Track",
       "family:Track",
       "product:Other",

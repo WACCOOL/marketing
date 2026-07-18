@@ -20,6 +20,7 @@ import {
 import { internalSystem } from "./prompts.js";
 import { dispatch, TOOLS } from "./tools.js";
 import { HUBSPOT_TOOLS } from "./hubspotTools.js";
+import { LAYOUT_TOOLS } from "./layoutTool.js";
 import { PHOTOMETRICS_TOOLS } from "./photometricsTools.js";
 import type { Card, Citation, ThomUsage } from "./types.js";
 
@@ -46,6 +47,13 @@ export function photometricsEnabled(env: Env): boolean {
   return env.THOM_PHOTOMETRICS === "1";
 }
 
+/** Layout tool is OFF unless THOM_LAYOUT is explicitly "1" (dark-launch,
+ *  mirroring THOM_PHOTOMETRICS). Enforced here — plan_layout isn't advertised
+ *  to the model until the flag flips. */
+export function layoutEnabled(env: Env): boolean {
+  return env.THOM_LAYOUT === "1";
+}
+
 /** Compose the client tool set for a turn: base retrieval tools, plus the
  *  internal-only CRM tools (when a read token is set) and the photometrics tools
  *  (when THOM_PHOTOMETRICS=1). The cache breakpoint is re-homed to the composed
@@ -54,6 +62,7 @@ function composeTools(env: Env): ClaudeTool[] {
   const list: ClaudeTool[] = [...TOOLS];
   if (crmEnabled(env)) list.push(...HUBSPOT_TOOLS);
   if (photometricsEnabled(env)) list.push(...PHOTOMETRICS_TOOLS);
+  if (layoutEnabled(env)) list.push(...LAYOUT_TOOLS);
   return withTailCache(list);
 }
 
@@ -334,7 +343,9 @@ export function dedupeCards(cards: Card[]): Card[] {
         ? `family:${c.family}`
         : c.kind === "photometrics"
           ? `photometrics:${c.sku}`
-          : `product:${c.sku}`;
+          : c.kind === "layout"
+            ? `layout:${c.product.sku ?? c.product.family ?? "?"}:${c.space.lengthFt}x${c.space.widthFt}:${c.layoutKind}`
+            : `product:${c.sku}`;
     return !seen.has(k) && seen.add(k);
   });
 }

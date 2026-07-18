@@ -460,3 +460,282 @@ export interface RoomReflectances {
   wall: number;
   floor: number;
 }
+
+/* ── estimator I/O (ported from WIES types.ts for ies/layout.ts) ──────
+   The solver bodies live in ies/layout.ts; these are the data contract
+   for its inputs and results. Ported verbatim from WIES so the port's
+   numbers stay comparable, with two marketing-app adaptations:
+     * the reference tables (ESTIMATOR_TASKS etc) live in ies/estimator.ts;
+     * CatalogEntry is a minimal shape (WIES's is much larger) — the
+       solver reads only sku / family / wattage off it. */
+
+export interface EstimatorInputs {
+  mounting: MountingOrientation;
+  aim: AimDirection;
+  target: TargetSurface;
+
+  /** Canonical metres. Always present even when the calc is on a
+   *  vertical surface — defines the fixture-mounting geometry. */
+  roomLength: number;
+  roomWidth: number;
+  ceilingHeight: number;
+
+  reflectances: RoomReflectances;
+
+  /** Target illuminance in foot-candles (canonical regardless of the
+   *  display unit; `unit` controls only display). */
+  targetFc: number;
+  /** Selected task preset key, or "custom" when overridden. */
+  taskKey: string;
+
+  /** Light-loss factor (combined LLD × LDD × RSDD). 0..1. */
+  llf: number;
+
+  /** Display units. */
+  unit: IsoluxUnit;
+  system: DistanceSystem;
+}
+
+/** A single fixture placed in world coordinates with a mounting and aim. */
+export interface PlacedFixture {
+  /** World position in metres. */
+  x: number;
+  y: number;
+  z: number;
+  mounting: MountingOrientation;
+  aim: AimDirection;
+}
+
+export interface EstimatorResult {
+  /** Number of fixtures placed. */
+  count: number;
+  /** Grid layout: cols × rows. For non-grid layouts both are 1. */
+  cols: number;
+  rows: number;
+  /** Spacing between fixtures in metres (canonical). */
+  spacingX: number;
+  spacingY: number;
+  /** Fixture positions (one entry per placed fixture). */
+  fixtures: PlacedFixture[];
+
+  /** Computed average maintained illuminance on the target surface,
+   *  in foot-candles (canonical). */
+  actualFc: number;
+  /** Max & min over the *whole* target surface, in fc. */
+  maxFc: number;
+  minFc: number;
+  /** Avg, max & min over the *task area* — a subgrid inset from the
+   *  perimeter so the avg:min ratio is computed the IES RP-1 / RP-7 way
+   *  (and the way AGi32 / DIALux task-area reports do). `uniformity`
+   *  below is taskAvgFc / taskMinFc. */
+  taskAvgFc: number;
+  taskMaxFc: number;
+  taskMinFc: number;
+  /** Task-area avg:min uniformity ratio (taskAvgFc / taskMinFc). */
+  uniformity: number;
+
+  /** Total electrical wattage of all placed fixtures. */
+  totalWatts: number;
+  /** Power density in W per square foot of target surface. */
+  wPerFt2: number;
+
+  /** Coefficient of utilization used (NaN when not computed). */
+  cu: number;
+  /** Room cavity ratio used (NaN when not applicable). */
+  rcr: number;
+
+  /** Whether actualFc includes a CU-method bonus on top of the
+   *  point-by-point direct contribution. */
+  includesCUBonus: boolean;
+
+  /** 2D illuminance grid for plotting. values[j][i] in foot-candles.
+   *  Axes (xs, ys) are canonical metres on the target surface. */
+  grid: {
+    xs: number[];
+    ys: number[];
+    values: number[][];
+  };
+
+  /** Working-plane illuminance from a single ceiling bounce for uplight
+   *  installs. First-order approximation only. fc. */
+  indirectWPFc?: number;
+
+  /** True when the iterative solver hit the 144-fixture cap and the
+   *  target is still unmet. */
+  unreachable?: boolean;
+
+  /** Set when the solver detected a degenerate fixture/aim/target combo
+   *  that produces a (silently) near-zero result. */
+  degenerate?: { reason: string; suggestion: string };
+
+  /** True when no wattage data was available (neither IES file nor
+   *  catalog provided a value). */
+  wattsUnknown?: boolean;
+
+  /** Raw lumen-method N before the grow loop + ceil-to-integer snap.
+   *  NaN when the lumen method doesn't apply. */
+  lumenMethodNRaw?: number;
+
+  /** Integer lumen-method N (post-iteration, pre-grid-snap). When it
+   *  equals `count` no snap was applied. */
+  lumenMethodN?: number;
+}
+
+/* ── layout estimator — linear-continuous (tape) ─────────── */
+
+/** Phase 2 application preset for `linear-continuous` products. */
+export type LinearApplication =
+  | "free-form"
+  | "cove-uplight"
+  | "under-cabinet"
+  | "perimeter-accent";
+
+/** Which wall of the room rectangle a run sits on. Plan view uses +x as
+ *  room width and +y as room length; `south` is the wall at y = 0,
+ *  `north` at y = roomLengthM, `east` at x = roomWidthM, `west` at
+ *  x = 0. */
+export type RoomWall = "south" | "east" | "north" | "west";
+
+/** User inputs for the tape-light (`linear-continuous`) configurator.
+ *  All distances canonical metres. */
+export interface LinearEstimatorInputs {
+  runLengthM: number;
+  driverMaxW?: number;
+  cutIncrementM?: number;
+  llf: number;
+  unit: IsoluxUnit;
+  system: DistanceSystem;
+  application: LinearApplication;
+  coveToCeilingM?: number;
+  coveWidthM?: number;
+  cabinetHeightM?: number;
+  counterDepthM?: number;
+  wallMountHeightM?: number;
+  wallExtentM?: number;
+  roomLengthM: number;
+  roomWidthM: number;
+  ceilingHeightM: number;
+  runWall: RoomWall;
+  runStartM: number;
+}
+
+/** Result of `solveLinearLayout()`. */
+export interface LinearEstimatorResult {
+  requestedLengthM: number;
+  buildableLengthM: number;
+  lumensPerFt: number;
+  wattsPerFt: number;
+  totalLumens: number;
+  totalWatts: number;
+  driverMaxW: number;
+  driverCount: number;
+  driverOverloaded: boolean;
+  cutCount?: number;
+  cutIncrementM?: number;
+  wattsUnknown?: boolean;
+  surface?: {
+    xs: number[];
+    ys: number[];
+    values: number[][];
+    avgFc: number;
+    minFc: number;
+    maxFc: number;
+    view: "plan" | "elevation";
+    targetRect: { x: number; y: number; w: number; h: number };
+    fixtureLine: { x0: number; y0: number; x1: number; y1: number };
+  };
+  indirectWPFc?: number;
+}
+
+/* ── layout estimator — area-continuous (pixels) ─────────── */
+
+/** Phase 2 application preset for `area-continuous` products. */
+export type AreaApplication = "free-form" | "feature-wall" | "ceiling-array" | "signage";
+
+/** Surface orientation for an `area-continuous` install. */
+export type AreaSurface = "ceiling" | "wall" | "floor";
+
+/** User inputs for the pixel (`area-continuous`) configurator. */
+export interface AreaEstimatorInputs {
+  regionLengthM: number;
+  regionWidthM: number;
+  surface: AreaSurface;
+  moduleIncrementMx?: number;
+  moduleIncrementMy?: number;
+  driverMaxW?: number;
+  llf: number;
+  unit: IsoluxUnit;
+  system: DistanceSystem;
+  application: AreaApplication;
+  targetDistanceM?: number;
+  reflectances?: RoomReflectances;
+  roomLengthM: number;
+  roomWidthM: number;
+  ceilingHeightM: number;
+  arrayWall: RoomWall;
+  arrayStartXM: number;
+  arrayStartYM: number;
+}
+
+/** Result of `solveAreaLayout()`. */
+export interface AreaEstimatorResult {
+  requestedLengthM: number;
+  requestedWidthM: number;
+  buildableLengthM: number;
+  buildableWidthM: number;
+  modulesAlong: number;
+  modulesAcross: number;
+  moduleCount: number;
+  lumensPerModule: number;
+  wattsPerModule: number;
+  totalLumens: number;
+  totalWatts: number;
+  driverMaxW: number;
+  driverCount: number;
+  driverOverloaded: boolean;
+  moduleIncrementMx: number;
+  moduleIncrementMy: number;
+  pixelCount?: number;
+  wattsUnknown?: boolean;
+  surface?: {
+    xs: number[];
+    ys: number[];
+    values: number[][];
+    avgFc: number;
+    minFc: number;
+    maxFc: number;
+    view: "plan" | "elevation";
+    targetRect: { x: number; y: number; w: number; h: number };
+    fixtureRect: { x: number; y: number; w: number; h: number };
+    roomAvgFc?: number;
+    rcr?: number;
+    cu?: number;
+  };
+}
+
+/** How a product lays out in a room — the dispatch key for the layout
+ *  solver. Ported AS-IS from WIES: it has NO track member. A track
+ *  layout is a relationship between a track product and one or more head
+ *  products (a multi-product session shape), not a property of a single
+ *  product — track BOM is handled by ies/trackBom.ts, not this enum.
+ *  When absent (or "area-grid"), the grid-of-point-fixtures solver runs
+ *  (recessed downlights, surface mount, troffers). */
+export type LayoutKind =
+  | "area-grid"
+  | "linear-continuous"
+  | "area-continuous"
+  | "linear-pitch"
+  | "wall-wash-row"
+  | "accent-single"
+  | "decorative-single";
+
+/** Minimal catalog-entry shape the layout solver reads. The full WIES
+ *  CatalogEntry is much larger; the solver only needs a wattage source
+ *  (`wattage`) and family/sku hints (for the tape/pixel cut-increment
+ *  family lookups). Everything is optional so callers can pass a partial
+ *  record or omit it entirely. */
+export interface CatalogEntry {
+  sku?: string;
+  family?: string;
+  wattage?: number;
+}

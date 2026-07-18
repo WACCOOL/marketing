@@ -1789,6 +1789,78 @@ a.thom-family-member:hover {
   font-size: 12px;
   padding: 2px 2px 0;
 }
+
+/* --- Layout card (plan_layout) ------------------------------------------- */
+.thom-layout-card .thom-card-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.thom-layout-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.thom-layout-chip {
+  font-size: 12px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+}
+.thom-layout-svg {
+  display: block;
+  width: 100%;
+  max-width: 300px;
+  height: auto;
+  margin: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+.thom-layout-bom {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-size: 13px;
+}
+.thom-layout-bom td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.thom-layout-bom-role td {
+  padding-top: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-bottom: none;
+}
+.thom-layout-bom-sku {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text);
+}
+.thom-layout-bom-qty {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.thom-layout-warnings {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+.thom-layout-warnings li {
+  margin: 2px 0;
+}
+.thom-layout-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
 .thom-composer {
   display: flex;
   gap: 8px;
