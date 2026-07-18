@@ -7,10 +7,12 @@
     "dev": "pnpm --filter @wac/web dev",
     "dev:api": "pnpm --filter @wac/api dev",
     "dev:redirect": "pnpm --filter @wac/redirect dev",
+    "dev:thom-bot": "pnpm --filter @wac/thom-bot dev",
     "build": "pnpm -r build",
     "deploy:web": "pnpm --filter @wac/web build && pnpm --filter @wac/api exec wrangler deploy --containers-rollout none",
     "deploy:all": "pnpm --filter @wac/web build && pnpm --filter @wac/api exec wrangler deploy --containers-rollout immediate",
     "deploy:container": "bash scripts/deploy-container.sh",
+    "deploy:thom-bot": "pnpm --filter @wac/thom-bot build:widget && pnpm --filter @wac/thom-bot exec wrangler deploy",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint --if-present"
