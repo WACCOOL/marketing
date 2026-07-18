@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Env } from "../env.js";
-import type { ClaudeContentBlock, ClaudeResponse } from "../anthropic.js";
+import type { ThomEnv } from "./env.js";
+import type { ClaudeContentBlock, ClaudeResponse } from "./transport.js";
 import {
   buildWebSearchTools,
   collectWebCitations,
@@ -9,7 +9,7 @@ import {
   webSearchMaxUses,
 } from "./agent.js";
 
-const env = (over: Partial<Env> = {}): Env => over as Env;
+const env = (over: Partial<ThomEnv> = {}): ThomEnv => over as ThomEnv;
 
 describe("webSearchEnabled", () => {
   it("is off when unset", () => {

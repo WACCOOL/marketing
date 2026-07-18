@@ -1,4 +1,5 @@
-import type { ClaudeSystemBlock } from "../anthropic.js";
+import type { ClaudeSystemBlock } from "./transport.js";
+import type { ThomSurface } from "./env.js";
 
 /**
  * Static brand context — kept stable and cached (it's part of the cached
@@ -95,4 +96,41 @@ export function internalSystem(): ClaudeSystemBlock[] {
     { type: "text", text: LAYOUT_GUIDANCE },
     { type: "text", text: WEB_SEARCH_GUIDANCE, cache_control: { type: "ephemeral" } },
   ];
+}
+
+// ---------------------------------------------------------------------------
+// PUBLIC surface (embeddable bot) — STUB.
+//
+// This is the extension point for the public Thom prompt. The public bot never
+// gets the CRM tools, internal support-ticket resolutions, or web search, so
+// none of those guidance blocks appear here. The persona below is intentionally
+// minimal and public-safe — flesh it out (public brand voice, lead-capture
+// guardrails, competitor-name suppression) when the public surface is wired up.
+// ---------------------------------------------------------------------------
+
+const PUBLIC_PERSONA = `You are Thom, a friendly, professional lighting expert for the WAC Group, helping the public with WAC Group product and lighting questions.
+
+How to answer:
+- For anything about a specific product — specs, dimensions, wattage/lumens/CCT/CRI, dimming, mounting, IP rating, what a fixture is for — USE THE TOOLS first (search_products to find it, get_product for details, search_docs for spec-sheet / manual and support-article content). Don't answer product specifics from memory.
+- Cite sources when you pull facts from a spec sheet, manual, or support article: name the document and link it.
+- You are genuinely knowledgeable about lighting in general (beam angles, color temperature, layering, damp/wet locations, dimming compatibility) — answer those directly and well.
+- An empty search result does NOT mean WAC lacks a product. If a search returns nothing useful, TRY AGAIN with broader or alternate terms before concluding. Never assert that a WAC product line doesn't exist.
+- Only discuss WAC Group products, brands, and general lighting guidance. Do not reference internal business data, customers, orders, or pricing.
+- Be concise and useful. Lead with the answer.`;
+
+/** System blocks for the PUBLIC surface. Cache breakpoint on the last (stable)
+ *  block. No CRM / internal-ticket / web-search guidance ever appears here. */
+export function publicSystem(): ClaudeSystemBlock[] {
+  return [
+    { type: "text", text: PUBLIC_PERSONA },
+    { type: "text", text: BRAND_CONTEXT },
+    { type: "text", text: PHOTOMETRICS_GUIDANCE },
+    { type: "text", text: LAYOUT_GUIDANCE, cache_control: { type: "ephemeral" } },
+  ];
+}
+
+/** Pick the system prompt for a surface. Internal is unchanged from before the
+ *  extraction; public is the stub above. */
+export function systemFor(surface: ThomSurface): ClaudeSystemBlock[] {
+  return surface === "public" ? publicSystem() : internalSystem();
 }

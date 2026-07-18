@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Env } from "../env.js";
-import type { ClaudeStreamEvent, ClaudeUsage } from "../anthropic.js";
+import type { ThomEnv } from "./env.js";
+import type { ClaudeStreamEvent, ClaudeUsage } from "./transport.js";
 import {
   reconstructTurn,
   shouldEscalate,
@@ -74,13 +74,13 @@ describe("shouldEscalate", () => {
 
 describe("tieringEnabled", () => {
   it("is on when unset (default)", () => {
-    expect(tieringEnabled({} as Env)).toBe(true);
+    expect(tieringEnabled({} as ThomEnv)).toBe(true);
   });
   it("is on when explicitly \"1\"", () => {
-    expect(tieringEnabled({ THOM_TIERING: "1" } as Env)).toBe(true);
+    expect(tieringEnabled({ THOM_TIERING: "1" } as ThomEnv)).toBe(true);
   });
   it("is off when explicitly \"0\" (safe rollback)", () => {
-    expect(tieringEnabled({ THOM_TIERING: "0" } as Env)).toBe(false);
+    expect(tieringEnabled({ THOM_TIERING: "0" } as ThomEnv)).toBe(false);
   });
 });
 

@@ -17,8 +17,8 @@ import {
   mToFt,
   tasksForTarget,
   type EstimatorTask,
-} from "@wac/shared";
-import type { ClaudeTool } from "../anthropic.js";
+} from "../index.js";
+import type { ClaudeTool } from "./transport.js";
 import type { PhotometricsCard, ToolContext, ToolOutput } from "./types.js";
 
 export const PHOTOMETRICS_TOOLS: ClaudeTool[] = [
