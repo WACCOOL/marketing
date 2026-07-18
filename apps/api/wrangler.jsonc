@@ -218,7 +218,21 @@
     // Thom Bot — dark-launch flag for Sales Layer doc capture. "0" = discover +
     // log spec-sheet/manual coverage only (no writes); "1" = write kb_documents
     // + product_documents. Flip to "1" once apps/docs-ingest can extract them.
-    "THOM_DOC_CAPTURE": "1"
+    "THOM_DOC_CAPTURE": "1",
+    // Thom KB internal-ticket ingestion (dark-launch flag flipped on 2026-07-17).
+    // Capture is Worker-side: the ZenDesk->HubSpot mirror piggybacks each synced
+    // ticket in a KB group onto THOM_INGEST_QUEUE, and the nightly reconcile
+    // sweep (runThomTicketSweep, 26h lookback) nets webhook misses. The
+    // docs-ingest CLI then fetches the ticket + public comments, PII-REDACTS,
+    // and embeds (only redacted text reaches kb_chunks; kb_documents keeps a
+    // pointer row with no body). Tickets are scope='internal'.
+    "THOM_ZENDESK_TICKETS": "1",
+    // Which groups' ticket RESOLUTIONS feed the KB — the technical/product
+    // support groups (Fan Technical Support, Product Support, T1/T2/T3, Warranty
+    // Dept, Lighting Services), whose tickets carry reusable troubleshooting
+    // knowledge. Deliberately a SUBSET of ZD_SYNC_GROUPS (the transactional
+    // Quotes/Orders/CS groups are excluded); broaden here to add more.
+    "THOM_TICKET_GROUPS": "21558279834135,21558279824663,1500001314462,1500002309841,4415933935127,1500002479082,1500001316682"
   },
 
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:
