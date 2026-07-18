@@ -1,0 +1,65 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wac-thom-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "b94b5602d0fac83f082622fd88b092d7",
+
+  // Public custom domain on the gowac.cc zone. Wrangler provisions the DNS
+  // record + SSL cert automatically. Collision-free with the redirect Worker
+  // (gowac.cc/* + www) and the API Worker (marketing.gowac.cc).
+  "routes": [{ "pattern": "thom.gowac.cc", "custom_domain": true }],
+
+  // Workers AI — bge-m3 embeddings (1024-dim) for the KB + product hybrid
+  // search. Near-free, edge-local, no API key. Same binding the internal API
+  // Worker uses.
+  "ai": {
+    "binding": "AI"
+  },
+
+  "kv_namespaces": [
+    {
+      // Rate/token counters (day/min) + session bookkeeping. Create with:
+      //   npx wrangler kv namespace create THOM_KV
+      // then paste the printed id below (this placeholder must be replaced
+      // before the first deploy).
+      "binding": "THOM_KV",
+      "id": "REPLACE_WITH_THOM_KV_NAMESPACE_ID"
+    }
+  ],
+
+  // Reserved for the embeddable widget (S5). Stub ./public dir with a
+  // placeholder for now so `wrangler deploy` has an assets directory; the
+  // built widget bundle will land here later. The Worker owns /api/* +
+  // /_health; anything else falls through to the static widget.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+
+  "vars": {
+    // Public surface wants photometrics + layout + model-tiering ON.
+    "THOM_PHOTOMETRICS": "1",
+    "THOM_LAYOUT": "1",
+    "THOM_TIERING": "1",
+    // Comma-separated embed allowlist — Davis fills this with the approved
+    // brand-site origins before launch (empty = only localhost dev works).
+    "ALLOWED_ORIGINS": ""
+  },
+
+  // Secrets — set via `wrangler secret put`, NEVER in this file or CI:
+  //   wrangler secret put SUPABASE_URL
+  //   wrangler secret put SUPABASE_ANON_KEY
+  //   wrangler secret put ANTHROPIC_API_KEY
+  //   wrangler secret put TURNSTILE_SECRET
+  //   wrangler secret put SESSION_SECRET   (e.g. `openssl rand -hex 32`)
+  //
+  // DELIBERATELY ABSENT (security layer 1): SUPABASE_SERVICE_ROLE_KEY and every
+  // HUBSPOT_* token. The public Worker must be incapable of RLS-bypass reads or
+  // any CRM access — so those credentials are never bound here.
+
+  "observability": {
+    "enabled": true
+  }
+}

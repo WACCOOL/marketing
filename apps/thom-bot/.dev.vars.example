@@ -1,0 +1,35 @@
+# Local dev vars for the PUBLIC Thom Bot Worker (apps/thom-bot).
+# Copy to `.dev.vars` (git-ignored) and fill in. NEVER commit real secrets.
+#
+# NOTE the DELIBERATE absence of SUPABASE_SERVICE_ROLE_KEY and any HUBSPOT_*
+# token — the public Worker must be incapable of RLS-bypass reads or CRM access
+# (security layer 1). Do not add them here.
+
+# Supabase — ANON key only (RLS-scoped; same key a browser would use).
+SUPABASE_URL=https://stmphhslrjhtzmvqilqu.supabase.co
+SUPABASE_ANON_KEY=replace-me
+
+# Anthropic (Claude brain). Leave blank to keep chat closed ("not configured").
+ANTHROPIC_API_KEY=
+
+# Cloudflare Turnstile secret (server-side siteverify). Test secret keys are on
+# the Turnstile docs; use a real one for the deployed Worker.
+TURNSTILE_SECRET=1x0000000000000000000000000000000AA
+
+# Session token HMAC secret — any long random string (e.g. `openssl rand -hex 32`).
+SESSION_SECRET=dev-only-change-me
+
+# Comma-separated embed allowlist. Empty in dev = only localhost origins pass.
+ALLOWED_ORIGINS=
+
+# --- Optional: public tool flags (default ON in wrangler.jsonc vars) ---
+# THOM_PHOTOMETRICS=1
+# THOM_LAYOUT=1
+# THOM_TIERING=1
+# THOM_PUBLIC_WEB_SEARCH_MAX_USES=2
+
+# --- Optional: cap overrides (defaults in src/limits.ts) ---
+# THOM_RATE_PER_MIN=20
+# THOM_RATE_PER_DAY=300
+# THOM_TOKENS_PER_IP_DAY=200000
+# THOM_TOKENS_GLOBAL_DAY=5000000
