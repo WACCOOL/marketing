@@ -75,6 +75,48 @@ export function sendChat(
   });
 }
 
+// --- Chat history ------------------------------------------------------------
+
+/** One past conversation as shown in the history drawer. */
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  messageCount: number;
+}
+
+/** One persisted turn as reloaded from the server (mirrors ThomChat's Turn). */
+export interface StoredTurn {
+  role: "user" | "assistant";
+  text: string;
+  cards?: Card[];
+  citations?: Citation[];
+}
+
+/** List the current user's recent Thom conversations (newest first). */
+export async function listConversations(): Promise<ConversationSummary[]> {
+  const { conversations } = await api<{ conversations: ConversationSummary[] }>(
+    "/api/thom/conversations",
+  );
+  return conversations;
+}
+
+/** Load one conversation's turns to reload-and-continue. */
+export function getConversation(
+  id: string,
+): Promise<{ conversationId: string; turns: StoredTurn[] }> {
+  return api<{ conversationId: string; turns: StoredTurn[] }>(
+    `/api/thom/conversations/${encodeURIComponent(id)}`,
+  );
+}
+
+/** Delete one of the user's conversations. */
+export async function deleteConversation(id: string): Promise<void> {
+  await api<{ ok: true }>(`/api/thom/conversations/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
 // --- Streaming (SSE) ---------------------------------------------------------
 
 /** Callbacks for chatStream. onError receives the HTTP status when the failure
