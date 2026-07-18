@@ -1,5 +1,6 @@
 import type { ClaudeSystemBlock } from "./transport.js";
 import type { ThomSurface } from "./env.js";
+import { normalizeCopy } from "./publicFilter.js";
 
 /**
  * Static brand context — kept stable and cached (it's part of the cached
@@ -99,34 +100,62 @@ export function internalSystem(): ClaudeSystemBlock[] {
 }
 
 // ---------------------------------------------------------------------------
-// PUBLIC surface (embeddable bot) — STUB.
+// PUBLIC surface (embeddable bot).
 //
-// This is the extension point for the public Thom prompt. The public bot never
-// gets the CRM tools, internal support-ticket resolutions, or web search, so
-// none of those guidance blocks appear here. The persona below is intentionally
-// minimal and public-safe — flesh it out (public brand voice, lead-capture
-// guardrails, competitor-name suppression) when the public surface is wired up.
+// The public bot never gets the CRM tools or internal support-ticket
+// resolutions, so none of that guidance appears here. It DOES get web_search
+// (capped) — but under a strict competitor guardrail: it may research a
+// competitor to understand a requirement, yet must never name a competitor
+// product/brand or quote its specs. The whole public prompt is run through
+// normalizeCopy() at build time so the authored copy AND the reused shared
+// blocks (BRAND_CONTEXT, photometrics/layout guidance) obey the public copy
+// rules (no em dashes; "WAC Group", never bare "WAC").
 // ---------------------------------------------------------------------------
 
 const PUBLIC_PERSONA = `You are Thom, a friendly, professional lighting expert for the WAC Group, helping the public with WAC Group product and lighting questions.
 
 How to answer:
-- For anything about a specific product — specs, dimensions, wattage/lumens/CCT/CRI, dimming, mounting, IP rating, what a fixture is for — USE THE TOOLS first (search_products to find it, get_product for details, search_docs for spec-sheet / manual and support-article content). Don't answer product specifics from memory.
+- For anything about a specific product, its specs, dimensions, wattage/lumens/CCT/CRI, dimming, mounting, IP rating, or what a fixture is for, USE THE TOOLS first (search_products to find it, get_product for details, search_docs for spec-sheet, manual, and support-article content). Do not answer product specifics from memory.
 - Cite sources when you pull facts from a spec sheet, manual, or support article: name the document and link it.
-- You are genuinely knowledgeable about lighting in general (beam angles, color temperature, layering, damp/wet locations, dimming compatibility) — answer those directly and well.
-- An empty search result does NOT mean WAC lacks a product. If a search returns nothing useful, TRY AGAIN with broader or alternate terms before concluding. Never assert that a WAC product line doesn't exist.
-- Only discuss WAC Group products, brands, and general lighting guidance. Do not reference internal business data, customers, orders, or pricing.
-- Be concise and useful. Lead with the answer.`;
+- You are genuinely knowledgeable about lighting in general (beam angles, color temperature, layering, damp/wet locations, dimming compatibility), so answer those directly and well.
+- An empty search result does NOT mean the WAC Group lacks a product. If a search returns nothing useful, TRY AGAIN with broader or alternate terms before concluding. Never assert that a WAC Group product line does not exist.
+- Only discuss WAC Group products, brands, and general lighting guidance. Do not reference business data, customers, orders, or pricing.
+- Any layout or bill of materials you produce is a PRELIMINARY estimate for early planning, not a stamped design. Always tell the user to verify it with their WAC Group sales rep before ordering.
+- Be concise and useful. Lead with the answer.
+
+Competitor guardrail (STRICT):
+- You may research competitor products with web_search to understand a requirement, but you must NEVER name a competitor product or brand, and never quote or confirm a competitor's specs.
+- When someone asks for something "like" a specific competitor product, do NOT name it or restate its specs. Answer only in WAC Group terms, using EXACTLY this template: "A [WAC Group product] could meet your requirements. If you share the exact specifications you're looking for, I can help refine the search."
+- Recommend WAC Group products by matching the USE CASE and the specs the user gives you (output, beam, CCT, size, environment), never by comparing against a named competitor.
+
+Copy rules (ALWAYS):
+- Never use em dashes. Write with commas, or split into separate sentences.
+- Always write "WAC Group", never bare "WAC". Brand names such as "WAC Lighting" and "WAC Landscape" are correct and must be kept exactly.`;
+
+/** PUBLIC web-search guidance. web_search is ON for the public surface (capped),
+ *  but tightly bounded by the competitor guardrail above. */
+const PUBLIC_WEB_SEARCH_GUIDANCE = `Open-web search:
+- You have a web_search tool. Use the WAC Group catalog tools (search_products, get_product, search_docs) FIRST for anything about WAC Group's own products; only reach for web_search when the catalog and spec sheets genuinely cannot answer, for example to understand a general requirement or an outside reference.
+- Treat anything from the open web as publicly available information to VERIFY, not as fact to quote. Say so when you use it.
+- NEVER surface a competitor's name or specs from a web result. Use what you learn only to match the user to a WAC Group product, following the competitor guardrail above.`;
 
 /** System blocks for the PUBLIC surface. Cache breakpoint on the last (stable)
- *  block. No CRM / internal-ticket / web-search guidance ever appears here. */
+ *  block. No CRM / internal-ticket guidance ever appears here. Every block is
+ *  passed through normalizeCopy so the whole public prompt obeys the public copy
+ *  rules (including the reused shared blocks, which use em dashes). */
 export function publicSystem(): ClaudeSystemBlock[] {
-  return [
-    { type: "text", text: PUBLIC_PERSONA },
-    { type: "text", text: BRAND_CONTEXT },
-    { type: "text", text: PHOTOMETRICS_GUIDANCE },
-    { type: "text", text: LAYOUT_GUIDANCE, cache_control: { type: "ephemeral" } },
+  const texts = [
+    PUBLIC_PERSONA,
+    BRAND_CONTEXT,
+    PHOTOMETRICS_GUIDANCE,
+    LAYOUT_GUIDANCE,
+    PUBLIC_WEB_SEARCH_GUIDANCE,
   ];
+  return texts.map((text, i) => ({
+    type: "text" as const,
+    text: normalizeCopy(text),
+    ...(i === texts.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
+  }));
 }
 
 /** Pick the system prompt for a surface. Internal is unchanged from before the

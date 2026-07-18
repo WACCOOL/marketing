@@ -26,9 +26,12 @@ export interface ThomEnv {
   ANTHROPIC_MODEL?: string;
   // Model-tiering kill-switch ("0" = router-only).
   THOM_TIERING?: string;
-  // Native web_search gate ("1" = enabled) + per-turn cap.
+  // Native web_search gate ("1" = enabled) + per-turn cap. INTERNAL surface only.
   THOM_WEB_SEARCH?: string;
   THOM_WEB_SEARCH_MAX_USES?: string;
+  // PUBLIC surface: web_search is ON by default (not gated). Optional per-turn
+  // cap override (default 2, clamped 1..3).
+  THOM_PUBLIC_WEB_SEARCH_MAX_USES?: string;
   // Photometrics / layout tool gates ("1" = offered to the model).
   THOM_PHOTOMETRICS?: string;
   THOM_LAYOUT?: string;
