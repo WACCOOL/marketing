@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseIES } from "./ies-parser.js";
 import { solveTrackBom } from "./trackBom.js";
 import type { EstimatorInputs } from "./types.js";
-import type { BomLine, TrackSystem } from "./trackTypes.js";
+import type { BomLine, TrackComponent, TrackSystem } from "./trackTypes.js";
 
 const M_PER_FT = 0.3048;
 
@@ -56,7 +56,11 @@ const LINE_VOLT: TrackSystem = {
   trackType: "H",
   voltageClass: "line",
   segmentLengthsFt: [8, 4, 2],
-  circuitVa: 200, // small on purpose → forces >1 circuit
+  // circuit_va is the usable "Max Per Circuit" (already 80%-derated); trackBom
+  // does NOT re-derate. Chosen small on purpose to force >1 circuit AND to make
+  // the old (double-derated) vs new result differ: ~268 W →
+  //   OLD ceil(268/(150×0.8=120)) = 3 ; NEW ceil(268/150) = 2.
+  circuitVa: 150,
   defaultHeadSpacingFt: 4,
   compatibleHeadTrackTypes: ["H"],
   components: [
@@ -106,8 +110,9 @@ describe("solveTrackBom — low-voltage 20×10 ft", () => {
 
 describe("solveTrackBom — line-voltage sizes circuits, not transformers", () => {
   const r = solveTrackBom(head, space(20, 10), LINE_VOLT);
-  it("computes circuits = ceil(totalW / (circuitVa × 0.8)) and no transformer", () => {
-    // 268 W / (200 × 0.8 = 160) → 2 circuits.
+  it("computes circuits = ceil(totalW / circuitVa) — no re-derate — and no transformer", () => {
+    // circuit_va is already usable watts, so ~268 W / 150 → 2 circuits (NOT the
+    // old double-derated ceil(268/120) = 3).
     expect(r.summary.circuits).toBe(2);
     expect(r.summary.transformerCount).toBe(0);
     expect(r.warnings.some((w) => /circuits/i.test(w))).toBe(true);
@@ -134,5 +139,86 @@ describe("solveTrackBom — degrades without an IES file (lumen method)", () => 
     expect(r.summary.avgFc).toBe(0);
     expect(r.estimator).toBeUndefined();
     expect(r.warnings.some((w) => /no ies file/i.test(w))).toBe(true);
+  });
+});
+
+// A low-voltage system carrying the real 75/150/300/600 W transformer ladder
+// (Solorail / X style). The BOM picks a specific transformer SKU by capacity.
+const LV_XFMRS: TrackComponent[] = [
+  { role: "transformer", sku: "TRN-75", capacityW: 75, description: "75 W transformer" },
+  { role: "transformer", sku: "TRN-150", capacityW: 150, description: "150 W transformer" },
+  { role: "transformer", sku: "TRN-300", capacityW: 300, description: "300 W transformer" },
+  { role: "transformer", sku: "TRN-600", capacityW: 600, description: "600 W transformer" },
+];
+function lvLadder(): TrackSystem {
+  return {
+    key: "solorail",
+    label: "Solorail",
+    trackType: "SOLORAIL",
+    voltageClass: "low",
+    segmentLengthsFt: [8],
+    defaultHeadSpacingFt: 4,
+    compatibleHeadTrackTypes: ["SOLORAIL"],
+    components: [
+      { role: "channel", sku: "LM-T8", segmentLengthFt: 8 },
+      { role: "feed", sku: "SR-FEED" },
+      { role: "endcap", sku: "SR-END" },
+      ...LV_XFMRS,
+    ],
+  };
+}
+
+describe("solveTrackBom — low-voltage selects a transformer by capacity", () => {
+  it("picks the smallest transformer that covers the load (17 heads × 15 W ≈ 255 W → one 300 W)", () => {
+    // No-IES lumen path → 17 heads (matches the lumen-method test); 17×15 = 255 W.
+    const r = solveTrackBom(null, space(20, 10), lvLadder(), {
+      headWattsOverride: 15,
+      lumensPerHead: 600,
+    });
+    expect(r.summary.totalWatts).toBe(255);
+    expect(r.summary.transformerCount).toBe(1);
+    expect(r.summary.circuits).toBeUndefined();
+    const xfmr = line(r.bom.lines, "transformer");
+    expect(xfmr?.sku).toBe("TRN-300");
+    expect(xfmr?.qty).toBe(1);
+    // 255 / 300 = 85% → near-capacity warning.
+    expect(r.warnings.some((w) => /near capacity/i.test(w))).toBe(true);
+  });
+
+  it("uses multiples of the largest when none is big enough (17 × 40 = 680 W → two 600 W)", () => {
+    const r = solveTrackBom(null, space(20, 10), lvLadder(), {
+      headWattsOverride: 40,
+      lumensPerHead: 600,
+    });
+    expect(r.summary.totalWatts).toBe(680);
+    expect(r.summary.transformerCount).toBe(2);
+    const xfmr = line(r.bom.lines, "transformer");
+    expect(xfmr?.sku).toBe("TRN-600");
+    expect(xfmr?.qty).toBe(2);
+  });
+});
+
+describe("solveTrackBom — Flexrail is line voltage, not transformer", () => {
+  const FLEXRAIL_LINE: TrackSystem = {
+    key: "flexrail",
+    label: "Flexrail1",
+    trackType: "FLEXRAIL",
+    voltageClass: "line",
+    segmentLengthsFt: [8],
+    circuitVa: 1920, // usable "Max Per Circuit" — 120V line voltage, transformer-less
+    defaultHeadSpacingFt: 4,
+    compatibleHeadTrackTypes: ["FLEXRAIL"],
+    components: [
+      { role: "channel", sku: "1009", segmentLengthFt: 8 },
+      { role: "feed", sku: "1007" },
+      { role: "endcap", sku: "1005" },
+    ],
+  };
+  const r = solveTrackBom(head, space(20, 10), FLEXRAIL_LINE);
+  it("sizes circuits and adds no transformer line", () => {
+    // 268 W / 1920 → 1 circuit; a transformer-less system.
+    expect(r.summary.circuits).toBe(1);
+    expect(r.summary.transformerCount).toBe(0);
+    expect(line(r.bom.lines, "transformer")).toBeUndefined();
   });
 });

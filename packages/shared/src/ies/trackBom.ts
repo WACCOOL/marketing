@@ -167,32 +167,63 @@ export function solveTrackBom(
   const totalWatts = count * Math.max(0, headWatts);
   let circuits: number | undefined;
   let transformerCount = 0;
+  // The chosen LV transformer component (if any) so the BOM line can carry its
+  // real SKU/description instead of a generic placeholder.
+  let chosenTransformer: TrackComponent | undefined;
   if (system?.voltageClass === "line") {
     const va = system.circuitVa ?? 0;
+    // circuit_va is the published "Max Per Circuit" — ALREADY the 80%-derated
+    // usable continuous watts (20A×V×0.8). Do NOT re-derate here.
     if (va > 0 && totalWatts > 0) {
-      const usableVa = va * 0.8; // 80% continuous-load derate
-      circuits = Math.ceil(totalWatts / usableVa);
-      const fill = totalWatts / (circuits * usableVa);
+      circuits = Math.ceil(totalWatts / va);
+      const fill = totalWatts / (circuits * va);
       if (fill >= 0.8) {
         warnings.push(
-          `Circuits are ${Math.round(fill * 100)}% loaded (80% continuous-load basis) — near capacity; consider an extra circuit.`,
+          `Circuits are ${Math.round(fill * 100)}% loaded (usable "Max Per Circuit" basis) — near capacity; consider an extra circuit.`,
         );
       }
     } else if (totalWatts > 0) {
       circuits = 1;
     }
   } else if (system?.voltageClass === "low") {
-    const cap = system.feedCapacityW ?? 0;
-    if (cap > 0 && totalWatts > 0) {
-      transformerCount = Math.ceil(totalWatts / cap);
-      const fill = totalWatts / (transformerCount * cap);
+    // Prefer sizing off real transformer rows (capacity_w). Pick the smallest
+    // single transformer that covers the load; if none is large enough, use
+    // multiple of the largest.
+    const transformers = (system.components ?? [])
+      .filter((c) => c.role === "transformer" && (c.capacityW ?? 0) > 0)
+      .sort((a, b) => (a.capacityW ?? 0) - (b.capacityW ?? 0));
+    if (transformers.length > 0 && totalWatts > 0) {
+      const fit = transformers.find((c) => (c.capacityW ?? 0) >= totalWatts);
+      if (fit) {
+        chosenTransformer = fit;
+        transformerCount = 1;
+      } else {
+        const largest = transformers[transformers.length - 1]!;
+        chosenTransformer = largest;
+        transformerCount = Math.ceil(totalWatts / (largest.capacityW ?? 1));
+      }
+      const cap = (chosenTransformer.capacityW ?? 0) * transformerCount;
+      const fill = cap > 0 ? totalWatts / cap : 0;
       if (fill >= 0.8) {
         warnings.push(
           `Transformers/feeds are ${Math.round(fill * 100)}% loaded — near capacity; consider adding a feed.`,
         );
       }
-    } else if (totalWatts > 0) {
-      transformerCount = 1;
+    } else {
+      // No transformer rows → fall back to a system-level feed capacity, then
+      // to the =1 last resort.
+      const cap = system.feedCapacityW ?? 0;
+      if (cap > 0 && totalWatts > 0) {
+        transformerCount = Math.ceil(totalWatts / cap);
+        const fill = totalWatts / (transformerCount * cap);
+        if (fill >= 0.8) {
+          warnings.push(
+            `Transformers/feeds are ${Math.round(fill * 100)}% loaded — near capacity; consider adding a feed.`,
+          );
+        }
+      } else if (totalWatts > 0) {
+        transformerCount = 1;
+      }
     }
   }
 
@@ -233,7 +264,18 @@ export function solveTrackBom(
   pushLine("feed", feeds, "Power feed / live end");
   pushLine("connector", connectors, "Track connector");
   pushLine("endcap", endcaps, "Track end cap");
-  pushLine("transformer", transformerCount, "Transformer / low-voltage feed");
+  // Transformer line: use the capacity-selected transformer's real SKU when we
+  // picked one, otherwise fall back to the generic role line.
+  if (transformerCount > 0 && chosenTransformer) {
+    rawLines.push({
+      sku: chosenTransformer.sku,
+      description: chosenTransformer.description ?? "Transformer / low-voltage feed",
+      qty: transformerCount,
+      role: "transformer",
+    });
+  } else {
+    pushLine("transformer", transformerCount, "Transformer / low-voltage feed");
+  }
 
   // Merge identical (role, sku) lines so the BOM never double-lists a SKU.
   const merged = new Map<string, BomLine>();
