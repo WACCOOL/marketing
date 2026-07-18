@@ -1428,6 +1428,7 @@ button.slim {
   flex-direction: column;
   height: calc(100vh - 88px);
   min-height: 420px;
+  position: relative;
 }
 .thom-head {
   padding-bottom: 12px;
@@ -1449,11 +1450,129 @@ button.slim {
   justify-content: space-between;
   gap: 12px;
 }
+.thom-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
 .thom-new {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   flex: none;
+}
+/* --- Thom history drawer ---------------------------------------------- */
+.thom-history-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.28);
+  z-index: 5;
+}
+.thom-history {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(360px, 88%);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-pop);
+  border-top-left-radius: var(--radius);
+  border-bottom-left-radius: var(--radius);
+}
+.thom-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.thom-history-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.thom-history-close:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+.thom-history-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.thom-history-empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  color: var(--muted);
+}
+.thom-history-item {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+}
+.thom-history-item:hover {
+  background: var(--panel-3);
+  border-color: var(--border);
+}
+.thom-history-item.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.thom-history-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.thom-history-title {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.thom-history-meta {
+  font-size: 12px;
+}
+.thom-history-del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--radius);
+}
+.thom-history-del:hover {
+  color: var(--accent);
+  background: var(--panel-2);
 }
 .thom-scroll {
   flex: 1;

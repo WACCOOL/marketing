@@ -1,10 +1,26 @@
 import { useEffect, useRef, useState } from "react";
-import { Bot, Boxes, ExternalLink, FileText, Globe, Loader2, Plus, Send } from "lucide-react";
+import {
+  Bot,
+  Boxes,
+  ExternalLink,
+  FileText,
+  Globe,
+  History,
+  Loader2,
+  Plus,
+  Send,
+  Trash2,
+  X,
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import {
   chatStream,
+  deleteConversation,
+  getConversation,
+  listConversations,
   type Card,
   type Citation,
+  type ConversationSummary,
   type FamilyCard,
   type ProductCard,
 } from "../lib/thom.js";
@@ -39,6 +55,21 @@ function loadPersisted(): Persisted | null {
   }
 }
 
+/** Compact relative time for history rows ("just now", "3h ago", "2d ago"). */
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  const diff = Date.now() - then;
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  return new Date(then).toLocaleDateString();
+}
+
 /** Immutably replace the most recent assistant turn (the in-progress one). */
 function updateLastAssistant(turns: Turn[], fn: (t: Turn) => Turn): Turn[] {
   const next = turns.slice();
@@ -63,6 +94,11 @@ export function ThomChat() {
   const scrollRef = useRef<HTMLDivElement>(null);
   // Holds the in-flight stream so New chat / unmount can cancel it.
   const abortRef = useRef<AbortController | null>(null);
+
+  // History drawer.
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -95,6 +131,44 @@ export function ThomChat() {
       localStorage.removeItem(STORAGE_KEY);
     } catch {
       // ignore
+    }
+  }
+
+  async function openHistory() {
+    setHistoryOpen(true);
+    setHistoryBusy(true);
+    try {
+      setConversations(await listConversations());
+    } catch {
+      setConversations([]);
+    } finally {
+      setHistoryBusy(false);
+    }
+  }
+
+  async function loadConversation(id: string) {
+    // Abort any in-flight stream before swapping the transcript out.
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setBusy(false);
+    try {
+      const { conversationId: id2, turns: loaded } = await getConversation(id);
+      setTurns(loaded);
+      setConversationId(id2);
+      setHistoryOpen(false);
+    } catch {
+      // leave the drawer open so the user can retry
+    }
+  }
+
+  async function removeConversation(id: string) {
+    if (!window.confirm("Delete this conversation? This can't be undone.")) return;
+    try {
+      await deleteConversation(id);
+      setConversations((cs) => cs.filter((c) => c.id !== id));
+      if (id === conversationId) newChat();
+    } catch {
+      // no-op — the row stays; user can retry
     }
   }
 
@@ -154,16 +228,73 @@ export function ThomChat() {
 
   return (
     <div className="thom">
+      {historyOpen && (
+        <>
+          <div className="thom-history-scrim" onClick={() => setHistoryOpen(false)} />
+          <aside className="thom-history" aria-label="Conversation history">
+            <div className="thom-history-head">
+              <strong>Chat history</strong>
+              <button
+                className="thom-history-close"
+                onClick={() => setHistoryOpen(false)}
+                aria-label="Close history"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="thom-history-list">
+              {historyBusy ? (
+                <div className="thom-history-empty">
+                  <Loader2 size={16} className="spin" /> Loading…
+                </div>
+              ) : conversations.length === 0 ? (
+                <div className="thom-history-empty">No past conversations yet.</div>
+              ) : (
+                conversations.map((conv) => (
+                  <div
+                    key={conv.id}
+                    className={`thom-history-item${conv.id === conversationId ? " active" : ""}`}
+                  >
+                    <button
+                      className="thom-history-open"
+                      onClick={() => void loadConversation(conv.id)}
+                    >
+                      <span className="thom-history-title">{conv.title}</span>
+                      <span className="thom-history-meta muted">
+                        {relativeTime(conv.createdAt)} · {conv.messageCount} message
+                        {conv.messageCount === 1 ? "" : "s"}
+                      </span>
+                    </button>
+                    <button
+                      className="thom-history-del"
+                      onClick={() => void removeConversation(conv.id)}
+                      aria-label="Delete conversation"
+                      title="Delete conversation"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </aside>
+        </>
+      )}
       <header className="thom-head">
         <div className="thom-head-row">
           <div className="thom-title">
             <Bot size={20} /> <span>Thom</span>
           </div>
-          {turns.length > 0 && (
-            <button className="secondary thom-new" onClick={newChat}>
-              <Plus size={14} /> New chat
+          <div className="thom-head-actions">
+            <button className="secondary thom-new" onClick={() => void openHistory()}>
+              <History size={14} /> History
             </button>
-          )}
+            {turns.length > 0 && (
+              <button className="secondary thom-new" onClick={newChat}>
+                <Plus size={14} /> New chat
+              </button>
+            )}
+          </div>
         </div>
         <p className="muted">Your WAC Group lighting expert — products, specs, manuals, and recommendations.</p>
       </header>
