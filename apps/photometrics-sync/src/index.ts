@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { unzipSync } from "fflate";
 import { parseAndBuild } from "./metrics.js";
 import { pickRepresentative } from "./match.js";
+import { stripNul } from "./pg.js";
 
 /**
  * Thom Bot — IES photometrics precompute (mirrors apps/docs-ingest).
@@ -172,7 +173,9 @@ async function upsertIesMetrics(
   const { data, error } = await sb
     .from("ies_metrics")
     .upsert(
-      {
+      // stripNul: keyword text / warning messages / zip filenames can carry a
+      // U+0000 that Postgres refuses ("unsupported Unicode escape sequence").
+      stripNul({
         content_hash: contentHash,
         inner_filename: inner.filename,
         source_zip_url: sourceZipUrl,
@@ -180,7 +183,7 @@ async function upsertIesMetrics(
         warnings,
         parser_version: PARSER_VERSION,
         updated_at: new Date().toISOString(),
-      },
+      }),
       { onConflict: "content_hash" },
     )
     .select("id")
