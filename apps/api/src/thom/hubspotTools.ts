@@ -762,7 +762,10 @@ export async function hubspotDispatch(
   name: string,
   input: Record<string, unknown>,
 ): Promise<ToolOutput> {
-  const token = ctx.env.HUBSPOT_READ_TOKEN;
+  // ctx.env is the narrow ThomEnv from @wac/shared/thom (the brain doesn't know
+  // about CRM). The internal caller passes its fat `Env`, which carries the
+  // read token; read it via a cast so this INTERNAL-only module can reach it.
+  const token = (ctx.env as { HUBSPOT_READ_TOKEN?: string }).HUBSPOT_READ_TOKEN;
   if (!token) return NOT_CONFIGURED;
   switch (name) {
     case "crm_search_companies":

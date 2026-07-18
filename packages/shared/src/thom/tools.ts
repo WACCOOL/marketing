@@ -1,6 +1,6 @@
-import type { ClaudeTool } from "../anthropic.js";
+import type { ClaudeTool } from "./transport.js";
+import type { ThomSurface } from "./env.js";
 import { embedQuery } from "./embed.js";
-import { hubspotDispatch } from "./hubspotTools.js";
 import { layoutDispatch } from "./layoutTool.js";
 import { photometricsDispatch } from "./photometricsTools.js";
 import type {
@@ -18,9 +18,10 @@ import type {
 export const MAX_FAMILY_MEMBERS = 12;
 
 /** Tool JSON schemas advertised to Claude. The cache breakpoint after the tool
- *  block is owned by agent.ts (withTailCache), which composes this set with the
- *  internal-only HUBSPOT_TOOLS and marks the tail — so nothing here carries a
- *  static cache_control that could strand a mid-array breakpoint. */
+ *  block is owned by agent.ts (withTailCache), which composes this set with any
+ *  injected internal-only tools (e.g. HubSpot CRM) and marks the tail — so
+ *  nothing here carries a static cache_control that could strand a mid-array
+ *  breakpoint. */
 export const TOOLS: ClaudeTool[] = [
   {
     name: "search_products",
@@ -179,18 +180,26 @@ async function getProduct(ctx: ToolContext, input: Record<string, unknown>): Pro
   return { content: lines.join("\n"), cards: [card], citations: [] };
 }
 
-async function searchDocs(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutput> {
+async function searchDocs(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+  surface: ThomSurface,
+): Promise<ToolOutput> {
   const query = String(input.query ?? "").trim();
   if (!query) return { content: "search_docs: query is required.", cards: [], citations: [] };
   const embedding = await embedQuery(ctx.env, query);
+  // INTERNAL: scope_filter=null → RLS gates; sees public + internal, including
+  // zendesk_ticket resolutions (scope='internal'). PUBLIC: scope_filter='public'
+  // AND doc_types WITHOUT zendesk_ticket, so internal support-ticket resolutions
+  // are never retrievable on the public surface.
+  const isPublic = surface === "public";
   const { data, error } = await ctx.sb.rpc("kb_search", {
     query_embedding: embedding,
     query_text: query,
-    scope_filter: null, // internal surface: RLS gates; sees public + internal
-    // zendesk_ticket rows are scope='internal' — a future public surface passing
-    // scope_filter='public' excludes them; this internal agent (scope_filter=null)
-    // sees them under RLS.
-    doc_types: ["spec_sheet", "manual", "marketing", "zendesk_article", "zendesk_ticket"],
+    scope_filter: isPublic ? "public" : null,
+    doc_types: isPublic
+      ? ["spec_sheet", "manual", "marketing", "zendesk_article"]
+      : ["spec_sheet", "manual", "marketing", "zendesk_article", "zendesk_ticket"],
     brand_filter: str(input.brand),
     match_count: 8,
   });
@@ -389,22 +398,69 @@ async function getFamily(ctx: ToolContext, input: Record<string, unknown>): Prom
   return { content, cards: [card], citations: [] };
 }
 
+/**
+ * An injected tool set the surface-agnostic dispatch can route to WITHOUT the
+ * shared package knowing what the tools are. The INTERNAL caller uses this to
+ * add its read-only HubSpot CRM tools (crm_*): shared/thom has zero reference to
+ * hubspotTools — it just advertises `tools` and forwards owned names to
+ * `dispatch`. NEVER supply this on the public surface.
+ */
+export interface ThomToolExtension {
+  /** Extra client tool schemas to advertise (composed by composeTools). */
+  tools: ClaudeTool[];
+  /** Does this extension own the given tool name (should it dispatch it)? */
+  owns: (name: string) => boolean;
+  /** Execute one of this extension's tools. */
+  dispatch: (ctx: ToolContext, name: string, input: Record<string, unknown>) => Promise<ToolOutput>;
+}
+
+/** Options threaded into dispatch: which surface, and any injected tool set. */
+export interface DispatchOptions {
+  surface: ThomSurface;
+  extension?: ThomToolExtension;
+}
+
+/**
+ * Tool names permitted on the PUBLIC surface. Anything else — crm_* or an
+ * otherwise-unknown name — is HARD-REJECTED in dispatch, defense-in-depth beyond
+ * composeTools never advertising them.
+ */
+export const PUBLIC_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "search_products",
+  "get_product",
+  "get_related_products",
+  "get_family",
+  "search_docs",
+  "plan_layout",
+  "get_photometrics",
+  "lighting_requirement",
+]);
+
 export async function dispatch(
   ctx: ToolContext,
   name: string,
   input: Record<string, unknown>,
+  opts: DispatchOptions = { surface: "internal" },
 ): Promise<ToolOutput> {
-  // Internal CRM tools (see hubspotTools.ts) are namespaced crm_* and only
-  // reach dispatch when agent.ts composed them onto the tool set.
-  if (name.startsWith("crm_")) return hubspotDispatch(ctx, name, input);
-  // Photometrics tools (see photometricsTools.ts) are only offered when
+  const surface = opts.surface;
+  // PUBLIC hard-reject: never dispatch crm_* or any non-allowlisted tool on the
+  // public surface, even if one somehow reached the model. This runs BEFORE the
+  // extension check, so an injected crm_* tool can never execute on public.
+  if (surface === "public" && !PUBLIC_TOOL_NAMES.has(name)) {
+    return { content: `Tool "${name}" is not available on this surface.`, cards: [], citations: [] };
+  }
+  // Internal-only injected tools (e.g. HubSpot crm_*): the caller owns + executes
+  // them. Ordered FIRST (as the crm_* branch was before) so internal behavior is
+  // unchanged.
+  if (opts.extension?.owns(name)) return opts.extension.dispatch(ctx, name, input);
+  // Photometrics tools (photometricsTools.ts) are only offered when
   // THOM_PHOTOMETRICS=1 (composed by agent.ts); routing here is harmless
   // otherwise since the tools aren't advertised.
   if (name === "get_photometrics" || name === "lighting_requirement") {
     return photometricsDispatch(ctx, name, input);
   }
-  // Layout tool (see layoutTool.ts) is only offered when THOM_LAYOUT=1
-  // (composed by agent.ts); routing here is harmless otherwise.
+  // Layout tool (layoutTool.ts) is only offered when THOM_LAYOUT=1 (internal) /
+  // always on the public set; routing here is harmless when not advertised.
   if (name === "plan_layout") {
     return layoutDispatch(ctx, name, input);
   }
@@ -418,7 +474,7 @@ export async function dispatch(
     case "get_family":
       return getFamily(ctx, input);
     case "search_docs":
-      return searchDocs(ctx, input);
+      return searchDocs(ctx, input, surface);
     default:
       return { content: `Unknown tool: ${name}`, cards: [], citations: [] };
   }

@@ -30,8 +30,8 @@ import {
   type TrackComponent,
   type TrackComponentRole,
   type TrackSystem,
-} from "@wac/shared";
-import type { ClaudeTool } from "../anthropic.js";
+} from "../index.js";
+import type { ClaudeTool } from "./transport.js";
 import type { LayoutBomLine, LayoutCard, ToolContext, ToolOutput } from "./types.js";
 
 export const LAYOUT_TOOLS: ClaudeTool[] = [
