@@ -25,3 +25,30 @@ export function stripNul<T>(value: T): T {
   }
   return value;
 }
+
+/**
+ * Collapse product_photometrics link rows that share a (product_sku,
+ * ies_metrics_id) key. Byte-identical inner .ies files in one zip dedupe to a
+ * single ies_metrics row, so a SKU can produce two links to the same id — and
+ * Postgres `ON CONFLICT DO UPDATE` refuses to touch the same target row twice in
+ * one batch ("cannot affect row a second time"). Keep a representative flag if
+ * any duplicate had it, and the highest match_confidence.
+ */
+export function dedupeLinks(
+  links: Record<string, unknown>[],
+): Record<string, unknown>[] {
+  const byKey = new Map<string, Record<string, unknown>>();
+  for (const link of links) {
+    const key = JSON.stringify([link.product_sku, link.ies_metrics_id]);
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, { ...link });
+      continue;
+    }
+    if (link.is_representative) prev.is_representative = true;
+    const c = typeof link.match_confidence === "number" ? link.match_confidence : 0;
+    const pc = typeof prev.match_confidence === "number" ? prev.match_confidence : 0;
+    if (c > pc) prev.match_confidence = link.match_confidence;
+  }
+  return [...byKey.values()];
+}

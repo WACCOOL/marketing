@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { stripNul } from "./pg.js";
+import { dedupeLinks, stripNul } from "./pg.js";
 
 const NUL = String.fromCharCode(0);
 
@@ -41,5 +41,35 @@ describe("stripNul", () => {
   it("produces JSON with no NUL escape (Postgres-safe)", () => {
     const out = stripNul({ a: `x${NUL}y`, b: [`${NUL}z`] });
     expect(JSON.stringify(out)).not.toContain("\\u0000");
+  });
+});
+
+describe("dedupeLinks", () => {
+  it("collapses duplicate (product_sku, ies_metrics_id) rows", () => {
+    const out = dedupeLinks([
+      { product_sku: "A", ies_metrics_id: "m1", is_representative: false, match_confidence: 0.2 },
+      { product_sku: "A", ies_metrics_id: "m1", is_representative: true, match_confidence: 0.9 },
+      { product_sku: "A", ies_metrics_id: "m2", is_representative: false, match_confidence: 0.1 },
+    ]);
+    expect(out).toHaveLength(2);
+    const m1 = out.find((l) => l.ies_metrics_id === "m1")!;
+    expect(m1.is_representative).toBe(true); // OR of duplicates
+    expect(m1.match_confidence).toBe(0.9); // max of duplicates
+  });
+
+  it("keeps rows for different SKUs sharing an ies_metrics_id", () => {
+    const out = dedupeLinks([
+      { product_sku: "A", ies_metrics_id: "m1" },
+      { product_sku: "B", ies_metrics_id: "m1" },
+    ]);
+    expect(out).toHaveLength(2);
+  });
+
+  it("returns each unique row unchanged when there are no duplicates", () => {
+    const input = [
+      { product_sku: "A", ies_metrics_id: "m1", is_representative: true, match_confidence: 1 },
+      { product_sku: "A", ies_metrics_id: "m2", is_representative: false, match_confidence: 0 },
+    ];
+    expect(dedupeLinks(input)).toEqual(input);
   });
 });
