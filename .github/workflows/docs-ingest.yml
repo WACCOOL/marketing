@@ -46,16 +46,18 @@ jobs:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_AI_TOKEN: ${{ secrets.CF_AI_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Thom Bot — ZenDesk Help Center article capture (Step C), dark-launched.
-          # THOM_ZENDESK_ARTICLES stays unset/"0" until Davis adds the ZENDESK_*
-          # GitHub secrets (they exist as Cloudflare Worker secrets, not GH secrets)
-          # and flips it on.
+          # Thom Bot — ZenDesk Help Center article capture (Step C). ACTIVE:
+          # ZENDESK_* creds live as GitHub secrets (added 2026-07-17); the flag
+          # below is a non-secret toggle committed here (repo convention). Brand
+          # tagging is off until ZENDESK_HC_BRAND_MAP (a section/category-id ->
+          # brand JSON) is supplied — until then articles ingest with brand=null
+          # and are fully searchable, just not brand-filterable.
           ZENDESK_SUBDOMAIN: ${{ secrets.ZENDESK_SUBDOMAIN }}
           ZENDESK_EMAIL: ${{ secrets.ZENDESK_EMAIL }}
           ZENDESK_API_TOKEN: ${{ secrets.ZENDESK_API_TOKEN }}
-          THOM_ZENDESK_ARTICLES: ${{ secrets.THOM_ZENDESK_ARTICLES }}
+          THOM_ZENDESK_ARTICLES: "1"
           ZENDESK_HC_BRAND_MAP: ${{ secrets.ZENDESK_HC_BRAND_MAP }}
-          ZENDESK_HC_LOCALE: ${{ secrets.ZENDESK_HC_LOCALE }}
+          ZENDESK_HC_LOCALE: "en-us"
           # Internal-ticket capture is gated Worker-side (THOM_ZENDESK_TICKETS);
           # the CLI extracts whatever zendesk_ticket rows are pending regardless,
           # reusing the ZENDESK_* creds above to read the ticket + public comments
