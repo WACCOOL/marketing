@@ -5,6 +5,8 @@ import {
   buildWebSearchTools,
   collectWebCitations,
   loopAction,
+  publicWebSearchMaxUses,
+  serverToolsFor,
   webSearchEnabled,
   webSearchMaxUses,
 } from "./agent.js";
@@ -53,6 +55,46 @@ describe("buildWebSearchTools", () => {
     expect(tool?.type).toBe("web_search_20250305");
     expect(tool?.name).toBe("web_search");
     expect(tool?.max_uses).toBe(5);
+  });
+});
+
+describe("publicWebSearchMaxUses", () => {
+  it("defaults to 2 when unset", () => {
+    expect(publicWebSearchMaxUses(env())).toBe(2);
+  });
+  it("defaults to 2 when non-numeric", () => {
+    expect(publicWebSearchMaxUses(env({ THOM_PUBLIC_WEB_SEARCH_MAX_USES: "x" }))).toBe(2);
+  });
+  it("parses a valid value", () => {
+    expect(publicWebSearchMaxUses(env({ THOM_PUBLIC_WEB_SEARCH_MAX_USES: "3" }))).toBe(3);
+  });
+  it("clamps below 1 up to 1", () => {
+    expect(publicWebSearchMaxUses(env({ THOM_PUBLIC_WEB_SEARCH_MAX_USES: "0" }))).toBe(1);
+  });
+  it("clamps above 3 down to 3", () => {
+    expect(publicWebSearchMaxUses(env({ THOM_PUBLIC_WEB_SEARCH_MAX_USES: "9" }))).toBe(3);
+  });
+});
+
+describe("serverToolsFor", () => {
+  it("PUBLIC advertises web_search by default (capped ≤3), even with THOM_WEB_SEARCH unset", () => {
+    const tools = serverToolsFor("public", env());
+    expect(tools).toHaveLength(1);
+    const [tool] = tools;
+    expect(tool?.type).toBe("web_search_20250305");
+    expect(tool?.name).toBe("web_search");
+    expect(tool?.max_uses).toBeLessThanOrEqual(3);
+    expect(tool?.max_uses).toBe(2);
+  });
+
+  it("INTERNAL does NOT advertise web_search when THOM_WEB_SEARCH is unset (gated)", () => {
+    expect(serverToolsFor("internal", env())).toEqual([]);
+  });
+
+  it("INTERNAL advertises web_search only when THOM_WEB_SEARCH=1 (unchanged gate)", () => {
+    const tools = serverToolsFor("internal", env({ THOM_WEB_SEARCH: "1" }));
+    expect(tools).toHaveLength(1);
+    expect(tools[0]?.type).toBe("web_search_20250305");
   });
 });
 

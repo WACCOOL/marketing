@@ -18,6 +18,12 @@ import {
   type ClaudeUsage,
 } from "./transport.js";
 import { systemFor } from "./prompts.js";
+import {
+  makeHaikuJudge,
+  normalizeCopy,
+  screenCompetitors,
+  type CompetitorJudge,
+} from "./publicFilter.js";
 import { dispatch, TOOLS, type ThomToolExtension } from "./tools.js";
 import { LAYOUT_TOOLS } from "./layoutTool.js";
 import { PHOTOMETRICS_TOOLS } from "./photometricsTools.js";
@@ -172,10 +178,40 @@ export function webSearchMaxUses(env: ThomEnv): number {
 
 /** The server tools to offer this turn: [] when disabled, else a single capped
  *  web_search entry. Basic (Haiku-tier) variant — see WEB_SEARCH_TOOL_TYPE.
- *  INTERNAL-ONLY: runThom/runThomStream never call this on the public surface. */
+ *  INTERNAL gate: gated on THOM_WEB_SEARCH. See serverToolsFor for the public
+ *  path (always on, smaller cap). */
 export function buildWebSearchTools(env: ThomEnv): ClaudeServerTool[] {
   if (!webSearchEnabled(env)) return [];
   return [{ type: WEB_SEARCH_TOOL_TYPE, name: "web_search", max_uses: webSearchMaxUses(env) }];
+}
+
+/** Per-turn web_search cap for the PUBLIC surface (Davis's decision: ON but
+ *  small). THOM_PUBLIC_WEB_SEARCH_MAX_USES parsed as an int, default 2, clamped
+ *  to 1–3. */
+export function publicWebSearchMaxUses(env: ThomEnv): number {
+  const n = Number.parseInt(env.THOM_PUBLIC_WEB_SEARCH_MAX_USES ?? "", 10);
+  if (!Number.isFinite(n)) return 2;
+  return Math.min(3, Math.max(1, n));
+}
+
+/**
+ * Server tools for a surface. PUBLIC: web_search is ENABLED BY DEFAULT (not
+ * gated on THOM_WEB_SEARCH), with a small cap (default 2, ≤3) — Davis's
+ * decision. INTERNAL: unchanged — still gated on THOM_WEB_SEARCH (off by
+ * default) via buildWebSearchTools. Same Haiku-tier web_search_20250305 type.
+ */
+export function serverToolsFor(surface: ThomSurface, env: ThomEnv): ClaudeServerTool[] {
+  if (surface === "public") {
+    return [{ type: WEB_SEARCH_TOOL_TYPE, name: "web_search", max_uses: publicWebSearchMaxUses(env) }];
+  }
+  return buildWebSearchTools(env);
+}
+
+/** Does a reconstructed assistant turn's content include a web_search result
+ *  block? Used PUBLIC-side to decide whether to run the competitor screen on
+ *  that turn's text. */
+export function turnUsedWebSearch(content: ClaudeContentBlock[]): boolean {
+  return content.some((b) => b.type === "web_search_tool_result");
 }
 
 /**
@@ -240,10 +276,15 @@ export async function runThom(
   // extension tools (CRM) in the SAME position as before; public gets the
   // allowlist only. The cache breakpoint is re-homed to the composed tail.
   const tools = composeTools(surface, env, extension?.tools ?? []);
-  // web_search is INTERNAL-ONLY, gated (THOM_WEB_SEARCH=1) and capped; [] on the
-  // public surface and when disabled so nothing is sent and there's no billing.
-  // Rendered AFTER the client tools so the withTailCache breakpoint is unaffected.
-  const serverTools = surface === "public" ? [] : buildWebSearchTools(env);
+  // web_search: PUBLIC = on-by-default + capped; INTERNAL = gated on
+  // THOM_WEB_SEARCH (unchanged). Rendered AFTER the client tools so the
+  // withTailCache breakpoint is unaffected.
+  const serverTools = serverToolsFor(surface, env);
+  // PUBLIC output guardrails: normalizeCopy every final text; screen web_search
+  // turns for competitor content. The judge is built once (undefined when
+  // ANTHROPIC unavailable → denylist-only). Internal: no filter at all.
+  const isPublic = surface === "public";
+  const judge: CompetitorJudge | undefined = isPublic ? makeHaikuJudge(env) : undefined;
   const messages: ClaudeMessage[] = [
     ...opts.history,
     { role: "user", content: opts.userMessage },
@@ -315,7 +356,15 @@ export async function runThom(
         `[thom] answered model=${usage.model} escalated=${usage.escalated} ` +
           `toolCalls=${toolCallCount} docPassages=${citations.length} products=${cards.length}`,
       );
-      return { text: finalText(res.content), cards, citations, usage };
+      // PUBLIC: normalize copy, and (only if this turn used web_search) run the
+      // competitor screen, replacing the answer with the guardrail template when
+      // flagged. INTERNAL: raw final text, unchanged.
+      const text = isPublic
+        ? turnUsedWebSearch(res.content)
+          ? await screenCompetitors(normalizeCopy(finalText(res.content)), { judge })
+          : normalizeCopy(finalText(res.content))
+        : finalText(res.content);
+      return { text, cards, citations, usage };
     }
 
     // action === "dispatch": client tools only (server web_search never reaches
@@ -348,8 +397,11 @@ export async function runThom(
     `[thom] answered model=${usage.model} escalated=${usage.escalated} ` +
       `toolCalls=${toolCallCount} docPassages=${citations.length} products=${cards.length} (max-steps)`,
   );
+  // Authored copy carries an em dash; normalize it on the public surface so it
+  // obeys the copy rules. INTERNAL keeps the byte-identical original.
+  const maxStepsText = "I couldn't finish that in a reasonable number of steps — try narrowing the question.";
   return {
-    text: "I couldn't finish that in a reasonable number of steps — try narrowing the question.",
+    text: isPublic ? normalizeCopy(maxStepsText) : maxStepsText,
     cards,
     citations,
     usage,
@@ -501,6 +553,15 @@ function safeJson(json: string): Record<string, unknown> {
  * client-tool dispatch, same web-citation collection — but streams the final
  * answer token-by-token. Forwards `text` events live AND reconstructs each
  * assistant turn so history matches the non-streaming path exactly.
+ *
+ * PUBLIC guardrail (surface==='public' ONLY — internal is byte-for-byte the same
+ * path as before): raw tokens are NOT streamed live. Each turn's text is
+ * buffered, normalizeCopy'd, and — when that turn used web_search — run through
+ * the competitor screen (which may REPLACE the whole answer with the guardrail
+ * template) BEFORE it is emitted as a single `text` event. This is the
+ * documented buffer-then-emit approach: we can't normalize/screen text that has
+ * already been streamed token-by-token, so the public surface trades live
+ * token streaming for a per-turn buffered emit. Internal keeps live streaming.
  */
 export async function* runThomStream(
   env: ThomEnv,
@@ -511,7 +572,19 @@ export async function* runThomStream(
   const extension = opts.extension;
   const system = systemFor(surface);
   const tools = composeTools(surface, env, extension?.tools ?? []);
-  const serverTools = surface === "public" ? [] : buildWebSearchTools(env);
+  // web_search: PUBLIC = on-by-default + capped; INTERNAL = gated (unchanged).
+  const serverTools = serverToolsFor(surface, env);
+  // PUBLIC output guardrails (see the doc comment above). Internal: no filter.
+  const isPublic = surface === "public";
+  const judge: CompetitorJudge | undefined = isPublic ? makeHaikuJudge(env) : undefined;
+  // Sanitize one turn's reconstructed text for the public surface: normalize
+  // copy always; screen for competitors only when the turn used web_search.
+  const sanitizePublic = (turn: { content: ClaudeContentBlock[]; text: string }): Promise<string> => {
+    const normalized = normalizeCopy(turn.text);
+    return turnUsedWebSearch(turn.content)
+      ? screenCompetitors(normalized, { judge })
+      : Promise.resolve(normalized);
+  };
   const messages: ClaudeMessage[] = [
     ...opts.history,
     { role: "user", content: opts.userMessage },
@@ -542,8 +615,10 @@ export async function* runThomStream(
     usage.model = model; // last write wins → reflects the answering turn
     if (escalate) usage.escalated = true;
 
-    // Stream this turn: forward text live for token streaming, and collect the
-    // raw events so reconstructTurn can rebuild the assistant content array.
+    // Stream this turn: INTERNAL forwards text live for token streaming; PUBLIC
+    // buffers (no live yield) so the whole turn can be normalized/screened
+    // before emit. Either way we collect the raw events so reconstructTurn can
+    // rebuild the assistant content array.
     const events: ClaudeStreamEvent[] = [];
     for await (const ev of claudeMessagesStream(env, {
       system,
@@ -554,7 +629,7 @@ export async function* runThomStream(
       maxTokens: MAX_TOKENS,
     })) {
       events.push(ev);
-      if (ev.type === "text") yield { type: "text", text: ev.text };
+      if (ev.type === "text" && !isPublic) yield { type: "text", text: ev.text };
     }
 
     const turn = reconstructTurn(events);
@@ -569,9 +644,16 @@ export async function* runThomStream(
     messages.push({ role: "assistant", content: turn.content });
     citations.push(...collectWebCitations(turn.content));
 
+    // PUBLIC: sanitize this turn's text once (normalize + competitor screen).
+    // Emitted as a single buffered `text` event below (interim turns) or carried
+    // into the `final` event. INTERNAL leaves publicText undefined.
+    const publicText = isPublic ? await sanitizePublic(turn) : undefined;
+
     const action = loopAction({ stop_reason: turn.stopReason, content: turn.content });
 
     if (action === "pause") {
+      // A paused server-tool turn rarely carries text, but emit it if present.
+      if (isPublic && publicText) yield { type: "text", text: publicText };
       if (++pauseCount > MAX_PAUSE_CONTINUATIONS) break;
       continue;
     }
@@ -585,9 +667,22 @@ export async function* runThomStream(
       const dedupedCites = dedupeCitations(citations);
       if (deduped.length) yield { type: "cards", cards: deduped };
       if (dedupedCites.length) yield { type: "citations", citations: dedupedCites };
-      yield { type: "final", text: finalText(turn.content), usage };
+      // PUBLIC: emit the buffered, sanitized answer as one `text` event (raw
+      // tokens were never streamed) plus the matching `final`. INTERNAL: text
+      // already streamed live; `final` carries the raw final text for logging.
+      if (isPublic) {
+        const text = publicText ?? "";
+        if (text) yield { type: "text", text };
+        yield { type: "final", text, usage };
+      } else {
+        yield { type: "final", text: finalText(turn.content), usage };
+      }
       return;
     }
+
+    // action === "dispatch": PUBLIC emits any interim (pre-tool) narration text
+    // for this turn, buffered + sanitized, before the client tools run.
+    if (isPublic && publicText) yield { type: "text", text: publicText };
 
     // action === "dispatch": client tools only (server web_search never reaches
     // dispatch — it has no client tool_use block).
@@ -623,9 +718,11 @@ export async function* runThomStream(
   const dedupedCites = dedupeCitations(citations);
   if (deduped.length) yield { type: "cards", cards: deduped };
   if (dedupedCites.length) yield { type: "citations", citations: dedupedCites };
+  // Authored copy carries an em dash; normalize it on the public surface.
+  const maxStepsText = "I couldn't finish that in a reasonable number of steps — try narrowing the question.";
   yield {
     type: "final",
-    text: "I couldn't finish that in a reasonable number of steps — try narrowing the question.",
+    text: isPublic ? normalizeCopy(maxStepsText) : maxStepsText,
     usage,
   };
 }

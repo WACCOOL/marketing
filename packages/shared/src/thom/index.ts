@@ -13,6 +13,7 @@ export * from "./transport.js";
 export * from "./types.js";
 export * from "./embed.js";
 export * from "./prompts.js";
+export * from "./publicFilter.js";
 export * from "./tools.js";
 export * from "./photometricsTools.js";
 export * from "./layoutTool.js";
