@@ -238,11 +238,14 @@
     // the internal tool set. Precompute (apps/photometrics-sync) can run + fill
     // product_photometrics independently; flip to "1" once metrics are populated.
     "THOM_PHOTOMETRICS": "0",
-    // Thom layout tool (plan_layout: lighting layouts + track BOM), dark-launched.
+    // Thom layout tool (plan_layout: lighting layouts + track BOM).
     // "0" = tool NOT offered to the model; "1" = composed onto the internal tool
-    // set. Needs product_photometrics populated and the track_systems/
-    // track_components seed (migrations 0049/0050). DARK — do NOT enable yet.
-    "THOM_LAYOUT": "0"
+    // set. Uses the track_systems/track_components seed (migrations 0049/0050);
+    // reads product_photometrics when populated, else parses each head's IES on
+    // demand. ENABLED 2026-07-18 (migrations applied). Track BOM transformer/feed
+    // counts are omitted for systems whose feed_capacity_w is still NULL in the
+    // DRAFT seed (see docs/thom-track-systems.md) until those values are verified.
+    "THOM_LAYOUT": "1"
   },
 
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:
