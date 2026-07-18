@@ -62,6 +62,14 @@ const PHOTOMETRICS_GUIDANCE = `Photometrics & lighting requirements:
 - BUG and UGR are only defined for multi-plane Type C fixtures; for rotationally symmetric or Type A/B files they're intentionally omitted — say so, don't invent them. Surface any caveats the tool returns.
 - For recommended design targets by SPACE or TASK — how many footcandles for an office / classroom / retail / gallery / pathway, the recommended avg/min uniformity ratio, or the ASHRAE 90.1 lighting-power-density (LPD) allowance — call lighting_requirement and CITE the IES/ASHRAE source it returns. Don't quote recommended light levels from memory when this tool can give the standards-backed number.`;
 
+/** Guidance for the layout tool (plan_layout). Only has an effect when the tool
+ *  is offered (THOM_LAYOUT=1); harmless otherwise. Kept ahead of the web-search
+ *  block so the tail cache breakpoint stays on the final block. */
+const LAYOUT_GUIDANCE = `Layouts & track bills of materials:
+- For "how much / how many heads / lay out / how many footcandles do I get / what do I need for a NxM room / build me a track BOM" — call plan_layout with the space (length_ft, width_ft, mounting_height_ft), the product (a track head, downlight, or tape SKU), and a target (task_key or target_fc). It sizes the fixture count, lays them out, and — for a TRACK system — returns a full parts list (channel sections, feeds, connectors, end caps, transformers or circuits).
+- plan_layout is an ESTIMATE for early planning, not a stamped design: always say the numbers should be VERIFIED in AGi32 or the Ventrix visualizer, and hand off the full track configuration to the Ventrix configurator for the final build.
+- When plan_layout can't find a track SYSTEM (or the head's IES photometrics), it returns a generic parts list / a note that quantities need the underlying data — relay that honestly rather than inventing SKUs or counts. Use get_related_products to name the actual system components when the BOM has unresolved (sku-less) lines.`;
+
 /** INTERNAL-ONLY guidance for the native web_search server tool. Only appears
  *  inside internalSystem() (never on any public surface), and only has an effect
  *  when the tool is actually offered (THOM_WEB_SEARCH=1); harmless when it isn't. */
@@ -82,6 +90,7 @@ export function internalSystem(): ClaudeSystemBlock[] {
     { type: "text", text: CRM_GUIDANCE },
     { type: "text", text: HELP_CENTER_GUIDANCE },
     { type: "text", text: PHOTOMETRICS_GUIDANCE },
+    { type: "text", text: LAYOUT_GUIDANCE },
     { type: "text", text: WEB_SEARCH_GUIDANCE, cache_control: { type: "ephemeral" } },
   ];
 }

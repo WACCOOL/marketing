@@ -45,9 +45,43 @@ export interface FamilyCard {
   members: FamilyMember[];
   member_count: number;
 }
-/** Either kind of card. Cards logged before the family feature have no `kind`;
+/** One aggregated line of a layout / track bill of materials. */
+export interface LayoutBomLine {
+  sku: string | null;
+  description: string;
+  qty: number;
+  role: string;
+}
+/** A layout card — a lighting layout + bill of materials for a space. Mirrors
+ *  apps/api/src/thom/types.ts LayoutCard. `plan` coords are normalized 0..1. */
+export interface LayoutCard {
+  kind: "layout";
+  space: { lengthFt: number; widthFt: number; mountingHeightFt: number };
+  product: { sku: string | null; name: string | null; family: string | null };
+  layoutKind: "track" | "area-grid" | "linear";
+  summary: {
+    headCount: number;
+    runs?: number;
+    headsPerRun?: number;
+    headSpacingFt?: number;
+    totalTrackFt?: number;
+    transformerCount?: number;
+    circuits?: number;
+    avgFc: number;
+    uniformity: number;
+    totalWatts: number;
+  };
+  bom: { lines: LayoutBomLine[] };
+  plan?: {
+    runs: { x1: number; y1: number; x2: number; y2: number }[];
+    heads: { x: number; y: number }[];
+    heatmap?: { cols: number; rows: number; values: number[][]; min: number; max: number };
+  };
+  warnings: string[];
+}
+/** Any kind of card. Cards logged before the family feature have no `kind`;
  *  treat missing/`"product"` as a ProductCard on the client. */
-export type Card = ProductCard | FamilyCard;
+export type Card = ProductCard | FamilyCard | LayoutCard;
 export interface Citation {
   /** "web" for open-web sources (web_search); absent/"doc" for spec-sheet /
    *  manual citations. */

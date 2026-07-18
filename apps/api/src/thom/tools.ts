@@ -1,6 +1,7 @@
 import type { ClaudeTool } from "../anthropic.js";
 import { embedQuery } from "./embed.js";
 import { hubspotDispatch } from "./hubspotTools.js";
+import { layoutDispatch } from "./layoutTool.js";
 import { photometricsDispatch } from "./photometricsTools.js";
 import type {
   Citation,
@@ -401,6 +402,11 @@ export async function dispatch(
   // otherwise since the tools aren't advertised.
   if (name === "get_photometrics" || name === "lighting_requirement") {
     return photometricsDispatch(ctx, name, input);
+  }
+  // Layout tool (see layoutTool.ts) is only offered when THOM_LAYOUT=1
+  // (composed by agent.ts); routing here is harmless otherwise.
+  if (name === "plan_layout") {
+    return layoutDispatch(ctx, name, input);
   }
   switch (name) {
     case "search_products":

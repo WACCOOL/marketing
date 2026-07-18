@@ -293,6 +293,12 @@ export interface Env {
   // (photometricsEnabled in agent.ts), not just the prompt. Metrics are
   // precomputed out-of-band by apps/photometrics-sync.
   THOM_PHOTOMETRICS?: string;
+  // Thom layout tool gate (dark-launched, mirrors THOM_PHOTOMETRICS). Unset/"0"
+  // = the plan_layout tool is NOT offered to the model; "1" = composed onto the
+  // internal tool set. Enforced in CODE (layoutEnabled in agent.ts), not just
+  // the prompt. Needs product_photometrics populated (head IES/lumens) and, for
+  // track BOMs, the track_systems/track_components seed (migrations 0049/0050).
+  THOM_LAYOUT?: string;
   // Thom Bot — dark-launch flag for ZenDesk Help Center ARTICLE capture in the
   // docs-ingest CLI (apps/docs-ingest). Unset/"0" = no article capture; "1" =
   // list published articles and fold them into kb_documents/kb_chunks so Thom's

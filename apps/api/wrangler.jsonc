@@ -237,7 +237,12 @@
     // dark-launched. "0" = tools NOT offered to the model; "1" = composed onto
     // the internal tool set. Precompute (apps/photometrics-sync) can run + fill
     // product_photometrics independently; flip to "1" once metrics are populated.
-    "THOM_PHOTOMETRICS": "0"
+    "THOM_PHOTOMETRICS": "0",
+    // Thom layout tool (plan_layout: lighting layouts + track BOM), dark-launched.
+    // "0" = tool NOT offered to the model; "1" = composed onto the internal tool
+    // set. Needs product_photometrics populated and the track_systems/
+    // track_components seed (migrations 0049/0050). DARK — do NOT enable yet.
+    "THOM_LAYOUT": "0"
   },
 
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:

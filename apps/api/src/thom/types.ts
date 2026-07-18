@@ -76,8 +76,50 @@ export interface PhotometricsCard {
   metrics: unknown;
 }
 
+/** One aggregated line of a track / layout bill of materials. `sku` is
+ *  null when the seed doesn't carry a SKU for that role (the model can
+ *  resolve it via get_related_products). */
+export interface LayoutBomLine {
+  sku: string | null;
+  description: string;
+  qty: number;
+  role: string;
+}
+
+/** A layout card — a lighting layout + bill of materials for a space.
+ *  Covers the track-with-heads case (runs / heads-per-run / transformers)
+ *  and the single-product area-grid / linear cases. `plan` carries a
+ *  React-drawable top-down plan in NORMALIZED 0..1 room coords (the tool
+ *  downsamples any heatmap to ≤16×16). */
+export interface LayoutCard {
+  kind: "layout";
+  space: { lengthFt: number; widthFt: number; mountingHeightFt: number };
+  product: { sku: string | null; name: string | null; family: string | null };
+  layoutKind: "track" | "area-grid" | "linear";
+  summary: {
+    headCount: number;
+    runs?: number;
+    headsPerRun?: number;
+    headSpacingFt?: number;
+    totalTrackFt?: number;
+    transformerCount?: number;
+    circuits?: number;
+    avgFc: number;
+    uniformity: number;
+    totalWatts: number;
+  };
+  bom: { lines: LayoutBomLine[] };
+  /** Top-down plan in normalized 0..1 room coordinates. */
+  plan?: {
+    runs: { x1: number; y1: number; x2: number; y2: number }[];
+    heads: { x: number; y: number }[];
+    heatmap?: { cols: number; rows: number; values: number[][]; min: number; max: number };
+  };
+  warnings: string[];
+}
+
 /** Any kind of UI card the agent can emit. */
-export type Card = ProductCard | FamilyCard | PhotometricsCard;
+export type Card = ProductCard | FamilyCard | PhotometricsCard | LayoutCard;
 
 /** A source citation back to the spec sheet / manual a claim came from, or an
  *  open-web source when Thom used web_search. `kind` is optional — absent means
