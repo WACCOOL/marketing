@@ -232,7 +232,12 @@
     // Dept, Lighting Services), whose tickets carry reusable troubleshooting
     // knowledge. Deliberately a SUBSET of ZD_SYNC_GROUPS (the transactional
     // Quotes/Orders/CS groups are excluded); broaden here to add more.
-    "THOM_TICKET_GROUPS": "21558279834135,21558279824663,1500001314462,1500002309841,4415933935127,1500002479082,1500001316682"
+    "THOM_TICKET_GROUPS": "21558279834135,21558279824663,1500001314462,1500002309841,4415933935127,1500002479082,1500001316682",
+    // Thom photometrics tools (get_photometrics + lighting_requirement),
+    // dark-launched. "0" = tools NOT offered to the model; "1" = composed onto
+    // the internal tool set. Precompute (apps/photometrics-sync) can run + fill
+    // product_photometrics independently; flip to "1" once metrics are populated.
+    "THOM_PHOTOMETRICS": "0"
   },
 
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:

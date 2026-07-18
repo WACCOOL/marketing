@@ -65,8 +65,19 @@ export interface FamilyCard {
   member_count: number;
 }
 
-/** Either kind of UI card the agent can emit. */
-export type Card = ProductCard | FamilyCard;
+/** A photometrics card — precomputed IES metrics for one SKU's representative
+ *  distribution (beam/field angles, spacing, zonal, BUG/UGR, efficacy, cone of
+ *  light). `metrics` is the raw ies_metrics.metrics bundle (jsonb) for the UI to
+ *  render; `source_filename` is the inner IES filename it came from. */
+export interface PhotometricsCard {
+  kind: "photometrics";
+  sku: string;
+  source_filename: string | null;
+  metrics: unknown;
+}
+
+/** Any kind of UI card the agent can emit. */
+export type Card = ProductCard | FamilyCard | PhotometricsCard;
 
 /** A source citation back to the spec sheet / manual a claim came from, or an
  *  open-web source when Thom used web_search. `kind` is optional — absent means

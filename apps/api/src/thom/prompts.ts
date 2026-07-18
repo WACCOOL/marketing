@@ -52,6 +52,16 @@ const HELP_CENTER_GUIDANCE = `WAC Help Center articles:
 - These are official WAC support content: treat them as authoritative for support/how-to answers, and prefer them over generic knowledge.
 - CITE the article: name it and link its url (the article's Help Center URL comes back on the citation) so the user can open the full article.`;
 
+/** Guidance for the photometrics tools (get_photometrics + lighting_requirement).
+ *  Only has an effect when the tools are offered (THOM_PHOTOMETRICS=1); harmless
+ *  when they aren't (the tools simply aren't in the set). Kept ahead of the
+ *  web-search block so the tail cache breakpoint stays on the final block. */
+const PHOTOMETRICS_GUIDANCE = `Photometrics & lighting requirements:
+- For a SPECIFIC product's beam angle, field angle, coverage (footcandles on a surface / beam-and-field diameter at a mounting height), spacing criterion (S/MH), UGR / glare, BUG rating, delivered lumens, or efficacy — call get_photometrics with the SKU. NEVER estimate any of these from memory when you know the SKU; these come from the product's actual IES file.
+- get_photometrics reads PRECOMPUTED metrics — if it says a SKU's photometrics aren't computed yet, tell the user that rather than guessing numbers.
+- BUG and UGR are only defined for multi-plane Type C fixtures; for rotationally symmetric or Type A/B files they're intentionally omitted — say so, don't invent them. Surface any caveats the tool returns.
+- For recommended design targets by SPACE or TASK — how many footcandles for an office / classroom / retail / gallery / pathway, the recommended avg/min uniformity ratio, or the ASHRAE 90.1 lighting-power-density (LPD) allowance — call lighting_requirement and CITE the IES/ASHRAE source it returns. Don't quote recommended light levels from memory when this tool can give the standards-backed number.`;
+
 /** INTERNAL-ONLY guidance for the native web_search server tool. Only appears
  *  inside internalSystem() (never on any public surface), and only has an effect
  *  when the tool is actually offered (THOM_WEB_SEARCH=1); harmless when it isn't. */
@@ -71,6 +81,7 @@ export function internalSystem(): ClaudeSystemBlock[] {
     { type: "text", text: BRAND_CONTEXT },
     { type: "text", text: CRM_GUIDANCE },
     { type: "text", text: HELP_CENTER_GUIDANCE },
+    { type: "text", text: PHOTOMETRICS_GUIDANCE },
     { type: "text", text: WEB_SEARCH_GUIDANCE, cache_control: { type: "ephemeral" } },
   ];
 }

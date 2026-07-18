@@ -20,6 +20,7 @@ import {
 import { internalSystem } from "./prompts.js";
 import { dispatch, TOOLS } from "./tools.js";
 import { HUBSPOT_TOOLS } from "./hubspotTools.js";
+import { PHOTOMETRICS_TOOLS } from "./photometricsTools.js";
 import type { Card, Citation, ThomUsage } from "./types.js";
 
 const MAX_STEPS = 5;
@@ -36,6 +37,24 @@ const WEB_SEARCH_TOOL_TYPE = "web_search_20250305";
 /** The internal CRM tools are only offered when a read token is configured. */
 function crmEnabled(env: Env): boolean {
   return !!env.HUBSPOT_READ_TOKEN;
+}
+
+/** Photometrics tools are OFF unless THOM_PHOTOMETRICS is explicitly "1"
+ *  (dark-launch, mirroring THOM_WEB_SEARCH). Enforced here — the tools aren't
+ *  advertised to the model until the flag flips. */
+export function photometricsEnabled(env: Env): boolean {
+  return env.THOM_PHOTOMETRICS === "1";
+}
+
+/** Compose the client tool set for a turn: base retrieval tools, plus the
+ *  internal-only CRM tools (when a read token is set) and the photometrics tools
+ *  (when THOM_PHOTOMETRICS=1). The cache breakpoint is re-homed to the composed
+ *  tail by withTailCache. */
+function composeTools(env: Env): ClaudeTool[] {
+  const list: ClaudeTool[] = [...TOOLS];
+  if (crmEnabled(env)) list.push(...HUBSPOT_TOOLS);
+  if (photometricsEnabled(env)) list.push(...PHOTOMETRICS_TOOLS);
+  return withTailCache(list);
 }
 
 /**
@@ -178,7 +197,7 @@ export async function runThom(
   const system = internalSystem();
   // internal surface only — CRM tools ride the internal agent, gated on the
   // read token, with the cache breakpoint re-homed to the composed tail.
-  const tools = withTailCache(crmEnabled(env) ? [...TOOLS, ...HUBSPOT_TOOLS] : TOOLS);
+  const tools = composeTools(env);
   // internal surface only — web_search is gated (THOM_WEB_SEARCH=1) and capped;
   // [] when disabled so nothing is sent and there's no billing. Rendered AFTER
   // the client tools so the withTailCache breakpoint is unaffected.
@@ -304,12 +323,18 @@ function finalText(content: ClaudeContentBlock[]): string {
 }
 
 /** De-duplicate cards and citations (by document_id+page) for the client.
- *  Cards are keyed by kind so a product and a family never collide: products by
- *  `product:${sku}`, families by `family:${family}`. */
+ *  Cards are keyed by kind so a product, a family, and a photometrics card never
+ *  collide: products by `product:${sku}`, families by `family:${family}`,
+ *  photometrics by `photometrics:${sku}`. */
 export function dedupeCards(cards: Card[]): Card[] {
   const seen = new Set<string>();
   return cards.filter((c) => {
-    const k = c.kind === "family" ? `family:${c.family}` : `product:${c.sku}`;
+    const k =
+      c.kind === "family"
+        ? `family:${c.family}`
+        : c.kind === "photometrics"
+          ? `photometrics:${c.sku}`
+          : `product:${c.sku}`;
     return !seen.has(k) && seen.add(k);
   });
 }
@@ -439,7 +464,7 @@ export async function* runThomStream(
   opts: { history: ClaudeMessage[]; userMessage: string },
 ): AsyncGenerator<ThomStreamEvent> {
   const system = internalSystem();
-  const tools = withTailCache(crmEnabled(env) ? [...TOOLS, ...HUBSPOT_TOOLS] : TOOLS);
+  const tools = composeTools(env);
   const serverTools = buildWebSearchTools(env);
   const messages: ClaudeMessage[] = [
     ...opts.history,

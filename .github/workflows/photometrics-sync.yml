@@ -1,0 +1,48 @@
+name: Photometrics Sync
+
+# Thom Bot — IES photometrics precompute: for every product with an ies_url,
+# fetch the IES file (or family zip), parse + compute the metric bundle (beam/
+# field angles, spacing, zonal lumens, BUG, UGR, efficacy, cone-of-light) via the
+# ported WIES kernels, and upsert ies_metrics + product_photometrics. Idempotent
+# (SKUs already represented are skipped), so a capped run just resumes next time.
+on:
+  schedule:
+    - cron: "30 11 * * *" # daily 11:30 UTC (after the 11:00 docs-ingest)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (count pending, no writes)"
+        type: boolean
+        default: false
+      limit:
+        description: "Max SKUs to process this run (blank = all)"
+        type: string
+        default: ""
+
+concurrency:
+  group: photometrics-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build photometrics-sync
+        run: pnpm --filter @wac/photometrics-sync build
+      - name: Run photometrics sync
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: >-
+          pnpm --filter @wac/photometrics-sync sync --
+          ${{ inputs.dry_run && '--dry-run' || '' }}
+          ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }}
