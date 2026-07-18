@@ -1,6 +1,7 @@
 import type { ClaudeTool } from "../anthropic.js";
 import { embedQuery } from "./embed.js";
 import { hubspotDispatch } from "./hubspotTools.js";
+import { photometricsDispatch } from "./photometricsTools.js";
 import type {
   Citation,
   FamilyCard,
@@ -395,6 +396,12 @@ export async function dispatch(
   // Internal CRM tools (see hubspotTools.ts) are namespaced crm_* and only
   // reach dispatch when agent.ts composed them onto the tool set.
   if (name.startsWith("crm_")) return hubspotDispatch(ctx, name, input);
+  // Photometrics tools (see photometricsTools.ts) are only offered when
+  // THOM_PHOTOMETRICS=1 (composed by agent.ts); routing here is harmless
+  // otherwise since the tools aren't advertised.
+  if (name === "get_photometrics" || name === "lighting_requirement") {
+    return photometricsDispatch(ctx, name, input);
+  }
   switch (name) {
     case "search_products":
       return searchProducts(ctx, input);

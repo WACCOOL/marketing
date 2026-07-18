@@ -287,6 +287,12 @@ export interface Env {
   // Hard cap on web_search calls per turn (Anthropic max_uses). Parsed as an
   // int, default 3, clamped to 1–5 so a bad value can't uncork billing.
   THOM_WEB_SEARCH_MAX_USES?: string;
+  // Thom photometrics gate (dark-launched, mirrors THOM_WEB_SEARCH). Unset/"0" =
+  // the get_photometrics + lighting_requirement tools are NOT offered to the
+  // model; "1" = composed onto the internal tool set. Enforced in CODE
+  // (photometricsEnabled in agent.ts), not just the prompt. Metrics are
+  // precomputed out-of-band by apps/photometrics-sync.
+  THOM_PHOTOMETRICS?: string;
   // Thom Bot — dark-launch flag for ZenDesk Help Center ARTICLE capture in the
   // docs-ingest CLI (apps/docs-ingest). Unset/"0" = no article capture; "1" =
   // list published articles and fold them into kb_documents/kb_chunks so Thom's
