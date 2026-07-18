@@ -107,6 +107,9 @@ interface Args {
   skipProducts: boolean;
   skipZendesk: boolean;
   limit: number | null;
+  /** Requeue previously status='failed' rows to pending_extract before Step B,
+   *  so a re-run retries them (e.g. after a burst of transient upstream 502s). */
+  retryFailed: boolean;
 }
 function parseArgs(argv: string[]): Args {
   const a: Args = {
@@ -115,12 +118,14 @@ function parseArgs(argv: string[]): Args {
     skipProducts: false,
     skipZendesk: false,
     limit: null,
+    retryFailed: false,
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--dry-run") a.dryRun = true;
     else if (argv[i] === "--skip-pdp") a.skipPdp = true;
     else if (argv[i] === "--skip-products") a.skipProducts = true;
     else if (argv[i] === "--skip-zendesk") a.skipZendesk = true;
+    else if (argv[i] === "--retry-failed") a.retryFailed = true;
     else if (argv[i] === "--limit") a.limit = Number(argv[++i]);
   }
   return a;
@@ -400,7 +405,9 @@ function isPdf(bytes: Uint8Array): boolean {
   return bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
 }
 
-async function fetchPdf(url: string): Promise<Uint8Array> {
+const FETCH_RETRIES = 4;
+
+async function fetchPdfOnce(url: string): Promise<Uint8Array> {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -416,6 +423,31 @@ async function fetchPdf(url: string): Promise<Uint8Array> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Whether a fetch error is worth retrying: upstream 5xx/429 (the dynamic brand
+ *  spec-sheet endpoints 502 under burst load) and transient network/abort
+ *  errors. A 4xx or "not a PDF" is permanent — surface it immediately. */
+function isTransientFetchError(e: unknown): boolean {
+  const m = e instanceof Error ? e.message : String(e);
+  if (/^fetch (5\d\d|429)$/.test(m)) return true;
+  return /terminated|aborted|network|socket|ECONN|EAI_AGAIN|ETIMEDOUT|fetch failed/i.test(m);
+}
+
+async function fetchPdf(url: string): Promise<Uint8Array> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= FETCH_RETRIES; attempt++) {
+    try {
+      return await fetchPdfOnce(url);
+    } catch (e) {
+      lastErr = e;
+      if (!isTransientFetchError(e) || attempt === FETCH_RETRIES) throw e;
+      // Exponential backoff + jitter; spreads retries so the brand CDN recovers.
+      const wait = Math.min(20_000, 1000 * 2 ** attempt) + Math.floor(Math.random() * 500);
+      await new Promise((res) => setTimeout(res, wait));
+    }
+  }
+  throw lastErr;
 }
 
 interface Counts {
@@ -608,6 +640,18 @@ async function main(): Promise<void> {
         `[docs-ingest] step C: ${res.published} published articles captured, ${res.superseded} superseded`,
       );
     }
+  }
+  // --retry-failed: requeue prior failures (e.g. transient upstream 502s) so
+  // Step B picks them up again. Permanently-bad ones (empty/non-PDF) just
+  // re-fail, which is harmless.
+  if (args.retryFailed && !args.dryRun) {
+    const { data, error } = await sb
+      .from("kb_documents")
+      .update({ status: "pending_extract" })
+      .eq("status", "failed")
+      .select("id");
+    if (error) throw new Error(`retry-failed requeue failed: ${error.message}`);
+    console.log(`[docs-ingest] retry-failed: requeued ${data?.length ?? 0} previously-failed docs`);
   }
   const counts = await processPending(sb, cf, claude, zd, args.limit, args.dryRun);
   console.log(
