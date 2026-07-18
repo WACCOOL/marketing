@@ -19,6 +19,10 @@ on:
         description: "Max documents to process this run (blank = all)"
         type: string
         default: ""
+      retry_failed:
+        description: "Requeue previously-failed docs (e.g. transient 502s) and retry them"
+        type: boolean
+        default: false
 
 concurrency:
   group: docs-ingest
@@ -66,4 +70,5 @@ jobs:
         run: >-
           pnpm --filter @wac/docs-ingest ingest --
           ${{ inputs.dry_run && '--dry-run' || '' }}
+          ${{ inputs.retry_failed && '--retry-failed' || '' }}
           ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }}
