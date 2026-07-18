@@ -36,6 +36,7 @@ import {
   existingProperties,
   getById,
   searchAll,
+  searchTop,
   type HsObject,
   type HsSearchFilter,
   DEAL_STAGE_IDS,
@@ -131,6 +132,20 @@ const REP_PROPS = [
 const CAP_COMPANIES = 5;
 const CAP_DEALS = 20;
 const CAP_ORDERS = 25;
+// Portfolio-wide ranking default + hard ceiling (one sorted search page).
+const CAP_TOP = 10;
+const CAP_TOP_MAX = 50;
+
+// Company sales metrics rank-able by crm_top_companies. yoy is a percentage;
+// every other metric is a dollar amount.
+const TOP_COMPANY_METRICS = [
+  "ytd_sales",
+  "prior_ytd_sales",
+  "previous_year_sales",
+  "ytd_won_deals",
+  "ytd_sales_yoy_pct",
+] as const;
+type TopCompanyMetric = (typeof TOP_COMPANY_METRICS)[number];
 
 // --- tool schemas ------------------------------------------------------------
 
@@ -200,6 +215,41 @@ export const HUBSPOT_TOOLS: ClaudeTool[] = [
         limit: { type: "integer", description: `Max results (default ${CAP_ORDERS}).` },
       },
       required: ["account_number"],
+    },
+  },
+  {
+    name: "crm_top_deals",
+    description:
+      "Internal CRM (read-only): the LARGEST deals across ALL companies/reps, ranked by amount — use for 'biggest deal', 'top open deals', 'largest quotes'. Defaults to OPEN deals (excludes Closed Won/Lost). Optionally filter by rep_code. Note: some open deals are intentionally $0 (SAP zeroes unreferenced quote lines), so they rank last.",
+    input_schema: {
+      type: "object",
+      properties: {
+        open_only: { type: "boolean", description: "Exclude Closed Won / Closed Lost deals (default true)." },
+        rep_code: { type: "string", description: "Rep code / sales group to restrict the ranking to." },
+        limit: { type: "integer", description: `Max results (default ${CAP_TOP}, max ${CAP_TOP_MAX}).` },
+      },
+    },
+  },
+  {
+    name: "crm_top_companies",
+    description:
+      "Internal CRM (read-only): the TOP companies/accounts ranked by a sales metric across ALL accounts — use for 'which company has the highest YTD sales', 'top accounts by prior-year sales', 'biggest YoY growth/decline'. Metrics: ytd_sales, prior_ytd_sales, previous_year_sales, ytd_won_deals, ytd_sales_yoy_pct.",
+    input_schema: {
+      type: "object",
+      properties: {
+        metric: {
+          type: "string",
+          enum: [...TOP_COMPANY_METRICS],
+          description: "Sales metric to rank by (default ytd_sales).",
+        },
+        direction: {
+          type: "string",
+          enum: ["desc", "asc"],
+          description: "desc = highest first (default); asc = lowest first (e.g. biggest YoY decline).",
+        },
+        brand: { type: "string", description: "Restrict to a product_brand." },
+        limit: { type: "integer", description: `Max results (default ${CAP_TOP}, max ${CAP_TOP_MAX}).` },
+      },
     },
   },
   {
@@ -289,6 +339,26 @@ export function formatCompanyDetail(o: HsObject): string {
     prop(o, "ytd_won_deals") && `YTD won deals: ${money(prop(o, "ytd_won_deals"))}`,
   ].filter(Boolean);
   return lines.join("\n");
+}
+
+/** Render a metric value: yoy → "N%", everything else → currency. */
+export function formatMetricValue(metric: TopCompanyMetric, v: string | null): string {
+  if (metric === "ytd_sales_yoy_pct") return v == null ? "—" : `${v}%`;
+  return money(v);
+}
+
+/** Ranked company row: name, account, the ranked metric, plus YTD + prior-year
+ *  context. When the ranked metric IS ytd_sales, don't repeat it as context. */
+export function formatTopCompanyRow(o: HsObject, metric: TopCompanyMetric): string {
+  const name = prop(o, "name") ?? "(unnamed)";
+  const acct = prop(o, "account_number_");
+  const parts = [
+    acct && `acct ${acct}`,
+    `${metric} ${formatMetricValue(metric, prop(o, metric))}`,
+    metric !== "ytd_sales" && `YTD ${money(prop(o, "ytd_sales"))}`,
+    `prior-year ${money(prop(o, "previous_year_sales"))}`,
+  ].filter(Boolean);
+  return `- ${name} — ${parts.join(", ")}`;
 }
 
 export function formatDealRow(o: HsObject): string {
@@ -518,6 +588,70 @@ async function searchDeals(token: string, input: Record<string, unknown>): Promi
   return text(`${header}\n${shown.map(formatDealRow).join("\n")}${moreNote}`);
 }
 
+function topLimit(input: Record<string, unknown>): number {
+  return Math.min(Math.max(Number(input.limit) || CAP_TOP, 1), CAP_TOP_MAX);
+}
+
+async function topDeals(token: string, input: Record<string, unknown>): Promise<ToolOutput> {
+  // Open by default — only false when the caller explicitly asks to include closed.
+  const openOnly = input.open_only !== false;
+  const repCode = String(input.rep_code ?? "").trim();
+  const limit = topLimit(input);
+
+  const filters: HsSearchFilter[] = [];
+  if (openOnly) {
+    filters.push({
+      propertyName: "dealstage",
+      operator: "NOT_IN",
+      values: [DEAL_STAGE_IDS.closedWon, DEAL_STAGE_IDS.closedLost],
+    });
+  }
+  if (repCode) filters.push({ propertyName: "sales_group", operator: "EQ", value: repCode });
+
+  const rows = await searchTop(
+    token,
+    DEAL_OBJECT,
+    filters,
+    [...DEAL_PROPS],
+    { propertyName: "amount", direction: "DESCENDING" },
+    limit,
+  );
+  if (!rows.length) return text(openOnly ? "No open deals found." : "No deals found.");
+  const scope = [openOnly ? "open" : "all", repCode && `rep ${repCode}`].filter(Boolean).join(", ");
+  const header = `Top ${rows.length} deal(s) by amount (${scope}):`;
+  return text(`${header}\n${rows.map(formatDealRow).join("\n")}`);
+}
+
+async function topCompanies(token: string, input: Record<string, unknown>): Promise<ToolOutput> {
+  const metricRaw = String(input.metric ?? "").trim();
+  const metric: TopCompanyMetric = (TOP_COMPANY_METRICS as readonly string[]).includes(metricRaw)
+    ? (metricRaw as TopCompanyMetric)
+    : "ytd_sales";
+  const direction = String(input.direction ?? "").trim() === "asc" ? "ASCENDING" : "DESCENDING";
+  const brand = String(input.brand ?? "").trim();
+  const limit = topLimit(input);
+
+  // HAS_PROPERTY keeps companies with a null metric out of the ranking (an
+  // asc sort would otherwise surface them first).
+  const filters: HsSearchFilter[] = [{ propertyName: metric, operator: "HAS_PROPERTY" }];
+  if (brand) filters.push({ propertyName: "product_brand", operator: "EQ", value: brand });
+
+  const rows = await searchTop(
+    token,
+    "companies",
+    filters,
+    [...COMPANY_PROPS],
+    { propertyName: metric, direction },
+    limit,
+  );
+  if (!rows.length) return text("No companies with that metric.");
+  const scope = [`by ${metric}`, direction === "ASCENDING" ? "lowest first" : "highest first", brand && brand]
+    .filter(Boolean)
+    .join(", ");
+  const header = `Top ${rows.length} companies (${scope}):`;
+  return text(`${header}\n${rows.map((r) => formatTopCompanyRow(r, metric)).join("\n")}`);
+}
+
 async function getOpenOrders(token: string, input: Record<string, unknown>): Promise<ToolOutput> {
   const account = String(input.account_number ?? "").trim();
   if (!account) return text("crm_get_open_orders: account_number is required.");
@@ -637,6 +771,10 @@ export async function hubspotDispatch(
       return getCompany(token, input);
     case "crm_search_deals":
       return searchDeals(token, input);
+    case "crm_top_deals":
+      return topDeals(token, input);
+    case "crm_top_companies":
+      return topCompanies(token, input);
     case "crm_get_open_orders":
       return getOpenOrders(token, input);
     case "crm_get_invoice_history":

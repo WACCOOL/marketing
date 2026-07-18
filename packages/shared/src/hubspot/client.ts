@@ -212,6 +212,51 @@ export async function* searchAll(
   }
 }
 
+/** Clamp n into [lo, hi] (non-finite → lo). Exported for unit testing. */
+export function clamp(n: number, lo: number, hi: number): number {
+  if (!Number.isFinite(n)) return lo;
+  return Math.max(lo, Math.min(hi, Math.trunc(n)));
+}
+
+/**
+ * A SINGLE sorted search page — the top-N objects by a metric. Unlike
+ * searchAll (which pages by ascending hs_object_id and so CANNOT sort by a
+ * business metric), this asks HubSpot to sort server-side and returns just the
+ * first page. HubSpot serves up to 200 results/page, which is plenty for any
+ * "top N" ranking. No pagination — `limit` is clamped to [1, 200].
+ *
+ * `filters` are ANDed together in one filterGroup.
+ */
+export async function searchTop(
+  token: string,
+  objectType: string,
+  filters: HsSearchFilter[],
+  properties: string[],
+  sort: { propertyName: string; direction: "ASCENDING" | "DESCENDING" },
+  limit: number,
+  signal?: AbortSignal,
+): Promise<HsObject[]> {
+  const res = await hs(
+    token,
+    "POST",
+    `/crm/v3/objects/${objectType}/search`,
+    {
+      filterGroups: [{ filters }],
+      sorts: [sort],
+      properties,
+      limit: clamp(limit, 1, 200),
+    },
+    signal,
+    { retryTransient: true },
+  );
+  if (!res.ok) {
+    throw new Error(
+      `HubSpot searchTop ${objectType} -> ${res.status}: ${JSON.stringify(res.data).slice(0, 300)}`,
+    );
+  }
+  return (res.data?.results ?? []) as HsObject[];
+}
+
 /**
  * Batch-read objects by id or by a unique idProperty. HubSpot returns 207
  * (multi-status) when some/all inputs matched nothing — that's a normal
