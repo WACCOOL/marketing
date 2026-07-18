@@ -3,7 +3,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { unzipSync } from "fflate";
 import { parseAndBuild } from "./metrics.js";
 import { pickRepresentative } from "./match.js";
-import { stripNul } from "./pg.js";
+import { dedupeLinks, stripNul } from "./pg.js";
 
 /**
  * Thom Bot — IES photometrics precompute (mirrors apps/docs-ingest).
@@ -288,10 +288,14 @@ async function main(): Promise<void> {
     }
   }
 
-  for (let i = 0; i < links.length; i += UPSERT) {
+  // Byte-identical inner files dedupe to one ies_metrics id, so a SKU can link to
+  // the same id twice; collapse before upsert or Postgres rejects the batch.
+  const uniqueLinks = dedupeLinks(links);
+  counts.linkRows = uniqueLinks.length;
+  for (let i = 0; i < uniqueLinks.length; i += UPSERT) {
     const { error } = await sb
       .from("product_photometrics")
-      .upsert(links.slice(i, i + UPSERT), { onConflict: "product_sku,ies_metrics_id" });
+      .upsert(uniqueLinks.slice(i, i + UPSERT), { onConflict: "product_sku,ies_metrics_id" });
     if (error) throw new Error(`product_photometrics upsert failed: ${error.message}`);
   }
 
