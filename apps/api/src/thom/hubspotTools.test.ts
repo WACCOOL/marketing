@@ -1,5 +1,23 @@
-import { describe, expect, it } from "vitest";
-import type { HsObject } from "@wac/shared";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { HsObject, HsSearchFilter } from "@wac/shared";
+
+// Mock the shared HubSpot client so the top-N ranking tools can be driven
+// without a live HubSpot. Everything else in @wac/shared stays real.
+const searchTop = vi.fn<
+  (
+    token: string,
+    objectType: string,
+    filters: HsSearchFilter[],
+    properties: string[],
+    sort: { propertyName: string; direction: "ASCENDING" | "DESCENDING" },
+    limit: number,
+  ) => Promise<HsObject[]>
+>();
+vi.mock("@wac/shared", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@wac/shared")>();
+  return { ...actual, searchTop: (...args: unknown[]) => searchTop(...(args as Parameters<typeof searchTop>)) };
+});
+
 import {
   assembleRepCode,
   capRows,
@@ -8,7 +26,9 @@ import {
   filterInvoicesSince,
   formatDealRow,
   formatInvoiceRow,
+  formatMetricValue,
   formatOpenOrderRow,
+  formatTopCompanyRow,
   hubspotDispatch,
   invoiceTotal,
   isOpenDeal,
@@ -213,6 +233,115 @@ describe("assembleRepCode", () => {
     expect(out).toContain("State: NY");
     expect(out).not.toContain("City:"); // null → skipped
     expect(out).toContain("Owner (HubSpot user id): 555");
+  });
+});
+
+describe("formatMetricValue / formatTopCompanyRow", () => {
+  it("renders yoy as a percent and dollar metrics as currency", () => {
+    expect(formatMetricValue("ytd_sales_yoy_pct", "12.5")).toBe("12.5%");
+    expect(formatMetricValue("ytd_sales_yoy_pct", null)).toBe("—");
+    expect(formatMetricValue("ytd_sales", "1000")).toBe("$1,000.00");
+  });
+
+  it("formats a ranked-company row with the ranked metric plus context", () => {
+    const row = formatTopCompanyRow(
+      obj("c1", {
+        name: "Acme Electric",
+        account_number_: "2011239",
+        ytd_sales: "500000",
+        previous_year_sales: "420000",
+        prior_ytd_sales: "300000",
+      }),
+      "prior_ytd_sales",
+    );
+    expect(row).toContain("Acme Electric");
+    expect(row).toContain("acct 2011239");
+    expect(row).toContain("prior_ytd_sales $300,000.00");
+    expect(row).toContain("YTD $500,000.00");
+    expect(row).toContain("prior-year $420,000.00");
+  });
+
+  it("does not repeat ytd_sales as context when it is the ranked metric", () => {
+    const row = formatTopCompanyRow(obj("c2", { name: "Beta Co", ytd_sales: "900" }), "ytd_sales");
+    expect(row).toContain("ytd_sales $900.00");
+    expect(row).not.toContain("YTD $900.00");
+  });
+});
+
+describe("crm_top_deals dispatch", () => {
+  const ctx = { env: { HUBSPOT_READ_TOKEN: "x" }, sb: {} } as unknown as ToolContext;
+  beforeEach(() => searchTop.mockReset());
+
+  it("defaults to open-only, ranks by amount DESC, and formats rows", async () => {
+    searchTop.mockResolvedValue([
+      obj("d1", { dealname: "Big Tower", amount: "500000", dealstage: "1054295852", sales_group: "R1" }),
+    ]);
+    const out = await hubspotDispatch(ctx, "crm_top_deals", {});
+    expect(searchTop).toHaveBeenCalledTimes(1);
+    const [, objectType, filters, , sort, limit] = searchTop.mock.calls[0]!;
+    expect(objectType).toBe("0-3");
+    expect(sort).toEqual({ propertyName: "amount", direction: "DESCENDING" });
+    expect(limit).toBe(10);
+    // Open-only default → a NOT_IN dealstage exclusion of won + lost.
+    const stageFilter = (filters as HsSearchFilter[]).find((f) => f.propertyName === "dealstage");
+    expect(stageFilter).toMatchObject({ operator: "NOT_IN", values: ["1054295854", "1054295855"] });
+    expect(out.content).toContain("Big Tower");
+    expect(out.content).toContain("$500,000.00");
+  });
+
+  it("drops the stage exclusion when open_only is false and applies rep_code + limit", async () => {
+    searchTop.mockResolvedValue([]);
+    await hubspotDispatch(ctx, "crm_top_deals", { open_only: false, rep_code: "R99", limit: 100 });
+    const [, , filters, , , limit] = searchTop.mock.calls[0]!;
+    expect((filters as HsSearchFilter[]).some((f) => f.propertyName === "dealstage")).toBe(false);
+    expect((filters as HsSearchFilter[])).toContainEqual({
+      propertyName: "sales_group",
+      operator: "EQ",
+      value: "R99",
+    });
+    expect(limit).toBe(50); // clamped to CAP_TOP_MAX
+  });
+});
+
+describe("crm_top_companies dispatch", () => {
+  const ctx = { env: { HUBSPOT_READ_TOKEN: "x" }, sb: {} } as unknown as ToolContext;
+  beforeEach(() => searchTop.mockReset());
+
+  it("defaults to ytd_sales, HAS_PROPERTY, DESC and formats rows", async () => {
+    searchTop.mockResolvedValue([
+      obj("c1", { name: "Top Account", account_number_: "1", ytd_sales: "1000000", previous_year_sales: "800000" }),
+    ]);
+    const out = await hubspotDispatch(ctx, "crm_top_companies", {});
+    const [, objectType, filters, , sort] = searchTop.mock.calls[0]!;
+    expect(objectType).toBe("companies");
+    expect(sort).toEqual({ propertyName: "ytd_sales", direction: "DESCENDING" });
+    expect((filters as HsSearchFilter[])).toContainEqual({ propertyName: "ytd_sales", operator: "HAS_PROPERTY" });
+    expect(out.content).toContain("Top Account");
+    expect(out.content).toContain("$1,000,000.00");
+  });
+
+  it("honors metric + asc direction + brand filter", async () => {
+    searchTop.mockResolvedValue([]);
+    await hubspotDispatch(ctx, "crm_top_companies", {
+      metric: "ytd_sales_yoy_pct",
+      direction: "asc",
+      brand: "Schonbek",
+    });
+    const [, , filters, , sort] = searchTop.mock.calls[0]!;
+    expect(sort).toEqual({ propertyName: "ytd_sales_yoy_pct", direction: "ASCENDING" });
+    expect((filters as HsSearchFilter[])).toContainEqual({ propertyName: "ytd_sales_yoy_pct", operator: "HAS_PROPERTY" });
+    expect((filters as HsSearchFilter[])).toContainEqual({
+      propertyName: "product_brand",
+      operator: "EQ",
+      value: "Schonbek",
+    });
+  });
+
+  it("falls back to ytd_sales for an unknown metric", async () => {
+    searchTop.mockResolvedValue([]);
+    await hubspotDispatch(ctx, "crm_top_companies", { metric: "bogus_metric" });
+    const [, , , , sort] = searchTop.mock.calls[0]!;
+    expect(sort).toEqual({ propertyName: "ytd_sales", direction: "DESCENDING" });
   });
 });
 
