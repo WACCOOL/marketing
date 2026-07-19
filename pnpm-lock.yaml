@@ -272,6 +272,9 @@ importers:
       '@supabase/supabase-js':
         specifier: ^2.46.2
         version: 2.107.0
+      '@wac/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
     devDependencies:
       '@types/node':
         specifier: ^22.10.2

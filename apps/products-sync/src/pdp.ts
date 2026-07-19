@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { deriveModelCodes } from "@wac/shared";
 
 /**
  * PDP URL resolver — replicates WIES Studio's method (wies-app/scripts/
@@ -7,11 +8,16 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  *
  * Method: each WAC Group brand site exposes `?s=<query>` search that resolves
  * to the canonical product page `/<brand>/product/<slug>/`. For a product we
- * search the brand site for one of its variant material numbers, take the first
- * `/product/<slug>/` link, and build the canonical URL. When nothing resolves
- * (or the brand isn't scrapeable), we fall back to the brand-site PPID search —
- * WIES's own tier-2 fallback. Results cache to the `pdp_urls` table (30-day TTL)
- * so steady-state syncs are zero-network.
+ * search the brand site by, in order, its visible variant material numbers, the
+ * model codes derived from its asset filenames (image/IES — the real
+ * brand-site-indexed identifiers; see `@wac/shared` deriveModelCodes), then its
+ * family/name, take the first `/product/<slug>/` link, and build the canonical
+ * URL. When NOTHING resolves we store `url = null` (NOT a `?s=<sku>` search
+ * fallback: internal numeric SKUs aren't indexed, so those searches are dead
+ * links) and the caller keeps its image fallback. Results cache to the
+ * `pdp_urls` table (30-day TTL) so steady-state syncs are zero-network; null
+ * misses are cached too (fresh `resolved_at`) so they aren't re-scraped nightly
+ * — pass `--refresh-unresolved` to force a re-scrape of null / legacy `?s=` rows.
  */
 
 const CACHE_TTL_DAYS = 30;
@@ -119,17 +125,13 @@ function isUsableQuery(q: string | null | undefined): q is string {
   return !!q && q.trim().length >= 3 && /[a-z]/i.test(q);
 }
 
-function ppidSearchUrl(brand: string, ppid: string): string {
-  const dom = DOMAIN[brand];
-  // SAP brands index on PPID-<n>; AiSpire searches by raw code.
-  return brand === "AiSpire"
-    ? `https://${dom}/?s=${encodeURIComponent(ppid)}`
-    : `https://${dom}/?s=PPID-${encodeURIComponent(ppid)}`;
-}
-
-function buildUrl(brand: string, ppid: string, slug: string | null): string {
+/** Canonical PDP URL when a slug resolved, else null. We no longer store a
+ *  `?s=<query>` search fallback — those searches key on internal numeric SKUs
+ *  that brand sites don't index, so they're dead links. A null url tells the
+ *  caller to keep its own (image) fallback. */
+function buildUrl(brand: string, slug: string | null): string | null {
   if (slug) return `https://${DOMAIN[brand]}/product/${slug}/`;
-  return ppidSearchUrl(brand, ppid);
+  return null;
 }
 
 async function fetchText(url: string): Promise<string | null> {
@@ -186,6 +188,24 @@ export interface PdpProduct {
   family: string | null;
   name: string | null;
   variants: { sku: string | null }[] | null;
+  // Asset URLs — the real brand-site-indexed model code lives in these filenames
+  // (see deriveModelCodes). Optional so callers that don't select them still fit.
+  primary_image_url?: string | null;
+  image_urls?: (string | null)[] | null;
+  ies_url?: string | null;
+}
+
+/** Case-insensitive de-dupe, preserving first occurrence. */
+function dedupe(values: (string | null | undefined)[]): (string | null | undefined)[] {
+  const seen = new Set<string>();
+  const out: (string | null | undefined)[] = [];
+  for (const v of values) {
+    const key = typeof v === "string" ? v.trim().toUpperCase() : "";
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    out.push(v);
+  }
+  return out;
 }
 
 interface CacheRow {
@@ -193,7 +213,7 @@ interface CacheRow {
   brand: string | null;
   query: string | null;
   slug: string | null;
-  url: string;
+  url: string | null;
   resolved_at: string;
   // Only ever set when SPEC_SHEETS_ON, so the field is omitted from the upsert
   // (and thus safe) until migration 0045 adds the column.
@@ -220,6 +240,12 @@ export async function resolvePdpUrls(
   }
   const fresh = (r: CacheRow) =>
     Date.now() - new Date(r.resolved_at).getTime() < CACHE_TTL_DAYS * 864e5;
+  // Re-scrape rows that never resolved (slug null) or that still carry a legacy
+  // `?s=` search fallback, so a code-fix run can heal them without waiting out
+  // the 30-day TTL. Normal runs leave fresh rows untouched.
+  const refreshUnresolved = process.argv.includes("--refresh-unresolved");
+  const staleForRefresh = (r: CacheRow) =>
+    refreshUnresolved && (r.slug === null || (r.url != null && /[?&]s=/.test(r.url)));
 
   const result = new Map<string, string>();
   const toScrape: { p: PdpProduct; brand: string; queries: string[] }[] = [];
@@ -230,18 +256,23 @@ export async function resolvePdpUrls(
     const brand = canonicalBrand(p.brand);
     if (!brand || !DOMAIN[brand]) continue;
     const cached = cache.get(p.sku);
-    if (cached && fresh(cached)) {
-      result.set(p.sku, cached.url);
+    if (cached && fresh(cached) && !staleForRefresh(cached)) {
+      if (cached.url) result.set(p.sku, cached.url);
       if (SPEC_SHEETS_ON && (cached.spec_sheet_url === null || cached.spec_sheet_url === undefined)) {
         specBackfill.push({ p, brand, cached });
       }
       continue;
     }
-    const queries = [
+    // Variant material numbers first (unchanged for already-resolving products),
+    // then filename-derived model codes (the real brand-site identifiers), then
+    // family/name. Case-insensitive de-dupe so a filename code equal to a variant
+    // sku isn't searched twice.
+    const queries = dedupe([
       ...(p.variants ?? []).map((v) => v?.sku).slice(0, 3),
+      ...deriveModelCodes(p),
       p.family,
       p.name,
-    ].filter(isUsableQuery);
+    ]).filter(isUsableQuery);
     toScrape.push({ p, brand, queries });
   }
 
@@ -250,9 +281,12 @@ export async function resolvePdpUrls(
   let specs = 0;
   await mapWithConcurrency(toScrape, PARALLELISM, async ({ p, brand, queries }) => {
     const slug = SCRAPEABLE.has(brand) && queries.length ? await resolveSlug(brand, queries) : null;
-    const url = buildUrl(brand, p.sku, slug);
+    const url = buildUrl(brand, slug);
     if (slug) scraped++;
-    result.set(p.sku, url);
+    // Only expose a real URL; a null (unresolved) row lets the caller keep its
+    // image fallback. The null row is still cached below (fresh resolved_at) so
+    // the miss isn't re-scraped every night.
+    if (url) result.set(p.sku, url);
     const row: CacheRow = { sku: p.sku, brand, query: queries[0] ?? null, slug, url, resolved_at: iso() };
     if (SPEC_SHEETS_ON) {
       // Schonbek: template from raw sub-brand + PPID (no PDP to scrape).
@@ -272,7 +306,7 @@ export async function resolvePdpUrls(
 
   if (toScrape.length) {
     const specNote = SPEC_SHEETS_ON ? `, ${specs} spec sheets` : "";
-    console.log(`[pdp] resolved ${toScrape.length} products (${scraped} canonical slugs, ${toScrape.length - scraped} search fallback${specNote}); ${cache.size} from cache`);
+    console.log(`[pdp] resolved ${toScrape.length} products (${scraped} canonical slugs, ${toScrape.length - scraped} unresolved → null url${specNote}); ${cache.size} from cache`);
   } else {
     console.log(`[pdp] ${result.size} product URLs all from cache`);
   }
