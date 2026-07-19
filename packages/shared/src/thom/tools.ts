@@ -17,11 +17,12 @@ import type {
  *  is still reported via member_count). */
 export const MAX_FAMILY_MEMBERS = 12;
 
-/** Return a PDP url only if it points at a real product page. The PDP resolver
- *  falls back to a brand-site SEARCH url (…/?s=term) when it cannot resolve a
- *  canonical page, and those searches key on the internal numeric SKU, so they
- *  never resolve — surfacing one as a "View product" link is a dead end. Treat
- *  any search-result url as no link. */
+/** Return a PDP url only if it points at a real product page. The resolver now
+ *  writes url = null (not a search fallback) when it can't resolve a canonical
+ *  page, so this is defense-in-depth for legacy `?s=term` rows still in the
+ *  cache until the backfill (`--refresh-unresolved`) heals them: those searches
+ *  key on the internal numeric SKU, never resolve, and would be a dead "View
+ *  product" link — treat any search-result url as no link. */
 export function canonicalPdp(url: unknown): string | null {
   const u = typeof url === "string" ? url.trim() : "";
   if (!u) return null;

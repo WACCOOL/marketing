@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.46.2"
+    "@supabase/supabase-js": "^2.46.2",
+    "@wac/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

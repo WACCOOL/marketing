@@ -76,6 +76,7 @@ interface Product {
   category: string | null;
   family: string | null;
   primary_image_url: string | null;
+  image_urls: string[] | null;
   ies_url: string | null;
   dimensions_mm: Variant["dimensions_mm"];
   raw_json: Record<string, unknown> | null;
@@ -235,7 +236,7 @@ async function main(): Promise<void> {
   let products = await loadAll<Product>(
     sb,
     "products",
-    "sku,name,brand,category,family,primary_image_url,ies_url,dimensions_mm,raw_json,variants",
+    "sku,name,brand,category,family,primary_image_url,image_urls,ies_url,dimensions_mm,raw_json,variants",
   );
   if (Number.isFinite(limit)) products = products.slice(0, limit);
   console.log(`[products-sync] products: ${products.length}`);
