@@ -49,6 +49,7 @@ function b64urlDecodeToString(b64url: string): string {
 }
 
 async function importKey(secret: string): Promise<CryptoKey> {
+  if (!secret) throw new Error("SESSION_SECRET is not configured on the worker");
   return crypto.subtle.importKey(
     "raw",
     enc.encode(secret),

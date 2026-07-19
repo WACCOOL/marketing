@@ -7,7 +7,7 @@
  * talks exclusively to same-origin /api/* (served by the same Worker), so there
  * is no CORS and no auth beyond the Turnstile-minted session token.
  */
-import { el } from "./dom.js";
+import { el, svgEl } from "./dom.js";
 import { renderCard, renderCitations } from "./cards.js";
 import { renderMarkdown } from "./markdown.js";
 import { chatStream } from "./stream.js";
@@ -80,10 +80,32 @@ export class ThomWidget {
   private buildChrome(): void {
     const header = el("header", { class: "thom-head" }, [
       el("div", { class: "thom-brand" }, [
-        el("span", { class: "thom-logo", "aria-hidden": "true", text: "◆" }),
+        el("span", { class: "thom-logo", "aria-hidden": "true" }, [
+          svgEl(
+            "svg",
+            {
+              viewBox: "0 0 24 24",
+              width: 20,
+              height: 20,
+              fill: "none",
+              stroke: "currentColor",
+              "stroke-width": 2,
+              "stroke-linecap": "round",
+              "stroke-linejoin": "round",
+            },
+            [
+              svgEl("path", { d: "M12 8V4H8" }),
+              svgEl("rect", { width: 16, height: 12, x: 4, y: 8, rx: 2 }),
+              svgEl("path", { d: "M2 14h2" }),
+              svgEl("path", { d: "M20 14h2" }),
+              svgEl("path", { d: "M15 13v2" }),
+              svgEl("path", { d: "M9 13v2" }),
+            ],
+          ),
+        ]),
         el("div", {}, [
           el("strong", { text: "Thom" }),
-          el("span", { class: "thom-muted thom-brand-sub", text: "WAC Group lighting assistant" }),
+          el("span", { class: "thom-muted thom-brand-sub", text: "WAC Group assistant" }),
         ]),
       ]),
       el("div", { class: "thom-head-actions" }, [

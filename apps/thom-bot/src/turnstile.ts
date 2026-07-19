@@ -31,10 +31,17 @@ export async function verifyTurnstile(
 
   try {
     const res = await fetch(SITEVERIFY_URL, { method: "POST", body });
-    if (!res.ok) return false;
+    if (!res.ok) {
+      console.warn(`[turnstile] siteverify HTTP ${res.status}`);
+      return false;
+    }
     const data = (await res.json()) as SiteverifyResponse;
+    if (data.success !== true) {
+      console.warn(`[turnstile] verify failed: ${JSON.stringify(data["error-codes"] ?? [])}`);
+    }
     return data.success === true;
-  } catch {
+  } catch (e) {
+    console.warn(`[turnstile] siteverify error: ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
 }
