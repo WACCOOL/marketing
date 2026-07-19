@@ -212,7 +212,6 @@ async function main(): Promise<void> {
   const limArg = process.argv.indexOf("--limit");
   const limit = limArg >= 0 ? Number(process.argv[limArg + 1]) : Infinity;
 
-  const token = env("HUBSPOT_TOKEN");
   const sb = createClient(env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"), {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -250,6 +249,9 @@ async function main(): Promise<void> {
     console.log("[products-sync] --resolve-only: pdp_urls cache populated; skipping HubSpot push.");
     return;
   }
+
+  // Only needed for the push, which --resolve-only skips above.
+  const token = env("HUBSPOT_TOKEN");
 
   // Sales Layer's connector exports ONLY online/visible items — there is no
   // hidden/offline row in the feed (verified: the variant STATUS field is the
