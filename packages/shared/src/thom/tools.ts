@@ -17,6 +17,18 @@ import type {
  *  is still reported via member_count). */
 export const MAX_FAMILY_MEMBERS = 12;
 
+/** Return a PDP url only if it points at a real product page. The PDP resolver
+ *  falls back to a brand-site SEARCH url (…/?s=term) when it cannot resolve a
+ *  canonical page, and those searches key on the internal numeric SKU, so they
+ *  never resolve — surfacing one as a "View product" link is a dead end. Treat
+ *  any search-result url as no link. */
+export function canonicalPdp(url: unknown): string | null {
+  const u = typeof url === "string" ? url.trim() : "";
+  if (!u) return null;
+  if (/[?&]s=/i.test(u)) return null; // brand-site search results, not a product page
+  return u;
+}
+
 /** Tool JSON schemas advertised to Claude. The cache breakpoint after the tool
  *  block is owned by agent.ts (withTailCache), which composes this set with any
  *  injected internal-only tools (e.g. HubSpot CRM) and marks the tail — so
@@ -163,7 +175,7 @@ async function getProduct(ctx: ToolContext, input: Record<string, unknown>): Pro
     brand: (p.brand as string) ?? null,
     image_url: (p.primary_image_url as string) ?? null,
     key_specs,
-    pdp_url: (pdp?.url as string) ?? null,
+    pdp_url: canonicalPdp(pdp?.url),
     downloads,
   };
 
@@ -376,7 +388,8 @@ async function getFamily(ctx: ToolContext, input: Record<string, unknown>): Prom
   if (skus.length) {
     const { data: pdps } = await ctx.sb.from("pdp_urls").select("sku, url").in("sku", skus);
     for (const p of (pdps ?? []) as { sku: string; url: string | null }[]) {
-      if (p.url) pdpBySku.set(p.sku, p.url);
+      const cu = canonicalPdp(p.url);
+      if (cu) pdpBySku.set(p.sku, cu);
     }
   }
 
