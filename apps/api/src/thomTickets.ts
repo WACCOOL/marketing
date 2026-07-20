@@ -76,9 +76,11 @@ export function ticketContentHash(
 
 /**
  * kb_documents POINTER-ROW payload for a ticket. `status` is intentionally
- * OMITTED so a NEW or CHANGED row (new content_hash) defaults to
- * 'pending_extract' and an unchanged one keeps its current status. There is NO
- * body field here — the body lives only as redacted kb_chunks.content.
+ * OMITTED here — the consumer (handleTicketMessage) resolves it explicitly via
+ * resolveKbDocStatus against the row's current (content_hash, status), because
+ * the upsert's ON CONFLICT UPDATE would otherwise leave a CHANGED ticket stuck
+ * on 'active' (the DB's pending_extract default only covers new inserts). There
+ * is NO body field here — the body lives only as redacted kb_chunks.content.
  */
 export function buildTicketDocPayload(
   ticketId: number,

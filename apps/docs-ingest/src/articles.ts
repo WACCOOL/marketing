@@ -105,14 +105,19 @@ export function articleContentHash(
 }
 
 /**
- * kb_documents upsert payload for a published article. `status` is intentionally
- * OMITTED so a NEW or CHANGED row defaults to 'pending_extract' and an unchanged
- * row keeps its current status (mirrors the saleslayer + marketing capture).
+ * kb_documents upsert payload for a published article. `status` must be passed
+ * EXPLICITLY (see resolveKbDocStatus in @wac/shared): the upsert's ON CONFLICT
+ * UPDATE only writes supplied columns, so omitting status would leave an EDITED
+ * article stuck on 'active' — the DB's 'pending_extract' default only applies
+ * to brand-new inserts. (The saleslayer capture gets away without this because
+ * its external_id IS the content hash, so a changed file is a new row; article
+ * external_ids are stable ZenDesk ids.)
  */
 export function buildArticleDocPayload(
   article: ZendeskArticle,
   brand: string | null,
   hash: string,
+  status: string,
 ): Record<string, unknown> {
   return {
     source_system: ZENDESK_SOURCE_SYSTEM,
@@ -123,5 +128,6 @@ export function buildArticleDocPayload(
     title: article.title,
     url: article.html_url,
     content_hash: hash,
+    status,
   };
 }

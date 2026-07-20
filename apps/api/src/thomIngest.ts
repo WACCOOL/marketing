@@ -8,12 +8,14 @@
 // in the apps/docs-ingest Node CLI (Workers have a CPU ceiling; the catalog
 // does not).
 
+import { resolveKbDocStatus } from "@wac/shared";
 import type { Env } from "./env.js";
 import { serviceSupabase } from "./supabase.js";
 import {
   buildTicketPointerRow,
   parseTicketGroups,
   THOM_TICKET_DOC_TYPE,
+  THOM_TICKET_SOURCE_SYSTEM,
 } from "./thomTickets.js";
 
 export interface ThomIngestMessage {
@@ -58,14 +60,27 @@ async function handleTicketMessage(
   if (!row) return; // ticket gone or not in a KB group — nothing to write
 
   const sb = serviceSupabase(env);
-  // Upsert on (source_system, external_id); status OMITTED so a new/changed row
-  // (new content_hash) defaults to pending_extract and an unchanged one keeps
-  // its status. NO ticket body is written here.
+  // Resolve status EXPLICITLY: the upsert's ON CONFLICT UPDATE only writes the
+  // supplied columns, so a changed ticket (new content_hash) would otherwise
+  // stay 'active' and docs-ingest (pending_extract only) would never re-extract
+  // it. Read the current row's (content_hash, status) and requeue on change; an
+  // unchanged ticket keeps its status. NO ticket body is written here.
+  const { data: existing, error: readErr } = await sb
+    .from("kb_documents")
+    .select("content_hash, status")
+    .eq("source_system", THOM_TICKET_SOURCE_SYSTEM)
+    .eq("external_id", String(ticketId))
+    .maybeSingle();
+  if (readErr) throw new Error(`kb_documents (ticket ${ticketId}) read failed: ${readErr.message}`);
+  row.status = resolveKbDocStatus(
+    existing ? { content_hash: existing.content_hash ?? null, status: String(existing.status) } : null,
+    String(row.content_hash),
+  );
   const { error } = await sb
     .from("kb_documents")
     .upsert(row, { onConflict: "source_system,external_id" });
   if (error) throw new Error(`kb_documents (ticket ${ticketId}) upsert failed: ${error.message}`);
-  console.log(`[thom-ingest] ticket ${ticketId} pointer upserted (pending_extract)`);
+  console.log(`[thom-ingest] ticket ${ticketId} pointer upserted (${row.status})`);
 }
 
 const MAX_ATTEMPTS = 3;

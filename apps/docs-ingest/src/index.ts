@@ -1,5 +1,5 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { chunkText, estimateTokens } from "@wac/shared";
+import { chunkText, estimateTokens, resolveKbDocStatus, type KbDocStatusRow } from "@wac/shared";
 import {
   articleContentHash,
   articleScope,
@@ -242,12 +242,14 @@ async function syncPdpSpecSheets(sb: SupabaseClient, dryRun: boolean): Promise<n
  * extraction pass (Step B) picks them up. Dark-launched behind
  * THOM_ZENDESK_ARTICLES; only runs when the reader is configured.
  *
- * Idempotency mirrors the saleslayer + marketing capture: `status` is OMITTED
- * from the upsert, so a NEW or CHANGED article (new content_hash) defaults to
- * 'pending_extract' and an unchanged one keeps its current status. An article
- * we previously captured that is now draft / deleted / unpublished (absent from
- * the current published set) is flipped to 'superseded' so kb_search (active
- * only) can't retrieve it and Step B (pending only) won't re-extract it.
+ * Idempotency: article external_ids are STABLE ZenDesk ids, so the upsert's ON
+ * CONFLICT UPDATE path must set `status` explicitly — a NEW, EDITED (changed
+ * content_hash), or RE-PUBLISHED (previously superseded) article is requeued to
+ * 'pending_extract' via resolveKbDocStatus, and an unchanged one keeps its
+ * current status. An article we previously captured that is now draft / deleted
+ * / unpublished (absent from the current published set) is flipped to
+ * 'superseded' so kb_search (active only) can't retrieve it and Step B (pending
+ * only) won't re-extract it.
  */
 async function captureZendeskArticles(
   sb: SupabaseClient,
@@ -262,11 +264,11 @@ async function captureZendeskArticles(
 
   let withBrand = 0;
   let internalScope = 0;
-  const docRows = published.map((a) => {
+  const enriched = published.map((a) => {
     const brand = mapArticleBrand(a, brandMap);
     if (brand) withBrand++;
     if (articleScope(a) === "internal") internalScope++;
-    return buildArticleDocPayload(a, brand, articleContentHash(a));
+    return { article: a, brand, hash: articleContentHash(a) };
   });
 
   if (dryRun) {
@@ -277,22 +279,35 @@ async function captureZendeskArticles(
     return { published: published.length, superseded: 0 };
   }
 
-  // Every article id we've captured before (that isn't already superseded), so
-  // we can retire the ones no longer published.
-  const existingIds: string[] = [];
+  // Every article row we've captured before, ANY status: (content_hash, status)
+  // feed resolveKbDocStatus so edited/re-published articles get requeued, and
+  // the non-superseded ids drive the supersede diff below.
+  const existingByExtId = new Map<string, KbDocStatusRow>();
   for (let from = 0; ; from += 1000) {
     const { data, error } = await sb
       .from("kb_documents")
-      .select("external_id")
+      .select("external_id, content_hash, status")
       .eq("source_system", ZENDESK_SOURCE_SYSTEM)
       .eq("doc_type", ZENDESK_ARTICLE_DOC_TYPE)
-      .neq("status", "superseded")
       .range(from, from + 999);
     if (error) throw new Error(`kb_documents (zendesk) read failed: ${error.message}`);
     const rows = data ?? [];
-    for (const r of rows) existingIds.push(String(r.external_id));
+    for (const r of rows) {
+      existingByExtId.set(String(r.external_id), {
+        content_hash: (r.content_hash as string | null) ?? null,
+        status: String(r.status),
+      });
+    }
     if (rows.length < 1000) break;
   }
+
+  let requeued = 0;
+  const docRows = enriched.map(({ article, brand, hash }) => {
+    const existing = existingByExtId.get(String(article.id));
+    const status = resolveKbDocStatus(existing, hash);
+    if (existing && existing.status !== status) requeued++;
+    return buildArticleDocPayload(article, brand, hash, status);
+  });
 
   for (let i = 0; i < docRows.length; i += UPSERT) {
     const { error } = await sb
@@ -301,7 +316,9 @@ async function captureZendeskArticles(
     if (error) throw new Error(`kb_documents (zendesk) upsert failed: ${error.message}`);
   }
 
-  const toSupersede = existingIds.filter((id) => !publishedIds.has(id));
+  const toSupersede = [...existingByExtId.entries()]
+    .filter(([id, row]) => row.status !== "superseded" && !publishedIds.has(id))
+    .map(([id]) => id);
   let superseded = 0;
   for (let i = 0; i < toSupersede.length; i += UPSERT) {
     const slice = toSupersede.slice(i, i + UPSERT);
@@ -317,7 +334,7 @@ async function captureZendeskArticles(
 
   console.log(
     `[docs-ingest] zendesk: ${articles.length} fetched, ${published.length} published upserted ` +
-      `(${withBrand} brand-mapped, ${internalScope} internal), ${superseded} superseded`,
+      `(${withBrand} brand-mapped, ${internalScope} internal), ${requeued} requeued, ${superseded} superseded`,
   );
   return { published: published.length, superseded };
 }
