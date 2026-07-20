@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composeTools } from "./agent.js";
-import { dispatch, type ThomToolExtension } from "./tools.js";
+import { WEB_DOC_TYPES, dispatch, type ThomToolExtension } from "./tools.js";
 import type { ClaudeTool } from "./transport.js";
 import type { ThomEnv } from "./env.js";
 import type { ToolContext } from "./types.js";
@@ -90,7 +90,13 @@ describe("search_docs scope by surface", () => {
     await dispatch(ctx, "search_docs", { query: "cutout size" }, { surface: "public" });
     const args = rpcArgs();
     expect(args.scope_filter).toBe("public");
-    expect(args.doc_types).toEqual(["spec_sheet", "manual", "marketing", "zendesk_article"]);
+    expect(args.doc_types).toEqual([
+      "spec_sheet",
+      "manual",
+      "marketing",
+      "zendesk_article",
+      ...WEB_DOC_TYPES,
+    ]);
     expect(args.doc_types).not.toContain("zendesk_ticket");
   });
 
@@ -105,6 +111,7 @@ describe("search_docs scope by surface", () => {
       "marketing",
       "zendesk_article",
       "zendesk_ticket",
+      ...WEB_DOC_TYPES,
     ]);
   });
 });
