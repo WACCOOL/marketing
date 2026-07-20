@@ -1,5 +1,10 @@
 import type { Env } from "./env.js";
 import { serviceSupabase } from "./supabase.js";
+import {
+  variantAvailability,
+  availabilityLabel,
+  type Availability,
+} from "@wac/shared";
 
 /**
  * Sales Layer PIM adapter — legacy Connector API (api.saleslayer.com), the same
@@ -38,6 +43,21 @@ const VARIANT_IMAGE_FIELDS = [
   "line_drawing",
   "top_line_drawing",
 ];
+// Candidate variant field names carrying the SAP lifecycle code, first
+// non-empty wins (the connector exports both `zusage` and `ZUSAGE`).
+const ZUSAGE_VARIANT_FIELDS = ["zusage", "ZUSAGE"];
+// Candidate variant field names for plant status. NONE are in the export yet;
+// listed so the rule activates automatically once the connector adds the field
+// (override with SALES_LAYER_PLANT_STATUS_FIELD if the real name differs).
+const PLANT_STATUS_VARIANT_FIELDS = [
+  "zplant_status",
+  "zplantstatus",
+  "plant_status",
+  "zwerks",
+  "zwerk",
+  "werks",
+];
+
 // Variant fixture-dimension fields → normalized key. Values are inches.
 const VARIANT_DIM_FIELDS: Record<string, keyof DimsMm> = {
   zlength_fix: "length",
@@ -78,6 +98,15 @@ interface VariantRow {
   watts: string | null; // zpwrin
   lumens: string | null; // zlmt
   ip_rating: string | null; // ziprat
+  /** SAP lifecycle code (A/B/W/N/P) driving site/Thom visibility. Variant-level
+   * in the connector (`zusage`). N/P variants are dropped at stitch time. */
+  zusage: string | null;
+  /** Material plant status (DW/DV/…/UR/EX/T1/blank). NOT yet in the export —
+   * null until the connector adds it (see PLANT_STATUS_VARIANT_FIELDS). */
+  plant_status: string | null;
+  /** Resolved availability state + customer-facing label, stamped at stitch. */
+  availability?: Availability;
+  availability_label?: string;
 }
 
 /**
@@ -177,6 +206,13 @@ export function makeProductAdapter(env: Env): ProductAdapter {
   const secretKey = env.SALES_LAYER_SECRET_KEY || env.SALES_LAYER_API_KEY;
   const dimFactor = unitToMm(env.SALES_LAYER_DIMENSION_UNIT ?? "in");
   const brandFieldOverride = env.SALES_LAYER_BRAND_FIELD?.trim() || undefined;
+  // Plant-status field name, once the connector exports it: an explicit override
+  // wins, else scan the known candidates. (Nothing matches today → plant_status
+  // stays null and only the zusage N/P rule fires.)
+  const plantStatusOverride = env.SALES_LAYER_PLANT_STATUS_FIELD?.trim();
+  const plantStatusFields = plantStatusOverride
+    ? [plantStatusOverride, ...PLANT_STATUS_VARIANT_FIELDS]
+    : PLANT_STATUS_VARIANT_FIELDS;
 
   function ensureCreds(): void {
     if (!connectorId || !secretKey) {
@@ -298,6 +334,8 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             watts: cleanText(str(v.zpwrin)),
             lumens: cleanText(str(v.zlmt)),
             ip_rating: cleanText(str(v.ziprat)),
+            zusage: pickField(v, ZUSAGE_VARIANT_FIELDS),
+            plant_status: pickField(v, plantStatusFields),
           };
           if (!variant.variant_id) continue;
           const list = variantsByProduct.get(productId) ?? [];
@@ -314,32 +352,71 @@ export function makeProductAdapter(env: Env): ProductAdapter {
         url = body.next_page;
       }
 
+      // Raw feed variant total, BEFORE the availability filter — the zero-
+      // variants guard below keys on what the connector actually delivered, not
+      // on what survives filtering.
+      const rawVariantCount = [...variantsByProduct.values()].reduce(
+        (n, l) => n + l.length,
+        0,
+      );
+
+      // Availability tallies for observability (logged once per sync).
+      let hiddenDropped = 0;
+      let retiredLabeled = 0;
+      let limitedLabeled = 0;
+
       // Stitch variants into products + finalize aggregate fields.
       for (const [id, product] of products) {
         const vlist = variantsByProduct.get(id) ?? [];
-        product.variants = vlist;
 
         // Resolve category internal ID -> human name (fall back to the ref).
+        // Done first: category presence (L2/L3) feeds the availability rules.
         product.category = product.category
           ? categoryName.get(product.category) ?? product.category
           : null;
 
+        // Availability rules (zusage/plant-status/L2-L3/PPID): stamp every
+        // variant, then DROP the hidden (zusage N/P) ones so they never enter
+        // the products table — excluding them from the site push and Thom in one
+        // place. `hasCategory` = an L2/L3 category ref; `isPpid` = product PPID.
+        const hasCategory = !!product.category;
+        const isPpid = !!str(product.raw_json.zppid);
+        const visible = vlist.filter((v) => {
+          const state = variantAvailability({
+            zusage: v.zusage,
+            plantStatus: v.plant_status,
+            hasCategory,
+            isPpid,
+          });
+          v.availability = state;
+          v.availability_label = availabilityLabel(state);
+          if (state === "hidden") {
+            hiddenDropped++;
+            return false;
+          }
+          if (state === "retired") retiredLabeled++;
+          else if (state === "limited") limitedLabeled++;
+          return true;
+        });
+        product.variants = visible;
+
         // Representative dims: first variant that has any.
-        const repr = vlist.find((v) => Object.keys(v.dimensions_mm).length > 0);
+        const repr = visible.find((v) => Object.keys(v.dimensions_mm).length > 0);
         if (repr) product.dimensions_mm = repr.dimensions_mm;
 
-        // Aggregate every image (product + all variants), de-duplicated.
+        // Aggregate every image (product + all VISIBLE variants), de-duplicated.
         const all = new Set(product.image_urls);
-        for (const v of vlist) for (const u of v.image_urls) all.add(u);
+        for (const v of visible) for (const u of v.image_urls) all.add(u);
         product.image_urls = [...all];
         if (!product.primary_image_url && product.image_urls.length) {
           product.primary_image_url = product.image_urls[0]!;
         }
 
-        // IES photometry: prefer the product-level file, else the first variant
-        // that carries one (the photometric throw is shared across finishes).
+        // IES photometry: prefer the product-level file, else the first visible
+        // variant that carries one (the photometric throw is shared across
+        // finishes).
         if (!product.ies_url) {
-          product.ies_url = vlist.find((v) => v.ies_url)?.ies_url ?? null;
+          product.ies_url = visible.find((v) => v.ies_url)?.ies_url ?? null;
         }
 
         // Merge variant-level docs into the product's doc set (deduped by URL).
@@ -353,9 +430,10 @@ export function makeProductAdapter(env: Env): ProductAdapter {
           }
         }
 
-        // Searchable text: variant SKUs / ids / finishes.
+        // Searchable text: VISIBLE variant SKUs / ids / finishes (dropped N/P
+        // variants must not be findable via search either).
         const terms = new Set<string>();
-        for (const v of vlist) {
+        for (const v of product.variants) {
           if (v.sku) terms.add(v.sku);
           if (v.variant_id) terms.add(v.variant_id);
           if (v.finish) terms.add(v.finish);
@@ -388,28 +466,38 @@ export function makeProductAdapter(env: Env): ProductAdapter {
         if ((nameCounts.get(key) ?? 0) > 1) r.family = r.name;
       }
 
-      // Count variants on the deduped rows we actually store (not the raw
-      // pre-dedup total, which double-counts regional duplicate products).
+      // Count the VISIBLE variants on the deduped rows we actually store (not
+      // the raw pre-dedup total, which double-counts regional duplicate
+      // products). Post-availability-filter, so it excludes dropped N/P.
       const variantCount = rows.reduce((n, r) => n + r.variants.length, 0);
 
       // A 0-length pull almost always means a transient/auth error rather than
       // an empty catalog — bail without wiping the cache.
       if (rows.length === 0) return { upserted: 0, pruned: 0, variants: 0, docs: 0 };
 
-      // Products present but ZERO variants across the whole catalog is never a
-      // real state (the entire app is variant/SKU-driven) — it means the Sales
-      // Layer connector is mid-regeneration (e.g. just after a schema edit) and
-      // has served its products table before the variants table repopulated.
+      // Products present but ZERO variants IN THE FEED is never a real state
+      // (the entire app is variant/SKU-driven) — it means the Sales Layer
+      // connector is mid-regeneration (e.g. just after a schema edit) and has
+      // served its products table before the variants table repopulated.
       // Upserting now would fold `variants: []` into every product and wipe the
       // SKU-level catalog (breaking products-sync and Thom). Bail without
       // touching the cache; the next cron re-pulls once regeneration completes.
-      if (variantCount === 0) {
+      // Keyed on the RAW feed total, not the post-filter count, so a legitimate
+      // availability filter can never trip it.
+      if (rawVariantCount === 0) {
         console.warn(
           `[products] ABORT: feed returned ${rows.length} products but 0 variants ` +
             `(connector likely mid-regeneration) — skipping upsert/prune to protect the cache`,
         );
         return { upserted: 0, pruned: 0, variants: 0, docs: 0 };
       }
+
+      // Availability filter summary (zusage rules). Today only N/P drops fire;
+      // retired/limited stay 0 until plant status + PPID are in the export.
+      console.log(
+        `[products] availability: ${rawVariantCount} feed variants -> ${variantCount} visible ` +
+          `(${hiddenDropped} hidden/dropped [zusage N/P], ${retiredLabeled} Retired, ${limitedLabeled} Limited)`,
+      );
 
       const brandCount = rows.filter((r) => r.brand).length;
       console.log(
@@ -529,6 +617,15 @@ function mapRow(
 function str(v: unknown): string | null {
   if (typeof v === "string") return v.trim() || null;
   if (typeof v === "number") return String(v);
+  return null;
+}
+
+/** First non-empty value among a list of candidate field names on a mapped row. */
+function pickField(row: Record<string, unknown>, fields: string[]): string | null {
+  for (const f of fields) {
+    const v = str(row[f]);
+    if (v) return v;
+  }
   return null;
 }
 

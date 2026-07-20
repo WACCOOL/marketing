@@ -60,6 +60,11 @@ export interface Env {
   // Optional override pinning the exact Sales Layer product field that holds the
   // brand. When unset, the adapter auto-discovers it from common field names.
   SALES_LAYER_BRAND_FIELD?: string;
+  // Optional override for the Sales Layer VARIANT field carrying plant status
+  // (feeds the Retired / Limited-Availability rules). Not yet in the export; set
+  // this to its field name once the connector adds it. Unset => auto-scan known
+  // candidates (all currently absent, so plant_status stays null).
+  SALES_LAYER_PLANT_STATUS_FIELD?: string;
   // Thom Bot — comma-separated override of the Sales Layer file fields that
   // hold spec-sheet / manual PDFs. Defaults to the confirmed live-connector
   // fields "specsheet_pdf,inst_sheet"; set this to add more (e.g. ftc_label_pdf)
