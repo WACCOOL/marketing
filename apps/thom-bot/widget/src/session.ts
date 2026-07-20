@@ -33,6 +33,57 @@ export function historyKey(siteKey: string, sessionId: string): string {
   return `thom.public.history.${siteKey || "-"}.${sessionId}`;
 }
 
+// --- persisted Turnstile session token --------------------------------------
+// The session token is signed, IP-bound, and short-lived, so persisting it is
+// safe and lets a returning visitor skip the Turnstile challenge until it
+// expires (server TTL) or their IP changes.
+
+function tokenKey(siteKey: string): string {
+  return `thom.public.token.${siteKey || "-"}`;
+}
+
+/** Return a stored, non-expired session token, or null. */
+export function loadSessionToken(
+  siteKey: string,
+  storage: StorageLike | null = defaultStorage(),
+): string | null {
+  try {
+    const raw = storage?.getItem(tokenKey(siteKey));
+    if (!raw) return null;
+    const s = JSON.parse(raw) as { token?: unknown; exp?: unknown };
+    if (typeof s.token !== "string" || typeof s.exp !== "number") return null;
+    // Treat a token within 30s of expiry as already expired.
+    if (s.exp <= Date.now() + 30_000) return null;
+    return s.token;
+  } catch {
+    return null;
+  }
+}
+
+export function saveSessionToken(
+  siteKey: string,
+  token: string,
+  exp: number,
+  storage: StorageLike | null = defaultStorage(),
+): void {
+  try {
+    storage?.setItem(tokenKey(siteKey), JSON.stringify({ token, exp }));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function clearSessionToken(
+  siteKey: string,
+  storage: StorageLike | null = defaultStorage(),
+): void {
+  try {
+    storage?.removeItem(tokenKey(siteKey));
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
  * Return the session id for this tab, minting + persisting one on first use. A
  * session id scopes the transcript so two embeds on the same site don't collide.

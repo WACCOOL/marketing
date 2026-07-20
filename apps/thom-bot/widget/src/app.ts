@@ -15,9 +15,12 @@ import { fetchConfig } from "./config.js";
 import { renderChallenge, mintSession } from "./turnstile.js";
 import {
   clearHistory,
+  clearSessionToken,
   getSessionId,
   loadHistory,
+  loadSessionToken,
   saveHistory,
+  saveSessionToken,
   toRequestHistory,
 } from "./session.js";
 import type { Card, Citation, Turn } from "./types.js";
@@ -63,6 +66,9 @@ export class ThomWidget {
     this.siteKey = new URLSearchParams(location.search).get("site_key") ?? "";
     this.sessionId = getSessionId(this.siteKey);
     this.turns = loadHistory(this.siteKey, this.sessionId);
+    // Reuse a still-valid session from a previous visit, so a returning visitor
+    // is not re-challenged. null when absent/expired → challenge on first send.
+    this.sessionToken = loadSessionToken(this.siteKey);
   }
 
   async mount(): Promise<void> {
@@ -71,8 +77,10 @@ export class ThomWidget {
     postToParent({ type: "thom:ready" });
     const cfg = await fetchConfig();
     this.turnstileSiteKey = cfg.turnstileSiteKey;
-    // Warm a session up front so the first send is instant (best-effort).
-    if (this.turnstileSiteKey) void this.ensureSession().catch(() => {});
+    // Only warm a session up front if we already have a stored token (instant,
+    // no challenge). A brand-new visitor is challenged on their first send, not
+    // on page load.
+    if (this.turnstileSiteKey && this.sessionToken) void this.ensureSession().catch(() => {});
   }
 
   // --- chrome ---------------------------------------------------------------
@@ -214,12 +222,18 @@ export class ThomWidget {
   /** Ensure we hold a valid session token, minting one via Turnstile if needed. */
   private async ensureSession(): Promise<string> {
     if (this.sessionToken) return this.sessionToken;
+    const stored = loadSessionToken(this.siteKey);
+    if (stored) {
+      this.sessionToken = stored;
+      return stored;
+    }
     if (!this.turnstileSiteKey) throw new Error("Thom isn't configured yet.");
     this.challengeEl.hidden = false;
     try {
       const token = await renderChallenge(this.challengeEl, this.turnstileSiteKey);
-      const session = await mintSession(token, this.turnstileSiteKey);
+      const { session, exp } = await mintSession(token, this.turnstileSiteKey);
       this.sessionToken = session;
+      saveSessionToken(this.siteKey, session, exp);
       return session;
     } finally {
       this.challengeEl.hidden = true;
@@ -298,7 +312,9 @@ export class ThomWidget {
     );
 
     if (rechallenge) {
+      // Stored token was rejected (expired / IP changed) — drop it and re-verify.
       this.sessionToken = null;
+      clearSessionToken(this.siteKey);
       try {
         const session = await this.ensureSession();
         await this.runStream({ ...req, session }, /* allowRechallenge */ false);

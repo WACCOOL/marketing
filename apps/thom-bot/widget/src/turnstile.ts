@@ -67,8 +67,12 @@ export function renderChallenge(container: HTMLElement, siteKey: string): Promis
   );
 }
 
-/** Exchange a solved Turnstile token + site key for a session token. */
-export async function mintSession(token: string, siteKey: string): Promise<string> {
+/** Exchange a solved Turnstile token + site key for a session token + its
+ *  expiry (epoch ms) so the caller can persist it and skip future challenges. */
+export async function mintSession(
+  token: string,
+  siteKey: string,
+): Promise<{ session: string; exp: number }> {
   const res = await fetch("/api/turnstile", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -84,7 +88,8 @@ export async function mintSession(token: string, siteKey: string): Promise<strin
     }
     throw new Error(msg);
   }
-  const body = (await res.json()) as { session?: unknown };
+  const body = (await res.json()) as { session?: unknown; exp?: unknown };
   if (typeof body.session !== "string" || !body.session) throw new Error("no session returned");
-  return body.session;
+  const exp = typeof body.exp === "number" ? body.exp : Date.now() + 30 * 60 * 1000;
+  return { session: body.session, exp };
 }

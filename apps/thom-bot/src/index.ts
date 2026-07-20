@@ -5,7 +5,7 @@ import { anthropicConfigured, runThomStream, type ClaudeMessage } from "@wac/sha
 import type { PublicEnv } from "./env.js";
 import { anonSupabase } from "./supabase.js";
 import { verifyTurnstile } from "./turnstile.js";
-import { mintSession, verifySession } from "./session.js";
+import { DEFAULT_SESSION_TTL_MS, mintSession, verifySession } from "./session.js";
 import {
   checkAndAddTokens,
   checkAndIncrRate,
@@ -75,8 +75,10 @@ app.post("/api/turnstile", async (c) => {
   const ok = await verifyTurnstile(token, ip || null, c.env.TURNSTILE_SECRET);
   if (!ok) return c.json({ error: "turnstile verification failed" }, 401);
 
-  const session = await mintSession(c.env, { siteKey, ip });
-  return c.json({ session });
+  const now = Date.now();
+  const session = await mintSession(c.env, { siteKey, ip, now });
+  // exp lets the widget persist the token and re-challenge only when it lapses.
+  return c.json({ session, exp: now + DEFAULT_SESSION_TTL_MS });
 });
 
 /**

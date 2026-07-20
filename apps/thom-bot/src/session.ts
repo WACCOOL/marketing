@@ -24,8 +24,11 @@ interface SessionSecretEnv {
   SESSION_SECRET: string;
 }
 
-/** Default token lifetime: 30 minutes. */
-export const DEFAULT_SESSION_TTL_MS = 30 * 60 * 1000;
+/** Default token lifetime: 12 hours. The widget persists the token in
+ *  localStorage, so a returning visitor is not re-challenged until it expires
+ *  (or their IP changes). Abuse is still bounded by the per-IP rate + token
+ *  caps, not by re-challenging every visit. */
+export const DEFAULT_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 const enc = new TextEncoder();
 
