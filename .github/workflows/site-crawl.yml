@@ -58,6 +58,13 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_AI_TOKEN: ${{ secrets.CF_AI_TOKEN }}
+          # Step B drains the SHARED pending queue, which can hold zendesk and
+          # scanned-PDF docs too — carry the same extraction env as the daily
+          # docs-ingest so those don't fail here with "reader not configured".
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ZENDESK_SUBDOMAIN: ${{ secrets.ZENDESK_SUBDOMAIN }}
+          ZENDESK_EMAIL: ${{ secrets.ZENDESK_EMAIL }}
+          ZENDESK_API_TOKEN: ${{ secrets.ZENDESK_API_TOKEN }}
           # Crawl gate + roster (vars, not secrets — non-sensitive toggles).
           THOM_WEB_CRAWL: "1"
           THOM_CRAWL_SITES: ${{ inputs.sites || vars.THOM_CRAWL_SITES || '' }}
