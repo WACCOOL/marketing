@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildOrganizationJsonLd, buildProductPageJsonLd } from "./seo.js";
-import { classifyCctType, combineCctTypes, slugifyName, isValidUrlSlug, canonicalUrlFor } from "./productinfo.js";
+import { classifyCctType, combineCctTypes, slugifyName, isValidUrlSlug, canonicalUrlFor, brandSite } from "./productinfo.js";
 
 const BASE = {
   ppid: "3367",
@@ -152,6 +152,16 @@ describe("slug + canonical helpers", () => {
     );
     expect(canonicalUrlFor("Unknown Brand", "x")).toBe(
       "https://www.waclighting.com/products/x",
+    );
+  });
+
+  it("maps WAC Architectural to its own site, not the waclighting default", () => {
+    expect(brandSite("WAC Architectural")).toBe("https://www.wacarchitectural.com");
+    expect(brandSite("wac architectural")).toBe("https://www.wacarchitectural.com");
+    // PDPs there are /na/product-detail/{numericId} — no slug route exists,
+    // so the best-guess canonical is the brand site itself.
+    expect(canonicalUrlFor("WAC Architectural", "some-product")).toBe(
+      "https://www.wacarchitectural.com",
     );
   });
 });
