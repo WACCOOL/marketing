@@ -35,6 +35,10 @@ describe("publicSystem copy-lint", () => {
     expect(text).toMatch(/verify/i);
   });
 
+  it("forbids raising budget or pricing on the public surface", () => {
+    expect(text).toMatch(/never ask about or bring up budget/i);
+  });
+
   it("puts the cache breakpoint on the last block only", () => {
     const blocks = publicSystem();
     const cached = blocks.filter((b) => b.cache_control);
