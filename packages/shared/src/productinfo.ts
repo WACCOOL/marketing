@@ -121,10 +121,17 @@ export const BRAND_SITES: Record<string, string> = {
   wac: "https://www.waclighting.com",
   "wac lighting": "https://www.waclighting.com",
   "wac landscape": "https://www.waclighting.com",
+  "wac architectural": "https://www.wacarchitectural.com", // apex 301s to www
   "modern forms": "https://modernforms.com",
   schonbek: "https://schonbek.com",
 };
 const DEFAULT_BRAND_SITE = "https://www.waclighting.com";
+
+/** Brands whose PDPs are not slug-addressable. wacarchitectural.com serves
+ * product pages at /na/product-detail/{numericId} — the id can't be derived
+ * from the product name, so the brand site itself is the best pre-approval
+ * guess (editors paste the real PDP URL before approving). */
+const NO_SLUG_PDP_BRANDS = new Set(["wac architectural"]);
 
 export function brandSite(brand: string | null | undefined): string {
   return BRAND_SITES[(brand ?? "").trim().toLowerCase()] ?? DEFAULT_BRAND_SITE;
@@ -134,7 +141,9 @@ export function canonicalUrlFor(
   brand: string | null | undefined,
   slug: string,
 ): string {
-  return `${brandSite(brand)}/products/${slug}`;
+  const site = brandSite(brand);
+  if (NO_SLUG_PDP_BRANDS.has((brand ?? "").trim().toLowerCase())) return site;
+  return `${site}/products/${slug}`;
 }
 
 // ---------------------------------------------------------------------------
