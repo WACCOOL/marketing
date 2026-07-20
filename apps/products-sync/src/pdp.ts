@@ -1,10 +1,30 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { deriveModelCodes } from "@wac/shared";
+import {
+  DOMAIN,
+  MODERN_FORMS_SPEC_TEMPLATES,
+  SCRAPEABLE,
+  canonicalBrand,
+  canonicalPdpUrl,
+  deriveModelCodes,
+  extractSpecSheet,
+  firstSlugFromHtml,
+  modernFormsPpid,
+  modernFormsSpecUrl,
+  schonbekSpecSheet,
+  type PdpProduct,
+} from "@wac/shared";
+
+export type { PdpProduct };
 
 /**
  * PDP URL resolver — replicates WIES Studio's method (wies-app/scripts/
  * pdp-resolver.mjs + src/lib/pdp.ts), self-contained so the Marketing App owns
  * its product URLs and stays current if WIES changes.
+ *
+ * The pure brand-site vocabulary (brand normalization, domains, slug grammar,
+ * per-brand spec-sheet URL derivations) lives in `@wac/shared` pdp/taxonomy so
+ * the Thom web-crawl reconciliation shares it — this file keeps the NETWORK
+ * side: `?s=` search, PDP fetches, Modern Forms template probing, cache policy.
  *
  * Method: each WAC Group brand site exposes `?s=<query>` search that resolves
  * to the canonical product page `/<brand>/product/<slug>/`. For a product we
@@ -25,105 +45,10 @@ const PARALLELISM = 8;
 const FETCH_TIMEOUT_MS = 12_000;
 const USER_AGENT = "WAC-Marketing-App/1.0 (+product-url sync; nightly; contact WAC IT)";
 
-// Raw Sales Layer brand code -> canonical brand (from WIES BRAND_NORMALIZATION).
-const BRAND_NORMALIZATION: Record<string, string> = {
-  WAC: "WAC Lighting",
-  AISPIRE: "AiSpire",
-  SIGNATURE: "Schonbek",
-  MOF: "Modern Forms",
-  DWEL: "WAC Lighting",
-  LIM: "WAC Lighting",
-  LANDSCAPE: "WAC Lighting",
-  BEYOND: "Schonbek",
-  VENTRIX: "WAC Lighting",
-  MFF: "Modern Forms",
-  FAN: "WAC Lighting",
-  HOME: "WAC Lighting",
-  FOREVER: "Schonbek",
-  COLORSCAPING: "WAC Lighting",
-};
-
-const DOMAIN: Record<string, string> = {
-  "WAC Lighting": "waclighting.com",
-  "Modern Forms": "modernforms.com",
-  AiSpire: "aispire.com",
-  Schonbek: "schonbek.com",
-};
-
-// Brands whose sites we scrape for a canonical slug. Schonbek is search-only
-// (matches WIES brandResolverConfig).
-const SCRAPEABLE = new Set(["WAC Lighting", "Modern Forms", "AiSpire"]);
-
-const SLUG_RE = /\/product\/([a-z0-9][a-z0-9-]*)\//gi;
-const SKIP_SLUGS = new Set([
-  "all", "products", "search", "category", "blog", "support", "yoast-seo-wordpress",
-]);
-
 // Also resolve the spec-sheet URL (one extra PDP fetch per scraped product).
 // Dark until migration 0045 adds pdp_urls.spec_sheet_url; enable with
 // PDP_SPEC_SHEETS=1 once it's applied. Off => behaves exactly as before.
 const SPEC_SHEETS_ON = process.env.PDP_SPEC_SHEETS === "1";
-
-// Schonbek is search-only (no PDP scrape), so its spec sheet comes from a
-// per-sub-brand PHP template keyed on PPID. Mirrors WIES's
-// SPEC_SHEET_FALLBACK_TEMPLATES.Schonbek (SCHONBEK_SUB_BRAND_SLUGS).
-const SCHONBEK_SUB_BRAND_SLUGS: Record<string, string> = {
-  SIGNATURE: "signatureld",
-  BEYOND: "led-beyond1",
-  FOREVER: "forever",
-};
-
-/**
- * Extract the spec-sheet URL a scrapeable brand's PDP actually links to
- * (WIES tier 2). WAC embeds a WordPress dispatcher `?download=specsN`; AiSpire
- * links a direct S3 `_SPSHT.pdf`, falling back to the install sheet (many
- * AiSpire accessories ship only the latter). Modern Forms is resolved
- * separately (resolveModernFormsSpecSheet) because its template index has to be
- * probed live.
- */
-export function extractSpecSheet(
-  brand: string,
-  html: string | null,
-  slug: string | null,
-): string | null {
-  if (!html) return null;
-  if (brand === "WAC Lighting") {
-    const m = html.match(/\?download=specs[a-z0-9]+/i);
-    return m && slug ? `https://waclighting.com/product/${slug}/${m[0]}` : null;
-  }
-  if (brand === "AiSpire") {
-    const spec = html.match(/https:\/\/aispire\.s3[^"']+_SPSHT\.pdf/i);
-    if (spec) return spec[0];
-    const inst = html.match(/https:\/\/aispire\.s3[^"']+_INSSHT\.pdf/i);
-    return inst ? inst[0] : null;
-  }
-  return null;
-}
-
-/**
- * Modern Forms serves spec sheets from a dynamic endpoint keyed on the PDP's
- * `data-ppid` plus a template index (`download=specsN`). The template number
- * varies by product and is NOT present in the PDP HTML. The endpoint returns
- * HTTP 200 for ANY index, but only the correct one is a real PDF — a wrong
- * index returns an empty `text/html` body. So we HEAD-probe the candidates and
- * keep the first that answers `application/pdf`. specs5 is by far the most
- * common (~96%), so it is tried first for a one-request fast path; the rest
- * cover the tail that the previous hardcoded-specs5 URL silently turned into an
- * empty download (which then failed Thom's docs-ingest with no error surfaced).
- */
-export const MODERN_FORMS_SPEC_TEMPLATES = [5, 1, 2, 3, 4, 6, 7, 8];
-
-/** Extract the Modern Forms PPID from a PDP's `data-ppid` attribute. */
-export function modernFormsPpid(html: string | null): string | null {
-  if (!html) return null;
-  const m = html.match(/data-ppid="(\d+)"/);
-  return m ? m[1]! : null;
-}
-
-/** Build the Modern Forms dynamic-specsheet URL for a PPID + template index. */
-export function modernFormsSpecUrl(ppid: string, template: number): string {
-  return `https://modernforms.com/dynamic-specsheet/?download=specs${template}&ppid=${ppid}`;
-}
 
 /** HEAD a URL and report whether it actually responds as a PDF. */
 async function headIsPdf(url: string): Promise<boolean> {
@@ -145,8 +70,10 @@ async function headIsPdf(url: string): Promise<boolean> {
 
 /**
  * Resolve the real Modern Forms spec-sheet URL for a PDP by probing the
- * template candidates (specs5 first). Returns null when the PDP carries no PPID
- * or no template yields a PDF.
+ * template candidates (specs5 first — see MODERN_FORMS_SPEC_TEMPLATES). The
+ * endpoint returns HTTP 200 for ANY index, but only the correct one is a real
+ * PDF — a wrong index returns an empty `text/html` body. Returns null when the
+ * PDP carries no PPID or no template yields a PDF.
  */
 export async function resolveModernFormsSpecSheet(html: string | null): Promise<string | null> {
   const ppid = modernFormsPpid(html);
@@ -158,35 +85,10 @@ export async function resolveModernFormsSpecSheet(html: string | null): Promise<
   return null;
 }
 
-/** Schonbek spec-sheet URL from its per-sub-brand PHP template (WIES tier 3).
- *  `rawBrand` is the un-normalized Sales Layer code (SIGNATURE/BEYOND/FOREVER). */
-export function schonbekSpecSheet(
-  rawBrand: string | null | undefined,
-  ppid: string,
-): string | null {
-  const sub = rawBrand ? SCHONBEK_SUB_BRAND_SLUGS[rawBrand.trim().toUpperCase()] : undefined;
-  return sub ? `https://schonbek.com/downloads/specsheet/${sub}.php?ppid=${ppid}` : null;
-}
-
-export function canonicalBrand(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const up = raw.trim().toUpperCase();
-  return BRAND_NORMALIZATION[up] ?? null;
-}
-
 /** A query is usable if it carries a letter (purely-numeric family codes like
  *  "1322" are PIM placeholders that match unrelated SKUs) and is long enough. */
 function isUsableQuery(q: string | null | undefined): q is string {
   return !!q && q.trim().length >= 3 && /[a-z]/i.test(q);
-}
-
-/** Canonical PDP URL when a slug resolved, else null. We no longer store a
- *  `?s=<query>` search fallback — those searches key on internal numeric SKUs
- *  that brand sites don't index, so they're dead links. A null url tells the
- *  caller to keep its own (image) fallback. */
-function buildUrl(brand: string, slug: string | null): string | null {
-  if (slug) return `https://${DOMAIN[brand]}/product/${slug}/`;
-  return null;
 }
 
 async function fetchText(url: string): Promise<string | null> {
@@ -201,17 +103,6 @@ async function fetchText(url: string): Promise<string | null> {
   } finally {
     clearTimeout(timer);
   }
-}
-
-function firstSlugFromHtml(html: string | null): string | null {
-  if (!html) return null;
-  SLUG_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = SLUG_RE.exec(html)) != null) {
-    const slug = m[1]!.toLowerCase();
-    if (!SKIP_SLUGS.has(slug)) return slug;
-  }
-  return null;
 }
 
 /** Search the brand site for each query until one yields a slug. */
@@ -235,19 +126,6 @@ async function mapWithConcurrency<T>(inputs: T[], concurrency: number, fn: (x: T
     }
   }
   await Promise.all(Array.from({ length: concurrency }, worker));
-}
-
-export interface PdpProduct {
-  sku: string; // PPID
-  brand: string | null;
-  family: string | null;
-  name: string | null;
-  variants: { sku: string | null }[] | null;
-  // Asset URLs — the real brand-site-indexed model code lives in these filenames
-  // (see deriveModelCodes). Optional so callers that don't select them still fit.
-  primary_image_url?: string | null;
-  image_urls?: (string | null)[] | null;
-  ies_url?: string | null;
 }
 
 /** Case-insensitive de-dupe, preserving first occurrence. */
@@ -336,7 +214,7 @@ export async function resolvePdpUrls(
   let specs = 0;
   await mapWithConcurrency(toScrape, PARALLELISM, async ({ p, brand, queries }) => {
     const slug = SCRAPEABLE.has(brand) && queries.length ? await resolveSlug(brand, queries) : null;
-    const url = buildUrl(brand, slug);
+    const url = canonicalPdpUrl(brand, slug);
     if (slug) scraped++;
     // Only expose a real URL; a null (unresolved) row lets the caller keep its
     // image fallback. The null row is still cached below (fresh resolved_at) so
