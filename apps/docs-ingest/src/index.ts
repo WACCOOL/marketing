@@ -15,6 +15,7 @@ import { htmlToText } from "./html.js";
 import { enabledSites } from "./crawl/sites.js";
 import { webStoreFromEnv, type WebStore } from "./crawl/store.js";
 import { crawlSite, extractWebDocText } from "./crawl/stepW.js";
+import { reconcilePdp } from "./crawl/reconcilePdp.js";
 import { redactTicketText } from "./redact.js";
 import {
   ZendeskReader,
@@ -118,6 +119,10 @@ interface Args {
   harvestPdp: boolean;
   /** Ingest opt-in content types (wacarchitectural project case studies). */
   includeOptIn: boolean;
+  /** Run the PDP reconciliation pass (plan E) over crawl_frontier evidence.
+   *  Report-only unless --reconcile-write is ALSO passed (gap-only heals). */
+  reconcilePdp: boolean;
+  reconcileWrite: boolean;
   /** Requeue previously status='failed' rows to pending_extract before Step B,
    *  so a re-run retries them (e.g. after a burst of transient upstream 502s). */
   retryFailed: boolean;
@@ -133,6 +138,8 @@ function parseArgs(argv: string[]): Args {
     crawlLimit: null,
     harvestPdp: false,
     includeOptIn: false,
+    reconcilePdp: false,
+    reconcileWrite: false,
     retryFailed: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -143,6 +150,8 @@ function parseArgs(argv: string[]): Args {
     else if (argv[i] === "--skip-crawl") a.skipCrawl = true;
     else if (argv[i] === "--harvest-pdp") a.harvestPdp = true;
     else if (argv[i] === "--include-optin") a.includeOptIn = true;
+    else if (argv[i] === "--reconcile-pdp") a.reconcilePdp = true;
+    else if (argv[i] === "--reconcile-write") a.reconcileWrite = true;
     else if (argv[i] === "--retry-failed") a.retryFailed = true;
     else if (argv[i] === "--limit") a.limit = Number(argv[++i]);
     else if (argv[i] === "--crawl-limit") a.crawlLimit = Number(argv[++i]);
@@ -714,6 +723,11 @@ async function main(): Promise<void> {
         );
       }
     }
+  }
+  // Step E — PDP reconciliation over the crawl's evidence (plan E). Report-only
+  // unless --reconcile-write; wacarchitectural is excluded from writes either way.
+  if (args.reconcilePdp) {
+    await reconcilePdp(sb, { write: args.reconcileWrite && !args.dryRun });
   }
   // --retry-failed: requeue prior failures (e.g. transient upstream 502s) so
   // Step B picks them up again. Permanently-bad ones (empty/non-PDF) just

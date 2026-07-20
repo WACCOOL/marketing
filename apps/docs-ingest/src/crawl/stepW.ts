@@ -341,9 +341,16 @@ export async function crawlSite(
       }
     }
 
-    // Evidence lands on the frontier row regardless of kind.
+    // Evidence lands on the frontier row regardless of kind. The Modern Forms
+    // data-ppid and the Schonbek title parse (family + export PPID like 1302E)
+    // fold into model_codes so the reconciler sees ONE evidence vocabulary;
+    // the Schonbek family name doubles as a family-resolution hint.
+    const evidenceCodes = new Set(page.evidence.modelCodes);
+    if (page.evidence.ppid) evidenceCodes.add(page.evidence.ppid);
+    if (page.evidence.schonbek?.ppid) evidenceCodes.add(page.evidence.schonbek.ppid);
+    if (page.evidence.schonbek?.family) evidenceCodes.add(page.evidence.schonbek.family.toUpperCase());
     const evidence: Partial<FrontierRow> = {
-      model_codes: page.evidence.modelCodes.length ? page.evidence.modelCodes : null,
+      model_codes: evidenceCodes.size ? [...evidenceCodes] : null,
       discovered_spec_sheet_url: page.evidence.specSheetUrl,
       published_at: page.publishedAt,
     };
