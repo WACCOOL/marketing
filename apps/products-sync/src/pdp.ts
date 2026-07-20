@@ -75,10 +75,11 @@ const SCHONBEK_SUB_BRAND_SLUGS: Record<string, string> = {
 
 /**
  * Extract the spec-sheet URL a scrapeable brand's PDP actually links to
- * (WIES tier 2). WAC embeds a WordPress dispatcher `?download=specsN`; Modern
- * Forms embeds `data-ppid` for its dynamic-specsheet template (5 covers ~96%,
- * HEAD-verified at ingest); AiSpire links a direct S3 `_SPSHT.pdf`, falling
- * back to the install sheet (many AiSpire accessories ship only the latter).
+ * (WIES tier 2). WAC embeds a WordPress dispatcher `?download=specsN`; AiSpire
+ * links a direct S3 `_SPSHT.pdf`, falling back to the install sheet (many
+ * AiSpire accessories ship only the latter). Modern Forms is resolved
+ * separately (resolveModernFormsSpecSheet) because its template index has to be
+ * probed live.
  */
 export function extractSpecSheet(
   brand: string,
@@ -90,15 +91,69 @@ export function extractSpecSheet(
     const m = html.match(/\?download=specs[a-z0-9]+/i);
     return m && slug ? `https://waclighting.com/product/${slug}/${m[0]}` : null;
   }
-  if (brand === "Modern Forms") {
-    const m = html.match(/data-ppid="(\d+)"/);
-    return m ? `https://modernforms.com/dynamic-specsheet/?download=specs5&ppid=${m[1]}` : null;
-  }
   if (brand === "AiSpire") {
     const spec = html.match(/https:\/\/aispire\.s3[^"']+_SPSHT\.pdf/i);
     if (spec) return spec[0];
     const inst = html.match(/https:\/\/aispire\.s3[^"']+_INSSHT\.pdf/i);
     return inst ? inst[0] : null;
+  }
+  return null;
+}
+
+/**
+ * Modern Forms serves spec sheets from a dynamic endpoint keyed on the PDP's
+ * `data-ppid` plus a template index (`download=specsN`). The template number
+ * varies by product and is NOT present in the PDP HTML. The endpoint returns
+ * HTTP 200 for ANY index, but only the correct one is a real PDF — a wrong
+ * index returns an empty `text/html` body. So we HEAD-probe the candidates and
+ * keep the first that answers `application/pdf`. specs5 is by far the most
+ * common (~96%), so it is tried first for a one-request fast path; the rest
+ * cover the tail that the previous hardcoded-specs5 URL silently turned into an
+ * empty download (which then failed Thom's docs-ingest with no error surfaced).
+ */
+export const MODERN_FORMS_SPEC_TEMPLATES = [5, 1, 2, 3, 4, 6, 7, 8];
+
+/** Extract the Modern Forms PPID from a PDP's `data-ppid` attribute. */
+export function modernFormsPpid(html: string | null): string | null {
+  if (!html) return null;
+  const m = html.match(/data-ppid="(\d+)"/);
+  return m ? m[1]! : null;
+}
+
+/** Build the Modern Forms dynamic-specsheet URL for a PPID + template index. */
+export function modernFormsSpecUrl(ppid: string, template: number): string {
+  return `https://modernforms.com/dynamic-specsheet/?download=specs${template}&ppid=${ppid}`;
+}
+
+/** HEAD a URL and report whether it actually responds as a PDF. */
+async function headIsPdf(url: string): Promise<boolean> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch(url, {
+      method: "HEAD",
+      signal: ctl.signal,
+      headers: { "user-agent": USER_AGENT, accept: "application/pdf,*/*" },
+    });
+    return r.ok && (r.headers.get("content-type") ?? "").toLowerCase().includes("application/pdf");
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Resolve the real Modern Forms spec-sheet URL for a PDP by probing the
+ * template candidates (specs5 first). Returns null when the PDP carries no PPID
+ * or no template yields a PDF.
+ */
+export async function resolveModernFormsSpecSheet(html: string | null): Promise<string | null> {
+  const ppid = modernFormsPpid(html);
+  if (!ppid) return null;
+  for (const t of MODERN_FORMS_SPEC_TEMPLATES) {
+    const url = modernFormsSpecUrl(ppid, t);
+    if (await headIsPdf(url)) return url;
   }
   return null;
 }
@@ -296,7 +351,10 @@ export async function resolvePdpUrls(
         specUrl = schonbekSpecSheet(p.brand, p.sku);
       } else if (slug) {
         const pdpHtml = await fetchText(`https://${DOMAIN[brand]}/product/${slug}/`);
-        specUrl = extractSpecSheet(brand, pdpHtml, slug);
+        specUrl =
+          brand === "Modern Forms"
+            ? await resolveModernFormsSpecSheet(pdpHtml)
+            : extractSpecSheet(brand, pdpHtml, slug);
       }
       row.spec_sheet_url = specUrl;
       if (specUrl) specs++;
@@ -328,7 +386,10 @@ export async function resolvePdpUrls(
         specUrl = schonbekSpecSheet(p.brand, p.sku);
       } else if (cached.slug) {
         const html = await fetchText(`https://${DOMAIN[brand]}/product/${cached.slug}/`);
-        specUrl = extractSpecSheet(brand, html, cached.slug);
+        specUrl =
+          brand === "Modern Forms"
+            ? await resolveModernFormsSpecSheet(html)
+            : extractSpecSheet(brand, html, cached.slug);
       }
       if (specUrl) filled++;
       updates.push({ ...cached, spec_sheet_url: specUrl ?? "" });
