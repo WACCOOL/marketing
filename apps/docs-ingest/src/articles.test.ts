@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolveKbDocStatus } from "@wac/shared";
 import {
   articleContentHash,
   articleScope,
@@ -97,9 +98,9 @@ describe("articleContentHash", () => {
 });
 
 describe("buildArticleDocPayload", () => {
-  it("keys the row and OMITS status (so upsert defaults/keeps it)", () => {
+  it("keys the row and carries the resolved status explicitly", () => {
     const a = makeArticle();
-    const payload = buildArticleDocPayload(a, "WAC Lighting", "hash123");
+    const payload = buildArticleDocPayload(a, "WAC Lighting", "hash123", "pending_extract");
     expect(payload).toMatchObject({
       source_system: "zendesk",
       external_id: "123",
@@ -109,13 +110,41 @@ describe("buildArticleDocPayload", () => {
       title: "How to pair your fan",
       url: a.html_url,
       content_hash: "hash123",
+      status: "pending_extract",
     });
-    expect("status" in payload).toBe(false);
   });
 
   it("carries internal scope through", () => {
-    const payload = buildArticleDocPayload(makeArticle({ user_segment_id: 7 }), null, "h");
+    const payload = buildArticleDocPayload(makeArticle({ user_segment_id: 7 }), null, "h", "active");
     expect(payload.scope).toBe("internal");
     expect(payload.brand).toBeNull();
+  });
+
+  it("requeues an EDITED article (changed content_hash) to pending_extract", () => {
+    // Article previously captured + extracted (status 'active'), then edited in
+    // the Help Center: the new hash must put it back on Step B's queue — the
+    // old omit-status upsert left it 'active' and it was never re-embedded.
+    const before = makeArticle({ body: "<p>old steps</p>" });
+    const after = makeArticle({ body: "<p>new steps</p>", updated_at: "2026-07-19T00:00:00Z" });
+    const existing = { content_hash: articleContentHash(before), status: "active" };
+    const status = resolveKbDocStatus(existing, articleContentHash(after));
+    expect(status).toBe("pending_extract");
+    expect(buildArticleDocPayload(after, null, articleContentHash(after), status).status).toBe(
+      "pending_extract",
+    );
+  });
+
+  it("keeps an UNCHANGED article on its current status (no needless re-extract)", () => {
+    const a = makeArticle();
+    const hash = articleContentHash(a);
+    expect(resolveKbDocStatus({ content_hash: hash, status: "active" }, hash)).toBe("active");
+  });
+
+  it("requeues a re-published (previously superseded) article", () => {
+    const a = makeArticle();
+    const hash = articleContentHash(a);
+    expect(resolveKbDocStatus({ content_hash: hash, status: "superseded" }, hash)).toBe(
+      "pending_extract",
+    );
   });
 });
