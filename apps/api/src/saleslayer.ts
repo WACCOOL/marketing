@@ -396,6 +396,21 @@ export function makeProductAdapter(env: Env): ProductAdapter {
       // an empty catalog — bail without wiping the cache.
       if (rows.length === 0) return { upserted: 0, pruned: 0, variants: 0, docs: 0 };
 
+      // Products present but ZERO variants across the whole catalog is never a
+      // real state (the entire app is variant/SKU-driven) — it means the Sales
+      // Layer connector is mid-regeneration (e.g. just after a schema edit) and
+      // has served its products table before the variants table repopulated.
+      // Upserting now would fold `variants: []` into every product and wipe the
+      // SKU-level catalog (breaking products-sync and Thom). Bail without
+      // touching the cache; the next cron re-pulls once regeneration completes.
+      if (variantCount === 0) {
+        console.warn(
+          `[products] ABORT: feed returned ${rows.length} products but 0 variants ` +
+            `(connector likely mid-regeneration) — skipping upsert/prune to protect the cache`,
+        );
+        return { upserted: 0, pruned: 0, variants: 0, docs: 0 };
+      }
+
       const brandCount = rows.filter((r) => r.brand).length;
       console.log(
         `[products] brand field: ${
