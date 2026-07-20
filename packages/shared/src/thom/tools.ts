@@ -1,5 +1,6 @@
 import type { ClaudeTool } from "./transport.js";
 import type { ThomSurface } from "./env.js";
+import { authorityWeightFor, detectDocsQueryIntent } from "./authority.js";
 import { embedQuery } from "./embed.js";
 import { layoutDispatch } from "./layoutTool.js";
 import { photometricsDispatch } from "./photometricsTools.js";
@@ -222,6 +223,14 @@ async function searchDocs(
   // AND doc_types WITHOUT zendesk_ticket, so internal support-ticket resolutions
   // are never retrievable on the public surface.
   const isPublic = surface === "public";
+  // Intent-gated authority (plan D.2): product/SKU-shaped queries ALWAYS pass
+  // weight 0; company/ambiguous queries pass the default λ only when the
+  // THOM_AUTHORITY env gate is on. With the gate off this is 0 everywhere and
+  // kb_search ordering is identical to pre-0054.
+  const authorityWeight = authorityWeightFor(
+    detectDocsQueryIntent(query),
+    ctx.env.THOM_AUTHORITY === "1",
+  );
   const { data, error } = await ctx.sb.rpc("kb_search", {
     query_embedding: embedding,
     query_text: query,
@@ -231,6 +240,7 @@ async function searchDocs(
       : ["spec_sheet", "manual", "marketing", "zendesk_article", "zendesk_ticket", ...WEB_DOC_TYPES],
     brand_filter: str(input.brand),
     match_count: 8,
+    authority_weight: authorityWeight,
   });
   if (error) return { content: `search_docs error: ${error.message}`, cards: [], citations: [] };
   const rows = (data ?? []) as {

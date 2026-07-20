@@ -1,0 +1,76 @@
+name: Site Crawl
+
+# Thom Bot website crawl (Step W + Step B): discover + capture WAC Group site
+# pages into kb_documents (source_system='web_crawl'), then chunk + embed the
+# pending ones. Weekly — brand sites change slowly, and unchanged pages are
+# skipped by lastmod/conditional-GET/content_hash anyway. Resumable like the
+# daily docs-ingest: row status is the checkpoint. Separate concurrency group
+# from docs-ingest so the daily PDF pass and the weekly crawl never overlap
+# themselves, only queue.
+#
+# Dark by default: the THOM_CRAWL_SITES repo variable controls the roster
+# ("wacgroup" for the pilot → "wacgroup,waclighting,..." → "all"). Unset = the
+# crawl step no-ops and this workflow only extracts already-pending docs.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC (quiet window for the brand sites)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (discover + count, no writes)"
+        type: boolean
+        default: false
+      sites:
+        description: "Override site roster (comma keys or 'all'; blank = THOM_CRAWL_SITES variable)"
+        type: string
+        default: ""
+      crawl_limit:
+        description: "Max page fetches per site (blank = unlimited)"
+        type: string
+        default: ""
+      harvest_pdp:
+        description: "Fetch WordPress-brand PDPs for reconciliation evidence"
+        type: boolean
+        default: false
+
+concurrency:
+  group: site-crawl
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build docs-ingest
+        run: pnpm --filter @wac/docs-ingest build
+      - name: Crawl + extract
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_AI_TOKEN: ${{ secrets.CF_AI_TOKEN }}
+          # Crawl gate + roster (vars, not secrets — non-sensitive toggles).
+          THOM_WEB_CRAWL: "1"
+          THOM_CRAWL_SITES: ${{ inputs.sites || vars.THOM_CRAWL_SITES || '' }}
+          # R2 page cache (optional; Step B refetches live when unset).
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        # Steps A/A2/C belong to the daily docs-ingest run — skip them here so
+        # the weekly crawl only does Step W + Step B.
+        run: >-
+          pnpm --filter @wac/docs-ingest ingest --
+          --skip-pdp --skip-products --skip-zendesk
+          ${{ inputs.dry_run && '--dry-run' || '' }}
+          ${{ inputs.harvest_pdp && '--harvest-pdp' || '' }}
+          ${{ inputs.crawl_limit && format('--crawl-limit {0}', inputs.crawl_limit) || '' }}
