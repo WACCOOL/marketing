@@ -52,6 +52,7 @@ const PIM_PROPS: { name: string; label: string; fieldType: "text" | "textarea" }
   { name: "image_url", label: "Image URL", fieldType: "text" },
   { name: "ies_url", label: "IES File URL", fieldType: "text" },
   { name: "product_url", label: "Product URL", fieldType: "text" },
+  { name: "availability_label", label: "Availability Label", fieldType: "text" },
 ];
 
 interface Variant {
@@ -68,6 +69,10 @@ interface Variant {
   ies_url: string | null;
   image_urls: string[] | null;
   dimensions_mm: { width?: number; height?: number; length?: number; diameter?: number } | null;
+  /** Availability label ("Retired" / "Limited Availability, Consult Factory"),
+   * stamped at ingest from the zusage/plant-status rules ("" / absent = none).
+   * Hidden (zusage N/P) variants are dropped upstream and never reach here. */
+  availability_label?: string | null;
 }
 interface Product {
   sku: string;
@@ -196,6 +201,7 @@ function buildProps(p: Product, v: Variant, prices: PriceMap): Record<string, st
   // thumbnail shown in the UI (the custom image_url does not).
   set("hs_images", image);
   set("ies_url", s(v.ies_url) ?? s(p.ies_url));
+  set("availability_label", s(v.availability_label));
   // Product URL: the Sales Layer feed carries no product-page URL, so per spec
   // fall back to the product image (a variant-specific page URL would take
   // precedence here if the feed provided one). Use the variant image only if
