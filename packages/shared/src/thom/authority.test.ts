@@ -4,6 +4,8 @@ import {
   AUTHORITY_TIERS,
   AUTHORITY_WEIGHT_DEFAULT,
   authorityBias,
+  authorityWeightFor,
+  detectDocsQueryIntent,
   rankedScore,
 } from "./authority.js";
 
@@ -79,5 +81,36 @@ describe("authorityBias — the launch-gate invariants", () => {
     expect(t.marketingBaseline).toBeGreaterThan(t.news);
     expect(t.news).toBeGreaterThan(t.webProduct);
     expect(t.webProduct).toBeGreaterThan(t.resourceNav);
+  });
+});
+
+describe("detectDocsQueryIntent + authorityWeightFor (D.2 intent gating)", () => {
+  it("SKU/model-code-shaped queries are product intent", () => {
+    expect(detectDocsQueryIntent("FR-W1801 warranty")).toBe("product");
+    expect(detectDocsQueryIntent("cutout size for A2RU-447-27")).toBe("product");
+    expect(detectDocsQueryIntent("spec sheet for 1302E")).toBe("product");
+    expect(detectDocsQueryIntent("dimming for ppid 4324")).toBe("product");
+  });
+
+  it("company/capability-shaped queries are company intent", () => {
+    expect(detectDocsQueryIntent("who is WAC Group")).toBe("company");
+    expect(detectDocsQueryIntent("tell me about your manufacturing capabilities")).toBe("company");
+    expect(detectDocsQueryIntent("sustainability commitments")).toBe("company");
+  });
+
+  it("everything else is ambiguous", () => {
+    expect(detectDocsQueryIntent("how do I clean crystal")).toBe("ambiguous");
+  });
+
+  it("gate off ⇒ weight 0 for EVERY intent (pre-0054 ordering preserved)", () => {
+    expect(authorityWeightFor("product", false)).toBe(0);
+    expect(authorityWeightFor("company", false)).toBe(0);
+    expect(authorityWeightFor("ambiguous", false)).toBe(0);
+  });
+
+  it("gate on ⇒ product stays 0; company/ambiguous get the default λ", () => {
+    expect(authorityWeightFor("product", true)).toBe(0);
+    expect(authorityWeightFor("company", true)).toBe(AUTHORITY_WEIGHT_DEFAULT);
+    expect(authorityWeightFor("ambiguous", true)).toBe(AUTHORITY_WEIGHT_DEFAULT);
   });
 });

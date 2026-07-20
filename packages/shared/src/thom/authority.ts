@@ -52,6 +52,37 @@ export function authorityBias(
   return weight * Math.max(authority - 1.0, -0.3);
 }
 
+/**
+ * Query-shape detection for intent gating (plan D.2). Deliberately cheap and
+ * conservative:
+ *  - 'product': the query contains a SKU/model-code-shaped token (FR-W1801,
+ *    A2RU-447-27, 5401E) — authority must be OFF (λ=0) so corporate pages can
+ *    never outrank the best technical answer;
+ *  - 'company': company/capability-shaped wording — brand-hierarchy queries
+ *    where the WAC Group corporate page should win a near-tie;
+ *  - 'ambiguous': everything else (λ still applies, but band + cap keep it a
+ *    tiebreak).
+ */
+export type DocsQueryIntent = "product" | "company" | "ambiguous";
+
+const SKU_TOKEN_RE = /\b[A-Za-z][A-Za-z0-9]{0,5}-[A-Za-z0-9][A-Za-z0-9-]{2,}\b|\b\d{3,6}E?\b/;
+const COMPANY_RE =
+  /\b(who is|about|company|companies|capabilit\w*|sustainab\w*|responsib\w*|history|founded|headquarters|manufactur\w*|brands?|wac group|technolog\w*|light\s*(&|and)\s*health)\b/i;
+
+export function detectDocsQueryIntent(query: string): DocsQueryIntent {
+  const q = query.trim();
+  if (SKU_TOKEN_RE.test(q)) return "product";
+  if (COMPANY_RE.test(q)) return "company";
+  return "ambiguous";
+}
+
+/** The authority_weight search_docs should pass for a query, honoring the
+ *  enable flag (off ⇒ always 0 ⇒ kb_search ordering identical to pre-0054). */
+export function authorityWeightFor(intent: DocsQueryIntent, enabled: boolean): number {
+  if (!enabled) return 0;
+  return intent === "product" ? 0 : AUTHORITY_WEIGHT_DEFAULT;
+}
+
 /** Final ranking score under the 0054 model. */
 export function rankedScore(
   fusedScore: number,

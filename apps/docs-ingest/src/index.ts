@@ -12,6 +12,9 @@ import {
 import { embed, toVectorLiteral, type CfCreds } from "./embed.js";
 import { extractPdf, type ClaudeCfg } from "./extract.js";
 import { htmlToText } from "./html.js";
+import { enabledSites } from "./crawl/sites.js";
+import { webStoreFromEnv, type WebStore } from "./crawl/store.js";
+import { crawlSite, extractWebDocText } from "./crawl/stepW.js";
 import { redactTicketText } from "./redact.js";
 import {
   ZendeskReader,
@@ -106,7 +109,15 @@ interface Args {
   skipPdp: boolean;
   skipProducts: boolean;
   skipZendesk: boolean;
+  skipCrawl: boolean;
   limit: number | null;
+  /** Max page FETCHES per site in Step W (discovery is unlimited). */
+  crawlLimit: number | null;
+  /** Fetch WordPress-brand PDPs for reconciliation evidence (wacarchitectural
+   *  PDPs are always fetched — they are ingested content there). */
+  harvestPdp: boolean;
+  /** Ingest opt-in content types (wacarchitectural project case studies). */
+  includeOptIn: boolean;
   /** Requeue previously status='failed' rows to pending_extract before Step B,
    *  so a re-run retries them (e.g. after a burst of transient upstream 502s). */
   retryFailed: boolean;
@@ -117,7 +128,11 @@ function parseArgs(argv: string[]): Args {
     skipPdp: false,
     skipProducts: false,
     skipZendesk: false,
+    skipCrawl: false,
     limit: null,
+    crawlLimit: null,
+    harvestPdp: false,
+    includeOptIn: false,
     retryFailed: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -125,8 +140,12 @@ function parseArgs(argv: string[]): Args {
     else if (argv[i] === "--skip-pdp") a.skipPdp = true;
     else if (argv[i] === "--skip-products") a.skipProducts = true;
     else if (argv[i] === "--skip-zendesk") a.skipZendesk = true;
+    else if (argv[i] === "--skip-crawl") a.skipCrawl = true;
+    else if (argv[i] === "--harvest-pdp") a.harvestPdp = true;
+    else if (argv[i] === "--include-optin") a.includeOptIn = true;
     else if (argv[i] === "--retry-failed") a.retryFailed = true;
     else if (argv[i] === "--limit") a.limit = Number(argv[++i]);
+    else if (argv[i] === "--crawl-limit") a.crawlLimit = Number(argv[++i]);
   }
   return a;
 }
@@ -398,6 +417,7 @@ interface PendingDoc {
   brand: string | null;
   source_system: string;
   external_id: string;
+  r2_key: string | null;
 }
 
 function isPdf(bytes: Uint8Array): boolean {
@@ -462,6 +482,7 @@ async function processDoc(
   cf: CfCreds,
   claude: ClaudeCfg | null,
   zd: ZendeskReader | null,
+  web: WebStore | null,
   counts: Counts,
 ): Promise<void> {
   const fail = async (msg: string): Promise<void> => {
@@ -507,6 +528,15 @@ async function processDoc(
       if (!zd) return await fail("zendesk reader not configured");
       text = await extractTicketText(zd, doc.external_id);
       method = "zendesk_ticket";
+    } else if (doc.source_system === "web_crawl") {
+      // Crawled web page: Step W stored the ready chunkable text in R2; fall
+      // back to refetch + re-extract when the object (or R2 itself) is absent.
+      let t: string | null = null;
+      if (web && doc.r2_key) t = await web.getText(doc.r2_key);
+      if (!t) t = await extractWebDocText(doc.url ?? doc.external_id, doc.brand ?? "");
+      if (!t) return await fail("web page unavailable (js_shell/soft404/fetch)");
+      text = t;
+      method = "web_crawl";
     } else {
       if (!doc.url) return await fail("no url");
       const bytes = await fetchPdf(doc.url);
@@ -558,6 +588,7 @@ async function processPending(
   cf: CfCreds,
   claude: ClaudeCfg | null,
   zd: ZendeskReader | null,
+  web: WebStore | null,
   limit: number | null,
   dryRun: boolean,
 ): Promise<Counts> {
@@ -579,14 +610,14 @@ async function processPending(
     const take = Math.min(EXTRACT_BATCH, remaining);
     const { data, error } = await sb
       .from("kb_documents")
-      .select("id, url, scope, doc_type, brand, source_system, external_id")
+      .select("id, url, scope, doc_type, brand, source_system, external_id, r2_key")
       .eq("status", "pending_extract")
       .order("created_at", { ascending: true })
       .limit(take);
     if (error) throw new Error(`pending read failed: ${error.message}`);
     const batch = (data ?? []) as PendingDoc[];
     if (!batch.length) break;
-    await mapPool(batch, POOL, (d) => processDoc(sb, d, cf, claude, zd, counts));
+    await mapPool(batch, POOL, (d) => processDoc(sb, d, cf, claude, zd, web, counts));
     remaining -= batch.length;
     // Guard against a stuck row that never leaves pending (shouldn't happen —
     // every path flips to active or failed — but never spin forever).
@@ -618,6 +649,9 @@ async function main(): Promise<void> {
   const zdCreds = zendeskCredsFromEnv(process.env);
   const zd = zdCreds ? new ZendeskReader(zdCreds) : null;
 
+  // R2 page cache for Step W / Step B (optional — see crawl/store.ts).
+  const webStore = webStoreFromEnv(process.env);
+
   if (!args.skipPdp) {
     const added = await syncPdpSpecSheets(sb, args.dryRun);
     console.log(`[docs-ingest] step A: ${added} re-derived spec sheets folded into the KB`);
@@ -641,6 +675,29 @@ async function main(): Promise<void> {
       );
     }
   }
+  // Step W — website crawl capture, dark-launched behind THOM_WEB_CRAWL=1
+  // with a THOM_CRAWL_SITES allowlist ("wacgroup,waclighting" | "all").
+  if (!args.skipCrawl && process.env.THOM_WEB_CRAWL === "1") {
+    const sites = enabledSites(process.env.THOM_CRAWL_SITES);
+    if (!sites.length) {
+      console.warn("[docs-ingest] THOM_WEB_CRAWL=1 but THOM_CRAWL_SITES is empty — skipping crawl");
+    } else {
+      if (!webStore) {
+        console.warn("[docs-ingest] R2_* unset — crawled pages will not be cached (Step B refetches live)");
+      }
+      for (const site of sites) {
+        const stats = await crawlSite(
+          site,
+          { sb, store: webStore },
+          { dryRun: args.dryRun, limit: args.crawlLimit, harvestPdp: args.harvestPdp, includeOptIn: args.includeOptIn },
+          () => new Date().toISOString(),
+        );
+        console.log(
+          `[docs-ingest] step W (${stats.site}): ${stats.captured} captured, ${stats.unchanged} unchanged, ${stats.errors} errors`,
+        );
+      }
+    }
+  }
   // --retry-failed: requeue prior failures (e.g. transient upstream 502s) so
   // Step B picks them up again. Permanently-bad ones (empty/non-PDF) just
   // re-fail, which is harmless.
@@ -653,7 +710,7 @@ async function main(): Promise<void> {
     if (error) throw new Error(`retry-failed requeue failed: ${error.message}`);
     console.log(`[docs-ingest] retry-failed: requeued ${data?.length ?? 0} previously-failed docs`);
   }
-  const counts = await processPending(sb, cf, claude, zd, args.limit, args.dryRun);
+  const counts = await processPending(sb, cf, claude, zd, webStore, args.limit, args.dryRun);
   console.log(
     `[docs-ingest] step B: ${counts.active} extracted (${counts.chunks} chunks), ${counts.failed} failed`,
   );

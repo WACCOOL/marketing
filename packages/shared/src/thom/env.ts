@@ -35,6 +35,11 @@ export interface ThomEnv {
   // Photometrics / layout tool gates ("1" = offered to the model).
   THOM_PHOTOMETRICS?: string;
   THOM_LAYOUT?: string;
+  // Authority-weighted retrieval ("1" = search_docs passes a non-zero
+  // authority_weight to kb_search for company/ambiguous-shaped queries;
+  // product/SKU-shaped queries ALWAYS pass 0). Off by default — with it off,
+  // kb_search's weight defaults to 0 and ordering is identical to pre-0054.
+  THOM_AUTHORITY?: string;
 }
 
 /** Which surface the brain is answering on. `internal` = the authenticated
