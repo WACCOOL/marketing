@@ -29,7 +29,7 @@ export const WARNING_COPY =
   "important with WAC Group or your sales rep before you rely on it.";
 
 const EXAMPLES = [
-  "What's the lumen output and CRI of SKU 2095?",
+  "What's the lumen output and CRI of the Silo downlight?",
   "I need a warm-dim 3-inch downlight for a damp bathroom.",
   "What's the cutout size for the Aurora trimless downlight?",
 ];
