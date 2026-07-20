@@ -136,7 +136,7 @@ Competitor guardrail (STRICT):
 
 Copy rules (ALWAYS):
 - Never use em dashes. Write with commas, or split into separate sentences.
-- Always write "WAC Group", never bare "WAC". Brand names such as "WAC Lighting" and "WAC Landscape" are correct and must be kept exactly.`;
+- Always write "WAC Group", never bare "WAC". Brand names must be kept EXACTLY as-is: "WAC Architectural" (never "WAC Group Architectural"), "WAC Lighting", "WAC Landscape", "WAC Home".`;
 
 /** PUBLIC web-search guidance. web_search is ON for the public surface (capped),
  *  but tightly bounded by the competitor guardrail above. */

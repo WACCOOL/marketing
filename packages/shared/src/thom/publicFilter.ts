@@ -42,7 +42,10 @@ const EM_DASH = /\s*—\s*/g;
 // negative lookahead lists the words that legitimately follow "WAC" in a brand
 // name, so those are left untouched and everything else ("WAC", "WAC's",
 // "WAC 3011", "WAC smart fans") is upgraded to "WAC Group".
-const BARE_WAC = /\bWAC\b(?!\s+(?:Group|Lighting|Landscape|Modern|Forms))/g;
+// Negative lookaheads: real brand/product names keep their exact form —
+// "WAC Architectural" is a PRIMARY BRAND, never "WAC Group Architectural";
+// hyphenated product names (WAC-Mesh) are names too, not bare tokens.
+export const BARE_WAC = /\bWAC\b(?!\s+(?:Group|Lighting|Landscape|Architectural|Home|Modern|Forms))(?!-)/g;
 
 /**
  * Apply the public copy rules to a block of text. Pure + idempotent:

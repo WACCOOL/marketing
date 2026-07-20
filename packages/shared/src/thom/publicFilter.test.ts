@@ -20,6 +20,12 @@ describe("normalizeCopy", () => {
 
   it("upgrades a standalone bare WAC to WAC Group", () => {
     expect(normalizeCopy("Check the WAC 3011 downlight")).toBe("Check the WAC Group 3011 downlight");
+    // Primary-brand and hyphenated product names are NEVER expanded:
+    expect(normalizeCopy("WAC Architectural offers indoor and outdoor lines")).toBe(
+      "WAC Architectural offers indoor and outdoor lines",
+    );
+    expect(normalizeCopy("the WAC-Mesh PSC 96W driver")).toBe("the WAC-Mesh PSC 96W driver");
+    expect(normalizeCopy("see WAC Home for residential")).toBe("see WAC Home for residential");
     expect(normalizeCopy("Made by WAC.")).toBe("Made by WAC Group.");
     expect(normalizeCopy("WAC's catalog")).toBe("WAC Group's catalog");
   });

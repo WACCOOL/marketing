@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { internalSystem, publicSystem, systemFor } from "./prompts.js";
-import { GUARDRAIL_TEMPLATE } from "./publicFilter.js";
+import { BARE_WAC as CANONICAL_BARE_WAC, GUARDRAIL_TEMPLATE } from "./publicFilter.js";
 
 /** Join a system-block array into one string for lint-style assertions. */
 const joined = (blocks: { text: string }[]) => blocks.map((b) => b.text).join("\n\n");
 
-// A "bare WAC" is the token WAC NOT immediately followed by a real brand word.
-const BARE_WAC = /\bWAC\b(?!\s+(?:Group|Lighting|Landscape|Modern|Forms))/;
+// The canonical bare-WAC rule (single-sourced from publicFilter so the lint
+// can never drift from the runtime normalizer again). Fresh non-global copy:
+// the exported regex carries /g, whose lastIndex would make .test() stateful.
+const BARE_WAC = new RegExp(CANONICAL_BARE_WAC.source);
 
 describe("publicSystem copy-lint", () => {
   const text = joined(publicSystem());
