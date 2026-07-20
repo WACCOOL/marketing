@@ -9,6 +9,7 @@ export * from "./fixture.js";
 export * from "./roomcalib.js";
 export * from "./roombox.js";
 export * from "./productinfo.js";
+export * from "./productAvailability.js";
 export * from "./pdpcode.js";
 export * from "./seo.js";
 export * from "./stageprob.js";
