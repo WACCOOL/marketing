@@ -92,7 +92,7 @@ export const TOOLS: ClaudeTool[] = [
   {
     name: "search_docs",
     description:
-      "Search the CONTENTS of spec sheets, installation manuals, curated WAC marketing overviews/positioning/FAQs, WAC Help Center (support) articles, AND internal support-ticket resolutions (how a real customer issue was diagnosed and fixed) for a specific fact (cutout size, dimming compatibility, mounting, torque, wiring, exact photometrics), WAC's own product/brand/system positioning and messaging, or how-to / troubleshooting / warranty / support guidance. Returns matching passages with the document + link for citation.",
+      "Search the CONTENTS of spec sheets, installation manuals, curated WAC marketing overviews/positioning/FAQs, WAC Help Center (support) articles, WAC Group brand-website pages (company/about, capabilities, technology, news, FAQs, warranty), AND internal support-ticket resolutions (how a real customer issue was diagnosed and fixed) for a specific fact (cutout size, dimming compatibility, mounting, torque, wiring, exact photometrics), WAC's own product/brand/system positioning and messaging, company background and capabilities, or how-to / troubleshooting / warranty / support guidance. Returns matching passages with the document + link for citation.",
     input_schema: {
       type: "object",
       properties: {
@@ -193,6 +193,22 @@ async function getProduct(ctx: ToolContext, input: Record<string, unknown>): Pro
   return { content: lines.join("\n"), cards: [card], citations: [] };
 }
 
+/**
+ * Website-crawl doc types retrievable by search_docs on BOTH surfaces — all
+ * crawled from the public web (scope='public' by construction), so the public
+ * bubble may see them. web_product / web_category / web_resource are
+ * deliberately absent: product facts come from the catalog tools, and
+ * category/resource pages are navigation, not answers.
+ */
+export const WEB_DOC_TYPES = [
+  "web_company",
+  "web_capabilities",
+  "web_technology",
+  "web_news",
+  "web_faq",
+  "web_warranty",
+] as const;
+
 async function searchDocs(
   ctx: ToolContext,
   input: Record<string, unknown>,
@@ -211,8 +227,8 @@ async function searchDocs(
     query_text: query,
     scope_filter: isPublic ? "public" : null,
     doc_types: isPublic
-      ? ["spec_sheet", "manual", "marketing", "zendesk_article"]
-      : ["spec_sheet", "manual", "marketing", "zendesk_article", "zendesk_ticket"],
+      ? ["spec_sheet", "manual", "marketing", "zendesk_article", ...WEB_DOC_TYPES]
+      : ["spec_sheet", "manual", "marketing", "zendesk_article", "zendesk_ticket", ...WEB_DOC_TYPES],
     brand_filter: str(input.brand),
     match_count: 8,
   });
