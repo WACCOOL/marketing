@@ -5,6 +5,7 @@ import {
   getSessionId,
   historyKey,
   loadHistory,
+  randomId,
   saveHistory,
   toRequestHistory,
   MAX_HISTORY_TURNS,
@@ -81,5 +82,35 @@ describe("session history", () => {
     const b = getSessionId("site1", s);
     expect(a).toBe(b);
     expect(a).toBeTruthy();
+  });
+
+  it("round-trips turnId + feedback through storage (votes survive reopen)", () => {
+    const s = mockStorage();
+    const turns: Turn[] = [
+      { role: "user", text: "q" },
+      { role: "assistant", text: "a", turnId: "turn-xyz", feedback: -1 },
+    ];
+    saveHistory("site1", "sess1", turns, s);
+    const loaded = loadHistory("site1", "sess1", s);
+    expect(loaded[1]).toMatchObject({ role: "assistant", turnId: "turn-xyz", feedback: -1 });
+  });
+
+  it("toRequestHistory strips turnId/feedback down to {role, content}", () => {
+    const turns: Turn[] = [
+      { role: "user", text: "q" },
+      { role: "assistant", text: "a", turnId: "turn-xyz", feedback: 1 },
+    ];
+    expect(toRequestHistory(turns)).toEqual([
+      { role: "user", content: "q" },
+      { role: "assistant", content: "a" },
+    ]);
+  });
+
+  it("randomId mints non-empty, distinct ids (the client_turn_id source)", () => {
+    const a = randomId();
+    const b = randomId();
+    expect(a).toBeTruthy();
+    expect(a).not.toBe(b);
+    expect(a.length).toBeLessThanOrEqual(64); // bridge zod cap on client_turn_id
   });
 });

@@ -13,7 +13,8 @@
     "./bulk": "./src/bulk.ts",
     "./fixture": "./src/fixture.ts",
     "./thom": "./src/thom/index.ts",
-    "./thom/protectedTerms": "./src/thom/protectedTerms.ts"
+    "./thom/protectedTerms": "./src/thom/protectedTerms.ts",
+    "./thom/feedback": "./src/thom/feedback.ts"
   },
   "scripts": {
     "test": "vitest run",

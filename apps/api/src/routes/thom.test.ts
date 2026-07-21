@@ -97,4 +97,31 @@ describe("mapMessagesToTurns", () => {
     const turns = mapMessagesToTurns([{ role: "assistant", content: null }]);
     expect(turns).toEqual([{ role: "assistant", text: "", cards: [], citations: [] }]);
   });
+
+  it("carries an assistant row's id through as messageId (reloads stay ratable)", () => {
+    const turns = mapMessagesToTurns([
+      { id: "u-1", role: "user", content: "q" },
+      { id: "a-1", role: "assistant", content: "a" },
+    ]);
+    expect(turns[0]?.messageId).toBeUndefined(); // user turns are not ratable
+    expect(turns[1]?.messageId).toBe("a-1");
+  });
+
+  it("applies existing votes from the feedback map to their assistant turns", () => {
+    const feedback = new Map<string, 1 | -1>([["a-1", 1]]);
+    const turns = mapMessagesToTurns(
+      [
+        { id: "a-1", role: "assistant", content: "voted" },
+        { id: "a-2", role: "assistant", content: "not voted" },
+      ],
+      feedback,
+    );
+    expect(turns[0]?.feedback).toBe(1);
+    expect(turns[1]?.feedback).toBeUndefined();
+  });
+
+  it("leaves rows without ids un-keyed (old persisted transcripts)", () => {
+    const turns = mapMessagesToTurns([{ role: "assistant", content: "old" }]);
+    expect(turns[0]?.messageId).toBeUndefined();
+  });
 });

@@ -157,4 +157,25 @@ describe.skipIf(!HAVE_CREDS)("Thom public anon boundary (0052)", () => {
       ).toBe(true);
     }
   });
+
+  it("cannot read OR write thom_feedback (0062: admin select, service write)", async () => {
+    // Select: RLS admin-only → anon gets nothing (empty set or denial).
+    const read = await sb.from("thom_feedback").select("*").limit(1);
+    expect(
+      read.error !== null || (read.data ?? []).length === 0,
+      "anon must not read thom_feedback",
+    ).toBe(true);
+
+    // Insert: there is NO insert policy at all — anon must be denied. The
+    // public worker never touches this table directly; it rides the
+    // shared-secret log bridge.
+    const write = await sb.from("thom_feedback").insert({
+      surface: "public",
+      dedup_key: `probe:anon-boundary:${Date.now()}`,
+      rating: 1,
+      question_text: "anon boundary probe",
+      answer_text: "anon boundary probe",
+    });
+    expect(write.error, "anon must not insert into thom_feedback").not.toBeNull();
+  });
 });

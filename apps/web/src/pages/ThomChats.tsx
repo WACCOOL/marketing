@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { ThumbsDown, ThumbsUp } from "lucide-react";
 import { errorMessage } from "../lib/api.js";
 import {
   getConversation,
   listConversations,
   type AdminConversation,
   type AdminMessage,
+  type ConversationFeedback,
 } from "../lib/thomAdmin.js";
 
 /**
@@ -25,8 +28,11 @@ export function ThomChats() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const [openId, setOpenId] = useState<string | null>(null);
+  // Deep link from Analytics ("Open in Chats"): /thom-chats?open=<conversation_id>
+  const [searchParams] = useSearchParams();
+  const [openId, setOpenId] = useState<string | null>(searchParams.get("open"));
   const [thread, setThread] = useState<AdminMessage[] | null>(null);
+  const [feedback, setFeedback] = useState<ConversationFeedback[]>([]);
   const [threadErr, setThreadErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -50,14 +56,27 @@ export function ThomChats() {
     if (!openId) return;
     let stale = false;
     setThread(null);
+    setFeedback([]);
     setThreadErr(null);
     getConversation(openId)
-      .then((r) => !stale && setThread(r.messages))
+      .then((r) => {
+        if (stale) return;
+        setThread(r.messages);
+        setFeedback(r.feedback ?? []);
+      })
       .catch((e) => !stale && setThreadErr(errorMessage(e)));
     return () => {
       stale = true;
     };
   }, [openId]);
+
+  // Feedback chips, joined client-side by message_id; rows the log bridge
+  // could not match (message_id null — unmatched public votes) surface at the
+  // conversation level in the thread header.
+  const feedbackByMessage = new Map(
+    feedback.filter((f) => f.message_id).map((f) => [f.message_id as string, f]),
+  );
+  const unmatchedFeedback = feedback.filter((f) => !f.message_id);
 
   const fmt = (iso: string) =>
     new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -144,16 +163,46 @@ export function ThomChats() {
       {openId && (
         <div className="card col" style={{ gap: 12 }}>
           <div className="row" style={{ justifyContent: "space-between" }}>
-            <strong>Conversation</strong>
+            <span className="row" style={{ gap: 8, alignItems: "center" }}>
+              <strong>Conversation</strong>
+              {unmatchedFeedback.map((f, i) => (
+                <span
+                  key={i}
+                  className="tag"
+                  title={f.reason ?? undefined}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                >
+                  {f.rating === 1 ? <ThumbsUp size={12} /> : <ThumbsDown size={12} />}
+                  visitor feedback
+                </span>
+              ))}
+            </span>
             <button className="secondary" onClick={() => setOpenId(null)}>Close</button>
           </div>
           {threadErr && <div className="alert error">{threadErr}</div>}
           {!thread && !threadErr && <div className="muted">Loading…</div>}
           {thread?.map((m) => (
             <div key={m.id} className="col" style={{ gap: 4 }}>
-              <div className="muted" style={{ fontSize: 11 }}>
-                {m.role === "user" ? "Visitor" : "Thom"} · {fmt(m.created_at)}
-                {m.model ? ` · ${m.model}` : ""}
+              <div className="muted" style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}>
+                <span>
+                  {m.role === "user" ? "Visitor" : "Thom"} · {fmt(m.created_at)}
+                  {m.model ? ` · ${m.model}` : ""}
+                </span>
+                {(() => {
+                  const f = feedbackByMessage.get(m.id);
+                  if (!f) return null;
+                  // Reason shown as PLAIN text only (title + inline), F15.
+                  return (
+                    <span
+                      className="tag"
+                      title={f.reason ?? undefined}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                    >
+                      {f.rating === 1 ? <ThumbsUp size={12} /> : <ThumbsDown size={12} />}
+                      {f.reason ? "rated · reason" : "rated"}
+                    </span>
+                  );
+                })()}
               </div>
               <div
                 style={{

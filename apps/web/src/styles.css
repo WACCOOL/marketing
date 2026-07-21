@@ -1793,6 +1793,67 @@ button.slim {
 .thom-cite:hover {
   border-color: var(--accent);
 }
+/* feedback (thumbs) */
+.thom-feedback {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.thom-feedback-row {
+  display: flex;
+  gap: 6px;
+}
+.thom-feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+}
+.thom-feedback-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.thom-feedback-btn.selected {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.thom-feedback-btn.selected svg {
+  fill: var(--accent-soft);
+}
+.thom-feedback-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 420px;
+}
+.thom-feedback-reason textarea {
+  resize: none;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.thom-feedback-reason textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.thom-feedback-reason-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
 .thom-family-card .thom-card-head strong {
   display: inline-flex;
   align-items: center;

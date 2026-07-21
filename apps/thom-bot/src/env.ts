@@ -66,6 +66,15 @@ export interface PublicEnv extends ThomEnv {
   THOM_RATE_PER_DAY?: string; // per-IP+siteKey requests / day    (default 300)
   THOM_TOKENS_PER_IP_DAY?: string; // per-IP tokens / day          (default 200000)
   THOM_TOKENS_GLOBAL_DAY?: string; // GLOBAL tokens / day          (default 5000000)
+
+  // --- Response feedback (thumbs), DARK by default. "1" opens the
+  //     POST /api/feedback route AND advertises feedbackEnabled via
+  //     /api/config (which additionally requires the THOM_LOG_* bridge —
+  //     votes are stored through it). Flip via a COMMITTED wrangler.jsonc
+  //     vars edit, never the dashboard (CI clobbers dashboard vars). ---
+  THOM_FEEDBACK?: string;
+  THOM_FEEDBACK_PER_MIN?: string; // feedback requests / minute per IP (default 10)
+  THOM_FEEDBACK_PER_DAY?: string; // feedback requests / day per IP    (default 40)
 }
 
 // A compile-time assertion that PublicEnv is assignable to ThomEnv (i.e. the

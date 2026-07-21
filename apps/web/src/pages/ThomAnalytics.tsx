@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { getAnalytics, type AnalyticsBundle, type AnalyticsSurface, type DailyRow } from "../lib/thomAdmin.js";
+import { Link } from "react-router-dom";
+import { ThumbsDown, ThumbsUp } from "lucide-react";
+import { isUnverifiedFeedback } from "@wac/shared/thom/feedback";
+import {
+  getAnalytics,
+  listFeedback,
+  type AnalyticsBundle,
+  type AnalyticsSurface,
+  type DailyRow,
+  type FeedbackDailyRow,
+  type FeedbackItem,
+} from "../lib/thomAdmin.js";
 import { errorMessage } from "../lib/api.js";
 
 /**
@@ -83,6 +94,7 @@ export function ThomAnalytics() {
             <StatTile label="Conversations" value={totals.conversations} />
             <StatTile label="Public sessions" value={totals.publicConversations} />
             <StatTile label="Peak daily internal users" value={totals.peakInternalUsers} />
+            <FeedbackTiles totals={data.feedbackTotals ?? { up: 0, down: 0, unverified: 0 }} />
           </div>
 
           <div className="card col" style={{ gap: 10 }}>
@@ -166,7 +178,232 @@ export function ThomAnalytics() {
               </div>
             )}
           </div>
+
+          <div className="card col" style={{ gap: 10 }}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <strong>Feedback per day</strong>
+              <span className="row" style={{ gap: 12 }}>
+                {[
+                  { label: "Thumbs up", cssVar: "--chart-1" },
+                  { label: "Thumbs down", cssVar: "--chart-2" },
+                ].map((s) => (
+                  <span key={s.label} className="row" style={{ gap: 5, alignItems: "center" }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 3, background: `var(${s.cssVar})` }} />
+                    <span className="muted" style={{ fontSize: 12 }}>{s.label}</span>
+                  </span>
+                ))}
+              </span>
+            </div>
+            <FeedbackChart daily={data.feedbackDaily ?? []} />
+          </div>
+
+          <FeedbackList days={days} surface={surface} />
         </>
+      )}
+    </div>
+  );
+}
+
+function FeedbackTiles({ totals }: { totals: { up: number; down: number; unverified: number } }) {
+  const rated = totals.up + totals.down;
+  // Positive rate over VERIFIED rows only (unverified excluded), with the
+  // denominator shown so 3-vote days don't read as trends.
+  const rate = rated > 0 ? `${Math.round((totals.up / rated) * 100)}%` : "–";
+  return (
+    <>
+      <StatTile label="Feedback received" value={rated + totals.unverified} />
+      <div className="card col" style={{ gap: 2, padding: "12px 16px", minWidth: 150 }}>
+        <span style={{ fontSize: 26, fontWeight: 700 }}>{rate}</span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          Positive rate{rated > 0 ? ` (of ${rated.toLocaleString()} rated)` : ""}
+        </span>
+      </div>
+    </>
+  );
+}
+
+/** Compact two-series (up/down) daily line chart — small sibling of
+ *  DailyChart on the same validated token pair. */
+function FeedbackChart({ daily }: { daily: FeedbackDailyRow[] }) {
+  const series = [
+    { key: "up" as const, cssVar: "--chart-1" },
+    { key: "down" as const, cssVar: "--chart-2" },
+  ];
+  const W = 720;
+  const H = 140;
+  const PAD = { l: 34, r: 12, t: 10, b: 22 };
+  const n = daily.length;
+  if (n === 0) return <div className="muted">No feedback yet.</div>;
+  const max = Math.max(1, ...daily.flatMap((r) => series.map((s) => Number(r[s.key]))));
+  const x = (i: number) => PAD.l + (n <= 1 ? 0 : (i * (W - PAD.l - PAD.r)) / (n - 1));
+  const y = (v: number) => H - PAD.b - (v / max) * (H - PAD.t - PAD.b);
+  const path = (key: "up" | "down") =>
+    daily.map((r, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(Number(r[key])).toFixed(1)}`).join(" ");
+  const fmtDay = (iso: string) =>
+    new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        style={{ width: "100%", minWidth: 480, display: "block" }}
+        role="img"
+        aria-label="Feedback per day, thumbs up and thumbs down"
+      >
+        {[0, max].map((t) => (
+          <g key={t}>
+            <line x1={PAD.l} x2={W - PAD.r} y1={y(t)} y2={y(t)} stroke="currentColor" opacity={0.08} />
+            <text x={PAD.l - 6} y={y(t) + 4} textAnchor="end" fontSize={10} fill="var(--muted, #888)">{t}</text>
+          </g>
+        ))}
+        {[0, Math.floor((n - 1) / 2), n - 1].filter((v, i, a) => n > 0 && a.indexOf(v) === i).map((i) => (
+          <text key={i} x={x(i)} y={H - 6} textAnchor="middle" fontSize={10} fill="var(--muted, #888)">
+            {daily[i] ? fmtDay(daily[i]!.day) : ""}
+          </text>
+        ))}
+        {series.map((s) => (
+          <path key={s.key} d={path(s.key)} fill="none" stroke={`var(${s.cssVar})`} strokeWidth={2} strokeLinejoin="round" />
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+const FEEDBACK_PAGE = 50;
+
+/**
+ * Browsable feedback list. PLAIN-TEXT RULE (F15): question/answer snapshots
+ * and reasons are visitor-typed or probe text — rendered ONLY as plain React
+ * children inside pre-wrap blocks, NEVER through ReactMarkdown or any
+ * HTML/markdown renderer.
+ */
+function FeedbackList({ days, surface }: { days: number; surface: AnalyticsSurface }) {
+  const [rating, setRating] = useState<"all" | "up" | "down">("all");
+  const [offset, setOffset] = useState(0);
+  const [total, setTotal] = useState(0);
+  const [items, setItems] = useState<FeedbackItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  useEffect(() => setOffset(0), [days, surface, rating]);
+
+  useEffect(() => {
+    let stale = false;
+    setLoading(true);
+    setErr(null);
+    listFeedback({ days, surface, rating, limit: FEEDBACK_PAGE, offset })
+      .then((r) => {
+        if (stale) return;
+        setItems(r.items);
+        setTotal(r.total);
+      })
+      .catch((e) => !stale && setErr(errorMessage(e)))
+      .finally(() => !stale && setLoading(false));
+    return () => {
+      stale = true;
+    };
+  }, [days, surface, rating, offset]);
+
+  const fmt = (iso: string) =>
+    new Date(iso).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+  return (
+    <div className="card col" style={{ gap: 8 }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <strong>Feedback</strong>
+        <select value={rating} onChange={(e) => setRating(e.target.value as typeof rating)}>
+          <option value="all">All</option>
+          <option value="up">Thumbs up</option>
+          <option value="down">Thumbs down</option>
+        </select>
+      </div>
+      <div className="muted" style={{ fontSize: 12 }}>
+        Public reasons are visitor-typed free text and may contain contact info typed by the
+        visitor. Treat as customer data.
+      </div>
+      {err && <div className="alert error">Load failed: {err}</div>}
+      {loading ? (
+        <div className="muted">Loading…</div>
+      ) : items.length === 0 ? (
+        <div className="muted">No feedback in this window.</div>
+      ) : (
+        <div className="col" style={{ gap: 0 }}>
+          {items.map((f) => {
+            const unverified = isUnverifiedFeedback(f);
+            const open = openId === f.id;
+            return (
+              <div key={f.id} className="col" style={{ gap: 6, padding: "8px 0", borderTop: "1px solid var(--border, rgba(0,0,0,0.08))" }}>
+                <div
+                  className="row"
+                  style={{ gap: 8, alignItems: "center", cursor: "pointer", flexWrap: "wrap" }}
+                  onClick={() => setOpenId(open ? null : f.id)}
+                >
+                  <span className="muted" style={{ fontSize: 12, whiteSpace: "nowrap" }}>{fmt(f.created_at)}</span>
+                  <span className="tag">{f.surface === "internal" ? f.user_email ?? "internal" : `public${f.site_key ? ` · ${f.site_key}` : ""}`}</span>
+                  {f.rating === 1 ? (
+                    <ThumbsUp size={14} style={{ color: "var(--chart-1)", flex: "none" }} />
+                  ) : (
+                    <ThumbsDown size={14} style={{ color: "var(--chart-2)", flex: "none" }} />
+                  )}
+                  {unverified && (
+                    <span className="muted" style={{ fontSize: 11 }}>unverified, visitor-supplied text</span>
+                  )}
+                  <span style={{ flex: 1, minWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {f.question_text}
+                  </span>
+                  {f.reason && (
+                    <span className="muted" style={{ maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {f.reason}
+                    </span>
+                  )}
+                </div>
+                {open && (
+                  <div className="col" style={{ gap: 6 }}>
+                    {/* Plain text only (F15) — no markdown rendering for snapshots. */}
+                    <div style={{ whiteSpace: "pre-wrap", background: "var(--accent-soft)", borderRadius: 8, padding: "8px 10px" }}>
+                      {f.question_text}
+                    </div>
+                    <div style={{ whiteSpace: "pre-wrap", background: "var(--panel)", border: "1px solid var(--border, rgba(0,0,0,0.08))", borderRadius: 8, padding: "8px 10px", maxHeight: 320, overflowY: "auto" }}>
+                      {f.answer_text}
+                    </div>
+                    {f.reason && (
+                      <div className="muted" style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>Reason: {f.reason}</div>
+                    )}
+                    {(f.tool_calls.length > 0 || f.doc_types.length > 0) && (
+                      <div className="row" style={{ flexWrap: "wrap", gap: 4 }}>
+                        {f.tool_calls.map((tc, i) => (
+                          <span key={`t-${i}`} className="tag">{tc.name}</span>
+                        ))}
+                        {f.doc_types.map((d) => (
+                          <span key={`d-${d}`} className="tag">{d}</span>
+                        ))}
+                      </div>
+                    )}
+                    {f.conversation_id && (
+                      <Link to={`/thom-chats?open=${encodeURIComponent(f.conversation_id)}`} style={{ fontSize: 12 }}>
+                        Open in Chats
+                      </Link>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {total > FEEDBACK_PAGE && (
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <button className="secondary" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - FEEDBACK_PAGE))}>
+            Newer
+          </button>
+          <span className="muted">
+            {offset + 1}–{Math.min(offset + FEEDBACK_PAGE, total)} of {total}
+          </span>
+          <button className="secondary" disabled={offset + FEEDBACK_PAGE >= total} onClick={() => setOffset(offset + FEEDBACK_PAGE)}>
+            Older
+          </button>
+        </div>
       )}
     </div>
   );

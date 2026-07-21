@@ -5,7 +5,8 @@ import { anthropicConfigured, runThomStream, type ClaudeMessage } from "@wac/sha
 import type { PublicEnv } from "./env.js";
 import { anonSupabase } from "./supabase.js";
 import { verifyTurnstile } from "./turnstile.js";
-import { DEFAULT_SESSION_TTL_MS, mintSession, verifySession } from "./session.js";
+import { DEFAULT_SESSION_TTL_MS, mintSession, publicSessionKey, verifySession } from "./session.js";
+import { feedbackRoutes } from "./feedback.js";
 import {
   checkAndAddTokens,
   checkAndIncrRate,
@@ -49,8 +50,19 @@ app.get("/api/config", (c) => {
   const selfOrigin = new URL(c.req.url).origin;
   const ok = !origin || origin === selfOrigin || originAllowed(c.env, origin);
   if (!ok) return c.json({ error: "origin not allowed" }, 403);
-  return c.json({ turnstileSiteKey: c.env.TURNSTILE_SITE_KEY ?? "" });
+  return c.json({
+    turnstileSiteKey: c.env.TURNSTILE_SITE_KEY ?? "",
+    // Dark-launch flag for the thumbs UI. UX ONLY — the /api/feedback route
+    // itself 404s server-side while THOM_FEEDBACK is unset (F8). Requires the
+    // log bridge too: without it there is nowhere to store a vote.
+    feedbackEnabled:
+      c.env.THOM_FEEDBACK === "1" && Boolean(c.env.THOM_LOG_URL && c.env.THOM_LOG_TOKEN),
+  });
 });
+
+// Feedback (thumbs) — module has the full guard chain; dark (404) until
+// THOM_FEEDBACK="1".
+app.route("/api/feedback", feedbackRoutes);
 
 /** CF-Connecting-IP, or "" when absent (local dev). */
 function callerIp(c: Context<{ Bindings: PublicEnv }>): string {
@@ -168,11 +180,9 @@ app.post("/api/chat/stream", async (c) => {
     const token = c.env.THOM_LOG_TOKEN;
     if (!url || !token) return;
     try {
-      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sessionToken));
-      const sessionKey = [...new Uint8Array(digest)]
-        .map((b) => b.toString(16).padStart(2, "0"))
-        .join("")
-        .slice(0, 32);
+      // Shared derivation with /api/feedback so votes and turns group under
+      // the same anonymous session key.
+      const sessionKey = await publicSessionKey(sessionToken);
       await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json", "x-thom-log-token": token },
