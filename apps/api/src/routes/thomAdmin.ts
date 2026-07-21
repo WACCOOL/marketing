@@ -100,7 +100,98 @@ thomAdminRoutes.get("/conversations/:id", async (c) => {
     .eq("conversation_id", id)
     .order("created_at", { ascending: true });
   if (msgErr) return c.json({ error: msgErr.message }, 500);
-  return c.json({ conversation: conv, messages: msgs ?? [] });
+
+  // Feedback chips for the thread view. BEST-EFFORT (F11): if migration 0062
+  // has not been applied yet, the thread view must keep working — swallow any
+  // error and return no feedback.
+  let feedback: { message_id: string | null; rating: number; reason: string | null }[] = [];
+  try {
+    const { data: fb, error: fbErr } = await sb
+      .from("thom_feedback")
+      .select("message_id, rating, reason")
+      .eq("conversation_id", id);
+    if (!fbErr) feedback = (fb ?? []) as typeof feedback;
+  } catch {
+    // best-effort only
+  }
+  return c.json({ conversation: conv, messages: msgs ?? [], feedback });
+});
+
+// -----------------------------------------------------------------------------
+// Feedback list (thumbs + reasons — migration 0062). Reads under the admin's
+// own JWT (RLS: admin-only select). PLAIN-TEXT rule (F15): question/answer
+// snapshots and reasons are visitor/probe text — the UI renders them as plain
+// text only, never through a markdown renderer.
+// -----------------------------------------------------------------------------
+
+const FeedbackListQuery = z.object({
+  days: z.coerce.number().int().min(1).max(365).default(30),
+  surface: z.enum(["all", "internal", "public"]).default("all"),
+  rating: z.enum(["all", "up", "down"]).default("all"),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+});
+
+thomAdminRoutes.get("/feedback", async (c) => {
+  const q = FeedbackListQuery.parse(Object.fromEntries(new URL(c.req.url).searchParams));
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const since = new Date(Date.now() - q.days * 864e5).toISOString();
+
+  let query = sb
+    .from("thom_feedback")
+    .select(
+      "id, surface, rating, reason, question_text, answer_text, site_key, conversation_id, message_id, user_id, created_at",
+      { count: "exact" },
+    )
+    .gte("created_at", since)
+    .order("created_at", { ascending: false })
+    .range(q.offset, q.offset + q.limit - 1);
+  if (q.surface !== "all") query = query.eq("surface", q.surface);
+  if (q.rating !== "all") query = query.eq("rating", q.rating === "up" ? 1 : -1);
+  const { data, error, count } = await query;
+  if (error) return c.json({ error: error.message }, 500);
+  const rows = data ?? [];
+
+  const admin = serviceSupabase(c.env);
+
+  // Rater emails (internal rows).
+  const userIds = [...new Set(rows.map((r) => r.user_id).filter(Boolean))] as string[];
+  const emails = new Map<string, string>();
+  if (userIds.length) {
+    const { data: users } = await admin.from("users").select("id, email").in("id", userIds);
+    for (const u of users ?? []) emails.set(u.id as string, u.email as string);
+  }
+
+  // Source context for MATCHED rows (F13): tool_calls + citation doc_types
+  // from thom_messages, one batched in() query, best-effort like F11.
+  const messageIds = [...new Set(rows.map((r) => r.message_id).filter(Boolean))] as string[];
+  const context = new Map<string, { tool_calls: { name: string }[]; doc_types: string[] }>();
+  if (messageIds.length) {
+    try {
+      const { data: msgs } = await admin
+        .from("thom_messages")
+        .select("id, tool_calls, citations")
+        .in("id", messageIds);
+      for (const m of msgs ?? []) {
+        const toolCalls = (Array.isArray(m.tool_calls) ? m.tool_calls : []) as { name: string }[];
+        const cits = (Array.isArray(m.citations) ? m.citations : []) as { doc_type?: string }[];
+        const docTypes = [...new Set(cits.map((ci) => ci.doc_type).filter(Boolean))] as string[];
+        context.set(m.id as string, { tool_calls: toolCalls, doc_types: docTypes });
+      }
+    } catch {
+      // best-effort only
+    }
+  }
+
+  return c.json({
+    total: count ?? rows.length,
+    items: rows.map((r) => ({
+      ...r,
+      user_email: r.user_id ? emails.get(r.user_id as string) ?? null : null,
+      tool_calls: r.message_id ? context.get(r.message_id as string)?.tool_calls ?? [] : [],
+      doc_types: r.message_id ? context.get(r.message_id as string)?.doc_types ?? [] : [],
+    })),
+  });
 });
 
 const AnalyticsQuery = z.object({
@@ -112,14 +203,32 @@ thomAdminRoutes.get("/analytics", async (c) => {
   const q = AnalyticsQuery.parse(Object.fromEntries(new URL(c.req.url).searchParams));
   const sb = userSupabase(c.env, c.get("jwt"));
   const scope = q.surface === "all" ? null : q.surface;
-  const [daily, topQueries, topProducts, sources] = await Promise.all([
+  const [daily, topQueries, topProducts, sources, feedbackDaily] = await Promise.all([
     sb.rpc("thom_chat_daily", { days: q.days }),
     sb.rpc("thom_top_queries", { days: q.days, max_rows: 200, scope_filter: scope }),
     sb.rpc("thom_top_products", { days: q.days, max_rows: 50, scope_filter: scope }),
     sb.rpc("thom_source_usage", { days: q.days, scope_filter: scope }),
+    sb.rpc("thom_feedback_daily", { days: q.days, scope_filter: scope }),
   ]);
   const err = daily.error ?? topQueries.error ?? topProducts.error ?? sources.error;
   if (err) return c.json({ error: err.message }, 500);
+
+  // Feedback is BEST-EFFORT (F11 posture): if migration 0062 lags the deploy,
+  // the analytics page must still load — render zeros, don't 500.
+  const fbRows = (feedbackDaily.error ? [] : feedbackDaily.data ?? []) as {
+    day: string;
+    up: number;
+    down: number;
+    unverified: number;
+  }[];
+  const feedbackTotals = fbRows.reduce(
+    (a, r) => ({
+      up: a.up + Number(r.up ?? 0),
+      down: a.down + Number(r.down ?? 0),
+      unverified: a.unverified + Number(r.unverified ?? 0),
+    }),
+    { up: 0, down: 0, unverified: 0 },
+  );
 
   const queries = (topQueries.data ?? []) as { query: string; hits: number; public_hits: number }[];
   return c.json({
@@ -130,5 +239,7 @@ thomAdminRoutes.get("/analytics", async (c) => {
     topWords: wordFrequencies(queries.map((r) => ({ query: r.query, hits: Number(r.hits) }))),
     topProducts: topProducts.data ?? [],
     sources: bucketSourceUsage((sources.data ?? []) as SourceUsageRow[]),
+    feedbackDaily: fbRows,
+    feedbackTotals,
   });
 });

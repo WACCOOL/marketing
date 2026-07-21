@@ -74,6 +74,16 @@ export async function sha256Hex(input: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+/**
+ * The anonymous session key sent to the API worker's log bridge: SHA-256 of
+ * the session token, truncated to 32 hex chars. ONE derivation shared by turn
+ * logging and feedback so their rows group under the same key — the raw token
+ * never leaves this worker.
+ */
+export async function publicSessionKey(sessionToken: string): Promise<string> {
+  return (await sha256Hex(sessionToken)).slice(0, 32);
+}
+
 /** Constant-time string compare (equal length → no early-out on content). */
 function timingSafeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;

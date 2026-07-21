@@ -7,6 +7,7 @@
  * talks exclusively to same-origin /api/* (served by the same Worker), so there
  * is no CORS and no auth beyond the Turnstile-minted session token.
  */
+import { showFeedbackRow } from "@wac/shared/thom/feedback";
 import { el, svgEl } from "./dom.js";
 import { renderCard, renderCitations } from "./cards.js";
 import { renderMarkdown } from "./markdown.js";
@@ -19,6 +20,7 @@ import {
   getSessionId,
   loadHistory,
   loadSessionToken,
+  randomId,
   saveHistory,
   saveSessionToken,
   toRequestHistory,
@@ -30,6 +32,14 @@ export const WARNING_COPY =
   "Thom is an AI assistant and can make mistakes. Answers, including specs, " +
   "compatibility, and availability, aren't guaranteed. Please confirm anything " +
   "important with WAC Group or your sales rep before you rely on it.";
+
+/** Feedback disclosure (F4): rendered STATICALLY whenever the thumbs row
+ *  renders — visible before either vote is cast, never tooltip-only (mobile
+ *  has no hover). Wording AND placement are Davis sign-off items, same bar as
+ *  WARNING_COPY. Do not edit without product sign-off. */
+export const FEEDBACK_DISCLOSURE_COPY =
+  "Sending feedback shares this question and Thom's answer with WAC Group " +
+  "so we can improve Thom.";
 
 const EXAMPLES = [
   "I need a warm-dim 3-inch downlight for a damp bathroom.",
@@ -55,6 +65,13 @@ export class ThomWidget {
   private turns: Turn[] = [];
   private busy = false;
   private abort: AbortController | null = null;
+  // Feedback (thumbs) — dark unless /api/config advertises it.
+  private feedbackEnabled = false;
+  /** turnId whose thumbs-down reason box is open, if any. */
+  private reasonOpenFor: string | null = null;
+  /** Transient per-turn "Couldn't send feedback" notes (never persisted). */
+  private feedbackNotes = new Map<string, string>();
+  private outerCloseBound: ((e: MouseEvent) => void) | null = null;
 
   private listEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
@@ -77,6 +94,10 @@ export class ThomWidget {
     postToParent({ type: "thom:ready" });
     const cfg = await fetchConfig();
     this.turnstileSiteKey = cfg.turnstileSiteKey;
+    if (cfg.feedbackEnabled !== this.feedbackEnabled) {
+      this.feedbackEnabled = cfg.feedbackEnabled;
+      this.renderTurns(); // reopened transcripts gain their thumbs rows
+    }
     // Only warm a session up front if we already have a stored token (instant,
     // no challenge). A brand-new visitor is challenged on their first send, not
     // on page load.
@@ -246,7 +267,171 @@ export class ThomWidget {
     }
     if (turn.cards) for (const c of turn.cards) bubble.appendChild(renderCard(c));
     if (turn.citations && turn.citations.length) bubble.appendChild(renderCitations(turn.citations));
+    // Thumbs row: completed, non-error assistant turns with a rating key,
+    // only when the dark-launch flag is on.
+    if (
+      this.feedbackEnabled &&
+      showFeedbackRow({ role: turn.role, error: turn.error, id: turn.turnId, streaming })
+    ) {
+      bubble.appendChild(this.feedbackView(turn));
+    }
     return el("div", { class: `thom-turn ${turn.role}` }, [bubble]);
+  }
+
+  // --- feedback (thumbs) ------------------------------------------------------
+
+  /** lucide "thumbs-up" outline; drawn flipped for thumbs-down. */
+  private thumbIcon(down: boolean): SVGElement {
+    const svg = svgEl(
+      "svg",
+      {
+        viewBox: "0 0 24 24",
+        width: 14,
+        height: 14,
+        fill: "none",
+        stroke: "currentColor",
+        "stroke-width": 2,
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+        class: down ? "thom-thumb-flip" : undefined,
+      },
+      [
+        svgEl("path", { d: "M7 10v12" }),
+        svgEl("path", {
+          d: "M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z",
+        }),
+      ],
+    );
+    return svg;
+  }
+
+  /** The thumbs row + STATIC disclosure line (F4) + optional reason box. */
+  private feedbackView(turn: Turn): HTMLElement {
+    const turnId = turn.turnId as string;
+    const up = el("button", {
+      class: `thom-btn thom-feedback-btn${turn.feedback === 1 ? " selected" : ""}`,
+      type: "button",
+      "aria-label": "Good answer",
+      title: "Good answer",
+      "aria-pressed": turn.feedback === 1 ? "true" : "false",
+    }, [this.thumbIcon(false)]);
+    up.addEventListener("click", () => {
+      if (turn.feedback === 1) return; // one vote per answer; change-of-mind only
+      this.closeReasonBox();
+      void this.submitFeedback(turnId, 1);
+    });
+    const down = el("button", {
+      class: `thom-btn thom-feedback-btn${turn.feedback === -1 ? " selected" : ""}`,
+      type: "button",
+      "aria-label": "Bad answer",
+      title: "Bad answer",
+      "aria-pressed": turn.feedback === -1 ? "true" : "false",
+    }, [this.thumbIcon(true)]);
+    down.addEventListener("click", () => {
+      if (turn.feedback === -1) return;
+      this.openReasonBox(turnId);
+    });
+
+    const note = this.feedbackNotes.get(turnId);
+    const children: (Node | null)[] = [
+      el("div", { class: "thom-feedback-row" }, [up, down]),
+      // Disclosure renders STATICALLY with the thumbs (F4) — before either
+      // vote is cast, never tooltip-only.
+      el("div", { class: "thom-muted thom-feedback-disclosure", text: FEEDBACK_DISCLOSURE_COPY }),
+      note ? el("div", { class: "thom-muted thom-feedback-note", text: note }) : null,
+    ];
+
+    if (this.reasonOpenFor === turnId) {
+      const textarea = el("textarea", {
+        class: "thom-input thom-feedback-textarea",
+        rows: 2,
+        maxlength: 1000,
+        placeholder: "What went wrong? (optional)",
+        "aria-label": "Feedback reason",
+      });
+      const send = this.button("Send", "thom-btn-primary", () => {
+        void this.submitFeedback(turnId, -1, textarea.value.trim() || undefined);
+      });
+      const skip = this.button("Skip", "thom-btn-ghost", () => {
+        void this.submitFeedback(turnId, -1);
+      });
+      children.push(
+        el("div", { class: "thom-feedback-reason" }, [
+          textarea,
+          el("div", { class: "thom-feedback-reason-actions" }, [send, skip]),
+        ]),
+      );
+    }
+
+    return el("div", { class: "thom-feedback" }, children);
+  }
+
+  private openReasonBox(turnId: string): void {
+    this.reasonOpenFor = turnId;
+    this.renderTurns();
+    // Close on outer click (anywhere outside the reason box).
+    if (!this.outerCloseBound) {
+      this.outerCloseBound = (e: MouseEvent) => {
+        const target = e.target as HTMLElement | null;
+        if (target?.closest(".thom-feedback-reason") || target?.closest(".thom-feedback-btn")) return;
+        this.closeReasonBox();
+        this.renderTurns();
+      };
+      document.addEventListener("mousedown", this.outerCloseBound, true);
+    }
+  }
+
+  private closeReasonBox(): void {
+    this.reasonOpenFor = null;
+    if (this.outerCloseBound) {
+      document.removeEventListener("mousedown", this.outerCloseBound, true);
+      this.outerCloseBound = null;
+    }
+  }
+
+  /** POST the vote. Both snapshots are PROBES: when the log bridge matches the
+   *  logged turn, the stored snapshot comes from the DB rows (F3). */
+  private async submitFeedback(turnId: string, rating: 1 | -1, reason?: string): Promise<void> {
+    this.closeReasonBox();
+    this.feedbackNotes.delete(turnId);
+    const idx = this.turns.findIndex((t) => t.turnId === turnId);
+    const turn = idx >= 0 ? this.turns[idx] : undefined;
+    if (!turn) return;
+    // question = nearest preceding user turn's text; answer = this turn's text.
+    let question = "";
+    for (let i = idx - 1; i >= 0; i--) {
+      const t = this.turns[i];
+      if (t && t.role === "user" && t.text) {
+        question = t.text;
+        break;
+      }
+    }
+
+    const post = async (session: string): Promise<Response> =>
+      fetch("/api/feedback", {
+        method: "POST",
+        headers: { "content-type": "application/json", "X-Thom-Session": session },
+        body: JSON.stringify({ session, turnId, rating, reason, question, answer: turn.text }),
+      });
+
+    try {
+      let session = await this.ensureSession();
+      let res = await post(session);
+      if (res.status === 401) {
+        // Expired session — drop it and re-challenge once (mirrors runStream).
+        this.sessionToken = null;
+        clearSessionToken(this.siteKey);
+        session = await this.ensureSession();
+        res = await post(session);
+      }
+      if (!res.ok) throw new Error(`feedback failed (${res.status})`);
+      this.turns[idx] = { ...turn, feedback: rating };
+      this.persist();
+    } catch {
+      // Quiet inline note — never an error bubble.
+      this.feedbackNotes.set(turnId, "Couldn't send feedback. Please try again.");
+    }
+    this.renderTurns();
   }
 
   private scrollToBottom(): void {
@@ -286,6 +471,8 @@ export class ThomWidget {
     this.abort?.abort();
     this.abort = null;
     this.busy = false;
+    this.closeReasonBox();
+    this.feedbackNotes.clear();
     this.turns = [];
     clearHistory(this.siteKey, this.sessionId);
     this.inputEl.value = "";
@@ -299,9 +486,13 @@ export class ThomWidget {
     this.busy = true;
     this.setComposerEnabled(false);
 
-    // Bounded history from PRIOR turns (before we push the new pair).
+    // Bounded history from PRIOR turns (before we push the new pair). The
+    // assistant turn mints its feedback key here (persisted with the turn).
     const history = toRequestHistory(this.turns);
-    this.turns.push({ role: "user", text: message }, { role: "assistant", text: "" });
+    this.turns.push(
+      { role: "user", text: message },
+      { role: "assistant", text: "", turnId: randomId() },
+    );
     this.renderTurns();
 
     let session: string;

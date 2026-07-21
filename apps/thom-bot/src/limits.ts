@@ -36,6 +36,10 @@ export interface TokenCaps {
 /** Documented defaults. Override via env (see src/env.ts / src/index.ts). */
 export const DEFAULT_RATE_CAPS: RateCaps = { perMin: 20, perDay: 300 };
 export const DEFAULT_TOKEN_CAPS: TokenCaps = { perIpDay: 200_000, globalDay: 5_000_000 };
+/** Feedback endpoint caps — deliberately smaller than chat (a vote is cheap
+ *  to send and needs no burst headroom). Override via THOM_FEEDBACK_PER_MIN /
+ *  THOM_FEEDBACK_PER_DAY. */
+export const DEFAULT_FEEDBACK_RATE_CAPS: RateCaps = { perMin: 10, perDay: 40 };
 
 // TTLs: minute window lives 2 min (slop for clock skew), day windows live 25 h.
 const MIN_TTL_S = 120;
@@ -64,15 +68,20 @@ async function readInt(kv: KVLike, key: string): Promise<number> {
  * IP+siteKey; if either is already at its cap, returns { ok:false } WITHOUT
  * incrementing. Otherwise increments both (compare-then-increment → exactly
  * `cap` requests allowed per window) and returns { ok:true }.
+ *
+ * `kind` namespaces the counters (e.g. "fb" for the feedback endpoint) so a
+ * secondary endpoint gets its OWN buckets and never consumes — or is starved
+ * by — the chat counters. Unset = the original chat keyspace, unchanged.
  */
 export async function checkAndIncrRate(
   kv: KVLike,
-  opts: { ip: string; siteKey: string; caps?: RateCaps; now?: number },
+  opts: { ip: string; siteKey: string; caps?: RateCaps; now?: number; kind?: string },
 ): Promise<LimitResult> {
   const caps = opts.caps ?? DEFAULT_RATE_CAPS;
   const now = opts.now ?? Date.now();
-  const minKey = `rate:min:${opts.siteKey}:${opts.ip}:${minuteEpoch(now)}`;
-  const dayKey = `rate:day:${opts.siteKey}:${opts.ip}:${dayStr(now)}`;
+  const ns = opts.kind ? `${opts.kind}:` : "";
+  const minKey = `rate:${ns}min:${opts.siteKey}:${opts.ip}:${minuteEpoch(now)}`;
+  const dayKey = `rate:${ns}day:${opts.siteKey}:${opts.ip}:${dayStr(now)}`;
 
   const [minCount, dayCount] = await Promise.all([readInt(kv, minKey), readInt(kv, dayKey)]);
   if (minCount >= caps.perMin) return { ok: false, reason: "rate_minute" };
@@ -132,6 +141,17 @@ export function rateCapsFromEnv(env: {
   return {
     perMin: intOr(env.THOM_RATE_PER_MIN, DEFAULT_RATE_CAPS.perMin),
     perDay: intOr(env.THOM_RATE_PER_DAY, DEFAULT_RATE_CAPS.perDay),
+  };
+}
+
+/** Build the FEEDBACK RateCaps from env overrides (10/min, 40/day defaults). */
+export function feedbackCapsFromEnv(env: {
+  THOM_FEEDBACK_PER_MIN?: string;
+  THOM_FEEDBACK_PER_DAY?: string;
+}): RateCaps {
+  return {
+    perMin: intOr(env.THOM_FEEDBACK_PER_MIN, DEFAULT_FEEDBACK_RATE_CAPS.perMin),
+    perDay: intOr(env.THOM_FEEDBACK_PER_DAY, DEFAULT_FEEDBACK_RATE_CAPS.perDay),
   };
 }
 

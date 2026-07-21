@@ -105,7 +105,9 @@ export function getSessionId(siteKey: string, storage: StorageLike | null = defa
   return id;
 }
 
-function randomId(): string {
+/** Random id used for the per-tab session id AND per-assistant-turn feedback
+ *  keys (client_turn_id). Exported so the widget mints turn ids the same way. */
+export function randomId(): string {
   const c = (globalThis as { crypto?: Crypto }).crypto;
   if (c?.randomUUID) return c.randomUUID();
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;

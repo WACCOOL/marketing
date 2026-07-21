@@ -43,10 +43,57 @@ export async function listConversations(params: {
   return api(`/api/thom-admin/conversations?${q}`);
 }
 
+/** One thom_feedback row as attached to a conversation thread (chips). */
+export interface ConversationFeedback {
+  message_id: string | null;
+  rating: 1 | -1;
+  reason: string | null;
+}
+
 export async function getConversation(
   id: string,
-): Promise<{ conversation: AdminConversation; messages: AdminMessage[] }> {
+): Promise<{
+  conversation: AdminConversation;
+  messages: AdminMessage[];
+  feedback?: ConversationFeedback[];
+}> {
   return api(`/api/thom-admin/conversations/${id}`);
+}
+
+// --- Feedback (thumbs + reasons) ----------------------------------------------
+
+export interface FeedbackItem {
+  id: string;
+  surface: "internal" | "public";
+  rating: 1 | -1;
+  reason: string | null;
+  question_text: string;
+  answer_text: string;
+  site_key: string | null;
+  conversation_id: string | null;
+  message_id: string | null;
+  user_id: string | null;
+  user_email: string | null;
+  created_at: string;
+  tool_calls: { name: string }[];
+  doc_types: string[];
+}
+
+export async function listFeedback(params: {
+  days: number;
+  surface: "all" | "internal" | "public";
+  rating: "all" | "up" | "down";
+  limit?: number;
+  offset?: number;
+}): Promise<{ total: number; items: FeedbackItem[] }> {
+  const q = new URLSearchParams({
+    days: String(params.days),
+    surface: params.surface,
+    rating: params.rating,
+    limit: String(params.limit ?? 50),
+    offset: String(params.offset ?? 0),
+  });
+  return api(`/api/thom-admin/feedback?${q}`);
 }
 
 export interface DailyRow {
@@ -60,6 +107,13 @@ export interface DailyRow {
 
 export type AnalyticsSurface = "all" | "internal" | "public";
 
+export interface FeedbackDailyRow {
+  day: string;
+  up: number;
+  down: number;
+  unverified: number;
+}
+
 export interface AnalyticsBundle {
   days: number;
   surface: AnalyticsSurface;
@@ -68,6 +122,9 @@ export interface AnalyticsBundle {
   topWords: { word: string; hits: number }[];
   topProducts: { sku: string; name: string | null; hits: number }[];
   sources: { source: string; hits: number }[];
+  /** Zeros/empty until migration 0062 is applied (the API is best-effort). */
+  feedbackDaily: FeedbackDailyRow[];
+  feedbackTotals: { up: number; down: number; unverified: number };
 }
 
 export async function getAnalytics(days: number, surface: AnalyticsSurface): Promise<AnalyticsBundle> {

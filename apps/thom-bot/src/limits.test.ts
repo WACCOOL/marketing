@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   checkAndIncrRate,
   checkAndAddTokens,
+  feedbackCapsFromEnv,
   rateCapsFromEnv,
   tokenCapsFromEnv,
+  DEFAULT_FEEDBACK_RATE_CAPS,
   DEFAULT_RATE_CAPS,
   DEFAULT_TOKEN_CAPS,
   type KVLike,
@@ -59,6 +61,23 @@ describe("checkAndIncrRate", () => {
     expect(dayKey).toBe("rate:day:SK:3.3.3.3:2026-07-18");
     expect(kv.ttls.get(minKey as string)).toBe(120);
     expect(kv.ttls.get(dayKey as string)).toBe(25 * 60 * 60);
+  });
+
+  it("namespaces counters by `kind` — feedback and chat never share buckets", async () => {
+    const kv = fakeKV();
+    const caps = { perMin: 1, perDay: 1000 };
+    const base = { ip: "f", siteKey: "s", caps, now: NOW };
+    // Chat bucket filled…
+    expect((await checkAndIncrRate(kv, base)).ok).toBe(true);
+    expect((await checkAndIncrRate(kv, base)).ok).toBe(false);
+    // …the "fb" bucket is untouched and has its own cap.
+    expect((await checkAndIncrRate(kv, { ...base, kind: "fb" })).ok).toBe(true);
+    expect((await checkAndIncrRate(kv, { ...base, kind: "fb" })).ok).toBe(false);
+    const keys = [...kv.store.keys()];
+    expect(keys).toContain(`rate:min:s:f:${Math.floor(NOW / 60_000)}`);
+    expect(keys).toContain(`rate:fb:min:s:f:${Math.floor(NOW / 60_000)}`);
+    expect(keys).toContain("rate:day:s:f:2026-07-18");
+    expect(keys).toContain("rate:fb:day:s:f:2026-07-18");
   });
 
   it("separates counters per ip and per siteKey", async () => {
@@ -128,5 +147,14 @@ describe("caps from env", () => {
     expect(
       tokenCapsFromEnv({ THOM_TOKENS_PER_IP_DAY: "1000", THOM_TOKENS_GLOBAL_DAY: "9999" }),
     ).toEqual({ perIpDay: 1000, globalDay: 9999 });
+  });
+
+  it("feedback caps default to 10/min, 40/day and honor their own overrides", () => {
+    expect(DEFAULT_FEEDBACK_RATE_CAPS).toEqual({ perMin: 10, perDay: 40 });
+    expect(feedbackCapsFromEnv({})).toEqual(DEFAULT_FEEDBACK_RATE_CAPS);
+    expect(feedbackCapsFromEnv({ THOM_FEEDBACK_PER_MIN: "abc" })).toEqual(DEFAULT_FEEDBACK_RATE_CAPS);
+    expect(
+      feedbackCapsFromEnv({ THOM_FEEDBACK_PER_MIN: "3", THOM_FEEDBACK_PER_DAY: "12" }),
+    ).toEqual({ perMin: 3, perDay: 12 });
   });
 });

@@ -471,6 +471,63 @@ a.thom-family-member:hover {
   border-color: var(--thom-accent);
 }
 
+/* feedback (thumbs) */
+.thom-feedback {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.thom-feedback-row {
+  display: flex;
+  gap: 6px;
+}
+.thom-feedback-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--thom-border);
+  border-radius: var(--thom-radius-sm);
+  background: var(--thom-panel);
+  color: var(--thom-muted);
+}
+.thom-feedback-btn:hover:not(:disabled) {
+  color: var(--thom-accent);
+  border-color: var(--thom-accent);
+}
+.thom-feedback-btn.selected {
+  color: var(--thom-accent);
+  border-color: var(--thom-accent);
+  background: var(--thom-accent-soft);
+}
+.thom-feedback-btn.selected svg {
+  fill: var(--thom-accent-soft);
+}
+.thom-thumb-flip {
+  transform: scale(-1);
+}
+.thom-feedback-disclosure,
+.thom-feedback-note {
+  font-size: 11px;
+  line-height: 1.4;
+}
+.thom-feedback-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.thom-feedback-textarea {
+  font-size: 13px;
+}
+.thom-feedback-reason-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 /* turnstile challenge */
 .thom-challenge {
   padding: 10px 12px;

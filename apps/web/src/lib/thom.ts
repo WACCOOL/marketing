@@ -119,12 +119,16 @@ export interface ConversationSummary {
   messageCount: number;
 }
 
-/** One persisted turn as reloaded from the server (mirrors ThomChat's Turn). */
+/** One persisted turn as reloaded from the server (mirrors ThomChat's Turn).
+ *  Assistant turns carry their thom_messages id (so reloaded history stays
+ *  ratable) and any vote already cast. */
 export interface StoredTurn {
   role: "user" | "assistant";
   text: string;
   cards?: Card[];
   citations?: Citation[];
+  messageId?: string;
+  feedback?: 1 | -1;
 }
 
 /** List the current user's recent Thom conversations (newest first). */
@@ -151,6 +155,21 @@ export async function deleteConversation(id: string): Promise<void> {
   });
 }
 
+// --- Feedback (thumbs up / thumbs down) ---------------------------------------
+
+/** Rate one of the caller's own assistant messages. Upsert semantics: one vote
+ *  per answer, change of mind allowed; reason is thumbs-down only. */
+export async function sendFeedback(
+  messageId: string,
+  rating: 1 | -1,
+  reason?: string,
+): Promise<void> {
+  await api<{ ok: true }>("/api/thom/feedback", {
+    method: "POST",
+    body: JSON.stringify({ messageId, rating, reason: reason || undefined }),
+  });
+}
+
 // --- Streaming (SSE) ---------------------------------------------------------
 
 /** Callbacks for chatStream. onError receives the HTTP status when the failure
@@ -161,7 +180,10 @@ export interface StreamCallbacks {
   onDelta: (text: string) => void;
   onCards: (cards: Card[]) => void;
   onCitations: (citations: Citation[]) => void;
-  onDone: () => void;
+  /** `messageId` (the logged assistant thom_messages id, used to key a
+   *  feedback vote) is absent on frames from older servers — degrade
+   *  gracefully by simply not showing thumbs. */
+  onDone: (info?: { messageId?: string }) => void;
   onError: (err: { status?: number; error: string }) => void;
 }
 
@@ -180,6 +202,7 @@ function dispatchFrame(frame: SSEFrame, cb: StreamCallbacks): void {
     cards?: Card[];
     citations?: Citation[];
     error?: string;
+    messageId?: string;
   };
   switch (frame.event) {
     case "meta":
@@ -195,7 +218,7 @@ function dispatchFrame(frame: SSEFrame, cb: StreamCallbacks): void {
       if (p.citations) cb.onCitations(p.citations);
       break;
     case "done":
-      cb.onDone();
+      cb.onDone(typeof p.messageId === "string" ? { messageId: p.messageId } : undefined);
       break;
     case "error":
       cb.onError({ error: p.error ?? "stream error" });

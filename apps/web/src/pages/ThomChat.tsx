@@ -9,16 +9,20 @@ import {
   Loader2,
   Plus,
   Send,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { showFeedbackRow } from "@wac/shared/thom/feedback";
 import {
   chatStream,
   deleteConversation,
   getConversation,
   listConversations,
+  sendFeedback,
   type Card,
   type Citation,
   type ConversationSummary,
@@ -33,6 +37,10 @@ interface Turn {
   cards?: Card[];
   citations?: Citation[];
   error?: boolean;
+  /** The logged assistant thom_messages id — the feedback key. Absent on old
+   *  persisted transcripts (thumbs simply hide). */
+  messageId?: string;
+  feedback?: 1 | -1;
 }
 
 const EXAMPLES = [
@@ -198,7 +206,13 @@ export function ThomChat() {
           setTurns((t) => updateLastAssistant(t, (turn) => ({ ...turn, cards }))),
         onCitations: (citations) =>
           setTurns((t) => updateLastAssistant(t, (turn) => ({ ...turn, citations }))),
-        onDone: () => {
+        onDone: (info) => {
+          // Store the message id on the just-finished assistant turn so it is
+          // ratable; absent on frames from older servers (thumbs just hide).
+          if (info?.messageId) {
+            const id = info.messageId;
+            setTurns((t) => updateLastAssistant(t, (turn) => ({ ...turn, messageId: id })));
+          }
           setBusy(false);
           abortRef.current = null;
         },
@@ -321,6 +335,14 @@ export function ThomChat() {
               key={i}
               turn={turn}
               streaming={busy && i === turns.length - 1 && turn.role === "assistant"}
+              onFeedback={(rating) =>
+                setTurns((t) => {
+                  const next = t.slice();
+                  const cur = next[i];
+                  if (cur) next[i] = { ...cur, feedback: rating };
+                  return next;
+                })
+              }
             />
           ))
         )}
@@ -343,7 +365,101 @@ export function ThomChat() {
   );
 }
 
-function TurnView({ turn, streaming = false }: { turn: Turn; streaming?: boolean }) {
+function FeedbackRow({
+  messageId,
+  feedback,
+  onFeedback,
+}: {
+  messageId: string;
+  feedback?: 1 | -1;
+  onFeedback: (rating: 1 | -1) => void;
+}) {
+  const [reasonOpen, setReasonOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const boxRef = useRef<HTMLDivElement>(null);
+
+  // The reason box also closes on outer click.
+  useEffect(() => {
+    if (!reasonOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setReasonOpen(false);
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [reasonOpen]);
+
+  async function vote(rating: 1 | -1, why?: string) {
+    setReasonOpen(false);
+    setReason("");
+    try {
+      await sendFeedback(messageId, rating, why);
+      onFeedback(rating);
+    } catch {
+      // quiet — the thumbs stay unselected so the user can retry
+    }
+  }
+
+  return (
+    <div className="thom-feedback" ref={boxRef}>
+      <div className="thom-feedback-row">
+        <button
+          className={`thom-feedback-btn${feedback === 1 ? " selected" : ""}`}
+          aria-label="Good answer"
+          title="Good answer"
+          aria-pressed={feedback === 1}
+          onClick={() => {
+            if (feedback === 1) return;
+            void vote(1);
+          }}
+        >
+          <ThumbsUp size={14} />
+        </button>
+        <button
+          className={`thom-feedback-btn${feedback === -1 ? " selected" : ""}`}
+          aria-label="Bad answer"
+          title="Bad answer"
+          aria-pressed={feedback === -1}
+          onClick={() => {
+            if (feedback === -1) return;
+            setReasonOpen(true);
+          }}
+        >
+          <ThumbsDown size={14} />
+        </button>
+      </div>
+      {reasonOpen && (
+        <div className="thom-feedback-reason">
+          <textarea
+            rows={2}
+            maxLength={1000}
+            placeholder="What went wrong? (optional)"
+            aria-label="Feedback reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+          />
+          <div className="thom-feedback-reason-actions">
+            <button className="primary" onClick={() => void vote(-1, reason.trim() || undefined)}>
+              Send
+            </button>
+            <button className="secondary" onClick={() => void vote(-1)}>
+              Skip
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TurnView({
+  turn,
+  streaming = false,
+  onFeedback,
+}: {
+  turn: Turn;
+  streaming?: boolean;
+  onFeedback?: (rating: 1 | -1) => void;
+}) {
   // An in-progress assistant turn with no text yet → show the thinking bubble
   // (kept until the first token arrives).
   if (turn.role === "assistant" && streaming && !turn.text) {
@@ -413,6 +529,11 @@ function TurnView({ turn, streaming = false }: { turn: Turn; streaming?: boolean
             ))}
           </div>
         )}
+        {onFeedback &&
+          turn.messageId &&
+          showFeedbackRow({ role: turn.role, error: turn.error, id: turn.messageId, streaming }) && (
+            <FeedbackRow messageId={turn.messageId} feedback={turn.feedback} onFeedback={onFeedback} />
+          )}
       </div>
     </div>
   );

@@ -25,4 +25,10 @@ export interface Turn {
   cards?: import("@wac/shared/thom").Card[];
   citations?: import("@wac/shared/thom").Citation[];
   error?: boolean;
+  /** Client-minted uuid per assistant turn — the rating key for feedback
+   *  (there is no server message id on the public surface). Persists with the
+   *  turn so votes survive widget reopen within the session. */
+  turnId?: string;
+  /** The vote already cast on this turn, if any (1 = up, -1 = down). */
+  feedback?: 1 | -1;
 }

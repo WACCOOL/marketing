@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { WARNING_COPY } from "./app.js";
+import { FEEDBACK_DISCLOSURE_COPY, WARNING_COPY } from "./app.js";
 
 /** The start-of-chat disclaimer is a product-mandated EXACT string. This test
  *  locks the wording (and the house copy rules) so it can't silently drift. */
@@ -18,5 +18,20 @@ describe("start-of-chat warning", () => {
     expect(WARNING_COPY).toContain("WAC Group");
     // no bare "WAC" that isn't "WAC Group" / "WAC Lighting" etc.
     expect(/\bWAC\b(?! Group| Lighting)/.test(WARNING_COPY)).toBe(false);
+  });
+});
+
+describe("feedback disclosure (F4 — static line with the thumbs row)", () => {
+  it("matches the drafted copy pending Davis sign-off", () => {
+    expect(FEEDBACK_DISCLOSURE_COPY).toBe(
+      "Sending feedback shares this question and Thom's answer with WAC Group " +
+        "so we can improve Thom.",
+    );
+  });
+
+  it("obeys the house copy rules (no em dash, uses 'WAC Group')", () => {
+    expect(FEEDBACK_DISCLOSURE_COPY).not.toContain("—");
+    expect(FEEDBACK_DISCLOSURE_COPY).toContain("WAC Group");
+    expect(/\bWAC\b(?! Group| Lighting)/.test(FEEDBACK_DISCLOSURE_COPY)).toBe(false);
   });
 });
