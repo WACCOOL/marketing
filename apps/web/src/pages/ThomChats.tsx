@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { errorMessage } from "../lib/api.js";
 import {
   getConversation,
   listConversations,
@@ -38,7 +39,7 @@ export function ThomChats() {
         setItems(r.items);
         setTotal(r.total);
       })
-      .catch((e) => !stale && setErr(e instanceof Error ? e.message : String(e)))
+      .catch((e) => !stale && setErr(errorMessage(e)))
       .finally(() => !stale && setLoading(false));
     return () => {
       stale = true;
@@ -52,7 +53,7 @@ export function ThomChats() {
     setThreadErr(null);
     getConversation(openId)
       .then((r) => !stale && setThread(r.messages))
-      .catch((e) => !stale && setThreadErr(e instanceof Error ? e.message : String(e)));
+      .catch((e) => !stale && setThreadErr(errorMessage(e)));
     return () => {
       stale = true;
     };

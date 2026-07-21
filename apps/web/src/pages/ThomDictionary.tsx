@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { errorMessage } from "../lib/api.js";
 import { DEFAULT_PROTECTED_TERMS } from "@wac/shared/thom/protectedTerms";
 import { addTerm, removeTerm, useThomDictionary } from "../lib/thomDictionary.js";
 
@@ -28,7 +29,7 @@ export function ThomDictionary() {
       setNote("");
       await refresh();
     } catch (e) {
-      setActionErr(e instanceof Error ? e.message : String(e));
+      setActionErr(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -42,7 +43,7 @@ export function ThomDictionary() {
       await removeTerm(id);
       await refresh();
     } catch (e) {
-      setActionErr(e instanceof Error ? e.message : String(e));
+      setActionErr(errorMessage(e));
     } finally {
       setBusy(false);
     }
