@@ -24,6 +24,18 @@ import type { WebStore } from "./store.js";
 const USER_AGENT = "WAC-Marketing-App/1.0 (+thom web crawl; contact WAC IT)";
 const FETCH_TIMEOUT_MS = 30_000;
 const UPSERT = 300;
+/** Safety cap on fetches for seeded-BFS discovery when no --crawl-limit is
+ *  given. Sitemap sites are naturally bounded by their sitemaps; a BFS site
+ *  whose listings always render a "next page" link is not. NOT a silent cap:
+ *  hitting it logs loudly and the remainder resumes next run (304/hash skip
+ *  re-covers old ground cheaply). */
+const BFS_DEFAULT_FETCH_CAP = 2_500;
+/** Highest ?p= pagination index the BFS will follow per listing. */
+const MAX_PAGINATION = 50;
+/** Persist frontier/kb rows every N processed URLs so a workflow timeout
+ *  keeps the progress made (the first wacarchitectural run lost 5 hours of
+ *  work to end-of-site persistence). */
+const FLUSH_EVERY = 100;
 
 export interface CrawlDeps {
   sb: SupabaseClient;
@@ -236,6 +248,10 @@ export async function crawlSite(
   const enqueued = new Set<string>();
   const enqueue = (d: Discovered) => {
     if (enqueued.has(d.c.url)) return;
+    // Pagination sanity: never follow ?p= beyond MAX_PAGINATION — a listing
+    // that always renders a next-page link would otherwise BFS forever.
+    const p = d.c.url.match(/[?&]p=(\d+)/);
+    if (p && Number(p[1]) > MAX_PAGINATION) return;
     enqueued.add(d.c.url);
     queue.push(d);
   };
@@ -252,6 +268,25 @@ export async function crawlSite(
   const frontierRows: FrontierRow[] = [];
   const kbRows: Record<string, unknown>[] = [];
   let fetches = 0;
+  const fetchCap =
+    opts.limit ?? (site.discovery === "seeded-bfs" ? BFS_DEFAULT_FETCH_CAP : null);
+  let capHit = false;
+
+  const flush = async (): Promise<void> => {
+    if (opts.dryRun) return;
+    while (kbRows.length) {
+      const slice = kbRows.splice(0, UPSERT);
+      const { error } = await deps.sb.from("kb_documents")
+        .upsert(slice, { onConflict: "source_system,external_id" });
+      if (error) throw new Error(`kb_documents (web_crawl) upsert failed: ${error.message}`);
+    }
+    while (frontierRows.length) {
+      const slice = frontierRows.splice(0, UPSERT);
+      const { error } = await deps.sb.from("crawl_frontier")
+        .upsert(slice, { onConflict: "url" });
+      if (error) throw new Error(`crawl_frontier upsert failed: ${error.message}`);
+    }
+  };
 
   const shouldFetch = (cls: Classification): boolean => {
     switch (cls.kind) {
@@ -287,9 +322,17 @@ export async function crawlSite(
       frontierRows.push({ ...base, status: "skipped", doc_type_guess: "skip:robots_disallow" });
       continue;
     }
-    if (opts.limit != null && fetches >= opts.limit) {
+    if (fetchCap != null && fetches >= fetchCap) {
+      if (!capHit) {
+        capHit = true;
+        log(`[crawl:${site.key}] FETCH CAP ${fetchCap} reached — remaining URLs recorded unfetched (resume next run)`);
+      }
       frontierRows.push(base);
       continue;
+    }
+    if (fetches > 0 && fetches % FLUSH_EVERY === 0) {
+      log(`[crawl:${site.key}] progress: ${fetches} fetched, ${queue.length - i} queued, ${stats.captured} captured`);
+      await flush();
     }
     if (opts.dryRun) {
       fetches++;
@@ -411,19 +454,8 @@ export async function crawlSite(
     frontierRows.push({ ...base, ...evidence, status: "fetched", http_status: 200, etag: res.etag, last_modified: res.lastModified, content_hash: hash, last_crawled_at: iso() });
   }
 
-  // --- persist ---
-  if (!opts.dryRun) {
-    for (let i = 0; i < kbRows.length; i += UPSERT) {
-      const { error } = await deps.sb.from("kb_documents")
-        .upsert(kbRows.slice(i, i + UPSERT), { onConflict: "source_system,external_id" });
-      if (error) throw new Error(`kb_documents (web_crawl) upsert failed: ${error.message}`);
-    }
-    for (let i = 0; i < frontierRows.length; i += UPSERT) {
-      const { error } = await deps.sb.from("crawl_frontier")
-        .upsert(frontierRows.slice(i, i + UPSERT), { onConflict: "url" });
-      if (error) throw new Error(`crawl_frontier upsert failed: ${error.message}`);
-    }
-  }
+  // --- persist (final flush; incremental flushes ran during the loop) ---
+  await flush();
 
   log(
     `[crawl:${site.key}] ${stats.discovered} discovered, ${stats.fetched} fetched, ` +
