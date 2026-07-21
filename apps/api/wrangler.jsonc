@@ -246,7 +246,14 @@
     // demand. ENABLED 2026-07-18 (migrations applied). Track BOM transformer/feed
     // counts are omitted for systems whose feed_capacity_w is still NULL in the
     // DRAFT seed (see docs/thom-track-systems.md) until those values are verified.
-    "THOM_LAYOUT": "1"
+    "THOM_LAYOUT": "1",
+    // Thom spec-rank tool (rank_products_by_spec: highest-lumen / most-efficient
+    // rankings over product_spec_view, migrations 0059/0060). "1" = tool offered
+    // + the primer's superlative bullet composed. INTERNAL surface; the public
+    // flag lives in apps/thom-bot/wrangler.jsonc and flips after the internal
+    // regression conversation (plan G.2, docs/thom-lighting-expert-plan.md).
+    // ENABLED 2026-07-21 (0059+0060 applied, G.1 verification passed).
+    "THOM_SPEC_RANK": "1"
   },
 
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:
