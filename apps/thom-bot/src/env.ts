@@ -21,6 +21,11 @@ export interface PublicEnv extends ThomEnv {
   // --- Supabase (ANON only — never service role) ---
   SUPABASE_URL: string;
   SUPABASE_ANON_KEY: string;
+  /** Turn-logging bridge to the API worker (chat viewer + analytics). BOTH
+   *  must be set or logging is silently skipped: the POST endpoint
+   *  (e.g. https://<api-host>/api/thom/public-log) and its shared secret. */
+  THOM_LOG_URL?: string;
+  THOM_LOG_TOKEN?: string;
 
   // --- Workers AI (bge-m3 embeddings for KB + product hybrid search) ---
   AI: Ai;

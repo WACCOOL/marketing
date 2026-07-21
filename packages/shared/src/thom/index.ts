@@ -17,6 +17,7 @@ export * from "./publicFilter.js";
 export * from "./tools.js";
 export * from "./authority.js";
 export * from "./dictionary.js";
+export * from "./analyticsWords.js";
 export * from "./photometricsTools.js";
 export * from "./layoutTool.js";
 export * from "./agent.js";

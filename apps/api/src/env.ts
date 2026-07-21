@@ -143,6 +143,8 @@ export interface Env {
   // Power Automate flows present it as a Bearer token to push files in. DEDICATED
   // (separate from ADMIN_API_TOKEN) so a leaked ingest token can't reach admin
   // routes. When unset, only authenticated GUI uploads work (the manual path).
+  /** Shared secret for the public Thom worker's turn-logging bridge. */
+  THOM_LOG_TOKEN?: string;
   INGEST_API_TOKEN?: string;
 
   // Shared secret for the SAP -> HubSpot sync capture endpoint

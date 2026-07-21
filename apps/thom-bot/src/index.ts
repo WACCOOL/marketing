@@ -151,6 +151,49 @@ app.post("/api/chat/stream", async (c) => {
   const history = boundHistory(body.history);
   const sb = anonSupabase(c.env);
 
+  // Turn logging (admin chat viewer + analytics): accumulate the turn and POST
+  // it to the API worker's shared-secret bridge AFTER the stream finishes.
+  // This worker deliberately holds no service key; the bridge does the write.
+  // Skipped silently unless THOM_LOG_URL + THOM_LOG_TOKEN are configured, and
+  // never allowed to affect the visitor's stream.
+  const turnLog = {
+    answer: "",
+    cards: [] as unknown[],
+    citations: [] as unknown[],
+    toolCalls: [] as { name: string; input: unknown }[],
+    usage: null as { model?: string; input_tokens?: number; output_tokens?: number } | null,
+  };
+  const sendTurnLog = async (): Promise<void> => {
+    const url = c.env.THOM_LOG_URL;
+    const token = c.env.THOM_LOG_TOKEN;
+    if (!url || !token) return;
+    try {
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sessionToken));
+      const sessionKey = [...new Uint8Array(digest)]
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("")
+        .slice(0, 32);
+      await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-thom-log-token": token },
+        body: JSON.stringify({
+          session_key: sessionKey,
+          site_key: siteKeyFromToken(sessionToken) ?? c.req.header("origin") ?? null,
+          question: message,
+          answer: turnLog.answer.slice(0, 64_000),
+          tool_calls: turnLog.toolCalls.slice(0, 40),
+          citations: turnLog.citations.length ? turnLog.citations : undefined,
+          product_cards: turnLog.cards.length ? turnLog.cards : undefined,
+          model: turnLog.usage?.model,
+          input_tokens: turnLog.usage?.input_tokens,
+          output_tokens: turnLog.usage?.output_tokens,
+        }),
+      });
+    } catch {
+      // best-effort only
+    }
+  };
+
   c.header("Content-Security-Policy", csp);
   return streamSSE(c, async (stream) => {
     await stream.writeSSE({ event: "meta", data: JSON.stringify({ surface: "public" }) });
@@ -161,15 +204,25 @@ app.post("/api/chat/stream", async (c) => {
         userMessage: message,
       })) {
         if (ev.type === "text") {
+          turnLog.answer += ev.text;
           await stream.writeSSE({ event: "text", data: JSON.stringify({ text: ev.text }) });
         } else if (ev.type === "cards") {
+          turnLog.cards.push(...ev.cards);
           await stream.writeSSE({ event: "cards", data: JSON.stringify({ cards: ev.cards }) });
         } else if (ev.type === "citations") {
+          turnLog.citations.push(...ev.citations);
           await stream.writeSSE({ event: "citations", data: JSON.stringify({ citations: ev.citations }) });
         } else if (ev.type === "final") {
           // Record token usage AFTER the turn (soft cap; the next pre-check enforces).
           const used = ev.usage.input_tokens + ev.usage.output_tokens;
           await checkAndAddTokens(c.env.THOM_KV, { ip, dayTokens: used, caps: tokenCaps }).catch(() => {});
+          turnLog.toolCalls = ev.toolCalls;
+          turnLog.usage = {
+            model: ev.usage.model,
+            input_tokens: ev.usage.input_tokens,
+            output_tokens: ev.usage.output_tokens,
+          };
+          c.executionCtx.waitUntil(sendTurnLog());
           await stream.writeSSE({ event: "done", data: JSON.stringify({ usage: ev.usage }) });
         }
       }

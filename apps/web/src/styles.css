@@ -10,6 +10,9 @@
   --muted: #8c93a5;
   --accent: #3b6fd4;
   --accent-2: #2f5dc0;
+  /* Chart series (validated: CVD-safe pair on both surfaces) */
+  --chart-1: #3b6fd4;
+  --chart-2: #d97706;
   --accent-soft: rgba(59, 111, 212, 0.12);
   --active-bg: #1c1f26;
   --active-text: #ffffff;
@@ -41,6 +44,8 @@
   --text: #e9ecf1;
   --muted: #8c93a5;
   --accent: #5b8def;
+  --chart-1: #5b8def;
+  --chart-2: #c47207;
   --accent-2: #4c7be0;
   --accent-soft: rgba(91, 141, 239, 0.16);
   --active-bg: #2b3140;

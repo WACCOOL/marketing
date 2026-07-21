@@ -17,6 +17,8 @@ import { Products } from "./pages/Products.js";
 import { ThomChat } from "./pages/ThomChat.js";
 import { ThomContentAdmin } from "./pages/ThomContentAdmin.js";
 import { ThomDictionary } from "./pages/ThomDictionary.js";
+import { ThomChats } from "./pages/ThomChats.js";
+import { ThomAnalytics } from "./pages/ThomAnalytics.js";
 import { AppImage } from "./pages/AppImage.js";
 import {
   NormalizationPage,
@@ -139,6 +141,14 @@ function Shell() {
           <Route
             path="/thom-dictionary"
             element={gate("thom-content", <ThomDictionary />)}
+          />
+          <Route
+            path="/thom-chats"
+            element={isAdmin ? <ThomChats /> : <Navigate to={landing} replace />}
+          />
+          <Route
+            path="/thom-analytics"
+            element={isAdmin ? <ThomAnalytics /> : <Navigate to={landing} replace />}
           />
           <Route
             path="/product-info"

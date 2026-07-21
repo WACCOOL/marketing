@@ -35,6 +35,8 @@ import {
   Upload,
   Webhook,
   Bot,
+  ChartLine,
+  MessagesSquare,
   type LucideIcon,
 } from "lucide-react";
 import { type FeatureKey } from "@wac/shared";
@@ -47,6 +49,8 @@ interface NavLeaf {
   icon: LucideIcon;
   /** Feature that gates this item; omitted = always visible to active users. */
   feature?: FeatureKey;
+  /** Admins only, regardless of features (chat transcripts, analytics). */
+  adminOnly?: boolean;
 }
 
 interface NavParent {
@@ -127,6 +131,8 @@ const ADMIN_ENTRIES: NavEntry[] = [
       { to: "/thom", label: "Thom Bot", icon: Bot, feature: "thom" },
       { to: "/thom-content", label: "Thom Knowledge", icon: BookOpen, feature: "thom-content" },
       { to: "/thom-dictionary", label: "Dictionary", icon: SpellCheck, feature: "thom-content" },
+      { to: "/thom-chats", label: "Chats", icon: MessagesSquare, adminOnly: true },
+      { to: "/thom-analytics", label: "Analytics", icon: ChartLine, adminOnly: true },
     ],
   },
   { to: "/library", label: "Asset Library", icon: FolderOpen, feature: "library" },
@@ -202,7 +208,9 @@ export function Sidebar() {
     // Asset Library by feature; the Admin page is admin-only.
     for (const entry of ADMIN_ENTRIES) {
       if (isParent(entry)) {
-        const children = entry.children.filter((c) => can(c.feature));
+        const children = entry.children.filter((c) =>
+          c.adminOnly ? isAdmin : can(c.feature),
+        );
         if (children.length) entries.push({ ...entry, children });
         continue;
       }

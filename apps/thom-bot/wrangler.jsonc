@@ -46,6 +46,9 @@
   },
 
   "vars": {
+    // Turn-logging bridge to the API worker (chat viewer + analytics).
+    // Dark until the THOM_LOG_TOKEN secret is also set (on BOTH workers).
+    "THOM_LOG_URL": "https://marketing.gowac.cc/api/thom/public-log",
     // Supabase project URL (public, also bundled in the SPA) — the anon KEY is a
     // secret set via `wrangler secret put SUPABASE_ANON_KEY`.
     "SUPABASE_URL": "https://stmphhslrjhtzmvqilqu.supabase.co",

@@ -457,7 +457,14 @@ export type ThomStreamEvent =
   | { type: "text"; text: string }
   | { type: "cards"; cards: Card[] }
   | { type: "citations"; citations: Citation[] }
-  | { type: "final"; text: string; usage: ThomUsage };
+  | {
+      type: "final";
+      text: string;
+      usage: ThomUsage;
+      /** Client tool calls this REQUEST made (name + input), for turn logging
+       *  and the search-analytics rollup. */
+      toolCalls: { name: string; input: unknown }[];
+    };
 
 /**
  * Rebuild one assistant turn from its streamed events. PURE and testable: the
@@ -585,6 +592,7 @@ export async function* runThomStream(
   const dictTerms = isPublic ? await loadProtectedTerms(sb) : [];
   // Sanitize one turn's reconstructed text for the public surface: normalize
   // copy always; screen for competitors only when the turn used web_search.
+  const allToolCalls: { name: string; input: unknown }[] = [];
   const sanitizePublic = (turn: { content: ClaudeContentBlock[]; text: string }): Promise<string> => {
     const normalized = normalizeCopy(turn.text, dictTerms);
     return turnUsedWebSearch(turn.content)
@@ -679,9 +687,9 @@ export async function* runThomStream(
       if (isPublic) {
         const text = publicText ?? "";
         if (text) yield { type: "text", text };
-        yield { type: "final", text, usage };
+        yield { type: "final", text, usage, toolCalls: allToolCalls };
       } else {
-        yield { type: "final", text: finalText(turn.content), usage };
+        yield { type: "final", text: finalText(turn.content), usage, toolCalls: allToolCalls };
       }
       return;
     }
@@ -695,6 +703,7 @@ export async function* runThomStream(
     const toolUses = turn.content.filter(
       (b): b is ClaudeToolUseBlock => b.type === "tool_use",
     );
+    for (const tu of toolUses) allToolCalls.push({ name: tu.name, input: tu.input });
     toolCallCount += toolUses.length;
     const results: ClaudeToolResultBlock[] = [];
     for (const tu of toolUses) {
@@ -730,5 +739,6 @@ export async function* runThomStream(
     type: "final",
     text: isPublic ? normalizeCopy(maxStepsText, dictTerms) : maxStepsText,
     usage,
+    toolCalls: allToolCalls,
   };
 }
