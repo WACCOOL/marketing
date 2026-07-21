@@ -115,6 +115,35 @@ export function lightingExpertise(hasSpecRank: boolean): string {
     : LIGHTING_EXPERTISE_BASE;
 }
 
+/** Compatibility / accessories guidance for BOTH surfaces (compatibility plan
+ *  v2.1 §C). AUTHORED TO THE PUBLIC COPY LINTS (it rides on the public surface
+ *  too): no em dashes, always "WAC Group" or a real brand name, none of the
+ *  promptsPublic.test.ts forbidden vocabulary, and it must pass normalizeCopy()
+ *  unchanged. Kept ahead of the web-search block so the tail cache breakpoint
+ *  stays on the final block. */
+const COMPATIBILITY_GUIDANCE_BASE = `Compatibility and accessories:
+- Source order for ANY compatibility or accessory claim: (1) the explicit confirmed accessory, component, and replacement-part references returned by get_product and get_related_products are AUTHORITATIVE catalog data, lead with them; (2) spec sheets and manuals via search_docs, always cited; (3) same-family or same-category expansion is a suggestion only, always presented as "same family or category, verify fitment". Never invent or infer fitment from name similarity alone.
+- Track head fitment (H, J, and L track): which track systems a WAC Lighting head fits is carried in the product NAME (for example "H/J/L Track Luminaire") and in letter-prefixed variant SKUs, so enumerate the heads for a track type with search_products on those name markers. The track-system data behind plan_layout can size and build a bill of materials for a KNOWN system, but it cannot list which heads fit a track; never use it to answer that question.
+- Accessory tables inside spec sheets often survive PDF extraction with scrambled column pairings. Name the accessory codes the sheet lists and cite the sheet; NEVER reconstruct which code pairs with which description or finish from a retrieved chunk.
+- Existence vs fitment: for "is there an accessory or lens for X?" follow the never-assert-absence rule, keep searching with broader or alternate wording. For "does X fit Y?" an honest non-confirmation is required when no source confirms the pairing: say it is not confirmed in the data you have and suggest verifying with a WAC Group sales rep before ordering.
+- Dimmer compatibility: pull it from the product's spec sheet or manual with search_docs and cite the document; do not answer dimmer compatibility from memory.
+- AiSpire accessory and component answers should note that AiSpire products are specified and supplied through the AiSpire custom-integrator channel.`;
+
+const COMPATIBILITY_INTERNAL_CODES = `
+- Some accessory references are raw codes with no catalog product page (unresolved). You may show the raw code to internal users, but flag that it is not a catalog page and confirm availability through sales before quoting it.`;
+
+const COMPATIBILITY_PUBLIC_CODES = `
+- Some accessory references have no catalog product page. NEVER show such a raw code to the user: present the item by its descriptive name when one exists, as "available through your WAC Group sales rep".`;
+
+/** The compatibility block for a surface: shared base + the surface's
+ *  unresolved-code presentation rule (PL8a: public never sees bare codes). */
+export function compatibilityGuidance(surface: ThomSurface): string {
+  return (
+    COMPATIBILITY_GUIDANCE_BASE +
+    (surface === "public" ? COMPATIBILITY_PUBLIC_CODES : COMPATIBILITY_INTERNAL_CODES)
+  );
+}
+
 /** INTERNAL-ONLY guidance for the native web_search server tool. Only appears
  *  inside internalSystem() (never on any public surface), and only has an effect
  *  when the tool is actually offered (THOM_WEB_SEARCH=1); harmless when it isn't. */
@@ -138,6 +167,7 @@ export function internalSystem(hasSpecRank = false): ClaudeSystemBlock[] {
     { type: "text", text: PHOTOMETRICS_GUIDANCE },
     { type: "text", text: LAYOUT_GUIDANCE },
     { type: "text", text: lightingExpertise(hasSpecRank) },
+    { type: "text", text: compatibilityGuidance("internal") },
     { type: "text", text: WEB_SEARCH_GUIDANCE, cache_control: { type: "ephemeral" } },
   ];
 }
@@ -201,6 +231,7 @@ export function publicSystem(hasSpecRank = false): ClaudeSystemBlock[] {
     PHOTOMETRICS_GUIDANCE,
     LAYOUT_GUIDANCE,
     lightingExpertise(hasSpecRank),
+    compatibilityGuidance("public"),
     PUBLIC_WEB_SEARCH_GUIDANCE,
   ];
   return texts.map((text, i) => ({

@@ -1,5 +1,6 @@
 import type { ClaudeTool } from "./transport.js";
 import type { ThomSurface } from "./env.js";
+import { normalizeSkuKey } from "../accessories/parse.js";
 import { authorityWeightFor, detectDocsQueryIntent, type DocsQueryIntent } from "./authority.js";
 import { embedQuery } from "./embed.js";
 import { layoutDispatch } from "./layoutTool.js";
@@ -55,7 +56,7 @@ export const TOOLS: ClaudeTool[] = [
   {
     name: "get_product",
     description:
-      "Full detail for one product by SKU/PPID: specs across its variants (wattage, lumens, CCT, CRI, IP, finish, dimensions), plus its spec-sheet / manual downloads and product-page URL. Use this to render a product card and answer spec questions.",
+      "Full detail for one product by SKU/PPID: specs across its variants (wattage, lumens, CCT, CRI, IP, finish, dimensions), plus its spec-sheet / manual downloads, product-page URL, CONFIRMED accessories/components/replacement parts (from catalog reference data), and what the product itself fits (reverse compatibility). Also resolves accessory codes and variant SKUs: if the input is not a product page it reports which products it fits. Use this to render a product card, answer spec questions, and answer 'what accessories fit X' / 'what does this accessory fit'.",
     input_schema: {
       type: "object",
       properties: { sku: { type: "string", description: "The product SKU / PPID." } },
@@ -65,7 +66,7 @@ export const TOOLS: ClaudeTool[] = [
   {
     name: "get_related_products",
     description:
-      "List the OTHER products in the same family or category as a product — e.g. every component of a track SYSTEM (channel, track heads, transformer/power supply, connectors, joiners, end caps, covers). Use this to build a complete parts/component list for a project. Pass a sku to find its siblings, or an explicit family/category.",
+      "List products related to a product, in TWO sections: first its CONFIRMED accessories/components/replacement parts (explicit catalog reference data — authoritative fitment), then the OTHER products in the same family or category (verify fitment) — e.g. every component of a track SYSTEM (channel, track heads, transformer/power supply, connectors, joiners, end caps, covers). Use this to build a complete parts/component list for a project. Pass a sku to find its confirmed accessories and siblings, or an explicit family/category.",
     input_schema: {
       type: "object",
       properties: {
@@ -184,7 +185,256 @@ async function searchProducts(ctx: ToolContext, input: Record<string, unknown>):
   return { content, cards: [], citations: [] };
 }
 
-async function getProduct(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutput> {
+// --- compatibility / accessories (plan v2.1 §B) ------------------------------
+
+/** One product_accessories row as the tools read it. */
+export interface ProductAccessoryRow {
+  related_sku: string;
+  related_product_sku: string | null;
+  kind: string;
+  label: string | null;
+}
+
+/** Minimal product info used to render a resolved accessory parent / a
+ *  reverse-fit referencing product by NAME (never a bare PPID list). */
+export interface AccessoryParentInfo {
+  name: string | null;
+  brand: string | null;
+}
+
+/** Cap on rendered accessory lines (MAX_FAMILY_MEMBERS idiom, AA13). */
+export const MAX_ACCESSORY_LINES = 30;
+/** Cap on raw option codes shown per resolved parent group. */
+const MAX_GROUP_CODES = 8;
+/** Cap on families enumerated in a reverse-fit rollup (PL1b). */
+export const MAX_REVERSE_FAMILIES = 10;
+
+function kindLabel(kind: string): string {
+  return kind === "replacement_part" ? "replacement part" : kind;
+}
+
+function kindPlural(kind: string, n: number): string {
+  if (n === 1) return kindLabel(kind);
+  if (kind === "accessory") return "accessories";
+  return `${kindLabel(kind)}s`;
+}
+
+/**
+ * Render accessory rows GROUPED BY RESOLVED PARENT with variant-code collapse
+ * (PL5): eleven finish variants of one lens product become ONE line naming the
+ * parent, never eleven rows. Unresolved rows follow — on the PUBLIC surface a
+ * raw code is never shown bare (PL8a): labeled rows keep their label, and
+ * label-less unresolved rows collapse into per-kind "available through your
+ * WAC Group sales rep" lines. Capped at MAX_ACCESSORY_LINES with "+N more".
+ * Pure, so grouping/caps/public framing are unit-testable.
+ */
+export function formatAccessoryLines(
+  rows: readonly ProductAccessoryRow[],
+  parents: ReadonlyMap<string, AccessoryParentInfo>,
+  surface: ThomSurface,
+): string[] {
+  // Group resolved rows by parent PPID, first-seen order.
+  const groups = new Map<string, { kind: string; codes: string[]; label: string | null }>();
+  const unresolved: ProductAccessoryRow[] = [];
+  for (const r of rows) {
+    if (!r.related_product_sku) {
+      unresolved.push(r);
+      continue;
+    }
+    const g = groups.get(r.related_product_sku);
+    if (!g) {
+      groups.set(r.related_product_sku, { kind: r.kind, codes: [r.related_sku], label: r.label });
+    } else {
+      if (!g.codes.includes(r.related_sku)) g.codes.push(r.related_sku);
+      if (!g.label && r.label) g.label = r.label;
+    }
+  }
+
+  const lines: string[] = [];
+  for (const [parentSku, g] of groups) {
+    const info = parents.get(parentSku);
+    const name = info?.name ?? g.label ?? parentSku;
+    const brand = info?.brand ? `, ${info.brand}` : "";
+    let options = "";
+    const distinct = g.codes.filter((c) => normalizeSkuKey(c) !== normalizeSkuKey(parentSku));
+    if (distinct.length) {
+      const shown = distinct.slice(0, MAX_GROUP_CODES).join(", ");
+      const more = distinct.length > MAX_GROUP_CODES ? `, +${distinct.length - MAX_GROUP_CODES} more` : "";
+      options = ` (${distinct.length} option${distinct.length === 1 ? "" : "s"}: ${shown}${more})`;
+    }
+    lines.push(`- ${name} (SKU ${parentSku}${brand}) [${kindLabel(g.kind)}]${options}`);
+  }
+
+  if (surface === "public") {
+    // Labeled unresolved rows keep the human label; bare codes NEVER surface.
+    const unlabeledByKind = new Map<string, number>();
+    for (const r of unresolved) {
+      if (r.label) {
+        lines.push(`- ${r.label} [${kindLabel(r.kind)}] (available through your WAC Group sales rep)`);
+      } else {
+        unlabeledByKind.set(r.kind, (unlabeledByKind.get(r.kind) ?? 0) + 1);
+      }
+    }
+    for (const [kind, n] of unlabeledByKind) {
+      lines.push(
+        `- ${n} additional ${kindPlural(kind, n)} available through your WAC Group sales rep`,
+      );
+    }
+  } else {
+    for (const r of unresolved) {
+      const head = r.label ? `${r.label} (code ${r.related_sku})` : `Code ${r.related_sku}`;
+      lines.push(`- ${head} [${kindLabel(r.kind)}] (not a catalog product page; order through sales)`);
+    }
+  }
+
+  if (lines.length > MAX_ACCESSORY_LINES) {
+    const extra = lines.length - MAX_ACCESSORY_LINES;
+    return [...lines.slice(0, MAX_ACCESSORY_LINES), `(+${extra} more)`];
+  }
+  return lines;
+}
+
+/** A referencing (host) product for the reverse-fit rollup. */
+export interface ReverseFitParent {
+  sku: string;
+  name: string | null;
+  family: string | null;
+  brand: string | null;
+}
+
+/**
+ * Fan-in rollup for reverse fit (PL1b): "what does this lens fit?" can have
+ * 100+ hosts, so ≤5 hosts are named individually and anything bigger rolls up
+ * BY FAMILY with counts — name-first, never a PPID list, families capped at
+ * MAX_REVERSE_FAMILIES.
+ */
+export function rollupReverseFit(parents: readonly ReverseFitParent[], totalCount: number): string {
+  if (!parents.length) return "";
+  if (totalCount <= 5 && parents.length === totalCount) {
+    const names = parents.map((p) => `${p.name ?? p.sku} (SKU ${p.sku})`).join(", ");
+    return `Fits ${totalCount} product${totalCount === 1 ? "" : "s"}: ${names}.`;
+  }
+  const byFamily = new Map<string, number>();
+  for (const p of parents) {
+    const fam = p.family ?? p.name ?? p.sku;
+    byFamily.set(fam, (byFamily.get(fam) ?? 0) + 1);
+  }
+  const sorted = [...byFamily.entries()].sort((a, b) => b[1] - a[1]);
+  const shown = sorted.slice(0, MAX_REVERSE_FAMILIES).map(([fam, n]) => `${fam} (${n})`);
+  const moreFams = sorted.length - Math.min(sorted.length, MAX_REVERSE_FAMILIES);
+  const famText = shown.join(", ") + (moreFams > 0 ? ` and ${moreFams} more famil${moreFams === 1 ? "y" : "ies"}` : "");
+  const brands = [...new Set(parents.map((p) => p.brand).filter(Boolean))] as string[];
+  const brandText = brands.length === 1 ? ` ${brands[0]}` : "";
+  return `Fits ${totalCount}${brandText} products across the ${famText} families.`;
+}
+
+/** Escape LIKE/ILIKE pattern characters so a code can be matched literally
+ *  (ILIKE without wildcards = case-insensitive equality). */
+function escapeLike(s: string): string {
+  return s.replace(/[\\%_]/g, (m) => `\\${m}`);
+}
+
+/** Fetch name/family/brand for a set of skus into a map (batched .in()). */
+async function fetchParentInfo(
+  ctx: ToolContext,
+  skus: string[],
+): Promise<Map<string, ReverseFitParent>> {
+  const out = new Map<string, ReverseFitParent>();
+  if (!skus.length) return out;
+  const { data } = await ctx.sb
+    .from("products")
+    .select("sku, name, family, brand")
+    .in("sku", skus.slice(0, 200));
+  for (const p of (data ?? []) as ReverseFitParent[]) out.set(p.sku, p);
+  return out;
+}
+
+/**
+ * Reverse-fit fallback when a get_product sku missed the products table
+ * (AA1/PL1) — BEFORE saying "not found":
+ *  1. match the input against product_accessories.related_sku (normalized /
+ *     case-insensitive): an accessory code answers "what does this fit?";
+ *  2. resolve the input as a VARIANT SKU via products.variant_search and
+ *     retry as its parent product (both directions ride the parent's
+ *     get_product output);
+ *  3. only then "not found".
+ */
+async function reverseFitFallback(
+  ctx: ToolContext,
+  rawSku: string,
+  surface: ThomSurface,
+): Promise<ToolOutput> {
+  const norm = rawSku.trim();
+  const notFound: ToolOutput = {
+    content: `No product found with SKU ${rawSku}.`,
+    cards: [],
+    citations: [],
+  };
+  if (!norm) return notFound;
+
+  // (1) accessory-code match.
+  const { data: refRows, count: refCount } = await ctx.sb
+    .from("product_accessories")
+    .select("product_sku, related_product_sku, kind, label", { count: "exact" })
+    .ilike("related_sku", escapeLike(norm))
+    .limit(200);
+  const hits = (refRows ?? []) as {
+    product_sku: string;
+    related_product_sku: string | null;
+    kind: string;
+    label: string | null;
+  }[];
+  if (hits.length) {
+    const hostSkus = [...new Set(hits.map((h) => h.product_sku))];
+    const infoBySku = await fetchParentInfo(ctx, hostSkus);
+    const parents = hostSkus
+      .map((s) => infoBySku.get(s) ?? { sku: s, name: null, family: null, brand: null });
+    // Distinct hosts when the window held every row; the exact total otherwise.
+    const total = (refCount ?? hits.length) > hits.length ? (refCount ?? hits.length) : hostSkus.length;
+    const kinds = [...new Set(hits.map((h) => kindLabel(h.kind)))].join(" / ");
+    const label = hits.find((h) => h.label)?.label ?? null;
+    const resolvedParent = hits.find((h) => h.related_product_sku)?.related_product_sku ?? null;
+    const lines = [
+      `${norm} is not a product page, but it is a confirmed ${kinds} reference${label ? ` ("${label}")` : ""}.`,
+      rollupReverseFit(parents, total),
+    ];
+    if (resolvedParent) {
+      const pinfo = infoBySku.get(resolvedParent) ?? (await fetchParentInfo(ctx, [resolvedParent])).get(resolvedParent);
+      lines.push(
+        `It is an option of ${pinfo?.name ?? resolvedParent} (SKU ${resolvedParent}); use get_product with ${resolvedParent} for full details.`,
+      );
+    }
+    return { content: lines.filter(Boolean).join("\n"), cards: [], citations: [] };
+  }
+
+  // (2) variant-SKU resolution against products.variants.
+  const { data: vhits } = await ctx.sb
+    .from("products")
+    .select("sku, name, brand, variants")
+    .ilike("variant_search", `%${escapeLike(norm)}%`)
+    .limit(5);
+  const key = normalizeSkuKey(norm);
+  const parent = ((vhits ?? []) as { sku: string; name: string | null; variants: unknown }[]).find((p) => {
+    const variants = Array.isArray(p.variants) ? (p.variants as Record<string, unknown>[]) : [];
+    return variants.some((v) => typeof v.sku === "string" && normalizeSkuKey(v.sku) === key);
+  });
+  if (parent) {
+    const out = await getProduct(ctx, { sku: parent.sku }, surface);
+    return {
+      ...out,
+      content: `${norm} is a variant of ${parent.name ?? parent.sku} (SKU ${parent.sku}).\n\n${out.content}`,
+    };
+  }
+
+  // (3) genuinely nothing.
+  return notFound;
+}
+
+async function getProduct(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+  surface: ThomSurface = "internal",
+): Promise<ToolOutput> {
   const sku = String(input.sku ?? "").trim();
   if (!sku) return { content: "get_product: sku is required.", cards: [], citations: [] };
 
@@ -194,12 +444,27 @@ async function getProduct(ctx: ToolContext, input: Record<string, unknown>): Pro
     .eq("sku", sku)
     .maybeSingle();
   if (error) return { content: `get_product error: ${error.message}`, cards: [], citations: [] };
-  if (!p) return { content: `No product found with SKU ${sku}.`, cards: [], citations: [] };
+  if (!p) return reverseFitFallback(ctx, sku, surface);
 
-  const [{ data: docs }, { data: pdp }] = await Promise.all([
+  const [{ data: docs }, { data: pdp }, accessoriesRes, referencedRes] = await Promise.all([
     ctx.sb.from("product_documents").select("doc_type, label, url").eq("product_sku", sku),
     ctx.sb.from("pdp_urls").select("url").eq("sku", sku).maybeSingle(),
+    // Forward: this product's confirmed accessories/components (§B).
+    ctx.sb
+      .from("product_accessories")
+      .select("related_sku, related_product_sku, kind, label")
+      .eq("product_sku", sku)
+      .limit(400),
+    // Reverse: hosts that reference THIS product as an accessory (AA1).
+    ctx.sb
+      .from("product_accessories")
+      .select("product_sku", { count: "exact" })
+      .eq("related_product_sku", sku)
+      .limit(400),
   ]);
+  const accRows = (accessoriesRes.data ?? []) as ProductAccessoryRow[];
+  const refRows = (referencedRes.data ?? []) as { product_sku: string }[];
+  const refTotal = referencedRes.count ?? refRows.length;
 
   const variants = (Array.isArray(p.variants) ? p.variants : []) as Record<string, unknown>[];
   const repr = variants.find((v) => v.watts || v.lumens || v.cct_desc) ?? variants[0] ?? {};
@@ -243,6 +508,33 @@ async function getProduct(ctx: ToolContext, input: Record<string, unknown>): Pro
     downloads.length ? `Documents: ${downloads.map((d) => d.label).join(", ")}.` : "No documents on file yet.",
     card.pdp_url ? `Product page: ${card.pdp_url}` : "",
   ].filter(Boolean);
+
+  // Compatibility sections (text-only — no ProductCard change, plan §B): the
+  // forward confirmed-accessory list and, when this product is itself
+  // referenced as an accessory, the reverse fan-in rollup.
+  if (accRows.length || refRows.length) {
+    const wantSkus = new Set<string>();
+    for (const r of accRows) if (r.related_product_sku) wantSkus.add(r.related_product_sku);
+    for (const r of refRows) wantSkus.add(r.product_sku);
+    const info = await fetchParentInfo(ctx, [...wantSkus]);
+    if (accRows.length) {
+      lines.push(
+        `Confirmed accessories and components (${accRows.length} reference${accRows.length === 1 ? "" : "s"}, from catalog reference data):`,
+        ...formatAccessoryLines(accRows, info, surface),
+      );
+    }
+    if (refRows.length) {
+      const hostSkus = [...new Set(refRows.map((r) => r.product_sku))];
+      const parents = hostSkus.map(
+        (s) => info.get(s) ?? { sku: s, name: null, family: null, brand: null },
+      );
+      // When every row was fetched, count distinct hosts (a host may reference
+      // the same parent under two kinds); otherwise trust the window's total.
+      const total = refTotal > refRows.length ? refTotal : hostSkus.length;
+      const rollup = rollupReverseFit(parents, total);
+      if (rollup) lines.push(`This product is itself a confirmed accessory. ${rollup}`);
+    }
+  }
 
   return { content: lines.join("\n"), cards: [card], citations: [] };
 }
@@ -505,11 +797,66 @@ async function resolveScope(
   return { family, category, sku };
 }
 
-async function getRelated(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutput> {
+/**
+ * Compose the two get_related_products sections (§B/AA12): explicit confirmed
+ * accessory/component rows FIRST (authoritative fitment), then the
+ * family/category expansion labeled "verify fitment", with separate counts.
+ * Pure so section ordering/labeling is unit-testable.
+ */
+export function composeRelatedSections(opts: {
+  sku: string | null;
+  explicitLines: string[];
+  explicitCount: number;
+  familyScope: string;
+  familyLines: string[];
+  familyCount: number;
+}): string {
+  const parts: string[] = [];
+  if (opts.explicitCount > 0) {
+    parts.push(
+      `Confirmed accessories and components${opts.sku ? ` for ${opts.sku}` : ""} ` +
+        `(${opts.explicitCount} reference${opts.explicitCount === 1 ? "" : "s"}, from catalog reference data):\n` +
+        opts.explicitLines.join("\n"),
+    );
+  }
+  if (opts.familyCount > 0) {
+    parts.push(
+      `Same family or category, verify fitment (${opts.familyCount} products in ${opts.familyScope}):\n` +
+        opts.familyLines.join("\n"),
+    );
+  }
+  return parts.join("\n\n");
+}
+
+async function getRelated(
+  ctx: ToolContext,
+  input: Record<string, unknown>,
+  surface: ThomSurface = "internal",
+): Promise<ToolOutput> {
   const { family, category, sku } = await resolveScope(ctx, input);
-  if (!family && !category) {
+  if (!family && !category && !sku) {
     return { content: "get_related_products: provide a sku, family, or category.", cards: [], citations: [] };
   }
+
+  // Section 1 — explicit confirmed accessory/component rows for the sku.
+  let explicitLines: string[] = [];
+  let explicitCount = 0;
+  if (sku) {
+    const { data: accData } = await ctx.sb
+      .from("product_accessories")
+      .select("related_sku, related_product_sku, kind, label")
+      .eq("product_sku", sku)
+      .limit(400);
+    const accRows = (accData ?? []) as ProductAccessoryRow[];
+    if (accRows.length) {
+      const resolvedSkus = [...new Set(accRows.map((r) => r.related_product_sku).filter(Boolean))] as string[];
+      const info = await fetchParentInfo(ctx, resolvedSkus);
+      explicitLines = formatAccessoryLines(accRows, info, surface);
+      explicitCount = accRows.length;
+    }
+  }
+
+  // Section 2 — family/category expansion (verify fitment).
   const limit = Math.min(Number(input.limit) || 60, 100);
   const found = new Map<string, { sku: string; name: string; category: string | null }>();
   for (const [col, val] of [
@@ -527,10 +874,22 @@ async function getRelated(ctx: ToolContext, input: Record<string, unknown>): Pro
       if (r.sku !== sku) found.set(r.sku, r);
     }
   }
-  if (!found.size) return { content: "No related products found.", cards: [], citations: [] };
-  const scope = [family && `family "${family}"`, category && `category "${category}"`].filter(Boolean).join(" / ");
-  const list = [...found.values()].map((r) => `- ${r.sku} — ${r.name}`).join("\n");
-  return { content: `${found.size} products in ${scope}:\n${list}`, cards: [], citations: [] };
+
+  if (!explicitCount && !found.size) {
+    return { content: "No related products found.", cards: [], citations: [] };
+  }
+  const scope =
+    [family && `family "${family}"`, category && `category "${category}"`].filter(Boolean).join(" / ") ||
+    "the catalog";
+  const content = composeRelatedSections({
+    sku,
+    explicitLines,
+    explicitCount,
+    familyScope: scope,
+    familyLines: [...found.values()].map((r) => `- ${r.sku} — ${r.name}`),
+    familyCount: found.size,
+  });
+  return { content, cards: [], citations: [] };
 }
 
 interface FamilyRow {
@@ -724,9 +1083,9 @@ export async function dispatch(
     case "search_products":
       return searchProducts(ctx, input);
     case "get_product":
-      return getProduct(ctx, input);
+      return getProduct(ctx, input, surface);
     case "get_related_products":
-      return getRelated(ctx, input);
+      return getRelated(ctx, input, surface);
     case "get_family":
       return getFamily(ctx, input);
     case "search_docs":

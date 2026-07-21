@@ -145,7 +145,8 @@ productRoutes.post("/sync", requireAuth, async (c) => {
       .sync()
       .then((r) =>
         console.log(
-          `[products] manual sync: upserted ${r.upserted}, variants ${r.variants}, pruned ${r.pruned}`,
+          `[products] manual sync: upserted ${r.upserted}, variants ${r.variants}, pruned ${r.pruned}, ` +
+            `accessories ${r.accessories} (${r.accessories_unresolved} unresolved)`,
         ),
       )
       .catch((e) => console.error("[products] manual sync failed", e)),

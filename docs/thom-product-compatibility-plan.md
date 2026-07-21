@@ -1,6 +1,16 @@
 # Thom Bot — Product Compatibility & Accessories Plan (v2 — RECONCILED; objections AA1–AA14 + PL1–PL11 + the zmataccess discovery folded in; awaiting Davis ratification)
 
-**Status:** v2, 2026-07-21. v1 → two-lens counter-plan (architecture AA*, product/behavior PL*) → this reconcile. Two of v1's three framing claims were WRONG and are corrected below. **Not ratified.** Companion: `docs/thom-lighting-expert-plan.md` (ratified v2.1, building now — shares `tools.ts`/`prompts.ts`; sequencing in §G).
+**Status:** v2.1, APPROVED by Davis 2026-07-21. v1 → two-lens counter-plan (AA*/PL*) → v2 reconcile → Davis approval → G.0 connector audit (addendum below). Companion: `docs/thom-lighting-expert-plan.md` (shipped: PRs #215/#216/#217).
+
+## G.0 audit addendum (2026-07-21 — connector feed audited: 46 pages, 7,674 products, 66,840 variants; amends §A's field list; where it conflicts with the v2 text below, the addendum wins)
+
+- **Capture list (final):** product-level `zmataccess` (1,000 feed products: WAC 607, LIM 153, LANDSCAPE 153, Home 53, VENTRIX 18, Colorscaping 10, AISPIRE 6) + `zmataccesstyp2` (215) — comma-joined parent **PPIDs, 100% resolve to `products.sku`** (0% to sl_id): store as product→product refs with `related_product_sku` set directly. Product-level `zacc1/zacc2(_1.._10)`/`zcomp1..10` (AISPIRE: both are CODE lists, zacc2 continues zacc1) and `matnracc1..3,_5` (66 products, AISPIRE/WAC). **VARIANT-level (new — fans):** MFF `zacc1_N` = accessory SKU with `zacc2_N` = **PAIRED human label** ("F-RCBT-WT" / "Bluetooth Remote Control"; ~78% of MFF variants) — semantics differ from product level; capture as `related_sku` + a new `label text` column, never as a second code. Variant `matnracc1..5` (MFF 538, FAN 160, LIM 6 variants) = orderable **replacement-part** SKUs → new kind `replacement_part` (extend the kind check). Variant `zcomp1..3` marginal (10 LIM variants) — capture cheaply.
+- **Drop (empty everywhere):** bare variant `zacc1`/`zacc2`, variant `zacc1_6/_7`, variant `zacc2_3..10`, variant `matnracc6`, product `matnracc4`.
+- **Schema deltas vs §A:** add `label text null`; kind check becomes `('accessory','component','replacement_part')`.
+- **Brand vocabulary (prod):** WAC 1052, Signature 926, AISPIRE 481, MOF 463, DWEL 394, LIM 274, Beyond 240, LANDSCAPE 154, VENTRIX 112, MFF 108, Forever 62, Home 50, FAN 43, Colorscaping 29, plus a **Home/HOME case-duplicate** — case-normalize any brand-keyed logic. Capture itself is field-driven, not brand-keyed.
+- Feed (7,674) ⊃ prod (4,390): refs may target non-synced products → kept unresolved, counted in the sync report.
+- Fan replacement parts + MFF zacc pairs materially serve the fan-accessory question class (Wynd XL downrods etc.) from Sales Layer data; Phase 2's PDP harvest remains committed for what the feed still lacks.
+- Migration renumbered **0061** (0059/0060 shipped by the lighting-expert build).
 
 **Thesis (corrected).** Thom does not know accessories; today's tools approximate by family/category. The Sales Layer export carries TWO explicit reference systems the sync drops on the floor, not one:
 

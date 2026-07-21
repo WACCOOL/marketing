@@ -3,7 +3,15 @@ import { serviceSupabase } from "./supabase.js";
 import {
   variantAvailability,
   availabilityLabel,
+  accessoryPruneDecision,
+  collectProductAccessoryRefs,
+  collectVariantAccessoryRefs,
+  dedupeAccessoryRefs,
+  normalizeSkuKey,
+  resolveAccessoryRefs,
+  type AccessoryRef,
   type Availability,
+  type RawAccessoryRef,
 } from "@wac/shared";
 
 /**
@@ -149,6 +157,10 @@ export interface ProductCacheRow {
   /** Spec-sheet / manual PDFs for this product (product + variant level,
    * merged and de-duplicated by URL). Populated only when doc capture runs. */
   docs: ProductDoc[];
+  /** RAW product-level accessory/component refs (zmataccess / zacc / zcomp /
+   * matnracc), collected at map time like `docs` (raw_json is not a reliable
+   * source). Resolved + written to product_accessories post-success. */
+  accessoryRefs: RawAccessoryRef[];
 }
 
 /**
@@ -184,6 +196,11 @@ export interface ProductAdapter {
     pruned: number;
     variants: number;
     docs: number;
+    /** Accessory/component/replacement-part refs written to
+     * product_accessories (post-dedupe), and how many of those did not
+     * resolve to a synced catalog product. */
+    accessories: number;
+    accessories_unresolved: number;
   }>;
   /** Return the upstream field schema (types) for products/variants/categories. */
   fetchSchema(): Promise<unknown>;
@@ -266,6 +283,10 @@ export function makeProductAdapter(env: Env): ProductAdapter {
       const products = new Map<string, ProductCacheRow>(); // internal ID -> row
       const variantsByProduct = new Map<string, VariantRow[]>();
       const variantDocsByProduct = new Map<string, ProductDoc[]>();
+      // RAW variant-level accessory refs (MFF zacc pairs, replacement parts,
+      // zcomp), keyed by internal product ID — collected at map time because
+      // VariantRow does not retain the raw connector fields.
+      const variantAccRefsByProduct = new Map<string, RawAccessoryRef[]>();
       // Remember which field we pulled brand from, logged once for observability
       // so an admin can pin it via SALES_LAYER_BRAND_FIELD if discovery is wrong.
       let discoveredBrandField: string | null = null;
@@ -310,6 +331,7 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             variant_search: null,
             raw_json: stripImages(p),
             docs: collectDocs(p, docFields),
+            accessoryRefs: collectProductAccessoryRefs(p),
           });
         }
 
@@ -346,6 +368,12 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             const dl = variantDocsByProduct.get(productId) ?? [];
             dl.push(...vdocs);
             variantDocsByProduct.set(productId, dl);
+          }
+          const vrefs = collectVariantAccessoryRefs(v);
+          if (vrefs.length) {
+            const rl = variantAccRefsByProduct.get(productId) ?? [];
+            rl.push(...vrefs);
+            variantAccRefsByProduct.set(productId, rl);
           }
         }
 
@@ -473,7 +501,9 @@ export function makeProductAdapter(env: Env): ProductAdapter {
 
       // A 0-length pull almost always means a transient/auth error rather than
       // an empty catalog — bail without wiping the cache.
-      if (rows.length === 0) return { upserted: 0, pruned: 0, variants: 0, docs: 0 };
+      if (rows.length === 0) {
+        return { upserted: 0, pruned: 0, variants: 0, docs: 0, accessories: 0, accessories_unresolved: 0 };
+      }
 
       // Products present but ZERO variants IN THE FEED is never a real state
       // (the entire app is variant/SKU-driven) — it means the Sales Layer
@@ -489,7 +519,7 @@ export function makeProductAdapter(env: Env): ProductAdapter {
           `[products] ABORT: feed returned ${rows.length} products but 0 variants ` +
             `(connector likely mid-regeneration) — skipping upsert/prune to protect the cache`,
         );
-        return { upserted: 0, pruned: 0, variants: 0, docs: 0 };
+        return { upserted: 0, pruned: 0, variants: 0, docs: 0, accessories: 0, accessories_unresolved: 0 };
       }
 
       // Availability filter summary (zusage rules). Today only N/P drops fire;
@@ -574,11 +604,36 @@ export function makeProductAdapter(env: Env): ProductAdapter {
         }
       }
 
+      // Accessory/component/replacement-part capture (plan v2.1 §A) — a
+      // post-success, best-effort step like doc capture: it runs only after
+      // the product upsert + the 0-rows/0-variants guards, and a failure can
+      // never fail the catalog sync. No feature flag — an empty
+      // product_accessories table is the natural dark launch.
+      let accessories = 0;
+      let accessoriesUnresolved = 0;
+      try {
+        const r = await captureAccessories(
+          admin,
+          rows,
+          variantAccRefsByProduct,
+          variantsByProduct,
+          syncedAt,
+        );
+        accessories = r.captured;
+        accessoriesUnresolved = r.unresolved;
+      } catch (e) {
+        console.warn(
+          `[products] accessory capture failed (non-fatal): ${String(e).slice(0, 200)}`,
+        );
+      }
+
       return {
         upserted: rows.length,
         pruned: pruned?.length ?? 0,
         variants: variantCount,
         docs,
+        accessories,
+        accessories_unresolved: accessoriesUnresolved,
       };
     },
   };
@@ -967,6 +1022,129 @@ async function captureDocs(
   }
 
   return distinct.size;
+}
+
+// -----------------------------------------------------------------------------
+// Accessory capture (Thom Bot) — product_accessories writer
+// -----------------------------------------------------------------------------
+
+/**
+ * Resolve + write the accessory/component/replacement-part refs collected at
+ * map time into `product_accessories` (plan v2.1 §A). Pure logic lives in
+ * @wac/shared (accessories/parse.ts); this function only wires the maps and
+ * talks to Supabase.
+ *
+ *  - Variant-code resolution uses an index built from the RAW pre-filter
+ *    variant lists (zusage N/P variants are dropped from products.variants,
+ *    but resolution is identity, not visibility), trim/uppercase-normalized
+ *    on both sides (AA7). The raw code is stored regardless.
+ *  - In-payload dedup on the upsert's conflict key (AA8/AA10).
+ *  - Prune is source-scoped `synced_at < stamp` (AA2), behind the PL7
+ *    mass-delete guard: if this run's capture collapses toward zero while
+ *    previously-referenced products are still in the feed, the prune is
+ *    ABORTED with a warning (connector-regen wipe hazard, same philosophy as
+ *    the zero-variants guard).
+ */
+async function captureAccessories(
+  admin: ReturnType<typeof serviceSupabase>,
+  rows: ProductCacheRow[],
+  variantAccRefsByProduct: Map<string, RawAccessoryRef[]>,
+  rawVariantsByProduct: Map<string, VariantRow[]>,
+  syncedAt: string,
+): Promise<{ captured: number; unresolved: number }> {
+  // Normalized products.sku -> canonical sku (zmataccess PPID resolution).
+  const productByNorm = new Map<string, string>();
+  for (const r of rows) productByNorm.set(normalizeSkuKey(r.sku), r.sku);
+
+  // Normalized RAW variant SKU -> parent products.sku (code resolution).
+  const variantParentByNorm = new Map<string, string>();
+  for (const r of rows) {
+    if (!r.sl_id) continue;
+    for (const v of rawVariantsByProduct.get(r.sl_id) ?? []) {
+      if (!v.sku) continue;
+      const key = normalizeSkuKey(v.sku);
+      if (!variantParentByNorm.has(key)) variantParentByNorm.set(key, r.sku);
+    }
+  }
+
+  const resolved: AccessoryRef[] = [];
+  for (const r of rows) {
+    const raw = [
+      ...r.accessoryRefs,
+      ...(r.sl_id ? variantAccRefsByProduct.get(r.sl_id) ?? [] : []),
+    ];
+    if (!raw.length) continue;
+    resolved.push(
+      ...resolveAccessoryRefs(r.sku, raw, productByNorm, variantParentByNorm),
+    );
+  }
+  const refs = dedupeAccessoryRefs(resolved);
+  const unresolved = refs.filter((r) => !r.related_product_sku).length;
+  const productCount = new Set(refs.map((r) => r.product_sku)).size;
+
+  // PL7 mass-delete guard inputs: current row count + a bounded sample of the
+  // product SKUs that currently carry refs (the signal is "still in the
+  // feed?", so a 1,000-row sample is plenty).
+  const { count: previous, error: countErr } = await admin
+    .from("product_accessories")
+    .select("id", { count: "exact", head: true })
+    .eq("source_system", "sales_layer");
+  if (countErr) throw new Error(`product_accessories count failed: ${countErr.message}`);
+  let previousProductSkus: string[] = [];
+  if (previous) {
+    const { data, error } = await admin
+      .from("product_accessories")
+      .select("product_sku")
+      .eq("source_system", "sales_layer")
+      .limit(1000);
+    if (error) throw new Error(`product_accessories sample failed: ${error.message}`);
+    previousProductSkus = ((data ?? []) as { product_sku: string }[]).map((d) => d.product_sku);
+  }
+
+  const CHUNK = 300;
+  for (let i = 0; i < refs.length; i += CHUNK) {
+    const chunk = refs.slice(i, i + CHUNK).map((r) => ({
+      product_sku: r.product_sku,
+      related_sku: r.related_sku,
+      related_product_sku: r.related_product_sku,
+      kind: r.kind,
+      label: r.label,
+      source_system: "sales_layer",
+      source_field: r.source_field,
+      position: r.position,
+      synced_at: syncedAt,
+    }));
+    const { error } = await admin
+      .from("product_accessories")
+      .upsert(chunk, { onConflict: "product_sku,related_sku,kind,source_system" });
+    if (error) throw new Error(`product_accessories upsert failed: ${error.message}`);
+  }
+
+  const decision = accessoryPruneDecision({
+    captured: refs.length,
+    previous: previous ?? 0,
+    previousProductSkus,
+    feedSkus: new Set(rows.map((r) => r.sku)),
+  });
+  let prunedCount = 0;
+  if (decision.prune) {
+    const { data: prunedRows, error: pruneErr } = await admin
+      .from("product_accessories")
+      .delete()
+      .eq("source_system", "sales_layer")
+      .lt("synced_at", syncedAt)
+      .select("id");
+    if (pruneErr) throw new Error(`product_accessories prune failed: ${pruneErr.message}`);
+    prunedCount = prunedRows?.length ?? 0;
+  } else {
+    console.warn(`[products] ${decision.warn}`);
+  }
+
+  console.log(
+    `[products] accessories: ${refs.length} refs across ${productCount} products ` +
+      `(${unresolved} unresolved), pruned ${prunedCount}`,
+  );
+  return { captured: refs.length, unresolved };
 }
 
 const ENTITIES: Record<string, string> = {
