@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { createMiddleware } from "hono/factory";
 import { z } from "zod";
-import { wordFrequencies } from "@wac/shared/thom";
+import { bucketSourceUsage, wordFrequencies, type SourceUsageRow } from "@wac/shared/thom";
 import type { AppBindings } from "../auth.js";
 import { requireAuth } from "../auth.js";
 import { serviceSupabase, userSupabase } from "../supabase.js";
@@ -105,25 +105,30 @@ thomAdminRoutes.get("/conversations/:id", async (c) => {
 
 const AnalyticsQuery = z.object({
   days: z.coerce.number().int().min(1).max(365).default(30),
+  surface: z.enum(["all", "internal", "public"]).default("all"),
 });
 
 thomAdminRoutes.get("/analytics", async (c) => {
   const q = AnalyticsQuery.parse(Object.fromEntries(new URL(c.req.url).searchParams));
   const sb = userSupabase(c.env, c.get("jwt"));
-  const [daily, topQueries, topProducts] = await Promise.all([
+  const scope = q.surface === "all" ? null : q.surface;
+  const [daily, topQueries, topProducts, sources] = await Promise.all([
     sb.rpc("thom_chat_daily", { days: q.days }),
-    sb.rpc("thom_top_queries", { days: q.days, max_rows: 200 }),
-    sb.rpc("thom_top_products", { days: q.days, max_rows: 50 }),
+    sb.rpc("thom_top_queries", { days: q.days, max_rows: 200, scope_filter: scope }),
+    sb.rpc("thom_top_products", { days: q.days, max_rows: 50, scope_filter: scope }),
+    sb.rpc("thom_source_usage", { days: q.days, scope_filter: scope }),
   ]);
-  const err = daily.error ?? topQueries.error ?? topProducts.error;
+  const err = daily.error ?? topQueries.error ?? topProducts.error ?? sources.error;
   if (err) return c.json({ error: err.message }, 500);
 
   const queries = (topQueries.data ?? []) as { query: string; hits: number; public_hits: number }[];
   return c.json({
     days: q.days,
+    surface: q.surface,
     daily: daily.data ?? [],
     topQueries: queries.slice(0, 50),
     topWords: wordFrequencies(queries.map((r) => ({ query: r.query, hits: Number(r.hits) }))),
     topProducts: topProducts.data ?? [],
+    sources: bucketSourceUsage((sources.data ?? []) as SourceUsageRow[]),
   });
 });

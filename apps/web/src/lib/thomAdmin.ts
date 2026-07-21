@@ -58,14 +58,18 @@ export interface DailyRow {
   internal_users: number;
 }
 
+export type AnalyticsSurface = "all" | "internal" | "public";
+
 export interface AnalyticsBundle {
   days: number;
+  surface: AnalyticsSurface;
   daily: DailyRow[];
   topQueries: { query: string; hits: number; public_hits: number }[];
   topWords: { word: string; hits: number }[];
   topProducts: { sku: string; name: string | null; hits: number }[];
+  sources: { source: string; hits: number }[];
 }
 
-export async function getAnalytics(days: number): Promise<AnalyticsBundle> {
-  return api(`/api/thom-admin/analytics?days=${days}`);
+export async function getAnalytics(days: number, surface: AnalyticsSurface): Promise<AnalyticsBundle> {
+  return api(`/api/thom-admin/analytics?days=${days}&surface=${surface}`);
 }

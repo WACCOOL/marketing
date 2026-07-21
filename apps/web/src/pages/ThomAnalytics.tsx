@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { getAnalytics, type AnalyticsBundle, type DailyRow } from "../lib/thomAdmin.js";
+import { getAnalytics, type AnalyticsBundle, type AnalyticsSurface, type DailyRow } from "../lib/thomAdmin.js";
 
 /**
  * Analytics (admin) — how much Thom is used, how that changes over time, and
@@ -14,6 +14,7 @@ const SERIES = [
 
 export function ThomAnalytics() {
   const [days, setDays] = useState(30);
+  const [surface, setSurface] = useState<AnalyticsSurface>("all");
   const [data, setData] = useState<AnalyticsBundle | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
@@ -21,24 +22,32 @@ export function ThomAnalytics() {
     let stale = false;
     setData(null);
     setErr(null);
-    getAnalytics(days)
+    getAnalytics(days, surface)
       .then((d) => !stale && setData(d))
       .catch((e) => !stale && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       stale = true;
     };
-  }, [days]);
+  }, [days, surface]);
 
   const totals = useMemo(() => {
     const daily = data?.daily ?? [];
     const sum = (k: keyof DailyRow) => daily.reduce((a, r) => a + Number(r[k] ?? 0), 0);
+    const withInternal = surface !== "public";
+    const withPublic = surface !== "internal";
     return {
-      conversations: sum("internal_conversations") + sum("public_conversations"),
-      questions: sum("internal_questions") + sum("public_questions"),
-      publicConversations: sum("public_conversations"),
-      peakInternalUsers: Math.max(0, ...daily.map((r) => Number(r.internal_users ?? 0))),
+      conversations:
+        (withInternal ? sum("internal_conversations") : 0) +
+        (withPublic ? sum("public_conversations") : 0),
+      questions:
+        (withInternal ? sum("internal_questions") : 0) +
+        (withPublic ? sum("public_questions") : 0),
+      publicConversations: withPublic ? sum("public_conversations") : 0,
+      peakInternalUsers: withInternal
+        ? Math.max(0, ...daily.map((r) => Number(r.internal_users ?? 0)))
+        : 0,
     };
-  }, [data]);
+  }, [data, surface]);
 
   return (
     <div className="col" style={{ gap: 20 }}>
@@ -47,11 +56,20 @@ export function ThomAnalytics() {
           <h1>Analytics</h1>
           <div className="muted">Thom usage across both surfaces. Admin only.</div>
         </div>
-        <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
-          <option value={7}>Last 7 days</option>
-          <option value={30}>Last 30 days</option>
-          <option value={90}>Last 90 days</option>
-        </select>
+        <div className="row" style={{ gap: 8 }}>
+          <select value={surface} onChange={(e) => setSurface(e.target.value as AnalyticsSurface)}>
+            <option value="all">All surfaces</option>
+            <option value="internal">Internal</option>
+            <option value="public">Public bubble</option>
+          </select>
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
+            <option value={7}>Last 7 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+            <option value={180}>Last 6 months</option>
+            <option value={365}>Last year</option>
+          </select>
+        </div>
       </div>
 
       {err && <div className="alert error">Load failed: {err}</div>}
@@ -70,7 +88,9 @@ export function ThomAnalytics() {
             <div className="row" style={{ justifyContent: "space-between" }}>
               <strong>Questions per day</strong>
               <span className="row" style={{ gap: 12 }}>
-                {SERIES.map((s) => (
+                {SERIES.filter((s) =>
+                  surface === "all" ? true : surface === "internal" ? s.key === "internal_questions" : s.key === "public_questions",
+                ).map((s) => (
                   <span key={s.key} className="row" style={{ gap: 5, alignItems: "center" }}>
                     <span style={{ width: 10, height: 10, borderRadius: 3, background: `var(${s.cssVar})` }} />
                     <span className="muted" style={{ fontSize: 12 }}>{s.label}</span>
@@ -78,7 +98,7 @@ export function ThomAnalytics() {
                 ))}
               </span>
             </div>
-            <DailyChart daily={data.daily} />
+            <DailyChart daily={data.daily} surface={surface} />
           </div>
 
           <div className="row" style={{ gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
@@ -120,6 +140,18 @@ export function ThomAnalytics() {
           </div>
 
           <div className="card col" style={{ gap: 8 }}>
+            <strong>Data sources used</strong>
+            <div className="muted" style={{ fontSize: 12 }}>
+              Where Thom's answers came from: cited documents and the tools it called.
+            </div>
+            {data.sources.length === 0 ? (
+              <div className="muted">Nothing yet.</div>
+            ) : (
+              <BarList rows={data.sources.map((s) => ({ label: s.source, value: s.hits }))} />
+            )}
+          </div>
+
+          <div className="card col" style={{ gap: 8 }}>
             <strong>Words people search with</strong>
             {data.topWords.length === 0 ? (
               <div className="muted">Nothing yet.</div>
@@ -150,13 +182,16 @@ function StatTile({ label, value }: { label: string; value: number }) {
 
 /** Two-series line chart with a crosshair tooltip. Hand-rolled SVG on the app
  *  tokens (validated pair --chart-1/--chart-2), baseline 0, recessive grid. */
-function DailyChart({ daily }: { daily: DailyRow[] }) {
+function DailyChart({ daily, surface }: { daily: DailyRow[]; surface: AnalyticsSurface }) {
+  const series = SERIES.filter((s) =>
+    surface === "all" ? true : surface === "internal" ? s.key === "internal_questions" : s.key === "public_questions",
+  );
   const [hover, setHover] = useState<number | null>(null);
   const W = 720;
   const H = 200;
   const PAD = { l: 34, r: 12, t: 10, b: 22 };
   const n = daily.length;
-  const max = Math.max(1, ...daily.map((r) => Math.max(Number(r.internal_questions), Number(r.public_questions))));
+  const max = Math.max(1, ...daily.flatMap((r) => series.map((s) => Number(r[s.key]))));
   const x = (i: number) => PAD.l + (n <= 1 ? 0 : (i * (W - PAD.l - PAD.r)) / (n - 1));
   const y = (v: number) => H - PAD.b - (v / max) * (H - PAD.t - PAD.b);
   const path = (key: (typeof SERIES)[number]["key"]) =>
@@ -191,13 +226,13 @@ function DailyChart({ daily }: { daily: DailyRow[] }) {
             {daily[i] ? fmtDay(daily[i]!.day) : ""}
           </text>
         ))}
-        {SERIES.map((s) => (
+        {series.map((s) => (
           <path key={s.key} d={path(s.key)} fill="none" stroke={`var(${s.cssVar})`} strokeWidth={2} strokeLinejoin="round" />
         ))}
         {hover != null && daily[hover] && (
           <g>
             <line x1={x(hover)} x2={x(hover)} y1={PAD.t} y2={H - PAD.b} stroke="currentColor" opacity={0.25} />
-            {SERIES.map((s) => (
+            {series.map((s) => (
               <circle
                 key={s.key}
                 cx={x(hover)}
@@ -225,8 +260,8 @@ function DailyChart({ daily }: { daily: DailyRow[] }) {
           }}
         >
           <div style={{ fontWeight: 600 }}>{fmtDay(daily[hover]!.day)}</div>
-          <div>Internal: {daily[hover]!.internal_questions}</div>
-          <div>Public: {daily[hover]!.public_questions}</div>
+          {surface !== "public" && <div>Internal: {daily[hover]!.internal_questions}</div>}
+          {surface !== "internal" && <div>Public: {daily[hover]!.public_questions}</div>}
           <div className="muted">{daily[hover]!.internal_users} internal users</div>
         </div>
       )}

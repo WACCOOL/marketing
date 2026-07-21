@@ -109,6 +109,8 @@ export interface ThomResult {
   cards: Card[];
   citations: Citation[];
   usage: ThomUsage;
+  /** Client tool calls the request made (name + input) — turn logging. */
+  toolCalls: { name: string; input: unknown }[];
 }
 
 /** Options for one Thom turn. `surface` selects the system prompt, tool set,
@@ -295,6 +297,7 @@ export async function runThom(
   ];
   const cards: Card[] = [];
   const citations: Citation[] = [];
+  const allToolCalls: { name: string; input: unknown }[] = [];
   let toolCallCount = 0;
   const usage: ThomUsage = {
     input_tokens: 0,
@@ -368,7 +371,7 @@ export async function runThom(
           ? await screenCompetitors(normalizeCopy(finalText(res.content), dictTerms), { judge })
           : normalizeCopy(finalText(res.content), dictTerms)
         : finalText(res.content);
-      return { text, cards, citations, usage };
+      return { text, cards, citations, usage, toolCalls: allToolCalls };
     }
 
     // action === "dispatch": client tools only (server web_search never reaches
@@ -376,6 +379,7 @@ export async function runThom(
     const toolUses = res.content.filter(
       (b): b is ClaudeToolUseBlock => b.type === "tool_use",
     );
+    for (const tu of toolUses) allToolCalls.push({ name: tu.name, input: tu.input });
     toolCallCount += toolUses.length;
     const results: ClaudeToolResultBlock[] = [];
     for (const tu of toolUses) {
@@ -409,6 +413,7 @@ export async function runThom(
     cards,
     citations,
     usage,
+    toolCalls: allToolCalls,
   };
 }
 

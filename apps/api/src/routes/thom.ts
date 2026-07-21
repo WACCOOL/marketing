@@ -164,6 +164,7 @@ async function logTurn(
   cards: Card[],
   citations: Citation[],
   usage: ThomUsage,
+  toolCalls: { name: string; input: unknown }[] = [],
 ): Promise<void> {
   const { error } = await admin.from("thom_messages").insert([
     { conversation_id: conversationId, role: "user", content: message },
@@ -171,6 +172,7 @@ async function logTurn(
       conversation_id: conversationId,
       role: "assistant",
       content: text,
+      tool_calls: toolCalls.length ? toolCalls : null,
       citations,
       product_cards: cards,
       input_tokens: usage.input_tokens,
@@ -195,7 +197,7 @@ thomRoutes.post("/chat", requireAuth, requireFeature("thom"), async (c) => {
   const cards = dedupeCards(result.cards);
   const citations = dedupeCitations(result.citations);
 
-  await logTurn(admin, conversationId, message, result.text, cards, citations, result.usage);
+  await logTurn(admin, conversationId, message, result.text, cards, citations, result.usage, result.toolCalls ?? []);
 
   return c.json({ conversationId, answer: result.text, cards, citations });
 });
@@ -226,7 +228,7 @@ thomRoutes.post("/chat/stream", requireAuth, requireFeature("thom"), async (c) =
           });
         } else if (ev.type === "final") {
           // Log identically to /chat, then emit the terminal done frame.
-          await logTurn(admin, conversationId, message, ev.text, cards, citations, ev.usage);
+          await logTurn(admin, conversationId, message, ev.text, cards, citations, ev.usage, ev.toolCalls);
           await stream.writeSSE({ event: "done", data: JSON.stringify({ usage: ev.usage }) });
         }
       }
