@@ -93,7 +93,7 @@ export const TOOLS: ClaudeTool[] = [
   {
     name: "search_docs",
     description:
-      "Search the CONTENTS of spec sheets, installation manuals, curated WAC marketing overviews/positioning/FAQs, WAC Help Center (support) articles, WAC Group brand-website pages (company/about, capabilities, technology, news, FAQs, warranty), AND internal support-ticket resolutions (how a real customer issue was diagnosed and fixed) for a specific fact (cutout size, dimming compatibility, mounting, torque, wiring, exact photometrics), WAC's own product/brand/system positioning and messaging, company background and capabilities, or how-to / troubleshooting / warranty / support guidance. Returns matching passages with the document + link for citation.",
+      "Search the CONTENTS of spec sheets, installation manuals, curated WAC marketing overviews/positioning/FAQs, WAC Help Center (support) articles, WAC Group brand-website pages (company/about, capabilities, technology, news, FAQs, warranty), official WAC Architectural PRODUCT pages (that brand is not in the product catalog yet — this is where its products live, with separate Domestic and International lines), AND internal support-ticket resolutions (how a real customer issue was diagnosed and fixed) for a specific fact (cutout size, dimming compatibility, mounting, torque, wiring, exact photometrics), WAC's own product/brand/system positioning and messaging, company background and capabilities, or how-to / troubleshooting / warranty / support guidance. Returns matching passages with the document + link for citation.",
     input_schema: {
       type: "object",
       properties: {
@@ -197,9 +197,12 @@ async function getProduct(ctx: ToolContext, input: Record<string, unknown>): Pro
 /**
  * Website-crawl doc types retrievable by search_docs on BOTH surfaces — all
  * crawled from the public web (scope='public' by construction), so the public
- * bubble may see them. web_product / web_category / web_resource are
- * deliberately absent: product facts come from the catalog tools, and
- * category/resource pages are navigation, not answers.
+ * bubble may see them. web_category / web_resource are deliberately absent
+ * (navigation, not answers). web_product IS included: for catalog-backed
+ * brands PDP prose is never chunked (facts come from the catalog tools), so
+ * the only web_product chunks that exist are WAC Architectural's — whose
+ * products are NOT in the catalog yet (Sales Layer add pending) and whose
+ * official product pages are therefore the sole product source.
  */
 export const WEB_DOC_TYPES = [
   "web_company",
@@ -208,6 +211,7 @@ export const WEB_DOC_TYPES = [
   "web_news",
   "web_faq",
   "web_warranty",
+  "web_product",
 ] as const;
 
 async function searchDocs(
