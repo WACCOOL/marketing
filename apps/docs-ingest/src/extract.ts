@@ -10,7 +10,7 @@ import { extractText, getDocumentProxy } from "unpdf";
  *     so the expensive path never re-runs for an unchanged doc.
  */
 
-const SPARSE_THRESHOLD = 200; // chars of real text below which we escalate
+export const SPARSE_THRESHOLD = 200; // chars of real text below which we escalate
 
 export interface ExtractResult {
   text: string;
@@ -30,11 +30,31 @@ async function textLayer(bytes: Uint8Array): Promise<{ text: string; pages: numb
   return { text: (merged ?? "").trim(), pages: totalPages ?? 0 };
 }
 
-function density(text: string): number {
+/**
+ * Per-page text-layer extraction (`mergePages: false`) — admin-uploaded
+ * education PDFs need REAL page numbers on their chunks so citations to a
+ * 200-page standard are usable ("<doc> p.148"), plan A3/R2. Throws on a
+ * corrupt/encrypted PDF, like textLayer.
+ */
+export async function extractPdfPageTexts(
+  bytes: Uint8Array,
+): Promise<{ pages: string[]; pageCount: number }> {
+  const pdf = await getDocumentProxy(bytes);
+  const { totalPages, text } = await extractText(pdf, { mergePages: false });
+  const pages = (Array.isArray(text) ? text : [text ?? ""]).map((t) => (t ?? "").trim());
+  return { pages, pageCount: totalPages ?? pages.length };
+}
+
+/** Chars of real (non-whitespace) text — the sparseness signal. */
+export function textDensity(text: string): number {
   return text.replace(/\s+/g, "").length;
 }
 
-async function claudeVision(bytes: Uint8Array, cfg: ClaudeCfg): Promise<string> {
+function density(text: string): number {
+  return textDensity(text);
+}
+
+export async function claudeVision(bytes: Uint8Array, cfg: ClaudeCfg): Promise<string> {
   const b64 = Buffer.from(bytes).toString("base64");
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",

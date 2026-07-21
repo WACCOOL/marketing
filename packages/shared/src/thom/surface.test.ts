@@ -87,6 +87,7 @@ describe("search_docs scope by surface", () => {
 
   it("public passes scope_filter='public' and EXCLUDES zendesk_ticket", async () => {
     const { ctx, rpcArgs } = makeCtx();
+    // "cutout size" is ambiguous intent -> education is included (plan C.3).
     await dispatch(ctx, "search_docs", { query: "cutout size" }, { surface: "public" });
     const args = rpcArgs();
     expect(args.scope_filter).toBe("public");
@@ -96,6 +97,7 @@ describe("search_docs scope by surface", () => {
       "marketing",
       "zendesk_article",
       ...WEB_DOC_TYPES,
+      "education",
     ]);
     expect(args.doc_types).not.toContain("zendesk_ticket");
   });
@@ -112,6 +114,15 @@ describe("search_docs scope by surface", () => {
       "zendesk_article",
       "zendesk_ticket",
       ...WEB_DOC_TYPES,
+      "education",
     ]);
+  });
+
+  it("product/SKU-shaped queries EXCLUDE education on both surfaces (C.3 gate)", async () => {
+    for (const surface of ["public", "internal"] as const) {
+      const { ctx, rpcArgs } = makeCtx();
+      await dispatch(ctx, "search_docs", { query: "cutout size for FR-W1801" }, { surface });
+      expect(rpcArgs().doc_types).not.toContain("education");
+    }
   });
 });

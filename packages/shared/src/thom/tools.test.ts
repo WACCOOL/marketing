@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildFamilyCard, dispatch, MAX_FAMILY_MEMBERS, orderFamilyRows } from "./tools.js";
+import { buildFamilyCard, dispatch, MAX_FAMILY_MEMBERS, orderFamilyRows, searchDocTypes, WEB_DOC_TYPES } from "./tools.js";
 import { dedupeCards } from "./agent.js";
 import type { Card, FamilyCard, ProductCard, ToolContext } from "./types.js";
 
@@ -210,5 +210,37 @@ describe("dedupeCards (mixed)", () => {
       "family:Track",
       "product:Other",
     ]);
+  });
+});
+
+describe("searchDocTypes (C.3 education intent gating)", () => {
+  it("includes education for company / education / ambiguous intents on BOTH surfaces", () => {
+    for (const surface of ["public", "internal"] as const) {
+      for (const intent of ["company", "education", "ambiguous"] as const) {
+        expect(searchDocTypes(surface, intent)).toContain("education");
+      }
+    }
+  });
+
+  it("EXCLUDES education for product/SKU-shaped queries on both surfaces", () => {
+    expect(searchDocTypes("public", "product")).not.toContain("education");
+    expect(searchDocTypes("internal", "product")).not.toContain("education");
+  });
+
+  it("keeps the surface split: zendesk_ticket internal-only, base types intact", () => {
+    const pub = searchDocTypes("public", "ambiguous");
+    const int = searchDocTypes("internal", "ambiguous");
+    expect(pub).not.toContain("zendesk_ticket");
+    expect(int).toContain("zendesk_ticket");
+    for (const t of ["spec_sheet", "manual", "marketing", "zendesk_article", ...WEB_DOC_TYPES]) {
+      expect(pub).toContain(t);
+      expect(int).toContain(t);
+    }
+  });
+
+  it("education gating never removes a base doc type (pure addition)", () => {
+    const withEdu = searchDocTypes("public", "ambiguous");
+    const withoutEdu = searchDocTypes("public", "product");
+    expect(withEdu.filter((t) => t !== "education")).toEqual(withoutEdu);
   });
 });

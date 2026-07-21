@@ -6,8 +6,10 @@ import {
   shouldEscalate,
   SUPERLATIVE_INTENT,
   tieringEnabled,
+  turnUsedEducationDocs,
   type EscalationState,
 } from "./agent.js";
+import type { Citation } from "./types.js";
 
 const usage = (over: Partial<ClaudeUsage> = {}): ClaudeUsage => ({
   input_tokens: 0,
@@ -202,5 +204,24 @@ describe("reconstructTurn", () => {
     const { content, text } = reconstructTurn(events);
     expect(text).toBe("Hello, world");
     expect(content).toEqual([{ type: "text", text: "Hello, world" }]);
+  });
+});
+
+describe("turnUsedEducationDocs (R10 competitor-screen trigger)", () => {
+  const cite = (doc_type: string): Citation => ({
+    document_id: "d1",
+    title: "Doc",
+    doc_type,
+    page: null,
+    url: null,
+  });
+
+  it("fires when any citation is an education doc", () => {
+    expect(turnUsedEducationDocs([cite("spec_sheet"), cite("education")])).toBe(true);
+  });
+
+  it("stays quiet for catalog/web citation mixes with no education doc", () => {
+    expect(turnUsedEducationDocs([cite("spec_sheet"), cite("marketing"), cite("web")])).toBe(false);
+    expect(turnUsedEducationDocs([])).toBe(false);
   });
 });

@@ -62,6 +62,44 @@ export async function apiBlob(path: string, init: RequestInit = {}): Promise<Blo
   return await res.blob();
 }
 
+/**
+ * Authenticated multipart request. `api()` force-sets `content-type:
+ * application/json` on bodies, which would strip the multipart boundary, so
+ * FormData requests go through this sibling instead (same pattern as the PPT
+ * templates page's local helper).
+ */
+export async function apiForm<T = unknown>(
+  path: string,
+  form: FormData,
+  method = "POST",
+): Promise<T> {
+  const { data: session } = await supabase.auth.getSession();
+  const token = session.session?.access_token;
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`${BASE}${path}`, { method, body: form, headers });
+  const ct = res.headers.get("content-type") ?? "";
+  if (!res.ok) {
+    let body: unknown = await res.text();
+    if (ct.includes("application/json")) {
+      try {
+        body = JSON.parse(body as string);
+      } catch {
+        // keep text
+      }
+    }
+    const err: ApiError = {
+      status: res.status,
+      error:
+        typeof body === "object" && body && "error" in body
+          ? String((body as { error: unknown }).error)
+          : String(body),
+    };
+    throw err;
+  }
+  return (await res.json()) as T;
+}
+
 /** Human-readable message from anything a lib/api call can throw (the thrown
  *  value is a plain ApiError object, NOT an Error — String() on it renders
  *  "[object Object]"). */
