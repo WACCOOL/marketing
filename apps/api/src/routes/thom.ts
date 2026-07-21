@@ -119,6 +119,17 @@ async function prepareTurn(c: Context<AppBindings>): Promise<Prepared> {
   // Load history (most recent turns, oldest-first) or open a new conversation.
   const history: ClaudeMessage[] = [];
   if (conversationId) {
+    // Ownership gate: the id is client-supplied and history is loaded with the
+    // service client (bypasses RLS), so verify the conversation belongs to the
+    // requester first - same 404 posture as GET /conversations/:id.
+    const { data: owned, error: ownErr } = await admin
+      .from("thom_conversations")
+      .select("id")
+      .eq("id", conversationId)
+      .eq("user_id", user.id)
+      .maybeSingle();
+    if (ownErr) return { ok: false, res: c.json({ error: `conversation load failed: ${ownErr.message}` }, 500) };
+    if (!owned) return { ok: false, res: c.json({ error: "not found" }, 404) };
     const { data, error } = await admin
       .from("thom_messages")
       .select("role, content")
