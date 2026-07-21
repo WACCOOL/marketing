@@ -56,6 +56,9 @@
     "THOM_PHOTOMETRICS": "1",
     "THOM_LAYOUT": "1",
     "THOM_TIERING": "1",
+    // Spec-rank tool (rank_products_by_spec + the primer's superlative bullet).
+    // Enabled after the internal regression passed (plan G.2, 2026-07-21).
+    "THOM_SPEC_RANK": "1",
     // Comma-separated embed allowlist — Davis fills this before launch. It must
     // contain BOTH the approved brand-site origins (drives the CSP
     // frame-ancestors that lets those sites embed the iframe) AND the widget's
