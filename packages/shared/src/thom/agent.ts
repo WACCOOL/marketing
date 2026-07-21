@@ -25,7 +25,7 @@ import {
   screenCompetitors,
   type CompetitorJudge,
 } from "./publicFilter.js";
-import { dispatch, TOOLS, type ThomToolExtension } from "./tools.js";
+import { dispatch, SPEC_RANK_TOOLS, TOOLS, type ThomToolExtension } from "./tools.js";
 import { LAYOUT_TOOLS } from "./layoutTool.js";
 import { PHOTOMETRICS_TOOLS } from "./photometricsTools.js";
 import type { Card, Citation, ThomUsage } from "./types.js";
@@ -55,6 +55,14 @@ export function layoutEnabled(env: ThomEnv): boolean {
   return env.THOM_LAYOUT === "1";
 }
 
+/** Spec-rank tool is OFF unless THOM_SPEC_RANK is explicitly "1" (dark-launch,
+ *  mirroring THOM_PHOTOMETRICS). Enforced here — rank_products_by_spec isn't
+ *  advertised (and the primer's superlative-tool bullet isn't composed) until
+ *  the flag flips, on BOTH surfaces. */
+export function specRankEnabled(env: ThomEnv): boolean {
+  return env.THOM_SPEC_RANK === "1";
+}
+
 /** The base PUBLIC tool set: the retrieval tools + plan_layout, always. The
  *  public surface NEVER carries any injected (crm_*) tool — see composeTools. */
 const PUBLIC_TOOLS: ClaudeTool[] = [...TOOLS, ...LAYOUT_TOOLS];
@@ -82,12 +90,14 @@ export function composeTools(
   if (surface === "public") {
     const list: ClaudeTool[] = [...PUBLIC_TOOLS];
     if (photometricsEnabled(env)) list.push(...PHOTOMETRICS_TOOLS);
+    if (specRankEnabled(env)) list.push(...SPEC_RANK_TOOLS);
     return withTailCache(list);
   }
   const list: ClaudeTool[] = [...TOOLS];
   list.push(...extraTools);
   if (photometricsEnabled(env)) list.push(...PHOTOMETRICS_TOOLS);
   if (layoutEnabled(env)) list.push(...LAYOUT_TOOLS);
+  if (specRankEnabled(env)) list.push(...SPEC_RANK_TOOLS);
   return withTailCache(list);
 }
 
@@ -144,17 +154,26 @@ export interface EscalationState {
 const COMPARISON_INTENT =
   /\b(vs\.?|versus|compared? to|comparison|difference between|which (is|one is) (better|best)|better than)\b/i;
 
+// Superlative intent ("what's the brightest / highest lumen light") escalates
+// IMMEDIATELY (toolCallCount >= 0): waiting for a tool call would still let the
+// router model field the failing turn — the documented tape-as-runner-up
+// failure. Superlatives are rare, so the extra strong-model turns are cheap.
+export const SUPERLATIVE_INTENT =
+  /\b(highest|brightest|most (powerful|efficient)|max(imum)?\s+(lumens?|output)|lowest (wattage|power)|best (output|efficacy))\b/i;
+
 /**
  * Whether this turn is "hard" enough to warrant the stronger model. Pure and
  * monotonic in the accumulated evidence: multi-doc synthesis (2+ passages),
- * multi-product work (2+ cards), a long tool chain (3+ calls), or an explicit
- * comparison once we have at least one tool result to compare against.
+ * multi-product work (2+ cards), a long tool chain (3+ calls), an explicit
+ * comparison once we have at least one tool result to compare against, or a
+ * superlative from the very first turn (see SUPERLATIVE_INTENT).
  */
 export function shouldEscalate(s: EscalationState): boolean {
   if (s.docPassageCount >= 2) return true;
   if (s.productCount >= 2) return true;
   if (s.toolCallCount >= 3) return true;
   if (COMPARISON_INTENT.test(s.userMessage) && s.toolCallCount >= 1) return true;
+  if (SUPERLATIVE_INTENT.test(s.userMessage)) return true;
   return false;
 }
 
@@ -274,7 +293,10 @@ export async function runThom(
 ): Promise<ThomResult> {
   const surface: ThomSurface = opts.surface ?? "internal";
   const extension = opts.extension;
-  const system = systemFor(surface);
+  // The primer's superlative-tool bullet composes only when the rank tool is
+  // actually offered (THOM_SPEC_RANK) — commanding an unadvertised tool would
+  // re-create the original superlative failure.
+  const system = systemFor(surface, specRankEnabled(env));
   // Compose the tool set for this surface. Internal appends the injected
   // extension tools (CRM) in the SAME position as before; public gets the
   // allowlist only. The cache breakpoint is re-homed to the composed tail.
@@ -586,7 +608,8 @@ export async function* runThomStream(
 ): AsyncGenerator<ThomStreamEvent> {
   const surface: ThomSurface = opts.surface ?? "internal";
   const extension = opts.extension;
-  const system = systemFor(surface);
+  // Same spec-rank flag threading as runThom (primer bullet tracks the tool).
+  const system = systemFor(surface, specRankEnabled(env));
   const tools = composeTools(surface, env, extension?.tools ?? []);
   // web_search: PUBLIC = on-by-default + capped; INTERNAL = gated (unchanged).
   const serverTools = serverToolsFor(surface, env);

@@ -80,6 +80,39 @@ const LAYOUT_GUIDANCE = `Layouts & track bills of materials:
 - plan_layout is an ESTIMATE for early planning, not a stamped design: always say the numbers should be VERIFIED in AGi32 or the Ventrix visualizer, and hand off the full track configuration to the Ventrix configurator for the final build.
 - When plan_layout can't find a track SYSTEM (or the head's IES photometrics), it returns a generic parts list / a note that quantities need the underlying data — relay that honestly rather than inventing SKUs or counts. Use get_related_products to name the actual system components when the BOM has unresolved (sku-less) lines.`;
 
+/** Lighting-domain priors for BOTH surfaces — the fix for Thom crowning a
+ *  1,033 lm track head (with tape as runner-up) as "the highest lumen light":
+ *  nothing told the model tape is a per-foot accent product and floods /
+ *  wall packs / high-bays are the high-output classes. AUTHORED TO THE PUBLIC
+ *  COPY LINTS (it rides on the public surface too): no em dashes, always
+ *  "WAC Group", none of the promptsPublic.test.ts forbidden vocabulary — and
+ *  it must pass normalizeCopy() unchanged. Kept ahead of the web-search block
+ *  so the tail cache breakpoint stays on the final block. */
+const LIGHTING_EXPERTISE_BASE = `Lighting expertise (output classes, units, and codes):
+- Output taxonomy, qualitative first: tape and strip lights are PER-FOOT accent products (cove, undercabinet, toe-kick), never comparable to a whole fixture's total lumens. Track heads and downlights are accent and task lighting. Linear and suspended fixtures carry ambient output. Multi-light chandeliers can total very large DECORATIVE numbers, which is not "high output" in the lighting sense. The genuinely high-output classes are flood lights, wall packs, area and site lighting, and high-bays.
+- Typical industry ranges, used sparingly: tape roughly 100 to 600 lm per foot; track heads and downlights roughly 500 to 3,000 lm; floods and wall packs roughly 2,000 to 30,000 lm; high-bays 10,000 lm and up. These ranges are industry-typical context, never WAC Group specifications; actual catalog data from the tools always overrides them.
+- When a class is thin or absent in the catalog, frame the answer as "the highest-output categories WAC Group offers are X" rather than comparing against classes not carried; never assert that a product line does not exist.
+- THE NAME TRAP: "High Output" in a WAC Group product NAME is relative to its own category; high-output tape is still a per-foot accent product. Never treat a name containing "high output" as evidence of high absolute lumen output.
+- Units discipline: lumens measure total emitted light; candela measures intensity in one direction (a narrow-beam head can post a huge candela figure from modest lumens); footcandles measure light arriving on a surface. Distinguish delivered lumens from source lumens, and cite efficacy as lm/W. Watts measure power CONSUMPTION, not light output; "100W equivalent" is a legacy comparison to incandescent lamps, not a measurement.
+- Lamp-based decorative fixtures (most chandeliers and many pendants) do not carry a fixture lumen rating; their output depends on the lamps installed. Say so rather than hunting for a number that does not exist.
+- Design targets: for recommended footcandles, uniformity, or lighting power density by space or task, the lighting_requirement tool (IES and ASHRAE backed) is the PRIMARY source; education documents surfaced by search_docs are supporting context, not the primary number.
+- Licensed standards (IES, ASHRAE, ICC and similar): summarize and cite the document, edition, and page; never reproduce extended verbatim passages from licensed standards.
+- Energy codes, ALWAYS: for any code-compliance question, whether from documents, web results, or memory, name the code and edition, note that state and local adoption and amendments vary, and advise verifying with the local authority having jurisdiction (AHJ). Never present an answer as a compliance determination; that is for the AHJ or a licensed professional.`;
+
+/** The superlative-tool bullet, composed ONLY when THOM_SPEC_RANK=1:
+ *  commanding an unadvertised tool would re-create the original failure (the
+ *  router model falls back to semantic search on "high output"). */
+const LIGHTING_EXPERTISE_SPEC_RANK_BULLET = `
+- Superlatives ("brightest", "highest output", "most powerful", "most efficient", "lowest wattage"): call rank_products_by_spec, present the results grouped by class, keep per-foot products (tape/strip) ranked separately by watts per foot, and state the coverage caveat the tool returns (not every product carries numeric output data). When the user says anything works, answer with the grouped top products first and then offer to refine; do not re-ask for filters.`;
+
+/** The lighting-expertise primer for a surface: the base block, plus the
+ *  rank-tool bullet only when the tool is actually offered (hasSpecRank). */
+export function lightingExpertise(hasSpecRank: boolean): string {
+  return hasSpecRank
+    ? LIGHTING_EXPERTISE_BASE + LIGHTING_EXPERTISE_SPEC_RANK_BULLET
+    : LIGHTING_EXPERTISE_BASE;
+}
+
 /** INTERNAL-ONLY guidance for the native web_search server tool. Only appears
  *  inside internalSystem() (never on any public surface), and only has an effect
  *  when the tool is actually offered (THOM_WEB_SEARCH=1); harmless when it isn't. */
@@ -92,8 +125,9 @@ You may have a web_search tool. It is a LAST RESORT — use it ONLY for things t
 /** System blocks for the INTERNAL surface, with a cache breakpoint on the last
  *  (stable) block so tools + system prefix are cached across turns. The web-search
  *  block is internal-only and lands LAST, so the breakpoint stays on the final
- *  block. */
-export function internalSystem(): ClaudeSystemBlock[] {
+ *  block. `hasSpecRank` composes the primer's rank-tool bullet (THOM_SPEC_RANK,
+ *  threaded by agent.ts); flipping it is a one-time prompt-cache invalidation. */
+export function internalSystem(hasSpecRank = false): ClaudeSystemBlock[] {
   return [
     { type: "text", text: PERSONA },
     { type: "text", text: BRAND_CONTEXT },
@@ -101,6 +135,7 @@ export function internalSystem(): ClaudeSystemBlock[] {
     { type: "text", text: HELP_CENTER_GUIDANCE },
     { type: "text", text: PHOTOMETRICS_GUIDANCE },
     { type: "text", text: LAYOUT_GUIDANCE },
+    { type: "text", text: lightingExpertise(hasSpecRank) },
     { type: "text", text: WEB_SEARCH_GUIDANCE, cache_control: { type: "ephemeral" } },
   ];
 }
@@ -155,12 +190,13 @@ const PUBLIC_WEB_SEARCH_GUIDANCE = `Open-web search:
  *  block. No CRM / internal-ticket guidance ever appears here. Every block is
  *  passed through normalizeCopy so the whole public prompt obeys the public copy
  *  rules (including the reused shared blocks, which use em dashes). */
-export function publicSystem(): ClaudeSystemBlock[] {
+export function publicSystem(hasSpecRank = false): ClaudeSystemBlock[] {
   const texts = [
     PUBLIC_PERSONA,
     BRAND_CONTEXT,
     PHOTOMETRICS_GUIDANCE,
     LAYOUT_GUIDANCE,
+    lightingExpertise(hasSpecRank),
     PUBLIC_WEB_SEARCH_GUIDANCE,
   ];
   return texts.map((text, i) => ({
@@ -170,8 +206,9 @@ export function publicSystem(): ClaudeSystemBlock[] {
   }));
 }
 
-/** Pick the system prompt for a surface. Internal is unchanged from before the
- *  extraction; public is the stub above. */
-export function systemFor(surface: ThomSurface): ClaudeSystemBlock[] {
-  return surface === "public" ? publicSystem() : internalSystem();
+/** Pick the system prompt for a surface. `hasSpecRank` (THOM_SPEC_RANK,
+ *  threaded by agent.ts) composes the primer's rank-tool bullet on either
+ *  surface. */
+export function systemFor(surface: ThomSurface, hasSpecRank = false): ClaudeSystemBlock[] {
+  return surface === "public" ? publicSystem(hasSpecRank) : internalSystem(hasSpecRank);
 }

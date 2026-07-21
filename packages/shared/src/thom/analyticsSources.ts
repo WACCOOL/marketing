@@ -22,10 +22,12 @@ const DOC_BUCKETS: [RegExp, string][] = [
   [/^zendesk_article$/, "Help Center (Zendesk)"],
   [/^zendesk_ticket$/, "Support tickets (Zendesk)"],
   [/^web_/, "Website crawl"],
+  // Admin-uploaded education PDFs (lighting-expert plan, Prong C).
+  [/^education$/, "Education library (uploads)"],
 ];
 
 const TOOL_BUCKETS: [RegExp, string][] = [
-  [/^(search_products|get_product|get_related_products|get_family)$/, "Product catalog (PIM)"],
+  [/^(search_products|get_product|get_related_products|get_family|rank_products_by_spec)$/, "Product catalog (PIM)"],
   [/^crm_/, "HubSpot CRM"],
   [/^(get_photometrics|lighting_requirement)$/, "Photometrics (IES)"],
   [/^plan_layout$/, "Layout planner"],

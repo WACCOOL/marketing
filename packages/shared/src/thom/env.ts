@@ -35,6 +35,10 @@ export interface ThomEnv {
   // Photometrics / layout tool gates ("1" = offered to the model).
   THOM_PHOTOMETRICS?: string;
   THOM_LAYOUT?: string;
+  // Spec-rank tool gate ("1" = rank_products_by_spec offered + the primer's
+  // superlative-tool bullet composed). Same dark-launch idiom as
+  // THOM_PHOTOMETRICS; enabling is a committed wrangler `vars` edit per surface.
+  THOM_SPEC_RANK?: string;
   // Authority-weighted retrieval ("1" = search_docs passes a non-zero
   // authority_weight to kb_search for company/ambiguous-shaped queries;
   // product/SKU-shaped queries ALWAYS pass 0). Off by default — with it off,
