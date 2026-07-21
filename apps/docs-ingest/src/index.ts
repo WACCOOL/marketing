@@ -9,8 +9,13 @@ import {
   ZENDESK_ARTICLE_DOC_TYPE,
   ZENDESK_SOURCE_SYSTEM,
 } from "./articles.js";
+import {
+  ADMIN_UPLOAD_SOURCE,
+  extractAdminUpload,
+  TRUNCATION_WARNING,
+} from "./adminUpload.js";
 import { embed, toVectorLiteral, type CfCreds } from "./embed.js";
-import { extractPdf, type ClaudeCfg } from "./extract.js";
+import { claudeVision, extractPdf, extractPdfPageTexts, type ClaudeCfg } from "./extract.js";
 import { htmlToText } from "./html.js";
 import { enabledSites } from "./crawl/sites.js";
 import { webStoreFromEnv, type WebStore } from "./crawl/store.js";
@@ -526,10 +531,29 @@ async function processDoc(
     // This is the docs-ingest fallback for the in-Worker on-save embed (which
     // leaves the row pending_extract if Workers AI throws). Everything else is a
     // PDF fetched from its url.
-    let text: string;
+    let text = "";
     let pages = 1;
     let method = "marketing";
-    if (doc.source_system === "marketing_admin") {
+    // admin_upload rows are chunked page-aware in their branch (chunks carry a
+    // real `page`); every other source fills `text` for the shared chunkText
+    // path below (page: null).
+    let prechunked: { index: number; content: string; page: number | null }[] | null = null;
+    let truncationWarning: string | null = null;
+    if (doc.source_system === ADMIN_UPLOAD_SOURCE) {
+      // Admin-uploaded education PDF: read the bytes from R2 (no public url),
+      // extract PER PAGE so chunks carry real page numbers, cap-raised chunking
+      // with the truncation surfaced as a WARNING (status stays active).
+      const res = await extractAdminUpload(doc.r2_key, {
+        getObject: web ? (k) => web.getObject(k) : null,
+        extractPages: extractPdfPageTexts,
+        vision: claude ? (b) => claudeVision(b, claude) : null,
+      });
+      if (!res.ok) return await fail(res.error);
+      prechunked = res.chunks;
+      truncationWarning = res.truncated ? TRUNCATION_WARNING : null;
+      pages = res.pageCount;
+      method = res.method;
+    } else if (doc.source_system === "marketing_admin") {
       const { data: mc, error: mcErr } = await sb
         .from("marketing_content")
         .select("body, status")
@@ -571,8 +595,10 @@ async function processDoc(
       pages = extracted.pages;
       method = extracted.method;
     }
-    if (!text) return await fail("no extractable text");
-    const chunks = chunkText(text);
+    if (!prechunked && !text) return await fail("no extractable text");
+    const chunks =
+      prechunked ??
+      chunkText(text).map((c) => ({ index: c.index, content: c.content, page: null as number | null }));
     if (!chunks.length) return await fail("no chunks");
 
     const vecs = await embed(cf, chunks.map((c) => c.content));
@@ -582,7 +608,7 @@ async function processDoc(
       doc_type: doc.doc_type,
       brand: doc.brand,
       chunk_index: c.index,
-      page: null,
+      page: c.page,
       content: c.content,
       token_count: estimateTokens(c.content),
       embedding: toVectorLiteral(vecs[i]!),
@@ -595,15 +621,24 @@ async function processDoc(
       const ins = await sb.from("kb_chunks").insert(rows.slice(i, i + CHUNK_INSERT));
       if (ins.error) throw new Error(`kb_chunks insert: ${ins.error.message}`);
     }
+    // Truncation (admin uploads hitting the chunk cap) rides in last_error with
+    // a WARNING prefix so the admin UI can surface it — status stays active.
     const upd = await sb
       .from("kb_documents")
-      .update({ status: "active", extracted_at: new Date().toISOString(), last_error: null })
+      .update({
+        status: "active",
+        extracted_at: new Date().toISOString(),
+        last_error: truncationWarning,
+      })
       .eq("id", doc.id);
     if (upd.error) throw new Error(`kb_documents update: ${upd.error.message}`);
 
     counts.active++;
     counts.chunks += chunks.length;
-    console.log(`[docs-ingest] ok ${doc.id} ${chunks.length} chunks (${pages}p, ${method})`);
+    console.log(
+      `[docs-ingest] ok ${doc.id} ${chunks.length} chunks (${pages}p, ${method}` +
+        `${truncationWarning ? ", TRUNCATED" : ""})`,
+    );
   } catch (e) {
     await fail(e instanceof Error ? e.message : String(e));
   }

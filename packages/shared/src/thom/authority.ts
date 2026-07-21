@@ -53,25 +53,36 @@ export function authorityBias(
 }
 
 /**
- * Query-shape detection for intent gating (plan D.2). Deliberately cheap and
+ * Query-shape detection for intent gating (plan D.2; extended for the
+ * lighting-expert plan's C.3 education gating). Deliberately cheap and
  * conservative:
  *  - 'product': the query contains a SKU/model-code-shaped token (FR-W1801,
  *    A2RU-447-27, 5401E) — authority must be OFF (λ=0) so corporate pages can
- *    never outrank the best technical answer;
+ *    never outrank the best technical answer, and education chunks are
+ *    EXCLUDED from search_docs (they structurally cannot displace spec-sheet
+ *    chunks on the query class the team has fought contamination on);
+ *  - 'education': lighting-fundamentals / energy-code / design-guidance
+ *    wording — the admin-uploaded education library is squarely in scope;
  *  - 'company': company/capability-shaped wording — brand-hierarchy queries
  *    where the WAC Group corporate page should win a near-tie;
  *  - 'ambiguous': everything else (λ still applies, but band + cap keep it a
- *    tiebreak).
+ *    tiebreak; education docs stay retrievable).
+ *
+ * Order matters: a SKU token wins even when code words are present ("does
+ * FR-W1801 meet Title 24") — the product data must stay uncontaminated.
  */
-export type DocsQueryIntent = "product" | "company" | "ambiguous";
+export type DocsQueryIntent = "product" | "company" | "education" | "ambiguous";
 
 const SKU_TOKEN_RE = /\b[A-Za-z][A-Za-z0-9]{0,5}-[A-Za-z0-9][A-Za-z0-9-]{2,}\b|\b\d{3,6}E?\b/;
 const COMPANY_RE =
   /\b(who is|about|company|companies|capabilit\w*|sustainab\w*|responsib\w*|history|founded|headquarters|manufactur\w*|brands?|wac group|technolog\w*|light\s*(&|and)\s*health)\b/i;
+const EDUCATION_RE =
+  /\b(foot-?candles?|illuminance|lux level|light(ing)? levels?|lighting power density|lpd\b|energy codes?|title\s*24|ashrae|iecc|ja8|candela|delivered lumens|source lumens|color rendering|bug rating|dark[- ]?sky|lighting ordinance|ada (protrusion|standard)|what (is|are|does) .*(lumen|watt|efficacy|cct|cri|candela|kelvin|footcandle)|glossary|terminolog\w*)\b/i;
 
 export function detectDocsQueryIntent(query: string): DocsQueryIntent {
   const q = query.trim();
   if (SKU_TOKEN_RE.test(q)) return "product";
+  if (EDUCATION_RE.test(q)) return "education";
   if (COMPANY_RE.test(q)) return "company";
   return "ambiguous";
 }

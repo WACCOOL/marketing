@@ -98,6 +98,18 @@ describe("detectDocsQueryIntent + authorityWeightFor (D.2 intent gating)", () =>
     expect(detectDocsQueryIntent("sustainability commitments")).toBe("company");
   });
 
+  it("lighting-education / energy-code wording is education intent (plan C.3)", () => {
+    expect(detectDocsQueryIntent("what footcandles for an office")).toBe("education");
+    expect(detectDocsQueryIntent("Title 24 residential lighting rules")).toBe("education");
+    expect(detectDocsQueryIntent("recommended lighting levels for a warehouse")).toBe("education");
+    expect(detectDocsQueryIntent("what is delivered lumens vs source lumens")).toBe("education");
+    expect(detectDocsQueryIntent("which energy code applies in Texas")).toBe("education");
+  });
+
+  it("a SKU token beats education wording — product data stays uncontaminated", () => {
+    expect(detectDocsQueryIntent("does FR-W1801 meet Title 24")).toBe("product");
+  });
+
   it("everything else is ambiguous", () => {
     expect(detectDocsQueryIntent("how do I clean crystal")).toBe("ambiguous");
   });
@@ -105,12 +117,14 @@ describe("detectDocsQueryIntent + authorityWeightFor (D.2 intent gating)", () =>
   it("gate off ⇒ weight 0 for EVERY intent (pre-0054 ordering preserved)", () => {
     expect(authorityWeightFor("product", false)).toBe(0);
     expect(authorityWeightFor("company", false)).toBe(0);
+    expect(authorityWeightFor("education", false)).toBe(0);
     expect(authorityWeightFor("ambiguous", false)).toBe(0);
   });
 
-  it("gate on ⇒ product stays 0; company/ambiguous get the default λ", () => {
+  it("gate on ⇒ product stays 0; company/education/ambiguous get the default λ", () => {
     expect(authorityWeightFor("product", true)).toBe(0);
     expect(authorityWeightFor("company", true)).toBe(AUTHORITY_WEIGHT_DEFAULT);
+    expect(authorityWeightFor("education", true)).toBe(AUTHORITY_WEIGHT_DEFAULT);
     expect(authorityWeightFor("ambiguous", true)).toBe(AUTHORITY_WEIGHT_DEFAULT);
   });
 });

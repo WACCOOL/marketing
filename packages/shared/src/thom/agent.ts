@@ -237,6 +237,17 @@ export function turnUsedWebSearch(content: ClaudeContentBlock[]): boolean {
 }
 
 /**
+ * Did this request's gathered citations include an admin-uploaded education
+ * document? DOE/DLC/ENERGY STAR education material names manufacturers, and
+ * public-scope education chunks would otherwise bypass the competitor screen
+ * (which historically ran only on web_search turns) — plan R10. Citations
+ * already carry doc_type, so this is cheap and precise.
+ */
+export function turnUsedEducationDocs(citations: Citation[]): boolean {
+  return citations.some((c) => c.doc_type === "education");
+}
+
+/**
  * Collect the open-web sources from an assistant turn as `kind:"web"` Citations.
  * Prefers `web_search_result_location` entries on text blocks (the sources the
  * model actually CITED); falls back to enumerating the raw web_search_tool_result
@@ -385,11 +396,12 @@ export async function runThom(
         `[thom] answered model=${usage.model} escalated=${usage.escalated} ` +
           `toolCalls=${toolCallCount} docPassages=${citations.length} products=${cards.length}`,
       );
-      // PUBLIC: normalize copy, and (only if this turn used web_search) run the
-      // competitor screen, replacing the answer with the guardrail template when
-      // flagged. INTERNAL: raw final text, unchanged.
+      // PUBLIC: normalize copy, and (if this turn used web_search OR cited an
+      // education document — plan R10) run the competitor screen, replacing the
+      // answer with the guardrail template when flagged. INTERNAL: raw final
+      // text, unchanged.
       const text = isPublic
-        ? turnUsedWebSearch(res.content)
+        ? turnUsedWebSearch(res.content) || turnUsedEducationDocs(citations)
           ? await screenCompetitors(normalizeCopy(finalText(res.content), dictTerms), { judge })
           : normalizeCopy(finalText(res.content), dictTerms)
         : finalText(res.content);
@@ -618,21 +630,23 @@ export async function* runThomStream(
   const judge: CompetitorJudge | undefined = isPublic ? makeHaikuJudge(env) : undefined;
   // Dictionary terms (marketing-app editable) the normalizer must protect.
   const dictTerms = isPublic ? await loadProtectedTerms(sb) : [];
-  // Sanitize one turn's reconstructed text for the public surface: normalize
-  // copy always; screen for competitors only when the turn used web_search.
   const allToolCalls: { name: string; input: unknown }[] = [];
-  const sanitizePublic = (turn: { content: ClaudeContentBlock[]; text: string }): Promise<string> => {
-    const normalized = normalizeCopy(turn.text, dictTerms);
-    return turnUsedWebSearch(turn.content)
-      ? screenCompetitors(normalized, { judge })
-      : Promise.resolve(normalized);
-  };
   const messages: ClaudeMessage[] = [
     ...opts.history,
     { role: "user", content: opts.userMessage },
   ];
   const cards: Card[] = [];
   const citations: Citation[] = [];
+  // Sanitize one turn's reconstructed text for the public surface: normalize
+  // copy always; screen for competitors when the turn used web_search OR when
+  // the request's citations so far include an education document (plan R10 —
+  // DOE/DLC/ENERGY STAR education material names manufacturers).
+  const sanitizePublic = (turn: { content: ClaudeContentBlock[]; text: string }): Promise<string> => {
+    const normalized = normalizeCopy(turn.text, dictTerms);
+    return turnUsedWebSearch(turn.content) || turnUsedEducationDocs(citations)
+      ? screenCompetitors(normalized, { judge })
+      : Promise.resolve(normalized);
+  };
   let toolCallCount = 0;
   const usage: ThomUsage = {
     input_tokens: 0,

@@ -11,9 +11,18 @@ import { PutObjectCommand, GetObjectCommand, S3Client } from "@aws-sdk/client-s3
  * Step B actually consumes — kb_documents.r2_key points here).
  */
 
+/** A raw R2 object: bytes plus its user metadata (admin uploads carry the
+ *  force-vision toggle there — kb_documents has no column for it). */
+export interface StoredObject {
+  bytes: Uint8Array;
+  meta: Record<string, string>;
+}
+
 export interface WebStore {
   putPage(siteKey: string, sha: string, html: string, text: string): Promise<string>;
   getText(key: string): Promise<string | null>;
+  /** Raw bytes + metadata — admin-uploaded PDFs (kb/admin_uploads/{uuid}.pdf). */
+  getObject(key: string): Promise<StoredObject | null>;
 }
 
 export function webStoreFromEnv(env: NodeJS.ProcessEnv): WebStore | null {
@@ -42,6 +51,16 @@ export function webStoreFromEnv(env: NodeJS.ProcessEnv): WebStore | null {
       try {
         const r = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
         return (await r.Body?.transformToString()) ?? null;
+      } catch {
+        return null;
+      }
+    },
+    async getObject(key) {
+      try {
+        const r = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+        const bytes = await r.Body?.transformToByteArray();
+        if (!bytes) return null;
+        return { bytes, meta: (r.Metadata ?? {}) as Record<string, string> };
       } catch {
         return null;
       }

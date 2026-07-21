@@ -1,6 +1,6 @@
 import type { ClaudeTool } from "./transport.js";
 import type { ThomSurface } from "./env.js";
-import { authorityWeightFor, detectDocsQueryIntent } from "./authority.js";
+import { authorityWeightFor, detectDocsQueryIntent, type DocsQueryIntent } from "./authority.js";
 import { embedQuery } from "./embed.js";
 import { layoutDispatch } from "./layoutTool.js";
 import { photometricsDispatch } from "./photometricsTools.js";
@@ -93,7 +93,7 @@ export const TOOLS: ClaudeTool[] = [
   {
     name: "search_docs",
     description:
-      "Search the CONTENTS of spec sheets, installation manuals, curated WAC marketing overviews/positioning/FAQs, WAC Help Center (support) articles, WAC Group brand-website pages (company/about, capabilities, technology, news, FAQs, warranty), official WAC Architectural PRODUCT pages (that brand is not in the product catalog yet — this is where its products live, with separate Domestic and International lines), AND internal support-ticket resolutions (how a real customer issue was diagnosed and fixed) for a specific fact (cutout size, dimming compatibility, mounting, torque, wiring, exact photometrics), WAC's own product/brand/system positioning and messaging, company background and capabilities, or how-to / troubleshooting / warranty / support guidance. Returns matching passages with the document + link for citation.",
+      "Search the CONTENTS of spec sheets, installation manuals, curated WAC marketing overviews/positioning/FAQs, WAC Help Center (support) articles, WAC Group brand-website pages (company/about, capabilities, technology, news, FAQs, warranty), official WAC Architectural PRODUCT pages (that brand is not in the product catalog yet — this is where its products live, with separate Domestic and International lines), lighting-education references (energy codes and adoption guides, design guides, lighting fundamentals and terminology), AND internal support-ticket resolutions (how a real customer issue was diagnosed and fixed) for a specific fact (cutout size, dimming compatibility, mounting, torque, wiring, exact photometrics), WAC's own product/brand/system positioning and messaging, company background and capabilities, general lighting-design or code guidance, or how-to / troubleshooting / warranty / support guidance. Returns matching passages with the document + link (and page, for PDFs) for citation.",
     input_schema: {
       type: "object",
       properties: {
@@ -267,6 +267,26 @@ export const WEB_DOC_TYPES = [
   "web_product",
 ] as const;
 
+/** Admin-uploaded education PDFs (lighting-expert plan, Prong C). */
+export const EDUCATION_DOC_TYPE = "education";
+
+/**
+ * The search_docs doc_type allowlist for a surface + query intent (plan C.3):
+ * `education` joins BOTH surface allowlists, but is EXCLUDED when the query is
+ * product/SKU-shaped — education chunks structurally cannot displace spec-sheet
+ * chunks on the query class the team has fought contamination on (the vec
+ * branch's fixed LIMIT 50 pool is the crowding risk). Company / education /
+ * ambiguous intents include it. Exported pure so the gating is unit-testable.
+ */
+export function searchDocTypes(surface: ThomSurface, intent: DocsQueryIntent): string[] {
+  const types: string[] =
+    surface === "public"
+      ? ["spec_sheet", "manual", "marketing", "zendesk_article", ...WEB_DOC_TYPES]
+      : ["spec_sheet", "manual", "marketing", "zendesk_article", "zendesk_ticket", ...WEB_DOC_TYPES];
+  if (intent !== "product") types.push(EDUCATION_DOC_TYPE);
+  return types;
+}
+
 async function searchDocs(
   ctx: ToolContext,
   input: Record<string, unknown>,
@@ -280,21 +300,19 @@ async function searchDocs(
   // AND doc_types WITHOUT zendesk_ticket, so internal support-ticket resolutions
   // are never retrievable on the public surface.
   const isPublic = surface === "public";
+  // Query intent drives BOTH gates below: authority weight (plan D.2) and the
+  // education doc_type inclusion (plan C.3).
+  const intent = detectDocsQueryIntent(query);
   // Intent-gated authority (plan D.2): product/SKU-shaped queries ALWAYS pass
-  // weight 0; company/ambiguous queries pass the default λ only when the
-  // THOM_AUTHORITY env gate is on. With the gate off this is 0 everywhere and
-  // kb_search ordering is identical to pre-0054.
-  const authorityWeight = authorityWeightFor(
-    detectDocsQueryIntent(query),
-    ctx.env.THOM_AUTHORITY === "1",
-  );
+  // weight 0; other intents pass the default λ only when the THOM_AUTHORITY env
+  // gate is on. With the gate off this is 0 everywhere and kb_search ordering
+  // is identical to pre-0054.
+  const authorityWeight = authorityWeightFor(intent, ctx.env.THOM_AUTHORITY === "1");
   const { data, error } = await ctx.sb.rpc("kb_search", {
     query_embedding: embedding,
     query_text: query,
     scope_filter: isPublic ? "public" : null,
-    doc_types: isPublic
-      ? ["spec_sheet", "manual", "marketing", "zendesk_article", ...WEB_DOC_TYPES]
-      : ["spec_sheet", "manual", "marketing", "zendesk_article", "zendesk_ticket", ...WEB_DOC_TYPES],
+    doc_types: searchDocTypes(surface, intent),
     brand_filter: str(input.brand),
     match_count: 8,
     authority_weight: authorityWeight,

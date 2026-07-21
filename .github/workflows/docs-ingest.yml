@@ -67,6 +67,14 @@ jobs:
           # reusing the ZENDESK_* creds above to read the ticket + public comments
           # (which it PII-redacts before embedding). Passed through for parity.
           THOM_ZENDESK_TICKETS: ${{ secrets.THOM_ZENDESK_TICKETS }}
+          # R2 access — REQUIRED for admin-uploaded education PDFs
+          # (kb/admin_uploads/*, read by the admin_upload extraction branch) and
+          # reused as the crawled-page cache. Same pattern as site-crawl.yml;
+          # the secrets already exist org-side.
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: wac-marketing-assets
         run: >-
           pnpm --filter @wac/docs-ingest ingest --
           ${{ inputs.dry_run && '--dry-run' || '' }}
