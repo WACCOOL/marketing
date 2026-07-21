@@ -25,7 +25,14 @@ import {
   screenCompetitors,
   type CompetitorJudge,
 } from "./publicFilter.js";
-import { dispatch, SPEC_RANK_TOOLS, TOOLS, type ThomToolExtension } from "./tools.js";
+import {
+  dispatch,
+  FILTER_TOOLS,
+  SPEC_RANK_TOOLS,
+  TOOLS,
+  withConstraintRouting,
+  type ThomToolExtension,
+} from "./tools.js";
 import { LAYOUT_TOOLS } from "./layoutTool.js";
 import { PHOTOMETRICS_TOOLS } from "./photometricsTools.js";
 import type { Card, Citation, ThomUsage } from "./types.js";
@@ -63,6 +70,15 @@ export function specRankEnabled(env: ThomEnv): boolean {
   return env.THOM_SPEC_RANK === "1";
 }
 
+/** Spec-filter tool is OFF unless THOM_SPEC_FILTER is explicitly "1"
+ *  (dark-launch, mirroring THOM_SPEC_RANK). Gates filter_products, the
+ *  primer's constraint bullets, the search_products back-pointer, AND
+ *  get_product's per-size dimension surface (they all read the 0063 views),
+ *  on BOTH surfaces. */
+export function specFilterEnabled(env: ThomEnv): boolean {
+  return env.THOM_SPEC_FILTER === "1";
+}
+
 /** The base PUBLIC tool set: the retrieval tools + plan_layout, always. The
  *  public surface NEVER carries any injected (crm_*) tool — see composeTools. */
 const PUBLIC_TOOLS: ClaudeTool[] = [...TOOLS, ...LAYOUT_TOOLS];
@@ -91,14 +107,18 @@ export function composeTools(
     const list: ClaudeTool[] = [...PUBLIC_TOOLS];
     if (photometricsEnabled(env)) list.push(...PHOTOMETRICS_TOOLS);
     if (specRankEnabled(env)) list.push(...SPEC_RANK_TOOLS);
-    return withTailCache(list);
+    if (specFilterEnabled(env)) list.push(...FILTER_TOOLS);
+    // The search_products constraint back-pointer composes ONLY when the
+    // filter tool is actually offered (plan O3 / the R3 rule).
+    return withTailCache(specFilterEnabled(env) ? withConstraintRouting(list) : list);
   }
   const list: ClaudeTool[] = [...TOOLS];
   list.push(...extraTools);
   if (photometricsEnabled(env)) list.push(...PHOTOMETRICS_TOOLS);
   if (layoutEnabled(env)) list.push(...LAYOUT_TOOLS);
   if (specRankEnabled(env)) list.push(...SPEC_RANK_TOOLS);
-  return withTailCache(list);
+  if (specFilterEnabled(env)) list.push(...FILTER_TOOLS);
+  return withTailCache(specFilterEnabled(env) ? withConstraintRouting(list) : list);
 }
 
 /**
@@ -146,6 +166,11 @@ export interface EscalationState {
   productCount: number;
   /** The user's message for this turn (intent detection). */
   userMessage: string;
+  /** The last N user turns of history joined with the current message —
+   *  CONSTRAINT_INTENT is evaluated over this window (plan O6: "no wider than
+   *  15 inches" in turn 1 followed by "what about in black?" in turn 3 is
+   *  still a constraint conversation). Defaults to userMessage when absent. */
+  recentUserText?: string;
 }
 
 // Genuine comparison / superlative intent. Deliberately TIGHT: a bare
@@ -161,6 +186,62 @@ const COMPARISON_INTENT =
 export const SUPERLATIVE_INTENT =
   /\b(highest|brightest|most (powerful|efficient)|max(imum)?\s+(lumens?|output)|lowest (wattage|power)|best (output|efficacy))\b/i;
 
+// --- CONSTRAINT_INTENT (attribute-filter plan §D — rebuilt per A2/O3/O6) ----
+//
+// Escalates at toolCallCount >= 0: multi-predicate composition is precisely
+// the shape a router-tier model fumbles, and the failing turn is the first
+// turn (the R6 lesson). Design rules, adjudicated in the plan:
+//  * units match only DIGIT-ADJACENT — "under-cabinet lighting", "over the
+//    island", "up to code", "over 100 products" cannot fire;
+//  * widened comparators incl. narrower/shallower/no-bigger-than/within/
+//    at most/at least and TRAILING forms ("15 in or less", "15 inches max");
+//  * \bADA\b fires alone (an ADA mention IS a 4-inch depth constraint), as
+//    does a bare IP rating ("IP65");
+//  * fits-in forms ("fit in a 30cm cabinet") need a digit-adjacent unit
+//    within reach;
+//  * overlap with SUPERLATIVE_INTENT is ALLOWED — "the brightest one under
+//    15 inches" legitimately matches both.
+// The false-positive and miss corpora in agent.test.ts ARE the spec: tuning
+// the regex = changing the corpora = a PR.
+const CONSTRAINT_NUM = String.raw`\d[\d,.]*`;
+const CONSTRAINT_UNIT_WORD = String.raw`(?:in(?:ch(?:es)?)?|mm|cm|ft|feet|foot|lm|lumens?|watts?|w|k|kelvin|cri)`;
+const CONSTRAINT_NUM_UNIT = String.raw`${CONSTRAINT_NUM}\s?(?:["'′″’”]|${CONSTRAINT_UNIT_WORD}\b)`;
+const CONSTRAINT_COMPARATOR = String.raw`(?:no\s+)?(?:more|less|fewer|bigger|smaller|narrower|wider|shorter|taller|longer|deeper|shallower|larger)\s+than|at\s+(?:most|least)|under|over|below|above|within|between|max(?:imum)?|min(?:imum)?|up\s+to`;
+export const CONSTRAINT_INTENT = new RegExp(
+  [
+    // comparator + digit-adjacent unit (optional soft filler word).
+    String.raw`(?:${CONSTRAINT_COMPARATOR})\s+(?:about\s+|around\s+|approximately\s+|roughly\s+)?${CONSTRAINT_NUM_UNIT}`,
+    // trailing forms: "15 in or less", "15 inches max".
+    String.raw`${CONSTRAINT_NUM_UNIT}\s*(?:or\s+(?:less|under|smaller|shorter|narrower|fewer|more|over|larger)|max(?:imum)?|min(?:imum)?)\b`,
+    // a bare ADA mention IS a constraint (§307's 4-inch protrusion rule).
+    String.raw`\bADA\b`,
+    // a bare IP rating is a constraint ("IP65 rated", "ip 65").
+    String.raw`\bIP\s?\d{2}\b`,
+    // fits-in forms with a digit-adjacent unit in reach.
+    String.raw`\bfits?\s+(?:in(?:to)?|within|under|over)\b[^.!?]{0,40}?${CONSTRAINT_NUM_UNIT}`,
+  ].join("|"),
+  "i",
+);
+
+/** How many trailing USER turns of history join the current message for the
+ *  CONSTRAINT_INTENT window (plan O6). */
+export const CONSTRAINT_HISTORY_TURNS = 4;
+
+/** The text CONSTRAINT_INTENT scans: the last (CONSTRAINT_HISTORY_TURNS - 1)
+ *  plain-text user turns of history plus the current message. Tool-result
+ *  user turns (content arrays) are skipped — they are transcripts, not asks.
+ *  Pure + exported for tests. */
+export function recentUserText(
+  history: ClaudeMessage[],
+  userMessage: string,
+  turns: number = CONSTRAINT_HISTORY_TURNS,
+): string {
+  const prior = history
+    .filter((m) => m.role === "user" && typeof m.content === "string")
+    .map((m) => m.content as string);
+  return [...prior.slice(-(Math.max(turns, 1) - 1)), userMessage].join("\n");
+}
+
 /**
  * Whether this turn is "hard" enough to warrant the stronger model. Pure and
  * monotonic in the accumulated evidence: multi-doc synthesis (2+ passages),
@@ -174,6 +255,10 @@ export function shouldEscalate(s: EscalationState): boolean {
   if (s.toolCallCount >= 3) return true;
   if (COMPARISON_INTENT.test(s.userMessage) && s.toolCallCount >= 1) return true;
   if (SUPERLATIVE_INTENT.test(s.userMessage)) return true;
+  // Constraint conversations escalate immediately (toolCallCount >= 0), over
+  // the recent-user-turns window (plan O6) so a follow-up like "what about in
+  // black?" three turns after "no wider than 15 inches" stays escalated.
+  if (CONSTRAINT_INTENT.test(s.recentUserText ?? s.userMessage)) return true;
   return false;
 }
 
@@ -305,9 +390,13 @@ export async function runThom(
   const surface: ThomSurface = opts.surface ?? "internal";
   const extension = opts.extension;
   // The primer's superlative-tool bullet composes only when the rank tool is
-  // actually offered (THOM_SPEC_RANK) — commanding an unadvertised tool would
-  // re-create the original superlative failure.
-  const system = systemFor(surface, specRankEnabled(env));
+  // actually offered (THOM_SPEC_RANK), and the constraint bullets only when
+  // the filter tool is (THOM_SPEC_FILTER) — commanding an unadvertised tool
+  // would re-create the original superlative failure.
+  const system = systemFor(surface, specRankEnabled(env), specFilterEnabled(env));
+  // CONSTRAINT_INTENT scans the last N user turns + the current message
+  // (plan O6): constraints stated earlier stay binding.
+  const constraintWindow = recentUserText(opts.history, opts.userMessage);
   // Compose the tool set for this surface. Internal appends the injected
   // extension tools (CRM) in the SAME position as before; public gets the
   // allowlist only. The cache breakpoint is re-homed to the composed tail.
@@ -357,6 +446,7 @@ export async function runThom(
         docPassageCount: citations.length,
         productCount: cards.length,
         userMessage: opts.userMessage,
+        recentUserText: constraintWindow,
       });
     const model = escalate ? claudeModel(env) : claudeRouterModel(env);
     usage.model = model; // last write wins → reflects the answering turn
@@ -620,8 +710,10 @@ export async function* runThomStream(
 ): AsyncGenerator<ThomStreamEvent> {
   const surface: ThomSurface = opts.surface ?? "internal";
   const extension = opts.extension;
-  // Same spec-rank flag threading as runThom (primer bullet tracks the tool).
-  const system = systemFor(surface, specRankEnabled(env));
+  // Same flag threading as runThom (primer bullets track the offered tools).
+  const system = systemFor(surface, specRankEnabled(env), specFilterEnabled(env));
+  // Same O6 constraint window as runThom.
+  const constraintWindow = recentUserText(opts.history, opts.userMessage);
   const tools = composeTools(surface, env, extension?.tools ?? []);
   // web_search: PUBLIC = on-by-default + capped; INTERNAL = gated (unchanged).
   const serverTools = serverToolsFor(surface, env);
@@ -666,6 +758,7 @@ export async function* runThomStream(
         docPassageCount: citations.length,
         productCount: cards.length,
         userMessage: opts.userMessage,
+        recentUserText: constraintWindow,
       });
     const model = escalate ? claudeModel(env) : claudeRouterModel(env);
     usage.model = model; // last write wins → reflects the answering turn

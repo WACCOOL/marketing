@@ -97,6 +97,67 @@ describe("lightingExpertise primer", () => {
   });
 });
 
+describe("constraint bullets (attribute-filter plan §C, THOM_SPEC_FILTER-gated)", () => {
+  it("compose ONLY when the filter tool is offered (R3 rule)", () => {
+    expect(lightingExpertise(false)).not.toContain("filter_products");
+    expect(lightingExpertise(true)).not.toContain("filter_products");
+    expect(lightingExpertise(false, true)).toContain("filter_products");
+    expect(lightingExpertise(true, true)).toContain(lightingExpertise(true, false)); // base+rank preserved
+  });
+
+  it("never command the RANK tool when only the filter flag is on (each half flag-gated)", () => {
+    expect(lightingExpertise(false, true)).not.toContain("rank_products_by_spec");
+    // Both on: the division-of-labor bullet appears.
+    expect(lightingExpertise(true, true)).toContain(
+      "filter first, then compare the survivors",
+    );
+  });
+
+  it("carry the load-bearing constraint contract lines", () => {
+    const primer = lightingExpertise(true, true);
+    // Constraints are requirements, not preferences.
+    expect(primer).toContain("requirements, not preferences");
+    expect(primer).toContain("MUST NOT present any product that violates a stated constraint");
+    // O12: only filter results are recommendable while a constraint is active.
+    expect(primer).toContain(
+      "only products returned by filter_products may be recommended",
+    );
+    // O6: constraints persist across turns.
+    expect(primer).toContain("remain binding until the user changes them");
+    // O10: units pass through, never model arithmetic.
+    expect(primer).toContain("unit parameter instead of converting values yourself");
+    // Unknown-vs-violating honesty + near-miss labeling.
+    expect(primer).toContain("without confirmed dimensions were not considered");
+    expect(primer).toContain("does NOT meet the stated requirement, never as a match");
+    // ADA verify-projection line.
+    expect(primer).toContain("verify the projection on the spec sheet");
+    // Addendum 1: metric answering from the tool's dual-unit values.
+    expect(primer).toContain("unit system the user used");
+  });
+
+  it("pass normalizeCopy unchanged (public copy lints) in every flag combination", () => {
+    for (const rank of [false, true]) {
+      for (const filter of [false, true]) {
+        const primer = lightingExpertise(rank, filter);
+        expect(normalizeCopy(primer)).toBe(primer);
+        expect(primer).not.toContain("—");
+        expect(hasBareWac(primer)).toBe(false);
+      }
+    }
+  });
+
+  it("systemFor threads the filter flag to both surfaces (default off), breakpoint intact", () => {
+    for (const surface of ["internal", "public"] as const) {
+      expect(systemFor(surface, true, true).some((b) => b.text.includes("filter_products"))).toBe(true);
+      expect(systemFor(surface).some((b) => b.text.includes("filter_products"))).toBe(false);
+      const blocks = systemFor(surface, true, true);
+      const cached = blocks.filter((b) => b.cache_control);
+      expect(cached).toHaveLength(1);
+      expect(blocks[blocks.length - 1]?.cache_control).toEqual({ type: "ephemeral" });
+    }
+  });
+});
+
 describe("internalSystem is unchanged by the public work", () => {
   it("still carries the CRM + web-search guidance (internal only)", () => {
     const text = joined(internalSystem());

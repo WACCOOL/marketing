@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { ThomEnv } from "./env.js";
-import type { ClaudeStreamEvent, ClaudeUsage } from "./transport.js";
+import type { ClaudeMessage, ClaudeStreamEvent, ClaudeUsage } from "./transport.js";
 import {
+  CONSTRAINT_HISTORY_TURNS,
+  CONSTRAINT_INTENT,
+  recentUserText,
   reconstructTurn,
   shouldEscalate,
   SUPERLATIVE_INTENT,
@@ -98,6 +101,96 @@ describe("shouldEscalate", () => {
     ]) {
       expect(SUPERLATIVE_INTENT.test(msg)).toBe(false);
     }
+  });
+});
+
+// --- CONSTRAINT_INTENT (attribute-filter plan §D — the corpora ARE the spec) --
+
+describe("CONSTRAINT_INTENT", () => {
+  it("MISS CORPUS: every constraint phrasing the v1 draft leaked must match", () => {
+    for (const msg of [
+      "vanity lights no wider than 15 inches",
+      "narrower than 16 inches",
+      "sconces 15 in or less",
+      "something 15 inches max",
+      "an ADA compliant sconce for a corridor",
+      "will it fit in a 4 inch space?",
+      "needs to fit into a 30cm cabinet",
+      "less than 15 inches wide, more than 1000 lumens, no more than 4 inches deep",
+      "under 20 watts",
+      "at least 90 CRI",
+      "between 2700K and 3000K",
+      "IP65 rated for the shower",
+      "ip 65 or better",
+      "up to 24 inches wide",
+      "within 12 in of the wall",
+      "no bigger than 10 in",
+      "shallower than 4 inches",
+      "5000 lumens max",
+      'a pendant with at least 10 ft of cord',
+      'no wider than 15"',
+    ]) {
+      expect(CONSTRAINT_INTENT.test(msg), msg).toBe(true);
+    }
+  });
+
+  it("FALSE-POSITIVE CORPUS: comparator words without a digit-adjacent unit never fire", () => {
+    for (const msg of [
+      "under-cabinet lighting for my kitchen",
+      "pendants that hang over the island",
+      "make sure the wiring is up to code",
+      "you have over 100 products in the track category",
+      "what's the brightest downlight?",
+      "is the high output tape dimmable?",
+      "I want it in black",
+      "recessed downlights for a living room",
+      "tell me more about the Slim family",
+    ]) {
+      expect(CONSTRAINT_INTENT.test(msg), msg).toBe(false);
+    }
+  });
+
+  it("escalates IMMEDIATELY, at zero tool calls", () => {
+    expect(
+      shouldEscalate(
+        state({ toolCallCount: 0, userMessage: "vanity lights no wider than 15 inches" }),
+      ),
+    ).toBe(true);
+  });
+
+  it("overlap with SUPERLATIVE_INTENT is allowed — both match, both escalate", () => {
+    const msg = "the brightest one under 15 inches";
+    expect(SUPERLATIVE_INTENT.test(msg)).toBe(true);
+    expect(CONSTRAINT_INTENT.test(msg)).toBe(true);
+    expect(shouldEscalate(state({ userMessage: msg }))).toBe(true);
+  });
+
+  it("multi-turn (O6): a constraint in an EARLIER user turn still escalates via the history window", () => {
+    const history = [
+      { role: "user", content: "vanity lights no wider than 15 inches" },
+      { role: "assistant", content: "Here are some options." },
+      // Tool-result user turns (content arrays) are transcripts, not asks.
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "rows" }] },
+    ] as unknown as ClaudeMessage[];
+    const window = recentUserText(history, "what about in black?");
+    expect(window).toContain("no wider than 15 inches");
+    expect(window).toContain("what about in black?");
+    expect(
+      shouldEscalate(state({ userMessage: "what about in black?", recentUserText: window })),
+    ).toBe(true);
+    // Without the window, the follow-up alone would de-escalate — the O6 bug.
+    expect(shouldEscalate(state({ userMessage: "what about in black?" }))).toBe(false);
+  });
+
+  it("the window is bounded to the last N user turns", () => {
+    const filler = (i: number) =>
+      ({ role: "user", content: `filler question ${i}` }) as unknown as ClaudeMessage;
+    const history = [
+      { role: "user", content: "no wider than 15 inches" } as unknown as ClaudeMessage,
+      ...Array.from({ length: CONSTRAINT_HISTORY_TURNS }, (_, i) => filler(i)),
+    ];
+    const window = recentUserText(history, "and in black?");
+    expect(window).not.toContain("no wider than 15 inches");
   });
 });
 
