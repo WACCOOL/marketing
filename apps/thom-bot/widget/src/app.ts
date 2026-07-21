@@ -194,11 +194,47 @@ export class ThomWidget {
     this.scrollToBottom();
   }
 
+  /** The lucide "bot" mark used in the header, at an arbitrary size. */
+  private robotIcon(size: number): SVGElement {
+    return svgEl(
+      "svg",
+      {
+        viewBox: "0 0 24 24",
+        width: size,
+        height: size,
+        fill: "none",
+        stroke: "currentColor",
+        "stroke-width": 2,
+        "stroke-linecap": "round",
+        "stroke-linejoin": "round",
+      },
+      [
+        svgEl("path", { d: "M12 8V4H8" }),
+        svgEl("rect", { width: 16, height: 12, x: 4, y: 8, rx: 2 }),
+        svgEl("path", { d: "M2 14h2" }),
+        svgEl("path", { d: "M20 14h2" }),
+        svgEl("path", { d: "M15 13v2" }),
+        svgEl("path", { d: "M9 13v2" }),
+      ],
+    );
+  }
+
+  /** Pre-first-token placeholder: the robot with a scanning beam and a
+   *  "Searching…" label. The whole tool phase happens before the first text
+   *  delta (the prompt forbids narrating searches), so this is exactly the
+   *  window where Thom is out reading the catalog/docs. */
+  private searchingView(): HTMLElement {
+    return el("div", { class: "thom-turn assistant" }, [
+      el("div", { class: "thom-bubble thom-searching", role: "status", "aria-label": "Searching" }, [
+        el("span", { class: "thom-scan", "aria-hidden": "true" }, [this.robotIcon(28)]),
+        el("span", { class: "thom-searching-label", text: "Searching…" }),
+      ]),
+    ]);
+  }
+
   private turnView(turn: Turn, streaming: boolean): HTMLElement {
     if (turn.role === "assistant" && streaming && !turn.text) {
-      return el("div", { class: "thom-turn assistant" }, [
-        el("div", { class: "thom-bubble thom-thinking", text: "Thom is thinking…" }),
-      ]);
+      return this.searchingView();
     }
     const bubble = el("div", { class: `thom-bubble${turn.error ? " thom-error" : ""}` });
     if (turn.role === "assistant") {
