@@ -482,6 +482,24 @@ async function getProduct(
   push("IP rating", repr.ip_rating);
   push("Finish", repr.finish);
 
+  // Variant availability: surface anything not plainly available so the model
+  // flags retired/limited products instead of presenting them as current.
+  // (Labels are stamped at stitch time; most rows are "normal" until the
+  // Sales Layer export carries plant status - see product-availability notes.)
+  const availLabels = [
+    ...new Set(
+      variants
+        .map((v) => {
+          const label = str(v.availability_label);
+          if (label) return label;
+          const a = str(v.availability);
+          return a && a.toLowerCase() !== "normal" ? a : null;
+        })
+        .filter((x): x is string => Boolean(x)),
+    ),
+  ];
+  if (availLabels.length) push("Availability", availLabels.join(", "));
+
   // De-dup downloads by url; keep the most useful label.
   const seen = new Set<string>();
   const downloads = ((docs ?? []) as { doc_type: string; label: string | null; url: string }[])
