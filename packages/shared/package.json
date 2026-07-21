@@ -12,7 +12,8 @@
     "./social": "./src/social.ts",
     "./bulk": "./src/bulk.ts",
     "./fixture": "./src/fixture.ts",
-    "./thom": "./src/thom/index.ts"
+    "./thom": "./src/thom/index.ts",
+    "./thom/protectedTerms": "./src/thom/protectedTerms.ts"
   },
   "scripts": {
     "test": "vitest run",

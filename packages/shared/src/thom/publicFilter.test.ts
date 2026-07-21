@@ -26,6 +26,7 @@ describe("normalizeCopy", () => {
     );
     expect(normalizeCopy("the WAC-Mesh PSC 96W driver")).toBe("the WAC-Mesh PSC 96W driver");
     expect(normalizeCopy("see WAC Home for residential")).toBe("see WAC Home for residential");
+    expect(normalizeCopy("control it from the My WAC app")).toBe("control it from the My WAC app");
     expect(normalizeCopy("Made by WAC.")).toBe("Made by WAC Group.");
     expect(normalizeCopy("WAC's catalog")).toBe("WAC Group's catalog");
   });
@@ -109,5 +110,27 @@ describe("screenCompetitors (async)", () => {
   it("works with no judge (denylist-only)", async () => {
     expect(await screenCompetitors("A Cree fixture")).toBe(GUARDRAIL_TEMPLATE);
     expect(await screenCompetitors("A WAC Group fixture")).toBe("A WAC Group fixture");
+  });
+});
+
+describe("normalizeCopy — dictionary terms", () => {
+  it("protects extra terms from the bare-WAC upgrade, longest-first", () => {
+    expect(normalizeCopy("the WAC Blueline controller ships in fall", ["WAC Blueline"])).toBe(
+      "the WAC Blueline controller ships in fall",
+    );
+    // untouched bare WAC in the same sentence still upgrades
+    expect(normalizeCopy("WAC makes the WAC Blueline controller", ["WAC Blueline"])).toBe(
+      "WAC Group makes the WAC Blueline controller",
+    );
+  });
+
+  it("matches dictionary terms case-insensitively but restores canonical casing", () => {
+    expect(normalizeCopy("the my wac app", [])).toBe("the My WAC app");
+  });
+
+  it("stays idempotent with dictionary terms", () => {
+    const once = normalizeCopy("My WAC pairs with WAC Home over WAC-Mesh, by WAC");
+    expect(normalizeCopy(once)).toBe(once);
+    expect(once).toBe("My WAC pairs with WAC Home over WAC-Mesh, by WAC Group");
   });
 });

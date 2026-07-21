@@ -117,6 +117,7 @@ export const ROUTE_FEATURE: Record<string, FeatureKey> = {
   "/products": "product",
   "/thom": "thom",
   "/thom-content": "thom-content",
+  "/thom-dictionary": "thom-content",
   "/product-info/romance": "product",
   "/product-info/seo": "product",
   "/product-info/normalization": "product",

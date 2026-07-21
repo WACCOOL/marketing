@@ -30,6 +30,7 @@ import {
   Share2,
   ShieldCheck,
   SlidersHorizontal,
+  SpellCheck,
   Sun,
   Upload,
   Webhook,
@@ -118,9 +119,16 @@ const NAV: NavEntry[] = [
 
 // The cross-tool Asset Library (gated by the `library` feature) and the Admin
 // page (admins only — managing access is inherently an admin function).
-const ADMIN_ENTRIES: NavLeaf[] = [
-  { to: "/thom", label: "Thom Bot", icon: Bot, feature: "thom" },
-  { to: "/thom-content", label: "Thom Knowledge", icon: BookOpen, feature: "thom-content" },
+const ADMIN_ENTRIES: NavEntry[] = [
+  {
+    label: "Thom Bot",
+    icon: Bot,
+    children: [
+      { to: "/thom", label: "Thom Bot", icon: Bot, feature: "thom" },
+      { to: "/thom-content", label: "Thom Knowledge", icon: BookOpen, feature: "thom-content" },
+      { to: "/thom-dictionary", label: "Dictionary", icon: SpellCheck, feature: "thom-content" },
+    ],
+  },
   { to: "/library", label: "Asset Library", icon: FolderOpen, feature: "library" },
   { to: "/admin", label: "Admin", icon: ShieldCheck },
 ];
@@ -193,6 +201,11 @@ export function Sidebar() {
 
     // Asset Library by feature; the Admin page is admin-only.
     for (const entry of ADMIN_ENTRIES) {
+      if (isParent(entry)) {
+        const children = entry.children.filter((c) => can(c.feature));
+        if (children.length) entries.push({ ...entry, children });
+        continue;
+      }
       if (entry.to === "/admin") {
         if (isAdmin) entries.push(entry);
       } else if (can(entry.feature)) {

@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { internalSystem, publicSystem, systemFor } from "./prompts.js";
-import { BARE_WAC as CANONICAL_BARE_WAC, GUARDRAIL_TEMPLATE } from "./publicFilter.js";
+import { GUARDRAIL_TEMPLATE, hasBareWac } from "./publicFilter.js";
 
 /** Join a system-block array into one string for lint-style assertions. */
 const joined = (blocks: { text: string }[]) => blocks.map((b) => b.text).join("\n\n");
 
-// The canonical bare-WAC rule (single-sourced from publicFilter so the lint
-// can never drift from the runtime normalizer again). Fresh non-global copy:
-// the exported regex carries /g, whose lastIndex would make .test() stateful.
-const BARE_WAC = new RegExp(CANONICAL_BARE_WAC.source);
+
 
 describe("publicSystem copy-lint", () => {
   const text = joined(publicSystem());
@@ -18,7 +15,7 @@ describe("publicSystem copy-lint", () => {
   });
 
   it("contains no bare 'WAC' token (only real brand names)", () => {
-    expect(BARE_WAC.test(text)).toBe(false);
+    expect(hasBareWac(text)).toBe(false);
   });
 
   it("bakes in the exact competitor guardrail template", () => {

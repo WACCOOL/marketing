@@ -17,6 +17,7 @@ import {
   type ClaudeToolUseBlock,
   type ClaudeUsage,
 } from "./transport.js";
+import { loadProtectedTerms } from "./dictionary.js";
 import { systemFor } from "./prompts.js";
 import {
   makeHaikuJudge,
@@ -285,6 +286,9 @@ export async function runThom(
   // ANTHROPIC unavailable → denylist-only). Internal: no filter at all.
   const isPublic = surface === "public";
   const judge: CompetitorJudge | undefined = isPublic ? makeHaikuJudge(env) : undefined;
+  // Dictionary terms the copy normalizer must protect (marketing-app editable;
+  // cached in-isolate; [] on any failure — defaults still apply).
+  const dictTerms = isPublic ? await loadProtectedTerms(sb) : [];
   const messages: ClaudeMessage[] = [
     ...opts.history,
     { role: "user", content: opts.userMessage },
@@ -361,8 +365,8 @@ export async function runThom(
       // flagged. INTERNAL: raw final text, unchanged.
       const text = isPublic
         ? turnUsedWebSearch(res.content)
-          ? await screenCompetitors(normalizeCopy(finalText(res.content)), { judge })
-          : normalizeCopy(finalText(res.content))
+          ? await screenCompetitors(normalizeCopy(finalText(res.content), dictTerms), { judge })
+          : normalizeCopy(finalText(res.content), dictTerms)
         : finalText(res.content);
       return { text, cards, citations, usage };
     }
@@ -401,7 +405,7 @@ export async function runThom(
   // obeys the copy rules. INTERNAL keeps the byte-identical original.
   const maxStepsText = "I couldn't finish that in a reasonable number of steps — try narrowing the question.";
   return {
-    text: isPublic ? normalizeCopy(maxStepsText) : maxStepsText,
+    text: isPublic ? normalizeCopy(maxStepsText, dictTerms) : maxStepsText,
     cards,
     citations,
     usage,
@@ -577,10 +581,12 @@ export async function* runThomStream(
   // PUBLIC output guardrails (see the doc comment above). Internal: no filter.
   const isPublic = surface === "public";
   const judge: CompetitorJudge | undefined = isPublic ? makeHaikuJudge(env) : undefined;
+  // Dictionary terms (marketing-app editable) the normalizer must protect.
+  const dictTerms = isPublic ? await loadProtectedTerms(sb) : [];
   // Sanitize one turn's reconstructed text for the public surface: normalize
   // copy always; screen for competitors only when the turn used web_search.
   const sanitizePublic = (turn: { content: ClaudeContentBlock[]; text: string }): Promise<string> => {
-    const normalized = normalizeCopy(turn.text);
+    const normalized = normalizeCopy(turn.text, dictTerms);
     return turnUsedWebSearch(turn.content)
       ? screenCompetitors(normalized, { judge })
       : Promise.resolve(normalized);
@@ -722,7 +728,7 @@ export async function* runThomStream(
   const maxStepsText = "I couldn't finish that in a reasonable number of steps — try narrowing the question.";
   yield {
     type: "final",
-    text: isPublic ? normalizeCopy(maxStepsText) : maxStepsText,
+    text: isPublic ? normalizeCopy(maxStepsText, dictTerms) : maxStepsText,
     usage,
   };
 }

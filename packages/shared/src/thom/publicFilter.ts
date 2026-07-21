@@ -38,24 +38,60 @@ export const GUARDRAIL_TEMPLATE =
 const EM_DASH = /\s*—\s*/g;
 
 // A STANDALONE bare "WAC" token — i.e. NOT already the start of a real brand
-// name (WAC Group / WAC Lighting / WAC Landscape / WAC Modern Forms / ...). The
-// negative lookahead lists the words that legitimately follow "WAC" in a brand
-// name, so those are left untouched and everything else ("WAC", "WAC's",
-// "WAC 3011", "WAC smart fans") is upgraded to "WAC Group".
-// Negative lookaheads: real brand/product names keep their exact form —
-// "WAC Architectural" is a PRIMARY BRAND, never "WAC Group Architectural";
-// hyphenated product names (WAC-Mesh) are names too, not bare tokens.
+// name. Kept as a regex for fast scanning, but the REAL protection is the
+// dictionary: normalizeCopy stashes every protected term (built-in defaults +
+// the thom_dictionary table, editable in the marketing app) before this
+// replacement runs, so a term like "My WAC" survives even though "WAC" there
+// is followed by a non-brand word.
 export const BARE_WAC = /\bWAC\b(?!\s+(?:Group|Lighting|Landscape|Architectural|Home|Modern|Forms))(?!-)/g;
+
+// The non-negotiable protected names live in ./protectedTerms.ts (a
+// zero-import module the SPA can also bundle); the dictionary table adds to
+// (never replaces) them — losing DB access can never break the core names.
+export { DEFAULT_PROTECTED_TERMS } from "./protectedTerms.js";
+import { DEFAULT_PROTECTED_TERMS } from "./protectedTerms.js";
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Case-insensitive whole-word matcher for a protected term. */
+function termRe(term: string): RegExp {
+  return new RegExp(`(?<![A-Za-z0-9])${escapeRe(term)}(?![A-Za-z0-9])`, "gi");
+}
 
 /**
  * Apply the public copy rules to a block of text. Pure + idempotent:
  * - em dashes are replaced with ", ";
- * - a standalone bare "WAC" is upgraded to "WAC Group" (real brand names such
- *   as "WAC Lighting" are preserved via the negative lookahead).
+ * - protected terms (defaults + `extraProtected`, longest-first) are stashed;
+ * - any remaining standalone bare "WAC" is upgraded to "WAC Group";
+ * - protected terms are restored in their canonical casing.
  */
-export function normalizeCopy(text: string): string {
+export function normalizeCopy(text: string, extraProtected: readonly string[] = []): string {
   if (!text) return text;
-  return text.replace(EM_DASH, ", ").replace(BARE_WAC, "WAC Group");
+  let out = text.replace(EM_DASH, ", ");
+  const terms = [...new Set([...DEFAULT_PROTECTED_TERMS, ...extraProtected])]
+    .filter((t) => t && /wac/i.test(t))
+    .sort((a, b) => b.length - a.length); // longest first so "My WAC" wins over any shorter overlap
+  const stash: string[] = [];
+  for (const term of terms) {
+    out = out.replace(termRe(term), () => {
+      stash.push(term);
+      return `\u0000${stash.length - 1}\u0000`;
+    });
+  }
+  out = out.replace(BARE_WAC, "WAC Group");
+  return out.replace(/\u0000(\d+)\u0000/g, (_, i: string) => stash[Number(i)] ?? "");
+}
+
+/** Lint helper: does the text contain a bare WAC token AFTER accounting for
+ *  protected terms? (The raw BARE_WAC regex alone would flag "My WAC".) */
+export function hasBareWac(text: string, extraProtected: readonly string[] = []): boolean {
+  if (!text) return false;
+  let scrubbed = text;
+  const terms = [...new Set([...DEFAULT_PROTECTED_TERMS, ...extraProtected])]
+    .filter((t) => t && /wac/i.test(t))
+    .sort((a, b) => b.length - a.length);
+  for (const term of terms) scrubbed = scrubbed.replace(termRe(term), " ");
+  return new RegExp(BARE_WAC.source).test(scrubbed);
 }
 
 // --- (b) competitor filter --------------------------------------------------
