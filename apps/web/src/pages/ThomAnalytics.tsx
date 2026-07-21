@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { getAnalytics, type AnalyticsBundle, type AnalyticsSurface, type DailyRow } from "../lib/thomAdmin.js";
+import { errorMessage } from "../lib/api.js";
 
 /**
  * Analytics (admin) — how much Thom is used, how that changes over time, and
@@ -24,7 +25,7 @@ export function ThomAnalytics() {
     setErr(null);
     getAnalytics(days, surface)
       .then((d) => !stale && setData(d))
-      .catch((e) => !stale && setErr(e instanceof Error ? e.message : String(e)));
+      .catch((e) => !stale && setErr(errorMessage(e)));
     return () => {
       stale = true;
     };

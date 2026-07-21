@@ -61,3 +61,14 @@ export async function apiBlob(path: string, init: RequestInit = {}): Promise<Blo
   }
   return await res.blob();
 }
+
+/** Human-readable message from anything a lib/api call can throw (the thrown
+ *  value is a plain ApiError object, NOT an Error — String() on it renders
+ *  "[object Object]"). */
+export function errorMessage(e: unknown): string {
+  if (typeof e === "object" && e !== null && "error" in e) {
+    const err = e as ApiError;
+    return err.status ? `${err.error} (HTTP ${err.status})` : String(err.error);
+  }
+  return e instanceof Error ? e.message : String(e);
+}
