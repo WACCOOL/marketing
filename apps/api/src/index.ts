@@ -205,7 +205,8 @@ async function runProductSync(env: Env): Promise<void> {
   try {
     const result = await makeProductAdapter(env).sync();
     console.log(
-      `[cron] product sync: upserted ${result.upserted}, variants ${result.variants}, pruned ${result.pruned}`,
+      `[cron] product sync: upserted ${result.upserted}, variants ${result.variants}, pruned ${result.pruned}, ` +
+        `accessories ${result.accessories} (${result.accessories_unresolved} unresolved)`,
     );
   } catch (e) {
     console.error("[cron] product sync failed", e);

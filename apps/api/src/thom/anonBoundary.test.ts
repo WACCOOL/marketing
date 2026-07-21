@@ -94,6 +94,14 @@ describe.skipIf(!HAVE_CREDS)("Thom public anon boundary (0052)", () => {
     expect(comp.error).toBeNull();
   });
 
+  it("reads product_accessories (0061: open read, service-role writes)", async () => {
+    const { error } = await sb
+      .from("product_accessories")
+      .select("product_sku,related_sku,related_product_sku,kind,label")
+      .limit(1);
+    expect(error).toBeNull();
+  });
+
   it("reads product_photometrics and ies_metrics", async () => {
     const pp = await sb
       .from("product_photometrics")
