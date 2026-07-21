@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   chatStream,
   deleteConversation,
@@ -360,11 +361,19 @@ function TurnView({ turn, streaming = false }: { turn: Turn; streaming?: boolean
         {turn.role === "assistant" ? (
           <div className="thom-text thom-md">
             <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
               components={{
                 a: ({ href, children }) => (
                   <a href={href} target="_blank" rel="noreferrer">
                     {children}
                   </a>
+                ),
+                // Tables scroll in their own container so a wide spec table
+                // never overflows the chat column.
+                table: ({ children }) => (
+                  <div className="thom-table-wrap">
+                    <table>{children}</table>
+                  </div>
                 ),
               }}
             >

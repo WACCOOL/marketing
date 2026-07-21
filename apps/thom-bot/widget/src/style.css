@@ -301,6 +301,33 @@ body {
 .thom-md a {
   color: var(--thom-accent);
 }
+/* GFM tables (spec comparisons / rankings). The bubble is narrow, so the
+   table scrolls sideways inside its own wrapper instead of overflowing. */
+.thom-md .thom-table-wrap {
+  overflow-x: auto;
+  margin: 8px 0;
+  border: 1px solid var(--thom-border);
+  border-radius: var(--thom-radius-sm);
+}
+.thom-md table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+.thom-md th,
+.thom-md td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--thom-border);
+  text-align: left;
+  white-space: nowrap;
+}
+.thom-md th {
+  background: var(--thom-panel-2);
+  font-weight: 600;
+}
+.thom-md tbody tr:last-child td {
+  border-bottom: none;
+}
 
 /* cards */
 .thom-card {

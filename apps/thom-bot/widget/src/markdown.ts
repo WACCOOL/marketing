@@ -8,9 +8,9 @@
  * be unit-tested outside the browser.
  *
  * Supported: headings (#..######), unordered + ordered lists, `code` spans,
- * fenced ``` code blocks, **bold**, *italic*, [text](http/https link), and
- * paragraphs. Links are forced to target=_blank rel=noopener noreferrer and
- * only http(s) URLs are linked.
+ * fenced ``` code blocks, **bold**, *italic*, [text](http/https link), GFM
+ * tables (header + |---| separator row), and paragraphs. Links are forced to
+ * target=_blank rel=noopener noreferrer and only http(s) URLs are linked.
  */
 
 /** Escape the five HTML-significant characters. */
@@ -50,12 +50,49 @@ function renderInline(escaped: string): string {
   return out;
 }
 
+type Align = "left" | "center" | "right" | null;
+
 type Block =
   | { kind: "p"; lines: string[] }
   | { kind: "ul"; items: string[] }
   | { kind: "ol"; items: string[] }
   | { kind: "h"; level: number; text: string }
-  | { kind: "code"; lines: string[] };
+  | { kind: "code"; lines: string[] }
+  | { kind: "table"; header: string[]; aligns: Align[]; rows: string[][] };
+
+/** A GFM table row: a pipe-delimited line (leading pipe required). */
+function isTableRow(line: string): boolean {
+  return /^\s*\|.*\|\s*$/.test(line);
+}
+
+/** The |---|:---:|---| separator row that promotes the previous row to a header. */
+function isTableSeparator(line: string): boolean {
+  return /^\s*\|(\s*:?-{3,}:?\s*\|)+\s*$/.test(line);
+}
+
+/** Split a pipe row into trimmed cells (escaped \| stays a literal pipe). */
+function splitRow(line: string): string[] {
+  const PIPE = "\u0000"; // placeholder; never present in escaped model text
+  return line
+    .trim()
+    .replace(/\\\|/g, PIPE)
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((c) => c.trim().replace(/\u0000/g, "|"));
+}
+
+/** Column alignments from the separator row cells. */
+function parseAligns(cells: string[]): Align[] {
+  return cells.map((c) => {
+    const l = c.startsWith(":");
+    const r = c.endsWith(":");
+    if (l && r) return "center";
+    if (r) return "right";
+    if (l) return "left";
+    return null;
+  });
+}
 
 /** Render a minimal-markdown string to a safe HTML string. */
 export function renderMarkdown(src: string): string {
@@ -64,8 +101,12 @@ export function renderMarkdown(src: string): string {
   const blocks: Block[] = [];
   let inCode = false;
   let codeLines: string[] = [];
+  let tableOpen = false; // true only while the previous line was a table line
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] as string;
+    const wasTableOpen = tableOpen;
+    tableOpen = false;
     // Fenced code block toggles (``` optionally followed by a language token).
     if (/^```/.test(line.trim())) {
       if (inCode) {
@@ -86,6 +127,26 @@ export function renderMarkdown(src: string): string {
     if (heading && heading[1] && heading[2] != null) {
       blocks.push({ kind: "h", level: heading[1].length, text: heading[2] });
       continue;
+    }
+
+    // GFM table: a pipe row whose NEXT line is the |---|---| separator starts
+    // one; further pipe rows append to it. A header row streamed in before its
+    // separator arrives simply falls through to the paragraph path (degrades
+    // to plain text mid-stream, upgrades on the next full re-render).
+    if (isTableRow(line)) {
+      const last = blocks[blocks.length - 1];
+      if (wasTableOpen && last && last.kind === "table") {
+        last.rows.push(splitRow(line));
+        tableOpen = true;
+        continue;
+      }
+      const next = lines[i + 1];
+      if (next != null && isTableSeparator(next)) {
+        blocks.push({ kind: "table", header: splitRow(line), aligns: parseAligns(splitRow(next)), rows: [] });
+        i++; // consume the separator row
+        tableOpen = true;
+        continue;
+      }
     }
 
     const ul = /^\s*[-*]\s+(.*)$/.exec(line);
@@ -128,6 +189,22 @@ export function renderMarkdown(src: string): string {
       html.push(`<ol>${b.items.map((i) => `<li>${renderInline(i)}</li>`).join("")}</ol>`);
     } else if (b.kind === "code") {
       html.push(`<pre><code>${b.lines.join("\n")}</code></pre>`);
+    } else if (b.kind === "table") {
+      // Alignment values come from a closed enum (parseAligns), never from
+      // model text, so the style attribute is safe.
+      const alignAttr = (col: number): string => {
+        const a = b.aligns[col];
+        return a ? ` style="text-align:${a}"` : "";
+      };
+      const head = b.header.map((c, col) => `<th${alignAttr(col)}>${renderInline(c)}</th>`).join("");
+      const body = b.rows
+        .map((r) => `<tr>${r.map((c, col) => `<td${alignAttr(col)}>${renderInline(c)}</td>`).join("")}</tr>`)
+        .join("");
+      html.push(
+        `<div class="thom-table-wrap"><table><thead><tr>${head}</tr></thead>` +
+          (body ? `<tbody>${body}</tbody>` : "") +
+          `</table></div>`,
+      );
     } else if (b.lines.length) {
       html.push(`<p>${b.lines.map((l) => renderInline(l)).join("<br>")}</p>`);
     }
