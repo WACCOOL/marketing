@@ -41,7 +41,7 @@ export const PHOTOMETRICS_TOOLS: ClaudeTool[] = [
   {
     name: "lighting_requirement",
     description:
-      "Recommended lighting design targets for a space or task — maintained illuminance (footcandles), avg/min uniformity ratio, and ASHRAE 90.1 lighting-power-density allowance (W/ft²) — from the IESNA/ASHRAE reference tables. Use this for 'how many footcandles for an office / classroom / retail / pathway', recommended uniformity, or LPD questions. Cite the IES/ASHRAE source it returns.",
+      "Recommended lighting design targets for a space or task — maintained illuminance (footcandles), avg/min uniformity ratio, and ASHRAE 90.1 lighting-power-density allowance (W/ft²) — from the IESNA/ASHRAE reference tables. Use this for 'how many footcandles for an office / classroom / retail / pathway', recommended uniformity, or LPD questions. Cite each value to its own source exactly as returned (illuminance and uniformity per the IES document; LPD per ASHRAE 90.1-2019), as an end-of-answer footnote.",
     input_schema: {
       type: "object",
       properties: {
@@ -210,8 +210,15 @@ function formatTask(t: EstimatorTask): string {
     `${t.label}: ${t.fc} fc maintained`,
     `avg/min uniformity ≤ ${uni}:1`,
   ];
-  if (t.lpdWFt2 != null) bits.push(`LPD allowance ${t.lpdWFt2} W/ft² (ASHRAE 90.1-2019)`);
-  bits.push(`source: ${t.source ?? "IESNA recommended practice"}`);
+  if (t.lpdWFt2 != null) bits.push(`LPD allowance ${t.lpdWFt2} W/ft²`);
+  // Per-value attribution (Davis 2026-07-21): illuminance/uniformity come from
+  // the IES recommended practice; the LPD allowance comes from ASHRAE 90.1.
+  // Kept as one trailing "sources:" clause so the model can lift it into its
+  // end-of-answer Sources footnote.
+  bits.push(
+    `sources: illuminance and uniformity per ${t.source ?? "IESNA recommended practice"}` +
+      (t.lpdWFt2 != null ? "; LPD allowance per ASHRAE 90.1-2019" : ""),
+  );
   return `- ${bits.join("; ")}.`;
 }
 
