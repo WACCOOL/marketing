@@ -10,6 +10,7 @@ export * from "./roomcalib.js";
 export * from "./roombox.js";
 export * from "./productinfo.js";
 export * from "./productAvailability.js";
+export * from "./auxLength.js";
 export * from "./pdpcode.js";
 export * from "./accessories/parse.js";
 export * from "./pdp/taxonomy.js";

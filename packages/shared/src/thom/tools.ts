@@ -106,15 +106,20 @@ export const TOOLS: ClaudeTool[] = [
   },
 ];
 
-/** Coarse class buckets stamped by product_spec_view (0059) — mirrored here
- *  only for the tool schema's enum; the regex itself is SQL-side by design
- *  (a TS mirror was rejected for v1: drift risk > test value). */
+/** Coarse class buckets stamped by the 0063 base view (product_variant_spec_view,
+ *  inherited by product_spec_view) — mirrored here only for the tool schemas'
+ *  enum; the regex itself is SQL-side by design (a TS mirror was rejected:
+ *  drift risk > test value). 0063 added `wall` (bath/vanity/sconce — plan O9)
+ *  and `ceiling` (flush/semi-flush/ceiling — needed by the class-aware depth
+ *  rule). */
 export const SPEC_RANK_CLASSES = [
   "per-foot",
   "fan",
   "downlight",
   "track",
   "outdoor",
+  "wall",
+  "ceiling",
   "linear",
   "decorative",
   "other",
@@ -158,6 +163,81 @@ export const SPEC_RANK_TOOLS: ClaudeTool[] = [
     },
   },
 ];
+
+/** Filter tool schema (attribute-filter plan §B). Split from TOOLS (mirroring
+ *  SPEC_RANK_TOOLS) and composed onto the set by agent.ts only when
+ *  THOM_SPEC_FILTER === "1" (dark-launch). */
+export const FILTER_TOOLS: ClaudeTool[] = [
+  {
+    name: "filter_products",
+    description:
+      "Filter WAC Group catalog products by HARD numeric constraints, evaluated per size/variant: " +
+      "width, depth (wall projection or ceiling drop), height, wire/cord length, lumens, watts, " +
+      "efficacy (lm/W), color temperature (a CCT kelvin band; a single kelvin = equal bounds), CRI, and IP rating. " +
+      "Use this for ANY question that states a numeric limit (a maximum or minimum size, brightness, wattage, " +
+      "color temperature, CRI, or IP rating) instead of search_products. " +
+      "Every returned product genuinely satisfies ALL stated constraints on a single variant; products missing " +
+      "catalog data for a constraint are excluded, never assumed to fit. " +
+      "Dimensions default to inches; when the user speaks in another unit pass it via `unit` and give their " +
+      "numbers unchanged, do not convert them yourself. " +
+      "'wide'/'across'/'long' means width; 'deep'/'projection'/'extension' means depth; an ADA wall-fixture " +
+      "question means max_depth_in 4. Always pass EVERY constraint the user stated, plus the descriptive part " +
+      "of the request (for example 'vanity light') as query so results are ordered by fit. " +
+      "Follow up with get_product for a specific product's card.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Descriptive part of the request for semantic ordering, e.g. 'vanity light', 'outdoor sconce'." },
+        unit: {
+          type: "string",
+          enum: ["in", "ft", "cm", "mm"],
+          description: "Unit of every dimension value passed (default in). Pass the user's own unit; never convert.",
+        },
+        max_width_in: { type: "number", description: "Maximum width (largest horizontal extent)." },
+        min_width_in: { type: "number", description: "Minimum width." },
+        max_depth_in: { type: "number", description: "Maximum depth: wall projection for wall fixtures, drop for ceiling fixtures." },
+        min_depth_in: { type: "number", description: "Minimum depth." },
+        max_height_in: { type: "number", description: "Maximum height." },
+        min_height_in: { type: "number", description: "Minimum height." },
+        min_wire_length: { type: "number", description: "Minimum wire/cord/suspension length (same unit as the other dimensions)." },
+        max_wire_length: { type: "number", description: "Maximum wire/cord/suspension length." },
+        min_lumens: { type: "number", description: "Minimum light output in lumens." },
+        max_lumens: { type: "number", description: "Maximum light output in lumens." },
+        max_watts: { type: "number", description: "Maximum power draw in watts." },
+        min_watts: { type: "number", description: "Minimum power draw in watts." },
+        min_efficacy: { type: "number", description: "Minimum efficacy in lm/W." },
+        cct_min_k: { type: "integer", description: "Lowest acceptable color temperature in kelvin (single kelvin = pass the same value as cct_max_k)." },
+        cct_max_k: { type: "integer", description: "Highest acceptable color temperature in kelvin." },
+        min_cri: { type: "integer", description: "Minimum CRI." },
+        min_ip: { type: "integer", description: "Minimum IP rating, e.g. 65." },
+        brand: { type: "string", description: "Optional brand filter: WAC Lighting, Modern Forms, Schonbek, or AiSpire." },
+        category: { type: "string", description: "Optional catalog category filter (free text — may not match catalog wording exactly)." },
+        class: {
+          type: "string",
+          enum: [...SPEC_RANK_CLASSES],
+          description: "Optional fixture-class filter (wall = bath/vanity/sconce).",
+        },
+        limit: { type: "integer", description: "Max results (default 10, cap 25)." },
+      },
+    },
+  },
+];
+
+/** The flag-respecting search_products back-pointer (plan O3): appended to the
+ *  search_products description ONLY when THOM_SPEC_FILTER=1 — a static edit
+ *  would advertise an unavailable tool with the flag off (the R3 rule). */
+export const SEARCH_PRODUCTS_FILTER_POINTER =
+  " For questions that state a numeric limit (a maximum or minimum size, brightness, wattage, color temperature, CRI, or IP rating), use filter_products instead of this tool.";
+
+/** Append the constraint back-pointer to search_products. Pure — returns fresh
+ *  objects; never mutates the shared TOOLS constant. */
+export function withConstraintRouting(tools: ClaudeTool[]): ClaudeTool[] {
+  return tools.map((t) =>
+    t.name === "search_products"
+      ? { ...t, description: t.description + SEARCH_PRODUCTS_FILTER_POINTER }
+      : t,
+  );
+}
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
@@ -430,6 +510,69 @@ async function reverseFitFallback(
   return notFound;
 }
 
+/** One product_variant_spec_view row as get_product reads it (O1). */
+export interface ProductDimRow {
+  variant_sku: string | null;
+  finish: string | null;
+  width_mm: number | null;
+  height_mm: number | null;
+  length_mm: number | null;
+  diameter_mm: number | null;
+  wire_length_mm: number | null;
+  width_in: number | null;
+  depth_in: number | null;
+  height_in: number | null;
+  class: string | null;
+}
+
+/**
+ * Per-size dimension lines for get_product (plan O1 — ship-gated with the
+ * filter): each distinct size shows the RECORDED W x H x L (+ Dia) axes AND
+ * the SAME derived width/depth the filter screens on (single source, zero
+ * drift), all dual-unit (Addendum 1). A wire/cord line rides along when
+ * present. No dimensions at all -> the explicit no-recorded-dimensions line,
+ * enabling the unknown-vs-violating honesty split (O8): the model can say
+ * "no recorded dimensions, check the spec sheet" instead of improvising.
+ * Pure + exported for tests.
+ */
+export function formatProductDims(rows: ProductDimRow[]): string[] {
+  const dimmed = rows.filter(
+    (r) => r.width_mm != null || r.height_mm != null || r.length_mm != null || r.diameter_mm != null,
+  );
+  if (!dimmed.length) return ["No recorded dimensions in the catalog for this product."];
+  // Distinct sizes: finishes share dims, so collapse by the recorded axes.
+  const bySig = new Map<string, ProductDimRow>();
+  for (const r of dimmed) {
+    const sig = [r.width_mm, r.height_mm, r.length_mm, r.diameter_mm].join("|");
+    if (!bySig.has(sig)) bySig.set(sig, r);
+  }
+  const sizes = [...bySig.values()].sort((a, b) => (a.width_in ?? 0) - (b.width_in ?? 0));
+  const out = ["Sizes:"];
+  for (const r of sizes) {
+    const derived = [
+      r.width_in != null ? `${fmtIn(r.width_in)} wide` : null,
+      r.depth_in != null ? `${fmtIn(r.depth_in)} deep` : null,
+      r.height_in != null ? `${fmtIn(r.height_in)} tall` : null,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    const rec = [
+      r.width_mm != null ? `W ${fmtMmAsIn(r.width_mm)}` : null,
+      r.height_mm != null ? `H ${fmtMmAsIn(r.height_mm)}` : null,
+      r.length_mm != null ? `L ${fmtMmAsIn(r.length_mm)}` : null,
+      r.diameter_mm != null ? `Dia ${fmtMmAsIn(r.diameter_mm)}` : null,
+    ]
+      .filter(Boolean)
+      .join(" x ");
+    out.push(`- ${derived ? `${derived} ` : ""}(recorded ${rec})`);
+  }
+  const wires = [
+    ...new Set(dimmed.map((r) => r.wire_length_mm).filter((x): x is number => x != null)),
+  ].sort((a, b) => a - b);
+  if (wires.length) out.push(`Wire/cord length: ${wires.map(fmtWire).join(", ")}`);
+  return out;
+}
+
 async function getProduct(
   ctx: ToolContext,
   input: Record<string, unknown>,
@@ -526,6 +669,23 @@ async function getProduct(
     downloads.length ? `Documents: ${downloads.map((d) => d.label).join(", ")}.` : "No documents on file yet.",
     card.pdp_url ? `Product page: ${card.pdp_url}` : "",
   ].filter(Boolean);
+
+  // Per-size dimensions from the 0063 variant-grain view (plan O1) — the SAME
+  // derived width/depth the filter screens on, plus the recorded axes and the
+  // wire/cord length, all dual-unit. Flag-gated with the filter tool (the
+  // view ships in the same migration): this closes the description vs
+  // implementation mismatch (the description promised dimensions; the
+  // implementation never printed them, so the model improvised).
+  if (ctx.env.THOM_SPEC_FILTER === "1") {
+    const { data: dimData } = await ctx.sb
+      .from("product_variant_spec_view")
+      .select(
+        "variant_sku, finish, width_mm, height_mm, length_mm, diameter_mm, wire_length_mm, width_in, depth_in, height_in, class",
+      )
+      .eq("sku", sku)
+      .limit(200);
+    lines.push(...formatProductDims((dimData ?? []) as ProductDimRow[]));
+  }
 
   // Compatibility sections (text-only — no ProductCard change, plan §B): the
   // forward confirmed-accessory list and, when this product is itself
@@ -788,6 +948,328 @@ async function rankProductsBySpec(ctx: ToolContext, input: Record<string, unknow
     formatSpecRankRows(rows, metric, perFoot, grouped) +
     `\n\n${specRankCoverageLine(rows[0]!, scope, perFoot)}`;
   // No cards here — the model follows up with get_product for specifics.
+  return { content, cards: [], citations: [] };
+}
+
+// --- filter_products (attribute-filter plan §B) -------------------------------
+
+/** Units the filter tool accepts. Conversion happens HERE in TS (plan O10) —
+ *  router-tier models multiply by 25.4 about as reliably as they compare
+ *  15 to 20, so the model passes the user's numbers + `unit` unchanged. */
+const UNIT_TO_INCHES = { in: 1, ft: 12, cm: 1 / 2.54, mm: 1 / 25.4 } as const;
+export type FilterUnit = keyof typeof UNIT_TO_INCHES;
+
+export function filterUnit(v: unknown): FilterUnit {
+  const u = String(v ?? "in").toLowerCase();
+  return u in UNIT_TO_INCHES ? (u as FilterUnit) : "in";
+}
+
+/** Convert one dimension value from the tool's unit to inches (2dp). */
+export function dimToInches(v: unknown, unit: FilterUnit): number | null {
+  if (v == null) return null;
+  const n = typeof v === "number" ? v : Number(String(v).trim() || Number.NaN);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * UNIT_TO_INCHES[unit] * 100) / 100;
+}
+
+/** Assemble the RPC predicate args (`p_` names — plan A3) from the tool input,
+ *  converting every dimension (and wire length) from the tool unit to inches.
+ *  Pure + exported for tests. */
+export function buildFilterPredicates(
+  input: Record<string, unknown>,
+): Record<string, number | null> {
+  const unit = filterUnit(input.unit);
+  const dim = (k: string) => dimToInches(input[k], unit);
+  const num = (k: string) => {
+    if (input[k] == null) return null;
+    const n = Number(input[k]);
+    return Number.isFinite(n) ? n : null;
+  };
+  const int = (k: string) => {
+    const n = num(k);
+    return n === null ? null : Math.round(n);
+  };
+  return {
+    p_width_max_in: dim("max_width_in"),
+    p_width_min_in: dim("min_width_in"),
+    p_depth_max_in: dim("max_depth_in"),
+    p_depth_min_in: dim("min_depth_in"),
+    p_height_max_in: dim("max_height_in"),
+    p_height_min_in: dim("min_height_in"),
+    p_wire_min_in: dim("min_wire_length"),
+    p_wire_max_in: dim("max_wire_length"),
+    p_lumens_min: num("min_lumens"),
+    p_lumens_max: num("max_lumens"),
+    p_watts_max: num("max_watts"),
+    p_watts_min: num("min_watts"),
+    p_efficacy_min: num("min_efficacy"),
+    p_cct_min_k: int("cct_min_k"),
+    p_cct_max_k: int("cct_max_k"),
+    p_cri_min: int("min_cri"),
+    p_ip_min: int("min_ip"),
+  };
+}
+
+/** Did the caller state ANY numeric predicate? (No predicate = free-text
+ *  fallback, not an unconstrained catalog dump.) */
+export function hasNumericPredicate(preds: Record<string, number | null>): boolean {
+  return Object.values(preds).some((v) => v !== null);
+}
+
+/** One product_spec_filter RPC row (0063). A null-sku row is the zero-match
+ *  counts carrier. */
+export interface FilterRpcRow {
+  sku: string | null;
+  name: string | null;
+  brand: string | null;
+  category: string | null;
+  class: string | null;
+  per_ft: boolean | null;
+  qualifying_variants: number | string | null;
+  variant_count_with_dims: number | string | null;
+  example_variant_sku: string | null;
+  q_width_min_in: number | null;
+  q_width_max_in: number | null;
+  q_depth_min_in: number | null;
+  q_depth_max_in: number | null;
+  q_height_min_in: number | null;
+  q_height_max_in: number | null;
+  ex_width_in: number | null;
+  ex_depth_in: number | null;
+  ex_height_in: number | null;
+  ex_width_mm: number | null;
+  ex_height_mm: number | null;
+  ex_length_mm: number | null;
+  ex_diameter_mm: number | null;
+  ex_wire_length_mm: number | null;
+  cct_summary: string | null;
+  cri: number | null;
+  ip: number | null;
+  lumens: number | null;
+  lumens_source: string | null;
+  score: number | null;
+  in_scope_total: number | string;
+  in_scope_screened: number | string;
+  matched: number | string;
+}
+
+/** Dual-unit rendering (Addendum 1): inches are the round-trip-exact source
+ *  figures, mm the stored conversion — the tool emits BOTH so no model
+ *  arithmetic ever occurs in either system. */
+export function fmtIn(inches: number): string {
+  return `${Number(inches).toFixed(1)} in (${Math.round(Number(inches) * 25.4)} mm)`;
+}
+export function fmtMmAsIn(mm: number): string {
+  return `${(mm / 25.4).toFixed(1)} in (${Math.round(mm)} mm)`;
+}
+/** Wire/cord lengths read best in feet: dual-unit ft (m). */
+export function fmtWire(mm: number): string {
+  const ft = Math.round((mm / 304.8) * 10) / 10;
+  const m = Math.round((mm / 1000) * 100) / 100;
+  return `${ft} ft (${m} m)`;
+}
+
+/** The MANDATORY product-level-lumens fallback sentence (plan O2 — a tested
+ *  output contract, not a tag: the router model drops tags; it repeats
+ *  sentences). Asserted verbatim in tests. */
+export const PRODUCT_LEVEL_LUMENS_SENTENCE =
+  "brightness figures are for the product's highest-output configuration, which may not be the size that fits";
+
+/** Classes where derived depth is DEFINED (wall projection / ceiling drop).
+ *  Everywhere else the tool says depth is not defined rather than inventing
+ *  a number (plan A1/O4). */
+const DEPTH_DEFINED_CLASSES = new Set(["wall", "ceiling", "fan"]);
+
+/** Render filter rows NAME-FIRST with real geometry: derived values dual-unit,
+ *  raw recorded axes alongside (plan A.2), per-size counts, spec tail. Pure. */
+export function formatFilterRows(
+  rows: FilterRpcRow[],
+  opts: { lumensStated: boolean; wireStated: boolean },
+): string[] {
+  return rows.map((r) => {
+    const who = [`SKU ${r.sku}`, r.brand, r.class].filter(Boolean).join(", ");
+    const dims: string[] = [];
+    if (r.ex_width_in != null) {
+      dims.push(r.per_ft ? `tape cross-section ${fmtIn(r.ex_width_in)} wide` : `${fmtIn(r.ex_width_in)} wide`);
+    }
+    if (r.ex_depth_in != null) dims.push(`${fmtIn(r.ex_depth_in)} deep`);
+    else if (r.class && !DEPTH_DEFINED_CLASSES.has(r.class)) dims.push("depth is not defined for this fixture type");
+    if (r.ex_height_in != null) dims.push(`${fmtIn(r.ex_height_in)} tall`);
+    const rec = [
+      r.ex_width_mm != null ? `W ${fmtMmAsIn(r.ex_width_mm)}` : null,
+      r.ex_height_mm != null ? `H ${fmtMmAsIn(r.ex_height_mm)}` : null,
+      r.ex_length_mm != null ? `L ${fmtMmAsIn(r.ex_length_mm)}` : null,
+      r.ex_diameter_mm != null ? `Dia ${fmtMmAsIn(r.ex_diameter_mm)}` : null,
+    ].filter(Boolean);
+    const parts: string[] = [];
+    if (dims.length) parts.push(dims.join(", ") + (rec.length ? ` (recorded ${rec.join(" x ")})` : ""));
+    const q = Number(r.qualifying_variants ?? 0);
+    const m = Number(r.variant_count_with_dims ?? 0);
+    if (q > 0 && m > 0) parts.push(`${q} of ${m} size${m === 1 ? "" : "s"} meet${q === 1 ? "s" : ""} your limits`);
+    const specs = [
+      r.cct_summary,
+      r.cri != null ? `CRI ${r.cri}` : null,
+      r.ip != null ? `IP${r.ip}` : null,
+      r.lumens != null ? `${Math.round(Number(r.lumens)).toLocaleString("en-US")} lm` : null,
+      opts.wireStated && r.ex_wire_length_mm != null ? `wire/cord ${fmtWire(r.ex_wire_length_mm)}` : null,
+    ].filter(Boolean);
+    if (specs.length) parts.push(specs.join(", "));
+    return `- ${r.name ?? r.sku} (${who}): ${parts.join("; ")}`;
+  });
+}
+
+/** The honest-coverage line from the RPC's windowed counts (plan §B, verbatim
+ *  contract). `in_scope_screened` follows the pinned A9 definition. */
+export function filterCoverageLine(
+  counts: Pick<FilterRpcRow, "in_scope_total" | "in_scope_screened" | "matched">,
+  scope: string,
+): string {
+  const s = Number(counts.in_scope_screened).toLocaleString("en-US");
+  const t = Number(counts.in_scope_total).toLocaleString("en-US");
+  const m = Number(counts.matched).toLocaleString("en-US");
+  return (
+    `Screened the ${s} of ${t} ${scope} products that carry data for every stated constraint; ` +
+    `${m} matched. Products missing catalog data for a constraint are excluded, not confirmed to fit.`
+  );
+}
+
+/** Near-miss vocabulary for the pinned zero-match relaxation (plan A13/O11). */
+const NEAR_MISS_WORDS: Record<
+  "width" | "depth" | "height",
+  { maxWord: string; minWord: string; adj: string }
+> = {
+  width: { maxWord: "narrowest", minWord: "widest", adj: "wide" },
+  depth: { maxWord: "shallowest", minWord: "deepest", adj: "deep" },
+  height: { maxWord: "shortest", minWord: "tallest", adj: "tall" },
+};
+
+async function filterProducts(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutput> {
+  const preds = buildFilterPredicates(input);
+  const query = str(input.query);
+  const brand = str(input.brand);
+  const category = str(input.category);
+  const cls = str(input.class);
+  const limit = Math.min(Number(input.limit) || 10, 25);
+
+  // Empty-filter free-text fallback: no numeric predicate stated -> this is a
+  // search, not a filter. Never dump the unconstrained catalog.
+  if (!hasNumericPredicate(preds)) {
+    if (!query) {
+      return {
+        content: "filter_products: state at least one numeric constraint, or provide a query.",
+        cards: [],
+        citations: [],
+      };
+    }
+    const out = await searchProducts(ctx, {
+      query,
+      brand: brand ?? undefined,
+      category: category ?? undefined,
+      limit,
+    });
+    return {
+      ...out,
+      content: `No numeric constraints were stated, so this fell back to a plain catalog search:\n${out.content}`,
+    };
+  }
+
+  const embedding = query ? await embedQuery(ctx.env, query) : null;
+  const call = (p: Record<string, number | null>, b: string | null, c: string | null) =>
+    ctx.sb.rpc("product_spec_filter", {
+      ...p,
+      p_brand: b,
+      p_category: c,
+      p_class: cls,
+      p_query_embedding: embedding,
+      p_query_text: query,
+      p_match_count: limit,
+    });
+
+  let curBrand = brand;
+  let curCategory = category;
+  let scope = [brand, cls, category].filter(Boolean).join(" ") || "catalog";
+  let preamble = "";
+  let res = await call(preds, curBrand, curCategory);
+  if (res.error) return { content: `filter_products error: ${res.error.message}`, cards: [], citations: [] };
+  let rows = (res.data ?? []) as FilterRpcRow[];
+  let counts = rows[0];
+
+  // Empty SCOPE from a brand/category filter (R16a idiom): categories are
+  // free text — re-run without them and explain, never imply no data exists.
+  if (counts && Number(counts.in_scope_total) === 0 && (curBrand || curCategory)) {
+    curBrand = null;
+    curCategory = null;
+    res = await call(preds, null, null);
+    if (res.error) return { content: `filter_products error: ${res.error.message}`, cards: [], citations: [] };
+    rows = (res.data ?? []) as FilterRpcRow[];
+    counts = rows[0];
+    scope = cls ?? "catalog";
+    preamble =
+      "No catalog products matched that brand or category filter. Catalog categories are free text, " +
+      "so the filter wording may not match the catalog's; screened the whole catalog instead.\n\n";
+  }
+  if (!counts) {
+    return { content: "filter_products: the catalog index returned no data.", cards: [], citations: [] };
+  }
+
+  const lumensStated = preds.p_lumens_min !== null || preds.p_lumens_max !== null;
+  const wireStated = preds.p_wire_min_in !== null || preds.p_wire_max_in !== null;
+  const coverage = filterCoverageLine(counts, scope);
+  const matched = Number(counts.matched);
+
+  if (matched === 0) {
+    // Pinned zero-match relaxation (plan A13/O11): keep the FULL scope and all
+    // other predicates; relax ONLY dimension predicates, one at a time, in
+    // width -> depth -> height order; report the near-miss for the FIRST
+    // predicate whose relaxation yields a row. NEVER emit a product card for
+    // a near-miss. A zero caused by a non-dimension predicate is a plain
+    // "nothing fits" — a near-miss on brightness is not a meaningful almost.
+    for (const dim of ["width", "depth", "height"] as const) {
+      const maxKey = `p_${dim}_max_in`;
+      const minKey = `p_${dim}_min_in`;
+      if (preds[maxKey] === null && preds[minKey] === null) continue;
+      const relaxed = { ...preds, [maxKey]: null, [minKey]: null };
+      const rr = await call(relaxed, curBrand, curCategory);
+      if (rr.error) break;
+      const rrows = ((rr.data ?? []) as FilterRpcRow[]).filter((r) => r.sku != null);
+      if (!rrows.length) continue;
+      const maxStated = preds[maxKey] !== null;
+      const valueKey = (
+        dim === "width"
+          ? maxStated ? "q_width_min_in" : "q_width_max_in"
+          : dim === "depth"
+            ? maxStated ? "q_depth_min_in" : "q_depth_max_in"
+            : maxStated ? "q_height_min_in" : "q_height_max_in"
+      ) as keyof FilterRpcRow;
+      const withVal = rrows.filter((r) => r[valueKey] != null);
+      if (!withVal.length) continue;
+      const best = withVal.reduce((a, b) =>
+        maxStated
+          ? Number(a[valueKey]) <= Number(b[valueKey]) ? a : b
+          : Number(a[valueKey]) >= Number(b[valueKey]) ? a : b,
+      );
+      const words = NEAR_MISS_WORDS[dim];
+      const word = maxStated ? words.maxWord : words.minWord;
+      const content =
+        `${preamble}No product with recorded dimensions fits all of those limits; the ${word} option ` +
+        `with data is ${best.name ?? best.sku} (SKU ${best.sku}) at ${fmtIn(Number(best[valueKey]))} ${words.adj}. ` +
+        `It does NOT meet the stated ${dim} requirement.\n\n${coverage}`;
+      return { content, cards: [], citations: [] };
+    }
+    return {
+      content: `${preamble}Nothing in the catalog fits all of those requirements.\n\n${coverage}`,
+      cards: [],
+      citations: [],
+    };
+  }
+
+  const productRows = rows.filter((r) => r.sku != null);
+  let content = preamble + formatFilterRows(productRows, { lumensStated, wireStated }).join("\n");
+  if (lumensStated && productRows.some((r) => r.lumens_source === "product_level")) {
+    content += `\n\nNote: ${PRODUCT_LEVEL_LUMENS_SENTENCE}.`;
+  }
+  content += `\n\n${coverage}`;
+  // No cards here — the model follows up with get_product.
   return { content, cards: [], citations: [] };
 }
 
@@ -1062,6 +1544,7 @@ export const PUBLIC_TOOL_NAMES: ReadonlySet<string> = new Set([
   "get_photometrics",
   "lighting_requirement",
   "rank_products_by_spec",
+  "filter_products",
 ]);
 
 export async function dispatch(
@@ -1096,6 +1579,11 @@ export async function dispatch(
   // agent.ts); routing here is harmless otherwise since it isn't advertised.
   if (name === "rank_products_by_spec") {
     return rankProductsBySpec(ctx, input);
+  }
+  // Filter tool is only offered when THOM_SPEC_FILTER=1 (composed by
+  // agent.ts); routing here is harmless otherwise since it isn't advertised.
+  if (name === "filter_products") {
+    return filterProducts(ctx, input);
   }
   switch (name) {
     case "search_products":

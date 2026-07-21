@@ -39,6 +39,12 @@ export interface ThomEnv {
   // superlative-tool bullet composed). Same dark-launch idiom as
   // THOM_PHOTOMETRICS; enabling is a committed wrangler `vars` edit per surface.
   THOM_SPEC_RANK?: string;
+  // Spec-filter tool gate ("1" = filter_products offered + the primer's
+  // constraint bullets composed + the search_products back-pointer appended +
+  // get_product's per-size dimension surface enabled — they all read the 0063
+  // views). Same dark-launch idiom; enabling is a committed wrangler `vars`
+  // edit per surface (internal first, then public).
+  THOM_SPEC_FILTER?: string;
   // Authority-weighted retrieval ("1" = search_docs passes a non-zero
   // authority_weight to kb_search for company/ambiguous-shaped queries;
   // product/SKU-shaped queries ALWAYS pass 0). Off by default — with it off,

@@ -109,12 +109,33 @@ const LIGHTING_EXPERTISE_BASE = `Lighting expertise (output classes, units, and 
 const LIGHTING_EXPERTISE_SPEC_RANK_BULLET = `
 - Superlatives ("brightest", "highest output", "most powerful", "most efficient", "lowest wattage"): call rank_products_by_spec, present the results grouped by class, keep per-foot products (tape/strip) ranked separately by watts per foot, and state the coverage caveat the tool returns (not every product carries numeric output data). When the user says anything works, answer with the grouped top products first and then offer to refine; do not re-ask for filters.`;
 
+/** Constraint bullets, composed ONLY when THOM_SPEC_FILTER=1 (attribute-filter
+ *  plan §C — commanding an unadvertised tool re-creates the original failure).
+ *  A constraint is a CONTRACT: authored to the public copy lints (no em
+ *  dashes, "WAC Group", passes normalizeCopy unchanged). */
+const LIGHTING_EXPERTISE_FILTER_BULLET = `
+- Numeric constraints are requirements, not preferences: when the user states ANY numeric limit (a maximum or minimum width, depth, height, wire or cord length, lumens, wattage, color temperature, CRI, or IP rating), you MUST call filter_products with EVERY stated constraint, and you MUST NOT present any product that violates a stated constraint.
+- While a numeric constraint is active, only products returned by filter_products may be recommended; never recommend from an earlier search result.
+- Numeric constraints stated earlier in the conversation remain binding until the user changes them.
+- Pass the descriptive part of the request (for example "vanity light" or "outdoor sconce") as the query so results are ordered by fit, and pass the user's unit through the unit parameter instead of converting values yourself.
+- filter_products excludes products that have no recorded data for a constrained attribute: say that products without confirmed dimensions were not considered rather than guessing a size. If the tool reports a closest option that exceeds the limit, present it only as an alternative that does NOT meet the stated requirement, never as a match.
+- When you recommend a product from the results, state its recorded dimensions so the user can verify the fit. For ADA projection questions, tell the user to verify the projection on the spec sheet; the catalog figure is a screen, not a certification.
+- Answer dimensions in the unit system the user used, using the tool's dual-unit values; both inches and millimeters are always available from the tool.`;
+
+/** The filter-vs-rank division of labor: composed only when BOTH tools are
+ *  offered (each half would otherwise command an unadvertised tool). */
+const LIGHTING_EXPERTISE_FILTER_RANK_BULLET = `
+- Superlatives stay with rank_products_by_spec; use filter_products when the user gives numeric bounds; for "the brightest one under 15 inches" use both in sequence, filter first, then compare the survivors.`;
+
 /** The lighting-expertise primer for a surface: the base block, plus the
- *  rank-tool bullet only when the tool is actually offered (hasSpecRank). */
-export function lightingExpertise(hasSpecRank: boolean): string {
-  return hasSpecRank
-    ? LIGHTING_EXPERTISE_BASE + LIGHTING_EXPERTISE_SPEC_RANK_BULLET
-    : LIGHTING_EXPERTISE_BASE;
+ *  rank-tool bullet only when the rank tool is actually offered (hasSpecRank),
+ *  plus the constraint bullets only when the filter tool is (hasSpecFilter). */
+export function lightingExpertise(hasSpecRank: boolean, hasSpecFilter = false): string {
+  let out = LIGHTING_EXPERTISE_BASE;
+  if (hasSpecRank) out += LIGHTING_EXPERTISE_SPEC_RANK_BULLET;
+  if (hasSpecFilter) out += LIGHTING_EXPERTISE_FILTER_BULLET;
+  if (hasSpecRank && hasSpecFilter) out += LIGHTING_EXPERTISE_FILTER_RANK_BULLET;
+  return out;
 }
 
 /** Compatibility / accessories guidance for BOTH surfaces (compatibility plan
@@ -160,7 +181,7 @@ You may have a web_search tool. It is a LAST RESORT — use it ONLY for things t
  *  block is internal-only and lands LAST, so the breakpoint stays on the final
  *  block. `hasSpecRank` composes the primer's rank-tool bullet (THOM_SPEC_RANK,
  *  threaded by agent.ts); flipping it is a one-time prompt-cache invalidation. */
-export function internalSystem(hasSpecRank = false): ClaudeSystemBlock[] {
+export function internalSystem(hasSpecRank = false, hasSpecFilter = false): ClaudeSystemBlock[] {
   return [
     { type: "text", text: PERSONA },
     { type: "text", text: BRAND_CONTEXT },
@@ -168,7 +189,7 @@ export function internalSystem(hasSpecRank = false): ClaudeSystemBlock[] {
     { type: "text", text: HELP_CENTER_GUIDANCE },
     { type: "text", text: PHOTOMETRICS_GUIDANCE },
     { type: "text", text: LAYOUT_GUIDANCE },
-    { type: "text", text: lightingExpertise(hasSpecRank) },
+    { type: "text", text: lightingExpertise(hasSpecRank, hasSpecFilter) },
     { type: "text", text: compatibilityGuidance("internal") },
     { type: "text", text: WEB_SEARCH_GUIDANCE, cache_control: { type: "ephemeral" } },
   ];
@@ -228,13 +249,13 @@ const PUBLIC_WEB_SEARCH_GUIDANCE = `Open-web search:
  *  block. No CRM / internal-ticket guidance ever appears here. Every block is
  *  passed through normalizeCopy so the whole public prompt obeys the public copy
  *  rules (including the reused shared blocks, which use em dashes). */
-export function publicSystem(hasSpecRank = false): ClaudeSystemBlock[] {
+export function publicSystem(hasSpecRank = false, hasSpecFilter = false): ClaudeSystemBlock[] {
   const texts = [
     PUBLIC_PERSONA,
     BRAND_CONTEXT,
     PHOTOMETRICS_GUIDANCE,
     LAYOUT_GUIDANCE,
-    lightingExpertise(hasSpecRank),
+    lightingExpertise(hasSpecRank, hasSpecFilter),
     compatibilityGuidance("public"),
     PUBLIC_WEB_SEARCH_GUIDANCE,
   ];
@@ -245,9 +266,15 @@ export function publicSystem(hasSpecRank = false): ClaudeSystemBlock[] {
   }));
 }
 
-/** Pick the system prompt for a surface. `hasSpecRank` (THOM_SPEC_RANK,
- *  threaded by agent.ts) composes the primer's rank-tool bullet on either
- *  surface. */
-export function systemFor(surface: ThomSurface, hasSpecRank = false): ClaudeSystemBlock[] {
-  return surface === "public" ? publicSystem(hasSpecRank) : internalSystem(hasSpecRank);
+/** Pick the system prompt for a surface. `hasSpecRank` (THOM_SPEC_RANK) and
+ *  `hasSpecFilter` (THOM_SPEC_FILTER), threaded by agent.ts, compose the
+ *  primer's rank-tool bullet and constraint bullets on either surface. */
+export function systemFor(
+  surface: ThomSurface,
+  hasSpecRank = false,
+  hasSpecFilter = false,
+): ClaudeSystemBlock[] {
+  return surface === "public"
+    ? publicSystem(hasSpecRank, hasSpecFilter)
+    : internalSystem(hasSpecRank, hasSpecFilter);
 }

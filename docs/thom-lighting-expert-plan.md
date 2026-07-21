@@ -145,7 +145,7 @@ v1 ingests **PDF uploads only** — no crawler extension to non-WAC domains (end
 
 ## H. Deferred
 
-- Category normalization / clean application flags; CRI/IP/CCT rank filters; per-foot lumens ranking (pending G.1 semantics check); materializing the view; TS mirror of the class regex.
+- Category normalization / clean application flags; ~~CRI/IP/CCT rank filters~~ **partially delivered by the attribute-filter plan (0063 `product_spec_filter` / `filter_products` filters on CRI, IP, and CCT bands — see `docs/thom-attribute-filter-plan.md`; rank-tool filter args remain unbuilt)**; per-foot lumens ranking (pending G.1 semantics check); materializing the view (now gated on the attribute-filter plan's G.1 latency budget); TS mirror of the class regex.
 - Crawler extension to gov/standards domains; inline Worker-side extraction (instant indexing); table-aware extraction (the R12 curated route + force-vision toggle are the v1 levers).
 - Photometrics coverage push (2,365/4,390 representative SKUs — raising it raises rank coverage automatically).
 - Authored "Lighting 101" marketing-content articles (no code).

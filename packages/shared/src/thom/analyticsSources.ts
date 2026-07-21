@@ -27,7 +27,7 @@ const DOC_BUCKETS: [RegExp, string][] = [
 ];
 
 const TOOL_BUCKETS: [RegExp, string][] = [
-  [/^(search_products|get_product|get_related_products|get_family|rank_products_by_spec)$/, "Product catalog (PIM)"],
+  [/^(search_products|get_product|get_related_products|get_family|rank_products_by_spec|filter_products)$/, "Product catalog (PIM)"],
   [/^crm_/, "HubSpot CRM"],
   [/^(get_photometrics|lighting_requirement)$/, "Photometrics (IES)"],
   [/^plan_layout$/, "Layout planner"],

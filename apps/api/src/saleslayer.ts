@@ -3,6 +3,7 @@ import { serviceSupabase } from "./supabase.js";
 import {
   variantAvailability,
   availabilityLabel,
+  parseAuxLengthMm,
   accessoryPruneDecision,
   collectProductAccessoryRefs,
   collectVariantAccessoryRefs,
@@ -11,6 +12,7 @@ import {
   resolveAccessoryRefs,
   type AccessoryRef,
   type Availability,
+  type AuxLengthsMm,
   type RawAccessoryRef,
 } from "@wac/shared";
 
@@ -89,6 +91,11 @@ interface VariantRow {
   finish: string | null;
   name: string | null;
   dimensions_mm: DimsMm;
+  /** Unit-suffixed auxiliary lengths (attribute-filter plan, Addendum 2),
+   * stored in mm like `dimensions_mm`. Today only `wire` (zwire_length —
+   * "6 Feet" / "57\"" / "96in"); parsed by the unit-REQUIRED parser in
+   * @wac/shared (a bare number is ambiguous and is dropped). */
+  aux_lengths_mm: AuxLengthsMm;
   image_urls: string[];
   /** Photometric (.ies) file URL, when the variant carries one. */
   ies_url: string | null;
@@ -346,6 +353,7 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             finish: cleanText(str(v.zfinish)),
             name: cleanText(decodeEntities(str(v.zprdtitle) ?? str(v.maktx) ?? "")),
             dimensions_mm: variantDims(v, dimFactor),
+            aux_lengths_mm: variantAuxLengths(v),
             image_urls: collectImages(v, VARIANT_IMAGE_FIELDS),
             ies_url: findIesUrl(v),
             cct_code: cleanText(str(v.zcct)),
@@ -767,6 +775,18 @@ function variantDims(
     if (n !== null && n > 0) dims[key] = round2(n * factor);
   }
   return dims;
+}
+
+/**
+ * Unit-suffixed auxiliary lengths (attribute-filter plan, Addendum 2). The
+ * build-gate audit of the 298-field variant schema found `zwire_length` the
+ * only viable field (5.7% populated, unit shapes `# Feet`/`#"`/`#'`/`# Inches`/
+ * `#in`/`#ft`); its bare-number rows (~10%) are ambiguous and parse to null.
+ * zsuspen_min/max are bare-number dominant and deferred (see auxLength.ts).
+ */
+function variantAuxLengths(v: Record<string, unknown>): AuxLengthsMm {
+  const wire = parseAuxLengthMm(str(v.zwire_length));
+  return wire !== null ? { wire } : {};
 }
 
 /** First http(s) URL across the given image fields. */

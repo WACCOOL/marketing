@@ -12,13 +12,15 @@ describe("bucketSourceUsage", () => {
       { kind: "doc", key: "education", hits: 1 },
       { kind: "tool", key: "search_products", hits: 8 },
       { kind: "tool", key: "rank_products_by_spec", hits: 4 },
+      { kind: "tool", key: "filter_products", hits: 2 },
       { kind: "tool", key: "crm_search_companies", hits: 6 },
     ]);
     expect(out[0]).toEqual({ source: "Spec sheets & manuals (PIM)", hits: 15 });
     expect(out).toContainEqual({ source: "Website crawl", hits: 6 });
     expect(out).toContainEqual({ source: "HubSpot CRM", hits: 6 });
-    // rank_products_by_spec reads the same PIM catalog data.
-    expect(out).toContainEqual({ source: "Product catalog (PIM)", hits: 12 });
+    // rank_products_by_spec + filter_products read the same PIM catalog data —
+    // never an `Other (…)` row on Davis's dashboard.
+    expect(out).toContainEqual({ source: "Product catalog (PIM)", hits: 14 });
     expect(out).toContainEqual({ source: "Help Center (Zendesk)", hits: 3 });
     expect(out).toContainEqual({ source: "Education library (uploads)", hits: 1 });
   });
