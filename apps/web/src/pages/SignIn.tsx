@@ -27,9 +27,9 @@ function friendlyAuthError(message: string): string {
   }
   if (m.includes("expired") || m.includes("invalid")) {
     return (
-      "That sign-in link was already used or has expired — company mail " +
-      "security often pre-opens links, which uses them up. Request a new " +
-      "email and type in the 6-digit code instead of clicking the link."
+      "That code or link was already used or has expired. Request a fresh " +
+      "email and type in the 6-digit code (don't click the link — company " +
+      "mail security pre-opens links, which uses them up)."
     );
   }
   return message;
@@ -52,7 +52,7 @@ function consumeHashError(): string | null {
   return friendlyAuthError(description ?? code ?? "sign-in failed");
 }
 
-type Mode = "signin" | "otp-sent" | "reset-sent";
+type Mode = "signin" | "reset-sent";
 
 export function SignIn() {
   const [mode, setMode] = useState<Mode>("signin");
@@ -61,9 +61,7 @@ export function SignIn() {
   const [code, setCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState<
-    "google" | "magic" | "code" | "password" | "reset" | "setpw" | null
-  >(null);
+  const [busy, setBusy] = useState<"google" | "password" | "reset" | "setpw" | null>(null);
 
   useEffect(() => {
     const hashErr = consumeHashError();
@@ -93,29 +91,6 @@ export function SignIn() {
     setErr(null);
     // On success the session lands via onAuthStateChange — router takes over.
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) setErr(friendlyAuthError(error.message));
-    setBusy(null);
-  }
-
-  async function signInMagic() {
-    if (!email) return;
-    setBusy("magic");
-    setErr(null);
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: window.location.origin },
-    });
-    if (error) setErr(friendlyAuthError(error.message));
-    else switchMode("otp-sent");
-    setBusy(null);
-  }
-
-  async function signInCode() {
-    const token = code.trim();
-    if (!email || token.length < 6) return;
-    setBusy("code");
-    setErr(null);
-    const { error } = await supabase.auth.verifyOtp({ email, token, type: "email" });
     if (error) setErr(friendlyAuthError(error.message));
     setBusy(null);
   }
@@ -160,35 +135,6 @@ export function SignIn() {
         <h2>Sign in to WAC Marketing</h2>
         {err && <div className="alert error">{err}</div>}
 
-        {mode === "otp-sent" && (
-          <>
-            <div className="alert good">
-              Check your inbox — a sign-in email has been sent to {email}.
-            </div>
-            <div className="muted" style={{ fontSize: 12 }}>
-              Enter the 6-digit code from the email (most reliable — company
-              mail security can break the link):
-            </div>
-            <input
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              placeholder="123456"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void signInCode();
-              }}
-            />
-            <button onClick={signInCode} disabled={code.trim().length < 6 || busy !== null}>
-              {busy === "code" ? <span className="spinner" /> : null}
-              Sign in with code
-            </button>
-            <button className="secondary" onClick={() => switchMode("signin")}>
-              Back
-            </button>
-          </>
-        )}
-
         {mode === "reset-sent" && (
           <>
             <div className="alert good">
@@ -225,6 +171,11 @@ export function SignIn() {
             <button className="secondary" onClick={() => switchMode("signin")}>
               Back
             </button>
+            <div className="muted" style={{ fontSize: 12 }}>
+              No email after a couple of minutes? If you've never signed in
+              before, use “Continue with Google” first — that creates your
+              account — then set a password here.
+            </div>
           </>
         )}
 
@@ -258,22 +209,16 @@ export function SignIn() {
               {busy === "password" ? <span className="spinner" /> : null}
               Sign in
             </button>
-            <div className="row" style={{ justifyContent: "space-between", marginTop: 4 }}>
-              <button className="secondary" onClick={signInMagic} disabled={!email || busy !== null}>
-                {busy === "magic" ? <span className="spinner" /> : null}
-                Email me a sign-in code
-              </button>
-              <button className="secondary" onClick={requestReset} disabled={!email || busy !== null}>
-                {busy === "reset" ? <span className="spinner" /> : null}
-                Set or reset password
-              </button>
-            </div>
+            <button className="secondary" onClick={requestReset} disabled={!email || busy !== null}>
+              {busy === "reset" ? <span className="spinner" /> : null}
+              Set or reset password
+            </button>
             <div className="muted" style={{ fontSize: 12, marginTop: 12 }}>
-              Have an account but no password? Enter your email and hit “Set
-              or reset password”. First time here? Sign in with Google or a
-              sign-in code once — that creates your account — then set a
-              password. Internal WAC Group emails are auto-approved; other
-              addresses create a pending account for an admin to approve.
+              No password yet? Enter your email and hit “Set or reset
+              password” — you'll get a 6-digit code to type in. First time
+              here? Use “Continue with Google” (any Google account works);
+              internal WAC Group emails are auto-approved, other addresses
+              create a pending account for an admin to approve.
             </div>
           </>
         )}
