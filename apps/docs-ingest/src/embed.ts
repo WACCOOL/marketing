@@ -6,7 +6,9 @@
  */
 
 const MODEL = "@cf/baai/bge-m3";
-const MAX_BATCH = 100;
+// 100-text batches blew bge-m3's per-request context on 600+ page documents
+// (Workers AI "Max context reached"). 6 x ~700-token chunks stays well under it.
+const MAX_BATCH = 6;
 
 export interface CfCreds {
   accountId: string;
