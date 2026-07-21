@@ -4,6 +4,7 @@ import type { ClaudeStreamEvent, ClaudeUsage } from "./transport.js";
 import {
   reconstructTurn,
   shouldEscalate,
+  SUPERLATIVE_INTENT,
   tieringEnabled,
   type EscalationState,
 } from "./agent.js";
@@ -69,6 +70,32 @@ describe("shouldEscalate", () => {
         state({ toolCallCount: 1, userMessage: "Do you have downlights or track heads?" }),
       ),
     ).toBe(false);
+  });
+
+  it("escalates a superlative IMMEDIATELY, at zero tool calls", () => {
+    // Unlike comparisons, superlatives must never let the router model field
+    // the failing turn (the tape-as-runner-up failure).
+    for (const msg of [
+      "what's the highest lumen light you make?",
+      "brightest downlight?",
+      "most efficient track head",
+      "which fixture has the maximum output?",
+      "lowest wattage sconce for a hallway",
+      "best efficacy in the catalog",
+    ]) {
+      expect(shouldEscalate(state({ toolCallCount: 0, userMessage: msg }))).toBe(true);
+    }
+  });
+
+  it("SUPERLATIVE_INTENT stays tight: ordinary product questions don't match", () => {
+    for (const msg of [
+      "specs for the 3011?",
+      "do you have outdoor track lighting?",
+      "what's the best way to light a kitchen island?",
+      "is the high output tape dimmable?",
+    ]) {
+      expect(SUPERLATIVE_INTENT.test(msg)).toBe(false);
+    }
   });
 });
 

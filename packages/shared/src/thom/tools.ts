@@ -105,6 +105,59 @@ export const TOOLS: ClaudeTool[] = [
   },
 ];
 
+/** Coarse class buckets stamped by product_spec_view (0059) — mirrored here
+ *  only for the tool schema's enum; the regex itself is SQL-side by design
+ *  (a TS mirror was rejected for v1: drift risk > test value). */
+export const SPEC_RANK_CLASSES = [
+  "per-foot",
+  "fan",
+  "downlight",
+  "track",
+  "outdoor",
+  "linear",
+  "decorative",
+  "other",
+] as const;
+
+/** Spec-rank tool schema. Split from TOOLS (mirroring PHOTOMETRICS_TOOLS) and
+ *  composed onto the set by agent.ts only when THOM_SPEC_RANK === "1"
+ *  (dark-launch). */
+export const SPEC_RANK_TOOLS: ClaudeTool[] = [
+  {
+    name: "rank_products_by_spec",
+    description:
+      "Rank WAC Group catalog products by a NUMERIC spec — lumens (light output), watts (power draw), or efficacy (lm/W) — highest or lowest. Use this for ANY superlative question ('brightest', 'highest output', 'most powerful', 'most efficient', 'lowest wattage') instead of semantic search. Results come grouped by fixture class (outdoor, track, downlight, linear, decorative, fan) with per-foot products (tape/strip) ranked separately by watts/ft, plus an honest coverage count — not every product carries numeric output data. Follow up with get_product for a specific product's card.",
+    input_schema: {
+      type: "object",
+      properties: {
+        metric: {
+          type: "string",
+          enum: ["lumens", "watts", "efficacy"],
+          description: "The spec to rank by.",
+        },
+        direction: {
+          type: "string",
+          enum: ["highest", "lowest"],
+          description: "Rank direction (default highest).",
+        },
+        brand: { type: "string", description: "Optional brand filter: WAC Lighting, Modern Forms, Schonbek, or AiSpire." },
+        category: { type: "string", description: "Optional catalog category filter (free text — may not match catalog wording exactly)." },
+        class: {
+          type: "string",
+          enum: [...SPEC_RANK_CLASSES],
+          description: "Optional fixture-class filter.",
+        },
+        per_foot: {
+          type: "boolean",
+          description: "Rank per-foot products (tape/strip) by watts per foot instead of whole-fixture figures.",
+        },
+        limit: { type: "integer", description: "Max results (default 10, cap 25)." },
+      },
+      required: ["metric"],
+    },
+  },
+];
+
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
@@ -273,6 +326,141 @@ async function searchDocs(
     url: r.url,
   }));
   return { content, cards: [], citations };
+}
+
+// --- rank_products_by_spec ---------------------------------------------------
+
+/** One row from the product_spec_rank RPC (0059). */
+interface SpecRankRow {
+  sku: string;
+  name: string | null;
+  brand: string | null;
+  class: string;
+  metric_value: number | string;
+  lumens_source: string | null;
+  per_ft: boolean;
+  in_scope_ranked: number;
+  in_scope_total: number;
+}
+
+/** Format a metric value with its unit: lumens whole + thousands-separated
+ *  ("2,071 lm"), watts/efficacy up to 1dp. */
+function fmtMetric(v: number, metric: string, perFoot: boolean): string {
+  if (perFoot) return `${Math.round(v * 10) / 10} W/ft`;
+  if (metric === "lumens") return `${Math.round(v).toLocaleString("en-US")} lm`;
+  if (metric === "watts") return `${Math.round(v * 10) / 10} W`;
+  return `${Math.round(v * 10) / 10} lm/W`;
+}
+
+/** Render rank rows NAME-FIRST — the public persona forbids leading with bare
+ *  catalog numbers, and a router-tier model will echo the tool's format — as
+ *  per-class sections when grouped, a flat list otherwise. The
+ *  [IES-measured]/[catalog-listed] tag rides only on lumens ranks (the view
+ *  records lumens_source; other metrics carry no source column). */
+export function formatSpecRankRows(
+  rows: SpecRankRow[],
+  metric: string,
+  perFoot: boolean,
+  grouped: boolean,
+): string {
+  const line = (r: SpecRankRow): string => {
+    const who = [`SKU ${r.sku}`, r.brand, r.class].filter(Boolean).join(", ");
+    const tag =
+      metric === "lumens" && !perFoot && r.lumens_source
+        ? r.lumens_source === "ies"
+          ? " [IES-measured]"
+          : " [catalog-listed]"
+        : "";
+    return `- ${r.name ?? r.sku} (${who}): ${fmtMetric(Number(r.metric_value), metric, perFoot)}${tag}`;
+  };
+  if (!grouped) return rows.map(line).join("\n");
+  // Per-class sections, preserving the RPC's class ordering.
+  const sections: string[] = [];
+  let current: string | null = null;
+  for (const r of rows) {
+    if (r.class !== current) {
+      current = r.class;
+      sections.push(`${r.class}:`);
+    }
+    sections.push(line(r));
+  }
+  return sections.join("\n");
+}
+
+/** The honest coverage line, from the RPC's windowed in-scope counts (never a
+ *  guessed denominator — only ~57% of products carry output data). */
+export function specRankCoverageLine(
+  row: Pick<SpecRankRow, "in_scope_ranked" | "in_scope_total">,
+  scope: string,
+  perFoot: boolean,
+): string {
+  const n = Number(row.in_scope_ranked).toLocaleString("en-US");
+  const m = Number(row.in_scope_total).toLocaleString("en-US");
+  return perFoot
+    ? `Ranked among the ${n} of ${m} ${scope} per-foot (tape/strip) products with watts/ft data.`
+    : `Ranked among the ${n} of ${m} ${scope} products with output data; per-foot products (tape/strip) are ranked separately by watts/ft.`;
+}
+
+async function rankProductsBySpec(ctx: ToolContext, input: Record<string, unknown>): Promise<ToolOutput> {
+  const metric = String(input.metric ?? "").trim().toLowerCase();
+  if (!["lumens", "watts", "efficacy"].includes(metric)) {
+    return { content: "rank_products_by_spec: metric must be lumens, watts, or efficacy.", cards: [], citations: [] };
+  }
+  const dir = input.direction === "lowest" ? "asc" : "desc";
+  const perFoot = input.per_foot === true;
+  const brand = str(input.brand);
+  const category = str(input.category);
+  const cls = str(input.class);
+  const limit = Math.min(Number(input.limit) || 10, 25);
+  // Grouped (top-3 per class) whenever no single class is pinned; a class
+  // filter or the per-foot rank is one section, so flat top-N reads better.
+  const askGrouped = !cls && !perFoot;
+
+  const call = (f: { brand: string | null; category: string | null; cls: string | null; grouped: boolean }) =>
+    ctx.sb.rpc("product_spec_rank", {
+      metric,
+      dir,
+      brand_filter: f.brand,
+      category_filter: f.category,
+      class_filter: f.cls,
+      per_ft_filter: perFoot,
+      grouped: f.grouped,
+      match_count: limit,
+    });
+
+  const { data, error } = await call({ brand, category, cls, grouped: askGrouped });
+  if (error) return { content: `rank_products_by_spec error: ${error.message}`, cards: [], citations: [] };
+  let rows = (data ?? []) as SpecRankRow[];
+  let grouped = askGrouped;
+  let scope = [brand, cls, category].filter(Boolean).join(" ") || "catalog";
+  let preamble = "";
+
+  if (!rows.length && (brand || category || cls)) {
+    // Empty FILTERED result (R16a): brand/category are free text and often miss
+    // the catalog's wording — never imply the data doesn't exist. Explain, then
+    // fall back to the unfiltered grouped rank.
+    const { data: fallback } = await call({ brand: null, category: null, cls: null, grouped: true });
+    rows = (fallback ?? []) as SpecRankRow[];
+    grouped = true;
+    scope = "catalog";
+    preamble =
+      `No ranked products matched that filter — catalog categories are free text, so the filter wording may not match the catalog's. ` +
+      `Top ${metric === "lumens" ? "output" : metric} across the whole catalog instead:\n\n`;
+  }
+  if (!rows.length) {
+    return {
+      content: `No products carry numeric ${perFoot ? "watts/ft" : metric} data in the catalog index yet.`,
+      cards: [],
+      citations: [],
+    };
+  }
+
+  const content =
+    preamble +
+    formatSpecRankRows(rows, metric, perFoot, grouped) +
+    `\n\n${specRankCoverageLine(rows[0]!, scope, perFoot)}`;
+  // No cards here — the model follows up with get_product for specifics.
+  return { content, cards: [], citations: [] };
 }
 
 /**
@@ -478,6 +666,7 @@ export const PUBLIC_TOOL_NAMES: ReadonlySet<string> = new Set([
   "plan_layout",
   "get_photometrics",
   "lighting_requirement",
+  "rank_products_by_spec",
 ]);
 
 export async function dispatch(
@@ -507,6 +696,11 @@ export async function dispatch(
   // always on the public set; routing here is harmless when not advertised.
   if (name === "plan_layout") {
     return layoutDispatch(ctx, name, input);
+  }
+  // Spec-rank tool is only offered when THOM_SPEC_RANK=1 (composed by
+  // agent.ts); routing here is harmless otherwise since it isn't advertised.
+  if (name === "rank_products_by_spec") {
+    return rankProductsBySpec(ctx, input);
   }
   switch (name) {
     case "search_products":
