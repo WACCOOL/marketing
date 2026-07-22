@@ -15,8 +15,10 @@
 import { z } from "zod";
 
 /** Bump on any schema/prompt/derivation fix: `--dimming` re-processes active
- *  units whose stored version < current (plan §B.4). */
-export const DIMMING_EXTRACTION_VERSION = 1;
+ *  units whose stored version < current (plan §B.4). v2: advisory row counts +
+ *  2-of-3 membership tiebreak + qualifier-is-not-a-section prompt reinforcement
+ *  (sample-10 tuning, 2026-07-22). */
+export const DIMMING_EXTRACTION_VERSION = 2;
 
 /** kb_documents doc_type for captured dimming charts. These rows are NEVER
  *  chunked/embedded (DC7 — Step B excludes them at the SQL level). */
@@ -28,6 +30,9 @@ export const DEFAULT_DIMMING_EXTRACTION_MODEL = "claude-sonnet-4-5";
 /** Default verifier model — Haiku-tier by default: cheaper and more
  *  independent than "different framing" on the same model (DC5). */
 export const DEFAULT_DIMMING_VERIFIER_MODEL = "claude-haiku-4-5";
+/** Default membership-tiebreak model (the third vote on a section-membership
+ *  dispute — Sonnet-tier, fresh list-the-section framing). */
+export const DEFAULT_DIMMING_TIEBREAK_MODEL = "claude-sonnet-4-5";
 
 export type DimmingPhaseType = "adaptive" | "elv" | "triac" | "zero_to_ten_v" | "other";
 export type DimmingModeQualifier = "elv" | "triac";
@@ -629,17 +634,52 @@ export function commentsMatch(a: string, b: string): boolean {
   return la.length > 0 && lb.length > 0 && (la.includes(lb) || lb.includes(la));
 }
 
+/** A sampled row whose section membership the verifier disputed — resolved by
+ *  the 2-of-3 tiebreak (a third, fresh-framing call) rather than gating
+ *  directly. Sample-10 evidence (2026-07-22): the haiku verifier
+ *  pattern-matched a "(ELV)" mode qualifier in the model cell as the section
+ *  (ADTP703TUW4) while the extractor had it right. */
+export interface MembershipDispute {
+  /** Index into the sampled-questions array (the verifier answer index). */
+  sampleIndex: number;
+  row: VerifiableRow;
+  extractedPhase: DimmingPhaseType;
+  extractedSectionHeader: string;
+  verifierSectionHeader: string;
+  verifierPhase: DimmingPhaseType;
+}
+
+/** Row-count deltas up to this are ADVISORY (warnings); beyond it they gate
+ *  (the gross-error backstop). Sample-10 evidence: the charts' text layer
+ *  detaches section headers to the page bottom, so the verifier's counting is
+ *  purely visual and drifts ±1-3 on nearly every file while the extraction
+ *  counts are uniform and manually verified correct. */
+export const ROW_COUNT_GATE_DELTA = 3;
+
 export interface VerificationResult {
+  /** True only on a CLEAN pass: no gating mismatches AND no membership
+   *  disputes left to tiebreak. Advisory warnings do not affect it. */
   ok: boolean;
+  /** Gating mismatches (cell values, missing answers, gross row-count errors)
+   *  -> needs_review, no tiebreak. */
   mismatches: string[];
+  /** Advisory findings (small row-count deltas, missing verifier counts) —
+   *  logged in the run report, never gate on their own. */
+  warnings: string[];
+  /** Section-membership disagreements awaiting the 2-of-3 tiebreak. */
+  membershipDisputes: MembershipDispute[];
 }
 
 /**
- * Compare the verifier's independent answers to the extraction (DC5): the
- * low-end %, the comment, and — the field the plan identifies as the
- * catastrophic failure mode — SECTION MEMBERSHIP (the verifier's section
- * header re-derived to a phase bucket must equal the extracted phase_type).
- * Also cross-checks per-section row counts. Any mismatch -> needs_review.
+ * Compare the verifier's independent answers to the extraction (DC5, tuned
+ * per the 2026-07-22 sample-10 evidence):
+ *  - low-end % and comment mismatches GATE (needs_review);
+ *  - SECTION MEMBERSHIP disagreements become `membershipDisputes` for the
+ *    2-of-3 tiebreak (see `tiebreakVerdictFromListings` +
+ *    `finalizeVerification`) instead of gating outright;
+ *  - per-section row counts are ADVISORY: deltas within
+ *    ROW_COUNT_GATE_DELTA (and missing verifier counts) are warnings; only a
+ *    gross error (delta > ROW_COUNT_GATE_DELTA) gates.
  */
 export function verifyExtraction(
   sections: readonly VerificationSection[],
@@ -647,6 +687,8 @@ export function verifyExtraction(
   sectionCounts: readonly VerifierSectionCount[],
 ): VerificationResult {
   const mismatches: string[] = [];
+  const warnings: string[] = [];
+  const membershipDisputes: MembershipDispute[] = [];
   const sampled = sections.filter((s) => s.sample !== null);
   for (let i = 0; i < sampled.length; i++) {
     const s = sampled[i]!;
@@ -673,23 +715,139 @@ export function verifyExtraction(
     }
     const verifierPhase = phaseFromSectionHeader(a.section_header);
     if (verifierPhase !== row.phase_type) {
-      mismatches.push(
-        `${row.dimmer_model} @ ${row.test_voltage}V section: extracted ${row.phase_type} vs verifier "${a.section_header}" (${verifierPhase})`,
-      );
+      membershipDisputes.push({
+        sampleIndex: i,
+        row,
+        extractedPhase: row.phase_type,
+        extractedSectionHeader: row.section_header,
+        verifierSectionHeader: a.section_header,
+        verifierPhase,
+      });
     }
   }
-  // Per-section row-count cross-check (page + phase bucket).
+  // Per-section row-count cross-check (page + phase bucket) — advisory unless
+  // the delta exceeds the gross-error backstop.
   for (const s of sections) {
     const vc = sectionCounts.find(
       (c) => c.page === s.page && phaseFromSectionHeader(c.section_header) === s.phase_type,
     );
     if (!vc) {
-      mismatches.push(`no verifier row count for p.${s.page} ${s.phase_type}`);
-    } else if (Number(vc.row_count) !== s.rowCount) {
-      mismatches.push(
-        `p.${s.page} ${s.phase_type} row count: extracted ${s.rowCount} vs verifier ${vc.row_count}`,
-      );
+      warnings.push(`no verifier row count for p.${s.page} ${s.phase_type} (extracted ${s.rowCount})`);
+      continue;
     }
+    const delta = Math.abs(Number(vc.row_count) - s.rowCount);
+    if (delta === 0) continue;
+    const line = `p.${s.page} ${s.phase_type} row count: extracted ${s.rowCount} vs verifier ${vc.row_count}`;
+    if (delta > ROW_COUNT_GATE_DELTA) mismatches.push(`${line} (gross error, delta ${delta})`);
+    else warnings.push(line);
   }
-  return { ok: mismatches.length === 0, mismatches };
+  return {
+    ok: mismatches.length === 0 && membershipDisputes.length === 0,
+    mismatches,
+    warnings,
+    membershipDisputes,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Membership tiebreak (2-of-3): a third call lists, in order, every row under
+// each claimed section header; code decides which side the listing supports.
+// -----------------------------------------------------------------------------
+
+export type MembershipTiebreakVerdict = "extractor" | "verifier" | "unresolved";
+
+/** Qualifier-aware match key for a listed model cell: the base norm plus the
+ *  parsed (ELV)/(TRIAC) qualifier as a suffix token — so the DC2 pairs that
+ *  share a base model stay distinguishable in tiebreak listings. */
+function qualifiedListingKey(cell: string): string {
+  const { qualifier } = parseModeQualifier(cell);
+  return normalizeDimmerModel(cell) + (qualifier ? `(${qualifier})` : "");
+}
+
+/**
+ * Decide the 2-of-3 tiebreak from the third call's per-section row listings:
+ * the disputed row is looked up (qualifier-aware first, base-norm fallback) in
+ * the listing for the extractor-claimed section and the verifier-claimed
+ * section. Present in exactly one -> that side wins the vote. Present in both
+ * or neither -> "unresolved" (the run report carries it; per the tuning
+ * decision only a tiebreak that SIDES WITH THE VERIFIER gates).
+ */
+export function tiebreakVerdictFromListings(
+  dispute: MembershipDispute,
+  extractorSectionRows: readonly string[],
+  verifierSectionRows: readonly string[],
+): MembershipTiebreakVerdict {
+  const row = dispute.row;
+  const wantQualified =
+    normalizeDimmerModel(row.dimmer_model) + (row.mode_qualifier ? `(${row.mode_qualifier})` : "");
+  const wantBase = normalizeDimmerModel(row.dimmer_model);
+  const hit = (rows: readonly string[], key: string, qualified: boolean): boolean =>
+    rows.some((c) => (qualified ? qualifiedListingKey(c) : normalizeDimmerModel(c)) === key);
+
+  // Qualifier-aware pass first; fall back to base-norm only when the
+  // qualified key appears on neither side.
+  for (const [key, qualified] of [
+    [wantQualified, true],
+    [wantBase, false],
+  ] as const) {
+    const inExtractor = hit(extractorSectionRows, key, qualified);
+    const inVerifier = hit(verifierSectionRows, key, qualified);
+    if (inExtractor && !inVerifier) return "extractor";
+    if (inVerifier && !inExtractor) return "verifier";
+    if (inExtractor && inVerifier) return "unresolved";
+  }
+  return "unresolved";
+}
+
+export interface MembershipTiebreakOutcome {
+  /** "error" when the tiebreak call itself failed — gates conservatively. */
+  verdict: MembershipTiebreakVerdict | "error";
+  /** Free-form detail for the run report (e.g. the error message). */
+  detail?: string;
+}
+
+export interface FinalVerification {
+  ok: boolean;
+  /** Gating findings -> needs_review (verifier-sided or errored tiebreaks
+   *  appended to the base mismatches). */
+  gating: string[];
+  /** Report-only notes: extractor-upheld and unresolved tiebreak outcomes. */
+  notes: string[];
+}
+
+/**
+ * Fold membership-tiebreak outcomes into the verification result (pure — the
+ * runner issues the third calls). A unit gates when it had base mismatches OR
+ * a tiebreak sided with the verifier (or errored — can't resolve, stay
+ * conservative). Extractor-upheld and unresolved disputes leave the unit
+ * active, carried as report notes.
+ */
+export function finalizeVerification(
+  result: VerificationResult,
+  outcomes: readonly MembershipTiebreakOutcome[],
+): FinalVerification {
+  const gating = [...result.mismatches];
+  const notes: string[] = [];
+  result.membershipDisputes.forEach((d, i) => {
+    const o = outcomes[i] ?? { verdict: "error", detail: "no tiebreak outcome" };
+    const base =
+      `${d.row.dimmer_model} @ ${d.row.test_voltage}V section membership: extracted ` +
+      `"${d.extractedSectionHeader}" (${d.extractedPhase}) vs verifier ` +
+      `"${d.verifierSectionHeader}" (${d.verifierPhase})`;
+    const detail = o.detail ? ` — ${o.detail}` : "";
+    switch (o.verdict) {
+      case "verifier":
+        gating.push(`${base}; tiebreak sided with VERIFIER${detail}`);
+        break;
+      case "error":
+        gating.push(`${base}; tiebreak FAILED${detail}`);
+        break;
+      case "extractor":
+        notes.push(`${base}; tiebreak upheld the EXTRACTOR (2-of-3)${detail}`);
+        break;
+      default:
+        notes.push(`${base}; tiebreak UNRESOLVED (row in both/neither listing)${detail}`);
+    }
+  });
+  return { ok: gating.length === 0, gating, notes };
 }

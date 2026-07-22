@@ -761,6 +761,7 @@ async function main(): Promise<void> {
       apiKey: process.env.ANTHROPIC_API_KEY ?? null,
       model: process.env.ANTHROPIC_DIMMING_MODEL || undefined,
       verifierModel: process.env.ANTHROPIC_DIMMING_VERIFIER_MODEL || undefined,
+      tiebreakModel: process.env.ANTHROPIC_DIMMING_TIEBREAK_MODEL || undefined,
     });
     return;
   }
