@@ -1036,6 +1036,97 @@ async function upsertLineItems(
   return out;
 }
 
+/* --------------- deal quote-line capture (Thom plane 3 staging) ------------- */
+
+/** One deal_quote_lines row (migration 0066 — category-sales plan §C). */
+export interface DealQuoteLineRow {
+  quote_product_name: string;
+  sap_quote_number: string;
+  quote_line: string | null;
+  material: string | null;
+  material_description: string | null;
+  quantity: number | null;
+  unit_price: number | null;
+  net_value: number | null;
+  currency: string | null;
+  raw_json: Record<string, unknown>;
+  updated_at: string;
+}
+
+/**
+ * Build the deal_quote_lines upsert rows from a push payload's products array.
+ * PURE (unit-tested). CS14 semantics, pinned:
+ *   - PK = quote_product_name (the portal line-item idProperty — the same key
+ *     the push itself upserts by); rows without it are skipped, deduped last-
+ *     wins like upsertLineItems' own dedup map. Deal key = sap_quote_number.
+ *   - An EMPTY or MISSING products array returns [] — the caller treats that
+ *     as a NO-OP, NEVER a delete (SAP payload shapes vary by transaction type;
+ *     an absent array must not be read as "this quote now has no lines").
+ * net_value mirrors the push's own extended-line derivation (qty x unit price,
+ * the durable record — SAP zeroes header net value on rejection/conversion).
+ */
+export function buildDealQuoteLineRows(
+  quoteNumber: string | null | undefined,
+  products: unknown,
+  now: Date = new Date(),
+): DealQuoteLineRow[] {
+  const quote = quoteNumber != null ? String(quoteNumber).trim() : "";
+  if (!quote || !Array.isArray(products) || products.length === 0) return [];
+  const rows = new Map<string, DealQuoteLineRow>();
+  for (const raw of products) {
+    const p = (raw ?? {}) as Record<string, unknown>;
+    const key = p.quote_product_name != null ? String(p.quote_product_name).trim() : "";
+    if (!key) continue;
+    const qty = toNumber(p.item_quantity);
+    const unitPrice = toNumber(p.unit_price);
+    const net =
+      typeof qty === "number" && Number.isFinite(qty) && typeof unitPrice === "number" && Number.isFinite(unitPrice)
+        ? Math.round(qty * unitPrice * 100) / 100
+        : null;
+    const s = (v: unknown): string | null => {
+      const t = v != null ? String(v).trim() : "";
+      return t ? t : null;
+    };
+    rows.set(key, {
+      quote_product_name: key,
+      sap_quote_number: quote,
+      quote_line: s(p.quote_line),
+      material: s(p.material__),
+      material_description: s(p.material_description),
+      quantity: typeof qty === "number" && Number.isFinite(qty) ? qty : null,
+      unit_price: typeof unitPrice === "number" && Number.isFinite(unitPrice) ? unitPrice : null,
+      net_value: net,
+      currency: s(p.doc__currency),
+      raw_json: p,
+      updated_at: now.toISOString(),
+    });
+  }
+  return [...rows.values()];
+}
+
+/**
+ * Capture-forward mirror hook (category-sales plan §C option b): upsert this
+ * push's quote lines into deal_quote_lines. NON-FATAL by contract — a staging
+ * failure must never fail the HubSpot push — and issues NO deletes ever (line
+ * removal happens only through the future weekly walk's reconciliation, CS14).
+ */
+export async function captureDealQuoteLines(
+  sb: SupabaseClient,
+  quoteNumber: string | null | undefined,
+  products: unknown,
+): Promise<void> {
+  const rows = buildDealQuoteLineRows(quoteNumber, products);
+  if (!rows.length) return; // empty/missing payload.products = NO-OP, never delete
+  try {
+    const { error } = await sb.from("deal_quote_lines").upsert(rows, { onConflict: "quote_product_name" });
+    if (error) console.warn(`[dealQuoteLines] capture failed for quote ${quoteNumber}: ${error.message}`);
+  } catch (e) {
+    console.warn(
+      `[dealQuoteLines] capture threw for quote ${quoteNumber}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
 /** Batch upsert line items with a batch-level heal loop (normalize/drop across all inputs). */
 async function healBatchUpsert(
   token: string,
@@ -1370,6 +1461,11 @@ export async function pushDeal(
     const lineItems = products.length
       ? await upsertLineItems(token, products, signal, fixActions, liAliases, liOptions, learn)
       : [];
+
+    // Thom plane-3 capture-forward staging (deal_quote_lines, migration 0066):
+    // mirror this push's quote lines for later category rollups. Non-fatal;
+    // empty/missing payload.products is a NO-OP inside (never a delete, CS14).
+    await captureDealQuoteLines(sb, deal.quoteNumber, products);
 
     if (lineItems.length) {
       await batchAssociate(

@@ -79,6 +79,16 @@ export function specFilterEnabled(env: ThomEnv): boolean {
   return env.THOM_SPEC_FILTER === "1";
 }
 
+/** Category-sales tool is OFF unless THOM_CATEGORY_SALES is explicitly "1"
+ *  (dark-launch, mirroring THOM_SPEC_RANK). INTERNAL surface only: apps/api
+ *  composes crm_sales_by_category onto its injected crm_* extension when the
+ *  flag flips, and the same flag composes the CRM guidance's sales bullets
+ *  (CS6 — guidance and tool appear together, atomically; static guidance
+ *  while the tool is flagged off would advertise a tool that doesn't exist). */
+export function categorySalesEnabled(env: ThomEnv): boolean {
+  return env.THOM_CATEGORY_SALES === "1";
+}
+
 /** The base PUBLIC tool set: the retrieval tools + plan_layout, always. The
  *  public surface NEVER carries any injected (crm_*) tool — see composeTools. */
 const PUBLIC_TOOLS: ClaudeTool[] = [...TOOLS, ...LAYOUT_TOOLS];
@@ -390,10 +400,12 @@ export async function runThom(
   const surface: ThomSurface = opts.surface ?? "internal";
   const extension = opts.extension;
   // The primer's superlative-tool bullet composes only when the rank tool is
-  // actually offered (THOM_SPEC_RANK), and the constraint bullets only when
-  // the filter tool is (THOM_SPEC_FILTER) — commanding an unadvertised tool
-  // would re-create the original superlative failure.
-  const system = systemFor(surface, specRankEnabled(env), specFilterEnabled(env));
+  // actually offered (THOM_SPEC_RANK), the constraint bullets only when the
+  // filter tool is (THOM_SPEC_FILTER), and the CRM guidance's sales bullets
+  // only when the category-sales tool is (THOM_CATEGORY_SALES, CS6) —
+  // commanding an unadvertised tool would re-create the original superlative
+  // failure.
+  const system = systemFor(surface, specRankEnabled(env), specFilterEnabled(env), categorySalesEnabled(env));
   // CONSTRAINT_INTENT scans the last N user turns + the current message
   // (plan O6): constraints stated earlier stay binding.
   const constraintWindow = recentUserText(opts.history, opts.userMessage);
@@ -711,7 +723,7 @@ export async function* runThomStream(
   const surface: ThomSurface = opts.surface ?? "internal";
   const extension = opts.extension;
   // Same flag threading as runThom (primer bullets track the offered tools).
-  const system = systemFor(surface, specRankEnabled(env), specFilterEnabled(env));
+  const system = systemFor(surface, specRankEnabled(env), specFilterEnabled(env), categorySalesEnabled(env));
   // Same O6 constraint window as runThom.
   const constraintWindow = recentUserText(opts.history, opts.userMessage);
   const tools = composeTools(surface, env, extension?.tools ?? []);

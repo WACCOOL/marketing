@@ -174,6 +174,29 @@ describe.skipIf(!HAVE_CREDS)("Thom public anon boundary (0052)", () => {
     expect(error, "anon must not execute refresh_product_spec_mat").not.toBeNull();
   });
 
+  it("cannot reach the category-sales surface (0065: authenticated-only grants + internal RLS)", async () => {
+    // The rollup + freshness RPCs are revoked from anon (and pre-0065 they
+    // don't exist) — either way anon must get an error, never data.
+    const rollup = await sb.rpc("thom_sales_by_category", {
+      p_plane: "invoiced",
+      p_date_from: "2026-01-01",
+      p_date_to: "2026-01-31",
+      p_group_by: "category",
+    });
+    expect(rollup.error, "anon must not execute thom_sales_by_category").not.toBeNull();
+    const fresh = await sb.rpc("thom_sales_freshness", { p_plane: "invoiced" });
+    expect(fresh.error, "anon must not execute thom_sales_freshness").not.toBeNull();
+    // The variant map view is granted to authenticated only.
+    const map = await sb.from("product_variant_map").select("variant_key,product_sku").limit(1);
+    expect(map.error, "anon must not read product_variant_map").not.toBeNull();
+    // The plane-3 staging table (0066) is internal-RLS'd: error or empty set.
+    const dql = await sb.from("deal_quote_lines").select("*").limit(1);
+    expect(
+      dql.error !== null || (dql.data ?? []).length === 0,
+      "anon must not read deal_quote_lines",
+    ).toBe(true);
+  });
+
   it("cannot read OR write thom_feedback (0062: admin select, service write)", async () => {
     // Select: RLS admin-only → anon gets nothing (empty set or denial).
     const read = await sb.from("thom_feedback").select("*").limit(1);

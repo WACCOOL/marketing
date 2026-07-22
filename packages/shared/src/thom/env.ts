@@ -50,6 +50,14 @@ export interface ThomEnv {
   // product/SKU-shaped queries ALWAYS pass 0). Off by default — with it off,
   // kb_search's weight defaults to 0 and ordering is identical to pre-0054.
   THOM_AUTHORITY?: string;
+  // Category-sales tool gate ("1" = crm_sales_by_category offered on the
+  // INTERNAL surface + the CRM guidance's sales bullets composed —
+  // category-sales plan v2, CS6: flag off means ZERO mention anywhere in the
+  // prompt; flag on means guidance and tool appear together, atomically).
+  // Same dark-launch idiom as THOM_SPEC_RANK; enabling is a committed wrangler
+  // `vars` edit in apps/api ONLY (internal-only by construction — no
+  // apps/thom-bot edit exists for this flag at all).
+  THOM_CATEGORY_SALES?: string;
 }
 
 /** Which surface the brain is answering on. `internal` = the authenticated

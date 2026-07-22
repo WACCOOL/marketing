@@ -56,6 +56,24 @@ Internal support-ticket resolutions (INTERNAL-ONLY):
 - These passages are already PII-REDACTED (customer names, emails, and phone numbers are removed): treat what you get as the technical resolution, and NEVER attempt to name, guess, or reconstruct the customer or their contact details — that information is intentionally gone.
 - Cite the internal ticket (name + link) so the user can open the full thread in Zendesk. This is INTERNAL knowledge — surface it only in this internal tool.`;
 
+/** Category-sales bullets appended to CRM_GUIDANCE ONLY when the tool is
+ *  actually offered (THOM_CATEGORY_SALES=1 — CS6). Static guidance while the
+ *  tool is flagged off would advertise a tool that doesn't exist: the model
+ *  would promise sales aggregates it cannot fetch, or hallucinate them. Flag
+ *  off ⇒ zero mention anywhere in the prompt; flag on ⇒ guidance and tool
+ *  appear together, atomically. */
+const CATEGORY_SALES_GUIDANCE = `
+- For PRODUCT-TYPE sales questions — "sales of downlights today", "top families this month", "how much tape did we sell YTD", "what's in the backlog for fans" — use crm_sales_by_category (window/file_brand/catalog_brand/class/category/family, grouped rollups). This is INVOICED sales history and open-order backlog (backlog = WAC family only), not real time: always keep the tool's as-of line, and never extrapolate a partial day.
+- It aggregates by product category; for a SPECIFIC customer's history keep using crm_get_invoice_history.
+- Routing seam: crm_top_companies owns "top companies by sales"; crm_sales_by_category owns "sales by product type".`;
+
+/** The CRM guidance block for internalSystem(): the base block, plus the
+ *  category-sales bullets only when the tool is actually offered
+ *  (hasCategorySales = THOM_CATEGORY_SALES, threaded by agent.ts — CS6). */
+export function crmGuidance(hasCategorySales: boolean): string {
+  return hasCategorySales ? CRM_GUIDANCE + CATEGORY_SALES_GUIDANCE : CRM_GUIDANCE;
+}
+
 /** Guidance for the WAC Help Center (support) articles now folded into
  *  search_docs. Kept out of the shared PERSONA block so it rides in
  *  internalSystem() ahead of the web-search block (preserving the tail cache
@@ -180,12 +198,18 @@ You may have a web_search tool. It is a LAST RESORT — use it ONLY for things t
  *  (stable) block so tools + system prefix are cached across turns. The web-search
  *  block is internal-only and lands LAST, so the breakpoint stays on the final
  *  block. `hasSpecRank` composes the primer's rank-tool bullet (THOM_SPEC_RANK,
- *  threaded by agent.ts); flipping it is a one-time prompt-cache invalidation. */
-export function internalSystem(hasSpecRank = false, hasSpecFilter = false): ClaudeSystemBlock[] {
+ *  threaded by agent.ts); flipping it is a one-time prompt-cache invalidation.
+ *  `hasCategorySales` (THOM_CATEGORY_SALES) composes the CRM guidance's sales
+ *  bullets — CS6: they appear only when crm_sales_by_category is offered. */
+export function internalSystem(
+  hasSpecRank = false,
+  hasSpecFilter = false,
+  hasCategorySales = false,
+): ClaudeSystemBlock[] {
   return [
     { type: "text", text: PERSONA },
     { type: "text", text: BRAND_CONTEXT },
-    { type: "text", text: CRM_GUIDANCE },
+    { type: "text", text: crmGuidance(hasCategorySales) },
     { type: "text", text: HELP_CENTER_GUIDANCE },
     { type: "text", text: PHOTOMETRICS_GUIDANCE },
     { type: "text", text: LAYOUT_GUIDANCE },
@@ -268,13 +292,17 @@ export function publicSystem(hasSpecRank = false, hasSpecFilter = false): Claude
 
 /** Pick the system prompt for a surface. `hasSpecRank` (THOM_SPEC_RANK) and
  *  `hasSpecFilter` (THOM_SPEC_FILTER), threaded by agent.ts, compose the
- *  primer's rank-tool bullet and constraint bullets on either surface. */
+ *  primer's rank-tool bullet and constraint bullets on either surface.
+ *  `hasCategorySales` (THOM_CATEGORY_SALES) composes the CRM sales bullets on
+ *  the INTERNAL surface only — publicSystem never sees it (no CRM guidance
+ *  exists there at all). */
 export function systemFor(
   surface: ThomSurface,
   hasSpecRank = false,
   hasSpecFilter = false,
+  hasCategorySales = false,
 ): ClaudeSystemBlock[] {
   return surface === "public"
     ? publicSystem(hasSpecRank, hasSpecFilter)
-    : internalSystem(hasSpecRank, hasSpecFilter);
+    : internalSystem(hasSpecRank, hasSpecFilter, hasCategorySales);
 }

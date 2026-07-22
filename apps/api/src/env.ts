@@ -337,6 +337,14 @@ export interface Env {
   // bot's credential must be INCAPABLE of writes no matter what a bug or an
   // injected instruction asks for. Never hand HUBSPOT_TOKEN to the bot.
   HUBSPOT_READ_TOKEN?: string;
+  // Thom category-sales tool gate (dark-launched, mirrors THOM_PHOTOMETRICS;
+  // category-sales plan v2 / migration 0065). Unset/"0" = crm_sales_by_category
+  // is NOT offered and the CRM guidance's sales bullets are NOT composed (CS6 —
+  // tool and guidance flip together, atomically); "1" = both appear on the
+  // INTERNAL surface. Enabling is a committed `vars` edit in apps/api
+  // wrangler.jsonc ONLY — no apps/thom-bot (public) edit exists for this flag.
+  // Apply migration 0065 + run its G.1 gate BEFORE flipping this on.
+  THOM_CATEGORY_SALES?: string;
   // Workers AI — bge-m3 embeddings (1024-dim) for KB + product hybrid search.
   // Used at query time (embed the question) and by the ingest pipeline.
   AI: Ai;

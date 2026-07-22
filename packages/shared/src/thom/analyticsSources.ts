@@ -28,6 +28,10 @@ const DOC_BUCKETS: [RegExp, string][] = [
 
 const TOOL_BUCKETS: [RegExp, string][] = [
   [/^(search_products|get_product|get_related_products|get_family|rank_products_by_spec|filter_products)$/, "Product catalog (PIM)"],
+  // Category-sales rollups read the Supabase warehouse (turnover/open orders),
+  // not HubSpot — bucketed BEFORE the crm_ catch-all so the dashboard doesn't
+  // misattribute them (category-sales plan §D, the 0059 A10 lesson).
+  [/^crm_sales_by_category$/, "Sales warehouse (category rollups)"],
   [/^crm_/, "HubSpot CRM"],
   [/^(get_photometrics|lighting_requirement)$/, "Photometrics (IES)"],
   [/^plan_layout$/, "Layout planner"],
