@@ -41,6 +41,11 @@ export const FEEDBACK_DISCLOSURE_COPY =
   "Sending feedback shares this question and Thom's answer with WAC Group " +
   "so we can improve Thom.";
 
+/** Short label framing the thumbs as a response-quality rating. Rendered on
+ *  the same compact row as the thumbs, below the answer bubble. House copy
+ *  rules apply (no em dashes, never bare "WAC"). */
+export const FEEDBACK_LABEL_COPY = "Was this response helpful?";
+
 const EXAMPLES = [
   "I need a warm-dim 3-inch downlight for a damp bathroom.",
   "What low-voltage landscape path lights do you have?",
@@ -267,15 +272,17 @@ export class ThomWidget {
     }
     if (turn.cards) for (const c of turn.cards) bubble.appendChild(renderCard(c));
     if (turn.citations && turn.citations.length) bubble.appendChild(renderCitations(turn.citations));
+    const children: (Node | null)[] = [bubble];
     // Thumbs row: completed, non-error assistant turns with a rating key,
-    // only when the dark-launch flag is on.
+    // only when the dark-launch flag is on. Rendered BELOW the bubble, as a
+    // sibling, with a quality-framing label.
     if (
       this.feedbackEnabled &&
       showFeedbackRow({ role: turn.role, error: turn.error, id: turn.turnId, streaming })
     ) {
-      bubble.appendChild(this.feedbackView(turn));
+      children.push(this.feedbackView(turn));
     }
-    return el("div", { class: `thom-turn ${turn.role}` }, [bubble]);
+    return el("div", { class: `thom-turn ${turn.role}` }, children);
   }
 
   // --- feedback (thumbs) ------------------------------------------------------
@@ -334,7 +341,11 @@ export class ThomWidget {
 
     const note = this.feedbackNotes.get(turnId);
     const children: (Node | null)[] = [
-      el("div", { class: "thom-feedback-row" }, [up, down]),
+      el("div", { class: "thom-feedback-row" }, [
+        el("span", { class: "thom-muted thom-feedback-label", text: FEEDBACK_LABEL_COPY }),
+        up,
+        down,
+      ]),
       // Disclosure renders STATICALLY with the thumbs (F4) — before either
       // vote is cast, never tooltip-only.
       el("div", { class: "thom-muted thom-feedback-disclosure", text: FEEDBACK_DISCLOSURE_COPY }),
