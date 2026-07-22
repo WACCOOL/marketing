@@ -22,6 +22,7 @@ import {
   moneyUsd,
   resolveWindow,
   SALES_CLASS_VALUES,
+  SALES_MOUNTING_TYPE_VALUES,
   SALES_TOOL_NAME,
   SALES_TOOLS,
   salesDispatch,
@@ -130,6 +131,25 @@ describe("SALES_TOOLS schema", () => {
     expect(props.file_brand.description).toMatch(/NOT the product's catalog brand/i);
     expect(props.catalog_brand.description).toMatch(/WAC Lighting/);
     expect(props.catalog_brand.description).toMatch(/Different concept from file_brand/i);
+  });
+
+  it("enumerates the REAL zmntyp vocabulary on mounting_type and demotes class to a derived bucket (0068)", () => {
+    const mt = rawProps.mounting_type!;
+    expect(mt.enum).toEqual([...SALES_MOUNTING_TYPE_VALUES]);
+    expect(mt.enum).toContain("Recessed Downlights");
+    expect(mt.enum).toContain("Landscape Lighting");
+    expect(mt.enum).toContain("Inground Lighting");
+    expect(mt.enum).not.toContain("VENTRIX"); // brand junk, remapped at sync
+    // The downlight vs in-ground/landscape rule rides the schema itself.
+    expect(mt.description).toContain("'Recessed Downlights'");
+    expect(mt.description).toContain("NOT downlights");
+    // class says mounting_type is the authoritative fixture-type facet.
+    expect(props.class.description).toMatch(/mounting_type is the authoritative/);
+    // group_by gained the two taxonomy facets.
+    expect(rawProps.group_by!.enum).toContain("mounting_type");
+    expect(rawProps.group_by!.enum).toContain("product_type");
+    // The tool description routes fixture-type scopes to mounting_type.
+    expect(tool.description).toMatch(/mounting_type/);
   });
 
   it("states the backlog WAC-family-only scope + the drill-down example + the routing seam", () => {
@@ -451,8 +471,32 @@ describe("dispatch routing + extension composition", () => {
       p_group_by: "family",
       p_class: "downlight",
       p_file_brand: "WAC",
+      p_mounting_type: null,
+      p_product_type: null,
       p_top_n: 25, // clamped
     });
+  });
+
+  it("passes the taxonomy facets through: mounting_type/product_type filters + group_by (0068)", async () => {
+    const { ctx, rpc } = mockCtx({
+      sales: () => ({ data: RICH_RESULT }),
+      freshness: () => ({ data: FRESH_INVOICED }),
+    });
+    const out = await salesDispatch(
+      ctx,
+      SALES_TOOL_NAME,
+      { window: "ytd", group_by: "mounting_type", mounting_type: "Recessed Downlights", product_type: "Downlights" },
+      NOW,
+    );
+    const call = rpc.mock.calls.find((c) => c[0] === "thom_sales_by_category")!;
+    expect(call[1]).toMatchObject({
+      p_group_by: "mounting_type",
+      p_mounting_type: "Recessed Downlights",
+      p_product_type: "Downlights",
+    });
+    // The answer header names the taxonomy filters.
+    expect(out.content).toContain("Recessed Downlights (mounting type)");
+    expect(out.content).toContain("Downlights (product type)");
   });
 
   it("internalToolExtension routes the sales tool to salesDispatch and crm_* to HubSpot", async () => {

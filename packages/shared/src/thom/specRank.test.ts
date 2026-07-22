@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composeTools, specRankEnabled } from "./agent.js";
-import { dispatch, PUBLIC_TOOL_NAMES, SPEC_RANK_TOOLS } from "./tools.js";
+import { dispatch, MOUNTING_TYPE_VALUES, PUBLIC_TOOL_NAMES, SPEC_RANK_TOOLS } from "./tools.js";
 import type { ThomEnv } from "./env.js";
 import type { ToolContext } from "./types.js";
 
@@ -71,6 +71,7 @@ describe("rank_products_by_spec output", () => {
       brand_filter: null,
       category_filter: null,
       class_filter: null,
+      mounting_type_filter: null,
       per_ft_filter: false,
       grouped: true,
       match_count: 10,
@@ -112,6 +113,7 @@ describe("rank_products_by_spec output", () => {
       brand_filter: "WAC Lighting",
       category_filter: null,
       class_filter: "downlight",
+      mounting_type_filter: null,
       per_ft_filter: false,
       grouped: false, // a pinned class is one section — flat top-N
       match_count: 25,
@@ -146,6 +148,26 @@ describe("rank_products_by_spec output", () => {
     expect(out.content).toContain(
       "Ranked among the 150 of 180 catalog per-foot (tape/strip) products with watts/ft data.",
     );
+  });
+
+  it("passes mounting_type through as the authoritative fixture-type filter (0068), flat mode", async () => {
+    const { ctx, calls } = makeCtx([
+      {
+        data: [rpcRow({ class: "downlight", metric_value: 3000, in_scope_ranked: 200, in_scope_total: 509 })],
+        error: null,
+      },
+    ]);
+    const out = await dispatch(ctx, "rank_products_by_spec", {
+      metric: "lumens",
+      mounting_type: "Recessed Downlights",
+    });
+    expect(calls[0]!.params).toMatchObject({
+      mounting_type_filter: "Recessed Downlights",
+      class_filter: null,
+      grouped: false, // a pinned mounting type is one section — flat top-N
+    });
+    // The coverage scope names the mounting type.
+    expect(out.content).toContain("Recessed Downlights");
   });
 
   it("empty FILTERED result: explains free-text categories and falls back to the unfiltered grouped rank", async () => {
@@ -188,6 +210,24 @@ describe("rank_products_by_spec output", () => {
     const err = makeCtx([{ data: null, error: { message: "boom" } }]);
     const out2 = await dispatch(err.ctx, "rank_products_by_spec", { metric: "lumens" });
     expect(out2.content).toContain("rank_products_by_spec error: boom");
+  });
+});
+
+describe("mounting_type schema (0068)", () => {
+  it("enumerates the REAL zmntyp vocabulary and names the downlight/landscape split", () => {
+    const schema = SPEC_RANK_TOOLS[0]!.input_schema as {
+      properties: Record<string, { enum?: string[]; description?: string }>;
+    };
+    const mt = schema.properties.mounting_type!;
+    expect(mt.enum).toEqual([...MOUNTING_TYPE_VALUES]);
+    expect(mt.enum).toContain("Recessed Downlights");
+    expect(mt.enum).toContain("Landscape Lighting");
+    expect(mt.enum).toContain("Inground Lighting");
+    // VENTRIX is brand junk, remapped at sync — never a legal filter value.
+    expect(mt.enum).not.toContain("VENTRIX");
+    expect(mt.description).toContain("NOT downlights");
+    // class is explicitly demoted to the coarse derived bucket.
+    expect(schema.properties.class!.description).toMatch(/mounting_type is the authoritative/);
   });
 });
 

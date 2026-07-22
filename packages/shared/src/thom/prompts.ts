@@ -63,7 +63,8 @@ Internal support-ticket resolutions (INTERNAL-ONLY):
  *  off ⇒ zero mention anywhere in the prompt; flag on ⇒ guidance and tool
  *  appear together, atomically. */
 const CATEGORY_SALES_GUIDANCE = `
-- For PRODUCT-TYPE sales questions — "sales of downlights today", "top families this month", "how much tape did we sell YTD", "what's in the backlog for fans" — use crm_sales_by_category (window/file_brand/catalog_brand/class/category/family, grouped rollups). This is INVOICED sales history and open-order backlog (backlog = WAC family only), not real time: always keep the tool's as-of line, and never extrapolate a partial day.
+- For PRODUCT-TYPE sales questions — "sales of downlights today", "top families this month", "how much tape did we sell YTD", "what's in the backlog for fans" — use crm_sales_by_category (window/file_brand/catalog_brand/class/mounting_type/product_type/category/family, grouped rollups). This is INVOICED sales history and open-order backlog (backlog = WAC family only), not real time: always keep the tool's as-of line, and never extrapolate a partial day.
+- Fixture-type sales questions (downlights, landscape, track, fans, tape) filter by mounting_type using the exact values the tool enumerates, never by name matching: downlight = 'Recessed Downlights' (plus 'Recessed Lighting' for indoor recessed); in-ground and landscape fixtures are 'Landscape Lighting' or 'Inground Lighting' and are NOT downlights.
 - It aggregates by product category; for a SPECIFIC customer's history keep using crm_get_invoice_history.
 - Routing seam: crm_top_companies owns "top companies by sales"; crm_sales_by_category owns "sales by product type".`;
 
@@ -138,7 +139,8 @@ const LIGHTING_EXPERTISE_FILTER_BULLET = `
 - Pass the descriptive part of the request (for example "vanity light" or "outdoor sconce") as the query so results are ordered by fit, and pass the user's unit through the unit parameter instead of converting values yourself.
 - filter_products excludes products that have no recorded data for a constrained attribute: say that products without confirmed dimensions were not considered rather than guessing a size. If the tool reports a closest option that exceeds the limit, present it only as an alternative that does NOT meet the stated requirement, never as a match.
 - When you recommend a product from the results, state its recorded dimensions so the user can verify the fit. For ADA projection questions, tell the user to verify the projection on the spec sheet; the catalog figure is a screen, not a certification.
-- Answer dimensions in the unit system the user used, using the tool's dual-unit values; both inches and millimeters are always available from the tool.`;
+- Answer dimensions in the unit system the user used, using the tool's dual-unit values; both inches and millimeters are always available from the tool.
+- Fixture-type questions (downlights, landscape, track, fans, tape) filter by the mounting_type parameter using the exact values the tool enumerates, never by matching words in product names: a downlight is mounting_type 'Recessed Downlights' (plus 'Recessed Lighting' for indoor recessed), and in-ground or landscape fixtures are 'Landscape Lighting' or 'Inground Lighting', never downlights.`;
 
 /** The filter-vs-rank division of labor: composed only when BOTH tools are
  *  offered (each half would otherwise command an unadvertised tool). */

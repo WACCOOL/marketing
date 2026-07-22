@@ -42,10 +42,12 @@ describe.skipIf(!HAVE_CREDS)("Thom public anon boundary (0052)", () => {
   // Anon CAN read the public catalog.
   // ---------------------------------------------------------------------------
   it("reads the products whitelist columns", async () => {
+    // 0068 extended the 0052 whitelist with the four taxonomy columns
+    // (product_type, product_subtype, mounting_type, indoor_outdoor).
     const { data, error } = await sb
       .from("products")
       .select(
-        "id,sku,name,brand,category,family,is_accessory,dimensions_mm,primary_image_url,image_urls,ies_url,variants",
+        "id,sku,name,brand,category,family,product_type,product_subtype,mounting_type,indoor_outdoor,is_accessory,dimensions_mm,primary_image_url,image_urls,ies_url,variants",
       )
       .limit(5);
     expect(error).toBeNull();
@@ -201,7 +203,7 @@ describe.skipIf(!HAVE_CREDS)("Thom public anon boundary (0052)", () => {
   it("reads the materialized spec surface (0064: anon-safe by construction)", async () => {
     const { error } = await sb
       .from("product_variant_spec_mat")
-      .select("sku,variant_key,class,width_in,lumens_max")
+      .select("sku,variant_key,class,mounting_type,product_type,width_in,lumens_max")
       .limit(1);
     expect(error).toBeNull();
   });

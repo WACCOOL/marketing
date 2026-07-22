@@ -4,6 +4,7 @@ import {
   collectDocs,
   docTypeForField,
   docFieldsFrom,
+  productTaxonomy,
   refreshSpecMatview,
   type SpecMatviewRpcClient,
 } from "./saleslayer.js";
@@ -96,6 +97,60 @@ describe("docFieldsFrom", () => {
   it("honors the CSV override (trimmed, empties dropped)", () => {
     const env = { SALES_LAYER_DOC_FIELDS: " specsheet_pdf , inst_sheet , ftc_label_pdf ," } as Env;
     expect(docFieldsFrom(env)).toEqual(["specsheet_pdf", "inst_sheet", "ftc_label_pdf"]);
+  });
+});
+
+// 0068: the four product-level Sales Layer taxonomy fields mapped onto the
+// products upsert. mounting_type (zmntyp) is the authoritative fixture-type
+// facet the spec views' class derivation now leads with.
+describe("productTaxonomy", () => {
+  it("maps zprdtyp/zprdstyp/zmntyp/zinout, cleaned like name/brand/family", () => {
+    expect(
+      productTaxonomy({
+        zprdtyp: " Downlights ",
+        zprdstyp: "Trims",
+        zmntyp: "Recessed Downlights",
+        zinout: "Indoor",
+      }),
+    ).toEqual({
+      product_type: "Downlights",
+      product_subtype: "Trims",
+      mounting_type: "Recessed Downlights",
+      indoor_outdoor: "Indoor",
+    });
+  });
+
+  it("decodes entities and drops N/A placeholders (cleanText parity)", () => {
+    expect(
+      productTaxonomy({
+        zprdtyp: "Task &amp; Cove Lighting",
+        zprdstyp: "N/A",
+        zmntyp: "n/a",
+        zinout: "",
+      }),
+    ).toEqual({
+      product_type: "Task & Cove Lighting",
+      product_subtype: null,
+      mounting_type: null,
+      indoor_outdoor: null,
+    });
+  });
+
+  it("VENTRIX-as-zmntyp falls back to zprdtyp (the brand is not a mounting type)", () => {
+    expect(
+      productTaxonomy({ zmntyp: "VENTRIX", zprdtyp: "Track Systems", zinout: "Indoor" }),
+    ).toMatchObject({ mounting_type: "Track Systems", product_type: "Track Systems" });
+    // Case-insensitive, and a missing zprdtyp yields null (never the brand).
+    expect(productTaxonomy({ zmntyp: "Ventrix" })).toMatchObject({ mounting_type: null });
+  });
+
+  it("returns all-null for a row without the fields (columns stay null pre-sync)", () => {
+    expect(productTaxonomy({})).toEqual({
+      product_type: null,
+      product_subtype: null,
+      mounting_type: null,
+      indoor_outdoor: null,
+    });
   });
 });
 

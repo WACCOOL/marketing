@@ -133,6 +133,12 @@ describe("constraint bullets (attribute-filter plan §C, THOM_SPEC_FILTER-gated)
     expect(primer).toContain("verify the projection on the spec sheet");
     // Addendum 1: metric answering from the tool's dual-unit values.
     expect(primer).toContain("unit system the user used");
+    // 0068: fixture-type questions route through mounting_type, never name
+    // matching; in-ground/landscape are never downlights.
+    expect(primer).toContain("filter by the mounting_type parameter");
+    expect(primer).toContain("never by matching words in product names");
+    expect(primer).toContain("'Recessed Downlights'");
+    expect(primer).toContain("never downlights");
   });
 
   it("pass normalizeCopy unchanged (public copy lints) in every flag combination", () => {
