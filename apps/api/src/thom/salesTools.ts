@@ -24,13 +24,16 @@
 // gets the plain-English snapshot explanation.
 // =============================================================================
 
+import { MOUNTING_TYPE_DESCRIPTION, MOUNTING_TYPE_VALUES } from "@wac/shared/thom";
 import type { ClaudeTool } from "../anthropic.js";
 import type { ToolContext, ToolOutput } from "./types.js";
 
 export const SALES_TOOL_NAME = "crm_sales_by_category";
 
-/** Legal class values — enumerated VERBATIM from the 0060/0063 class CASE in
- *  product_variant_spec_view (CS12) so the model filters on real buckets. */
+/** Legal class values — enumerated VERBATIM from the class CASE (0060/0063,
+ *  now product_spec_class() in 0068) so the model filters on real buckets.
+ *  Since 0068 class is DERIVED mounting-type-first; mounting_type is the
+ *  authoritative fixture-type facet. */
 export const SALES_CLASS_VALUES = [
   "per-foot",
   "fan",
@@ -44,6 +47,9 @@ export const SALES_CLASS_VALUES = [
   "other",
 ] as const;
 
+/** The real zmntyp vocabulary (0068) — re-exported for the schema tests. */
+export const SALES_MOUNTING_TYPE_VALUES = MOUNTING_TYPE_VALUES;
+
 export const SALES_WINDOW_VALUES = [
   "today",
   "yesterday",
@@ -56,7 +62,15 @@ export const SALES_WINDOW_VALUES = [
 ] as const;
 export type SalesWindowKey = (typeof SALES_WINDOW_VALUES)[number];
 
-const GROUP_BY_VALUES = ["category", "class", "family", "brand", "product"] as const;
+const GROUP_BY_VALUES = [
+  "category",
+  "class",
+  "family",
+  "brand",
+  "product",
+  "mounting_type",
+  "product_type",
+] as const;
 
 /** Explicit date ranges cap at ~2 years (CS1; the monthly pre-aggregate that
  *  would unlock deep history is deferred). */
@@ -72,7 +86,8 @@ export const SALES_TOOLS: ClaudeTool[] = [
     name: SALES_TOOL_NAME,
     description:
       "Internal sales data (read-only): AGGREGATED sales by PRODUCT TYPE — 'sales of downlights today', 'top families this month', 'how much tape did we sell YTD', 'what's in the backlog for fans'. " +
-      "Rolls up invoiced sales history (plane 'invoiced', from the SAP turnover warehouse) or the open-order backlog snapshot (plane 'backlog' — covers WAC-family orders only; Schonbek backlog is not in this system), grouped by category/class/family/brand/product. " +
+      "Rolls up invoiced sales history (plane 'invoiced', from the SAP turnover warehouse) or the open-order backlog snapshot (plane 'backlog' — covers WAC-family orders only; Schonbek backlog is not in this system), grouped by category/class/family/brand/product/mounting_type/product_type. " +
+      "For fixture-type scopes (downlights, landscape, track, fans) filter with mounting_type — the authoritative catalog taxonomy — never by name words. " +
       "Figures are internal business data, NOT real time: always keep the as-of line the tool returns, and never extrapolate a full day from partial data. " +
       "Drill-down is this same tool, narrowed: 'which downlight families sold most this month' → {window:'mtd', class:'downlight', group_by:'family'}. " +
       "Routing seam: crm_top_companies owns 'top companies by sales'; this tool owns 'sales by product type'. For a SPECIFIC customer's history use crm_get_invoice_history.",
@@ -119,7 +134,17 @@ export const SALES_TOOLS: ClaudeTool[] = [
           type: "string",
           enum: [...SALES_CLASS_VALUES],
           description:
-            "Product class filter (the catalog's class buckets, exactly these values — e.g. downlight, track, per-foot for tape/strip).",
+            "Product class filter (the catalog's class buckets, exactly these values — e.g. downlight, track, per-foot for tape/strip). A coarse DERIVED bucket: mounting_type is the authoritative fixture-type facet; prefer it when a mounting_type value matches the ask.",
+        },
+        mounting_type: {
+          type: "string",
+          enum: [...MOUNTING_TYPE_VALUES],
+          description: MOUNTING_TYPE_DESCRIPTION,
+        },
+        product_type: {
+          type: "string",
+          description:
+            "Sales Layer product-type filter (exact zprdtyp value). Narrower than mounting_type; use only when the user names a specific catalog product type.",
         },
         category: { type: "string", description: "Sales Layer category filter (exact category name)." },
         family: { type: "string", description: "Product family filter (exact family name)." },
@@ -400,6 +425,8 @@ export interface SalesAnswerParams {
     file_brand?: string;
     catalog_brand?: string;
     class?: string;
+    mounting_type?: string;
+    product_type?: string;
     category?: string;
     family?: string;
   };
@@ -413,6 +440,8 @@ export function formatSalesAnswer(
 ): string {
   const { plane, window: win, filters } = params;
   const filterBits = [
+    filters.mounting_type && `${filters.mounting_type} (mounting type)`,
+    filters.product_type && `${filters.product_type} (product type)`,
     filters.class && `${filters.class} (class)`,
     filters.category && `category ${filters.category}`,
     filters.family && `family ${filters.family}`,
@@ -523,6 +552,8 @@ export async function salesDispatch(
     file_brand: str(input.file_brand),
     catalog_brand: str(input.catalog_brand),
     class: str(input.class),
+    mounting_type: str(input.mounting_type),
+    product_type: str(input.product_type),
     category: str(input.category),
     family: str(input.family),
   };
@@ -553,6 +584,8 @@ export async function salesDispatch(
     p_class: filters.class ?? null,
     p_category: filters.category ?? null,
     p_family: filters.family ?? null,
+    p_mounting_type: filters.mounting_type ?? null,
+    p_product_type: filters.product_type ?? null,
     p_top_n: topN,
   };
 

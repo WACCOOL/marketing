@@ -20,6 +20,7 @@ import {
   formatFilterRows,
   formatProductDims,
   hasNumericPredicate,
+  MOUNTING_TYPE_VALUES,
   PRODUCT_LEVEL_LUMENS_SENTENCE,
   PUBLIC_TOOL_NAMES,
   SEARCH_PRODUCTS_FILTER_POINTER,
@@ -256,6 +257,7 @@ describe("filter_products dispatch", () => {
       p_brand: null,
       p_category: null,
       p_class: null,
+      p_mounting_type: null,
       p_query_text: "vanity light",
       p_match_count: 25, // clamped
     });
@@ -352,6 +354,31 @@ describe("filter_products dispatch", () => {
     expect(out.content).toContain("Slim Bath & Vanity Light");
   });
 
+  it("passes mounting_type through and KEEPS it on the free-text scope retry (0068: authoritative, not free text)", async () => {
+    const { ctx, calls } = makeCtx([
+      { data: [countsRow({ in_scope_total: 0, in_scope_screened: 0 })], error: null },
+      { data: [frow({ class: "downlight", category: "Recessed Downlights" })], error: null },
+    ]);
+    const out = await dispatch(ctx, "filter_products", {
+      max_width_in: 4,
+      brand: "WACC", // free-text miss — dropped on retry
+      mounting_type: "Recessed Downlights",
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.params).toMatchObject({
+      p_brand: "WACC",
+      p_mounting_type: "Recessed Downlights",
+    });
+    // Retry drops the free-text brand but NEVER the enumerated mounting type.
+    expect(calls[1]!.params).toMatchObject({
+      p_brand: null,
+      p_category: null,
+      p_mounting_type: "Recessed Downlights",
+    });
+    // The coverage scope names the mounting type.
+    expect(out.content).toContain("Recessed Downlights");
+  });
+
   it("with NO numeric predicate falls back to a plain catalog search (never an unconstrained dump)", async () => {
     const { ctx, calls } = makeCtx([
       { data: [{ sku: "2010", name: "Aurora Downlight", brand: "WAC Lighting" }], error: null },
@@ -432,6 +459,20 @@ describe("THOM_SPEC_FILTER gating", () => {
       "Use this for ANY question that states a numeric limit",
     );
     expect(FILTER_TOOLS[0]!.description).toContain("instead of search_products");
+  });
+
+  it("the mounting_type param enumerates the REAL zmntyp vocabulary (0068)", () => {
+    const schema = FILTER_TOOLS[0]!.input_schema as {
+      properties: Record<string, { enum?: string[]; description?: string }>;
+    };
+    const mt = schema.properties.mounting_type!;
+    expect(mt.enum).toEqual([...MOUNTING_TYPE_VALUES]);
+    expect(mt.enum).toContain("Recessed Downlights");
+    expect(mt.enum).toContain("Inground Lighting");
+    expect(mt.enum).not.toContain("VENTRIX"); // brand junk, remapped at sync
+    // The description carries the downlight vs in-ground/landscape rule.
+    expect(mt.description).toContain("'Recessed Downlights'");
+    expect(mt.description).toContain("NOT downlights");
   });
 });
 

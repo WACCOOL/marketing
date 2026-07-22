@@ -152,6 +152,14 @@ export interface ProductCacheRow {
   category: string | null;
   /** PIM family (zzfamily) — groups sibling PPIDs (e.g. CALLIOPE). */
   family: string | null;
+  /** Sales Layer product taxonomy (0068): zprdtyp / zprdstyp / zmntyp /
+   * zinout. mounting_type is the AUTHORITATIVE fixture-type facet (the spec
+   * views' class derivation is mounting-type-first) — see productTaxonomy()
+   * for the VENTRIX brand-junk fallback. */
+  product_type: string | null;
+  product_subtype: string | null;
+  mounting_type: string | null;
+  indoor_outdoor: string | null;
   /** Accessories (connectors, channels, mounting kits) are hidden from the
    * Product Info workflows by default — they need no copy/SEO/normalization. */
   is_accessory: boolean;
@@ -335,6 +343,7 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             brand: brandHit?.value ?? null,
             category: str(p.ID_categories), // resolved to name after the loop
             family: cleanText(decodeEntities(str(p.zzfamily) ?? "")),
+            ...productTaxonomy(p),
             is_accessory: isAccessory(p),
             dimensions_mm: {},
             primary_image_url: firstImage(p, PRODUCT_IMAGE_FIELDS),
@@ -582,6 +591,10 @@ export function makeProductAdapter(env: Env): ProductAdapter {
           brand: r.brand,
           category: r.category,
           family: r.family,
+          product_type: r.product_type,
+          product_subtype: r.product_subtype,
+          mounting_type: r.mounting_type,
+          indoor_outdoor: r.indoor_outdoor,
           is_accessory: r.is_accessory,
           dimensions_mm: r.dimensions_mm,
           primary_image_url: r.primary_image_url,
@@ -676,6 +689,41 @@ function isAccessory(p: Record<string, unknown>): boolean {
   }
   const name = str(p.product_name);
   return !!name && /\baccessor(y|ies)\b/i.test(name);
+}
+
+/** The four Sales Layer product-taxonomy fields synced onto products (0068). */
+export interface ProductTaxonomy {
+  product_type: string | null;
+  product_subtype: string | null;
+  mounting_type: string | null;
+  indoor_outdoor: string | null;
+}
+
+/**
+ * Map the product-level Sales Layer taxonomy fields (audited live 2026-07-22;
+ * coverage over 4,390 products: zmntyp 4,389, zprdtyp 4,389, zprdstyp 4,387,
+ * zinout only 2,165 — secondary). `mounting_type` (zmntyp) is the
+ * AUTHORITATIVE fixture-type facet: migration 0068 rebuilds the spec views'
+ * `class` derivation mounting-type-first on it (the name/category regex had
+ * been classing ground-recessed landscape fixtures as downlights).
+ *
+ * VENTRIX fallback: the 112 VENTRIX products carry their BRAND in zmntyp —
+ * not a mounting type — so those rows fall back to zprdtyp. Any other
+ * unrecognized value passes through unchanged; the SQL class CASE falls back
+ * to the name/category regex for values outside the known vocabulary.
+ */
+export function productTaxonomy(p: Record<string, unknown>): ProductTaxonomy {
+  const read = (key: string): string | null =>
+    cleanText(decodeEntities(str(p[key]) ?? ""));
+  const productType = read("zprdtyp");
+  const rawMounting = read("zmntyp");
+  const mounting = rawMounting && /^ventrix$/i.test(rawMounting) ? productType : rawMounting;
+  return {
+    product_type: productType,
+    product_subtype: read("zprdstyp"),
+    mounting_type: mounting,
+    indoor_outdoor: read("zinout"),
+  };
 }
 
 function mapRow(

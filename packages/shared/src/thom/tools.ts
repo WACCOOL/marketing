@@ -126,6 +126,40 @@ export const SPEC_RANK_CLASSES = [
   "other",
 ] as const;
 
+/** The REAL Sales Layer mounting-type (zmntyp) vocabulary, verified live
+ *  2026-07-22 (counts in migration 0068). Synced to products.mounting_type
+ *  and enumerated in the tool schemas so the model filters the exact value
+ *  ('Recessed Downlights') instead of guessing a phrasing or name-matching.
+ *  This is the AUTHORITATIVE fixture-type facet: the class buckets are now
+ *  DERIVED from it mounting-type-first (0068), fixing ground-recessed
+ *  landscape fixtures classing as downlights. VENTRIX (brand junk in zmntyp)
+ *  is deliberately absent — the sync remaps those rows to their product type. */
+export const MOUNTING_TYPE_VALUES = [
+  "Hanging Lighting",
+  "Wall Lighting",
+  "Ceiling Lighting",
+  "Recessed Downlights",
+  "Recessed Lighting",
+  "Track Lighting",
+  "Landscape Lighting",
+  "Inground Lighting",
+  "Ceiling Fans",
+  "Fan Accessories",
+  "Task & Cove Lighting",
+  "Task & Cove",
+  "Display Lighting",
+  "Accessories",
+] as const;
+
+/** The shared mounting_type schema description (filter + rank + sales tools
+ *  say the same thing, so the router learns ONE rule). */
+export const MOUNTING_TYPE_DESCRIPTION =
+  "Authoritative catalog fixture/mounting type (exact Sales Layer taxonomy values). " +
+  "Use this for fixture-type asks instead of name words: downlights = 'Recessed Downlights' " +
+  "(add 'Recessed Lighting' for indoor recessed); in-ground and landscape fixtures = " +
+  "'Landscape Lighting' or 'Inground Lighting' (these are NOT downlights); track = 'Track Lighting'; " +
+  "fans = 'Ceiling Fans'; tape/cove = 'Task & Cove Lighting'. Prefer this over class for fixture type.";
+
 /** Spec-rank tool schema. Split from TOOLS (mirroring PHOTOMETRICS_TOOLS) and
  *  composed onto the set by agent.ts only when THOM_SPEC_RANK === "1"
  *  (dark-launch). */
@@ -152,7 +186,12 @@ export const SPEC_RANK_TOOLS: ClaudeTool[] = [
         class: {
           type: "string",
           enum: [...SPEC_RANK_CLASSES],
-          description: "Optional fixture-class filter.",
+          description: "Optional fixture-class filter (coarse derived bucket; mounting_type is the authoritative fixture-type facet).",
+        },
+        mounting_type: {
+          type: "string",
+          enum: [...MOUNTING_TYPE_VALUES],
+          description: MOUNTING_TYPE_DESCRIPTION,
         },
         per_foot: {
           type: "boolean",
@@ -216,7 +255,12 @@ export const FILTER_TOOLS: ClaudeTool[] = [
         class: {
           type: "string",
           enum: [...SPEC_RANK_CLASSES],
-          description: "Optional fixture-class filter (wall = bath/vanity/sconce).",
+          description: "Optional fixture-class filter (wall = bath/vanity/sconce; coarse derived bucket — mounting_type is the authoritative fixture-type facet).",
+        },
+        mounting_type: {
+          type: "string",
+          enum: [...MOUNTING_TYPE_VALUES],
+          description: MOUNTING_TYPE_DESCRIPTION,
         },
         limit: { type: "integer", description: "Max results (default 10, cap 25)." },
       },
@@ -584,7 +628,7 @@ async function getProduct(
 
   const { data: p, error } = await ctx.sb
     .from("products")
-    .select("sku, name, brand, category, primary_image_url, variants")
+    .select("sku, name, brand, category, mounting_type, product_type, primary_image_url, variants")
     .eq("sku", sku)
     .maybeSingle();
   if (error) return { content: `get_product error: ${error.message}`, cards: [], citations: [] };
@@ -617,6 +661,10 @@ async function getProduct(
     const s = str(v);
     if (s) key_specs.push({ label, value: s });
   };
+  // Catalog taxonomy first (0068): the authoritative fixture-type facets.
+  // Null until the post-0068 products sync populates them — push() skips null.
+  push("Mounting type", (p as Record<string, unknown>).mounting_type);
+  push("Product type", (p as Record<string, unknown>).product_type);
   push("Wattage", repr.watts);
   push("Lumens", repr.lumens);
   push("CCT", repr.cct_desc);
@@ -907,35 +955,50 @@ async function rankProductsBySpec(ctx: ToolContext, input: Record<string, unknow
   const brand = str(input.brand);
   const category = str(input.category);
   const cls = str(input.class);
+  const mountingType = str(input.mounting_type);
   const limit = Math.min(Number(input.limit) || 10, 25);
-  // Grouped (top-3 per class) whenever no single class is pinned; a class
-  // filter or the per-foot rank is one section, so flat top-N reads better.
-  const askGrouped = !cls && !perFoot;
+  // Grouped (top-3 per class) whenever no single class/mounting type is
+  // pinned; a pinned fixture type or the per-foot rank is one section, so
+  // flat top-N reads better.
+  const askGrouped = !cls && !mountingType && !perFoot;
 
-  const call = (f: { brand: string | null; category: string | null; cls: string | null; grouped: boolean }) =>
+  const call = (f: {
+    brand: string | null;
+    category: string | null;
+    cls: string | null;
+    mountingType: string | null;
+    grouped: boolean;
+  }) =>
     ctx.sb.rpc("product_spec_rank", {
       metric,
       dir,
       brand_filter: f.brand,
       category_filter: f.category,
       class_filter: f.cls,
+      mounting_type_filter: f.mountingType,
       per_ft_filter: perFoot,
       grouped: f.grouped,
       match_count: limit,
     });
 
-  const { data, error } = await call({ brand, category, cls, grouped: askGrouped });
+  const { data, error } = await call({ brand, category, cls, mountingType, grouped: askGrouped });
   if (error) return { content: `rank_products_by_spec error: ${error.message}`, cards: [], citations: [] };
   let rows = (data ?? []) as SpecRankRow[];
   let grouped = askGrouped;
-  let scope = [brand, cls, category].filter(Boolean).join(" ") || "catalog";
+  let scope = [brand, mountingType, cls, category].filter(Boolean).join(" ") || "catalog";
   let preamble = "";
 
-  if (!rows.length && (brand || category || cls)) {
+  if (!rows.length && (brand || category || cls || mountingType)) {
     // Empty FILTERED result (R16a): brand/category are free text and often miss
     // the catalog's wording — never imply the data doesn't exist. Explain, then
     // fall back to the unfiltered grouped rank.
-    const { data: fallback } = await call({ brand: null, category: null, cls: null, grouped: true });
+    const { data: fallback } = await call({
+      brand: null,
+      category: null,
+      cls: null,
+      mountingType: null,
+      grouped: true,
+    });
     rows = (fallback ?? []) as SpecRankRow[];
     grouped = true;
     scope = "catalog";
@@ -1157,6 +1220,7 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
   const brand = str(input.brand);
   const category = str(input.category);
   const cls = str(input.class);
+  const mountingType = str(input.mounting_type);
   const limit = Math.min(Number(input.limit) || 10, 25);
 
   // Empty-filter free-text fallback: no numeric predicate stated -> this is a
@@ -1188,6 +1252,9 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
       p_brand: b,
       p_category: c,
       p_class: cls,
+      // mounting_type is AUTHORITATIVE taxonomy (schema-enumerated), not free
+      // text — it is never dropped by the empty-scope retry below.
+      p_mounting_type: mountingType,
       p_query_embedding: embedding,
       p_query_text: query,
       p_match_count: limit,
@@ -1195,7 +1262,7 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
 
   let curBrand = brand;
   let curCategory = category;
-  let scope = [brand, cls, category].filter(Boolean).join(" ") || "catalog";
+  let scope = [brand, mountingType, cls, category].filter(Boolean).join(" ") || "catalog";
   let preamble = "";
   let res = await call(preds, curBrand, curCategory);
   if (res.error) return { content: `filter_products error: ${res.error.message}`, cards: [], citations: [] };
@@ -1204,6 +1271,7 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
 
   // Empty SCOPE from a brand/category filter (R16a idiom): categories are
   // free text — re-run without them and explain, never imply no data exists.
+  // The class + mounting_type filters are enumerated vocabulary, so they stay.
   if (counts && Number(counts.in_scope_total) === 0 && (curBrand || curCategory)) {
     curBrand = null;
     curCategory = null;
@@ -1211,7 +1279,7 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
     if (res.error) return { content: `filter_products error: ${res.error.message}`, cards: [], citations: [] };
     rows = (res.data ?? []) as FilterRpcRow[];
     counts = rows[0];
-    scope = cls ?? "catalog";
+    scope = [mountingType, cls].filter(Boolean).join(" ") || "catalog";
     preamble =
       "No catalog products matched that brand or category filter. Catalog categories are free text, " +
       "so the filter wording may not match the catalog's; screened the whole catalog instead.\n\n";

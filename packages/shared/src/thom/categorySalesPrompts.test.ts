@@ -32,6 +32,12 @@ describe("category-sales guidance composition (CS6)", () => {
     expect(text).toContain("crm_get_invoice_history");
     // crm_top_companies seam (plan §D routing seam).
     expect(text).toMatch(/crm_top_companies owns "top companies by sales"/);
+    // 0068: fixture-type questions route through mounting_type, never name
+    // matching; the downlight vs in-ground/landscape split is spelled out.
+    expect(text).toMatch(/filter by mounting_type/);
+    expect(text).toMatch(/never by name matching/);
+    expect(text).toContain("'Recessed Downlights'");
+    expect(text).toMatch(/NOT downlights/);
   });
 
   it("crmGuidance(false) is byte-identical to the pre-existing CRM block (no drift for flag-off callers)", () => {
