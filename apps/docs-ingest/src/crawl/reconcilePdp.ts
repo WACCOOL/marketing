@@ -294,6 +294,7 @@ export async function reconcilePdp(
   // fill nulls (heals are gap-only, so any non-null candidate is equivalent).
   const bySku = new Map<string, (typeof pdpUpdates)[number]>();
   for (const p of pdpUpdates) {
+    if (!p.sku) continue; // every push sets sku; narrows the Partial<> type
     const prev = bySku.get(p.sku);
     if (!prev) {
       bySku.set(p.sku, p);
