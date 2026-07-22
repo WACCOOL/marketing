@@ -344,6 +344,26 @@ export interface ProductAccessoryRow {
   related_product_sku: string | null;
   kind: string;
   label: string | null;
+  /** Provenance (0061): 'sales_layer' catalog reference data vs 'web_crawl'
+   *  PDP-section harvest (compat Phase 2). Optional for older call sites. */
+  source_system?: string | null;
+  /** Connector column or PDP section the ref came from ('zmataccess',
+   *  'components_section', 'curated_for_you', ...). */
+  source_field?: string | null;
+}
+
+/** Split accessory rows by provenance: catalog reference data (Sales Layer)
+ *  vs PDP-section harvest rows, which are PAGE ASSOCIATIONS and must never be
+ *  presented as confirmed fitment (compat plan §D). Missing source_system is
+ *  catalog (pre-Phase-2 rows are all Sales Layer). */
+export function partitionAccessoryRows(rows: readonly ProductAccessoryRow[]): {
+  catalog: ProductAccessoryRow[];
+  webCrawl: ProductAccessoryRow[];
+} {
+  const catalog: ProductAccessoryRow[] = [];
+  const webCrawl: ProductAccessoryRow[] = [];
+  for (const r of rows) (r.source_system === "web_crawl" ? webCrawl : catalog).push(r);
+  return { catalog, webCrawl };
 }
 
 /** Minimal product info used to render a resolved accessory parent / a
@@ -445,6 +465,75 @@ export function formatAccessoryLines(
   return lines;
 }
 
+/** Section headers for PDP-harvested rows, keyed by source_field (compat plan
+ *  §D). The Modern Forms "Curated For You" scope is unverified (it may be
+ *  algorithmic cross-sell), so its header is the required "listed together on
+ *  the product page" framing, never "confirmed". waclighting's Components
+ *  section is the page's own structural list (housing to trims, head to
+ *  track) but still page-derived, so it is attributed to the product page. */
+const WEB_ACCESSORY_HEADERS: Record<string, string> = {
+  components_section:
+    "Components listed on the WAC Lighting product page (page-derived, cite the product page):",
+  curated_for_you:
+    'Listed together on the product page (Modern Forms "Curated For You" section; may include general recommendations, verify fitment):',
+};
+const WEB_ACCESSORY_FALLBACK_HEADER =
+  "Listed together on the product page (page-derived, verify fitment):";
+
+/**
+ * Render PDP-harvested (source_system='web_crawl') rows: grouped per source
+ * section with the §D provenance headers, resolved slugs shown by product
+ * NAME, unresolved slugs never shown bare on the public surface (they are
+ * page slugs, not orderable codes — PL8a's posture applies). Pure, like
+ * formatAccessoryLines.
+ */
+export function formatWebCrawlAccessoryLines(
+  rows: readonly ProductAccessoryRow[],
+  parents: ReadonlyMap<string, AccessoryParentInfo>,
+  surface: ThomSurface,
+): string[] {
+  if (!rows.length) return [];
+  // Group by source section, first-seen order.
+  const bySection = new Map<string, ProductAccessoryRow[]>();
+  for (const r of rows) {
+    const key = r.source_field ?? "";
+    const list = bySection.get(key);
+    if (list) list.push(r);
+    else bySection.set(key, [r]);
+  }
+
+  const lines: string[] = [];
+  for (const [section, sectionRows] of bySection) {
+    lines.push(WEB_ACCESSORY_HEADERS[section] ?? WEB_ACCESSORY_FALLBACK_HEADER);
+    const seenParents = new Set<string>();
+    let unresolved = 0;
+    for (const r of sectionRows) {
+      if (r.related_product_sku) {
+        if (seenParents.has(r.related_product_sku)) continue;
+        seenParents.add(r.related_product_sku);
+        const info = parents.get(r.related_product_sku);
+        const brand = info?.brand ? `, ${info.brand}` : "";
+        lines.push(`- ${info?.name ?? r.related_product_sku} (${ppidLabel(r.related_product_sku)}${brand})`);
+      } else if (surface === "public") {
+        unresolved++;
+      } else {
+        lines.push(`- Page link "${r.related_sku}" (no catalog match; see the product page)`);
+      }
+    }
+    if (unresolved > 0) {
+      lines.push(
+        `- ${unresolved} more item${unresolved === 1 ? "" : "s"} shown on the product page (see the product page link)`,
+      );
+    }
+  }
+
+  if (lines.length > MAX_ACCESSORY_LINES) {
+    const extra = lines.length - MAX_ACCESSORY_LINES;
+    return [...lines.slice(0, MAX_ACCESSORY_LINES), `(+${extra} more)`];
+  }
+  return lines;
+}
+
 /** A referencing (host) product for the reverse-fit rollup. */
 export interface ReverseFitParent {
   sku: string;
@@ -459,11 +548,15 @@ export interface ReverseFitParent {
  * BY FAMILY with counts — name-first, never a PPID list, families capped at
  * MAX_REVERSE_FAMILIES.
  */
-export function rollupReverseFit(parents: readonly ReverseFitParent[], totalCount: number): string {
+export function rollupReverseFit(
+  parents: readonly ReverseFitParent[],
+  totalCount: number,
+  verb = "Fits",
+): string {
   if (!parents.length) return "";
   if (totalCount <= 5 && parents.length === totalCount) {
     const names = parents.map((p) => `${p.name ?? p.sku} (${ppidLabel(p.sku)})`).join(", ");
-    return `Fits ${totalCount} product${totalCount === 1 ? "" : "s"}: ${names}.`;
+    return `${verb} ${totalCount} product${totalCount === 1 ? "" : "s"}: ${names}.`;
   }
   const byFamily = new Map<string, number>();
   for (const p of parents) {
@@ -476,7 +569,7 @@ export function rollupReverseFit(parents: readonly ReverseFitParent[], totalCoun
   const famText = shown.join(", ") + (moreFams > 0 ? ` and ${moreFams} more famil${moreFams === 1 ? "y" : "ies"}` : "");
   const brands = [...new Set(parents.map((p) => p.brand).filter(Boolean))] as string[];
   const brandText = brands.length === 1 ? ` ${brands[0]}` : "";
-  return `Fits ${totalCount}${brandText} products across the ${famText} families.`;
+  return `${verb} ${totalCount}${brandText} products across the ${famText} families.`;
 }
 
 /** Escape LIKE/ILIKE pattern characters so a code can be matched literally
@@ -629,7 +722,7 @@ async function reverseFitFallback(
   // (1) accessory-code match.
   const { data: refRows, count: refCount } = await ctx.sb
     .from("product_accessories")
-    .select("product_sku, related_product_sku, kind, label", { count: "exact" })
+    .select("product_sku, related_product_sku, kind, label, source_system", { count: "exact" })
     .ilike("related_sku", escapeLike(norm))
     .limit(200);
   const hits = (refRows ?? []) as {
@@ -637,6 +730,7 @@ async function reverseFitFallback(
     related_product_sku: string | null;
     kind: string;
     label: string | null;
+    source_system?: string | null;
   }[];
   if (hits.length) {
     const hostSkus = [...new Set(hits.map((h) => h.product_sku))];
@@ -648,9 +742,14 @@ async function reverseFitFallback(
     const kinds = [...new Set(hits.map((h) => kindLabel(h.kind)))].join(" / ");
     const label = hits.find((h) => h.label)?.label ?? null;
     const resolvedParent = hits.find((h) => h.related_product_sku)?.related_product_sku ?? null;
+    // Provenance framing (§D): only Sales Layer rows are "confirmed"; a hit
+    // that exists solely as a PDP page association is presented as such.
+    const webOnly = hits.every((h) => h.source_system === "web_crawl");
     const lines = [
-      `${norm} is not a product page, but it is a confirmed ${kinds} reference${label ? ` ("${label}")` : ""}.`,
-      rollupReverseFit(parents, total),
+      webOnly
+        ? `${norm} is not a product page, but it appears in brand product page accessory sections (page association, verify fitment).`
+        : `${norm} is not a product page, but it is a confirmed ${kinds} reference${label ? ` ("${label}")` : ""}.`,
+      rollupReverseFit(parents, total, webOnly ? "Shown on the product pages of" : "Fits"),
     ];
     if (resolvedParent) {
       const pinfo = infoBySku.get(resolvedParent) ?? (await fetchParentInfo(ctx, [resolvedParent])).get(resolvedParent);
@@ -778,22 +877,33 @@ async function getProduct(
   const [{ data: docs }, { data: pdp }, accessoriesRes, referencedRes] = await Promise.all([
     ctx.sb.from("product_documents").select("doc_type, label, url").eq("product_sku", sku),
     ctx.sb.from("pdp_urls").select("url").eq("sku", sku).maybeSingle(),
-    // Forward: this product's confirmed accessories/components (§B).
+    // Forward: this product's confirmed accessories/components (§B) plus the
+    // PDP-harvested page associations (Phase 2 — rendered separately).
     ctx.sb
       .from("product_accessories")
-      .select("related_sku, related_product_sku, kind, label")
+      .select("related_sku, related_product_sku, kind, label, source_system, source_field")
       .eq("product_sku", sku)
       .limit(400),
     // Reverse: hosts that reference THIS product as an accessory (AA1).
     ctx.sb
       .from("product_accessories")
-      .select("product_sku", { count: "exact" })
+      .select("product_sku, source_system", { count: "exact" })
       .eq("related_product_sku", sku)
       .limit(400),
   ]);
-  const accRows = (accessoriesRes.data ?? []) as ProductAccessoryRow[];
-  const refRows = (referencedRes.data ?? []) as { product_sku: string }[];
-  const refTotal = referencedRes.count ?? refRows.length;
+  // Provenance split (§D): catalog reference data stays "confirmed"; PDP
+  // harvest rows are page associations with their own labeled section.
+  const { catalog: accRows, webCrawl: webAccRows } = partitionAccessoryRows(
+    (accessoriesRes.data ?? []) as ProductAccessoryRow[],
+  );
+  const allRefRows = (referencedRes.data ?? []) as { product_sku: string; source_system?: string | null }[];
+  const refRows = allRefRows.filter((r) => r.source_system !== "web_crawl");
+  const webRefRows = allRefRows.filter((r) => r.source_system === "web_crawl");
+  // The exact-count window covers BOTH sources; only trust it when it exceeds
+  // what we fetched (then the split counts are lower bounds anyway).
+  const refTotal = (referencedRes.count ?? allRefRows.length) > allRefRows.length
+    ? (referencedRes.count ?? allRefRows.length) - webRefRows.length
+    : refRows.length;
 
   const variants = (Array.isArray(p.variants) ? p.variants : []) as Record<string, unknown>[];
   const repr = variants.find((v) => v.watts || v.lumens || v.cct_desc) ?? variants[0] ?? {};
@@ -889,16 +999,23 @@ async function getProduct(
   // Compatibility sections (text-only — no ProductCard change, plan §B): the
   // forward confirmed-accessory list and, when this product is itself
   // referenced as an accessory, the reverse fan-in rollup.
-  if (accRows.length || refRows.length) {
+  if (accRows.length || webAccRows.length || refRows.length || webRefRows.length) {
     const wantSkus = new Set<string>();
     for (const r of accRows) if (r.related_product_sku) wantSkus.add(r.related_product_sku);
+    for (const r of webAccRows) if (r.related_product_sku) wantSkus.add(r.related_product_sku);
     for (const r of refRows) wantSkus.add(r.product_sku);
+    for (const r of webRefRows) wantSkus.add(r.product_sku);
     const info = await fetchParentInfo(ctx, [...wantSkus]);
     if (accRows.length) {
       lines.push(
         `Confirmed accessories and components (${accRows.length} reference${accRows.length === 1 ? "" : "s"}, from catalog reference data):`,
         ...formatAccessoryLines(accRows, info, surface),
       );
+    }
+    // PDP harvest rows (Phase 2): labeled page associations, never folded into
+    // the confirmed section (headers ride inside the formatter).
+    if (webAccRows.length) {
+      lines.push(...formatWebCrawlAccessoryLines(webAccRows, info, surface));
     }
     if (refRows.length) {
       const hostSkus = [...new Set(refRows.map((r) => r.product_sku))];
@@ -910,6 +1027,18 @@ async function getProduct(
       const total = refTotal > refRows.length ? refTotal : hostSkus.length;
       const rollup = rollupReverseFit(parents, total);
       if (rollup) lines.push(`This product is itself a confirmed accessory. ${rollup}`);
+    }
+    if (webRefRows.length) {
+      const hostSkus = [...new Set(webRefRows.map((r) => r.product_sku))];
+      const parents = hostSkus.map(
+        (s) => info.get(s) ?? { sku: s, name: null, family: null, brand: null },
+      );
+      const rollup = rollupReverseFit(parents, hostSkus.length, "Shown on the product pages of");
+      if (rollup) {
+        lines.push(
+          `This product is also listed together with other products on brand product pages (page association, verify fitment). ${rollup}`,
+        );
+      }
     }
   }
 
@@ -1895,6 +2024,9 @@ export function composeRelatedSections(opts: {
   sku: string | null;
   explicitLines: string[];
   explicitCount: number;
+  /** PDP-harvested page-association lines (headers included, §D) — rendered
+   *  AFTER the confirmed section, BEFORE the family expansion. */
+  webLines?: string[];
   familyScope: string;
   familyLines: string[];
   familyCount: number;
@@ -1906,6 +2038,9 @@ export function composeRelatedSections(opts: {
         `(${opts.explicitCount} reference${opts.explicitCount === 1 ? "" : "s"}, from catalog reference data):\n` +
         opts.explicitLines.join("\n"),
     );
+  }
+  if (opts.webLines?.length) {
+    parts.push(opts.webLines.join("\n"));
   }
   if (opts.familyCount > 0) {
     parts.push(
@@ -1926,21 +2061,32 @@ async function getRelated(
     return { content: "get_related_products: provide a sku, family, or category.", cards: [], citations: [] };
   }
 
-  // Section 1 — explicit confirmed accessory/component rows for the sku.
+  // Section 1 — explicit confirmed accessory/component rows for the sku,
+  // with PDP-harvested page associations in their own labeled section (§D).
   let explicitLines: string[] = [];
   let explicitCount = 0;
+  let webLines: string[] = [];
   if (sku) {
     const { data: accData } = await ctx.sb
       .from("product_accessories")
-      .select("related_sku, related_product_sku, kind, label")
+      .select("related_sku, related_product_sku, kind, label, source_system, source_field")
       .eq("product_sku", sku)
       .limit(400);
-    const accRows = (accData ?? []) as ProductAccessoryRow[];
-    if (accRows.length) {
-      const resolvedSkus = [...new Set(accRows.map((r) => r.related_product_sku).filter(Boolean))] as string[];
+    const { catalog: accRows, webCrawl: webRows } = partitionAccessoryRows(
+      (accData ?? []) as ProductAccessoryRow[],
+    );
+    if (accRows.length || webRows.length) {
+      const resolvedSkus = [
+        ...new Set([...accRows, ...webRows].map((r) => r.related_product_sku).filter(Boolean)),
+      ] as string[];
       const info = await fetchParentInfo(ctx, resolvedSkus);
-      explicitLines = formatAccessoryLines(accRows, info, surface);
-      explicitCount = accRows.length;
+      if (accRows.length) {
+        explicitLines = formatAccessoryLines(accRows, info, surface);
+        explicitCount = accRows.length;
+      }
+      if (webRows.length) {
+        webLines = formatWebCrawlAccessoryLines(webRows, info, surface);
+      }
     }
   }
 
@@ -1963,7 +2109,7 @@ async function getRelated(
     }
   }
 
-  if (!explicitCount && !found.size) {
+  if (!explicitCount && !webLines.length && !found.size) {
     return { content: "No related products found.", cards: [], citations: [] };
   }
   const scope =
@@ -1973,6 +2119,7 @@ async function getRelated(
     sku,
     explicitLines,
     explicitCount,
+    webLines,
     familyScope: scope,
     familyLines: [...found.values()].map((r) => `- ${r.sku} — ${r.name}`),
     familyCount: found.size,

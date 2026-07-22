@@ -41,6 +41,16 @@ describe("compatibilityGuidance copy lints", () => {
     expect(text).toMatch(/cite the sheet/);
   });
 
+  it("carries the page-association rule (Phase 2 §D): MF Curated is never confirmed fitment", () => {
+    for (const surface of ["internal", "public"] as const) {
+      const text = compatibilityGuidance(surface);
+      expect(text).toContain("listed together on the product page");
+      expect(text).toContain("Curated For You");
+      expect(text).toMatch(/NOT confirmed fitment/);
+      expect(text).toMatch(/Components section/);
+    }
+  });
+
   it("splits existence from fitment (PL8c)", () => {
     const text = compatibilityGuidance("internal");
     expect(text).toMatch(/never-assert-absence/);

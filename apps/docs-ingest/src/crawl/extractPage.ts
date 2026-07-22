@@ -1,6 +1,6 @@
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
-import { codeFromAssetUrl, modernFormsSpecUrl } from "@wac/shared";
+import { SKIP_SLUGS, codeFromAssetUrl, modernFormsSpecUrl } from "@wac/shared";
 import { htmlToText } from "../html.js";
 
 /**
@@ -52,6 +52,11 @@ export interface PdpEvidence {
   specSheetUrl: string | null;
   /** Schonbek: "{Family} | {PPID} | {SubBrand} | ..." title parse. */
   schonbek: { family: string | null; ppid: string | null } | null;
+  /** PDP accessory-section slug links (compat plan Phase 2 / §D): waclighting
+   *  "Components" (h3#components + product-belt) and modernforms "Curated For
+   *  You" (.thumbnail-section a.product-link). Slugs, not SKUs — resolution
+   *  happens at reconcile time by inverting pdp_urls. Empty elsewhere. */
+  accessorySlugs: string[];
 }
 
 const MIN_MAIN_TEXT = 80; // chars below which we suspect a shell/soft-404
@@ -187,6 +192,83 @@ const DATA_PPID_RE = /data-ppid\s*=\s*["'](\d+)["']/;
 /** Model-code-shaped token: letters+digits with hyphens, e.g. FR-W1801, A2RU-447-27. */
 const CODE_TOKEN_RE = /\b[A-Z][A-Z0-9]{0,5}-[A-Z0-9][A-Z0-9-]{2,}\b/g;
 
+/** Cap on harvested accessory-section slugs per PDP (a curated belt is a
+ *  handful of items; anything bigger means the window regex over-matched). */
+const MAX_ACCESSORY_SLUGS = 40;
+
+/** `/product/<slug>` hrefs (absolute or site-relative, trailing slash or not). */
+const PRODUCT_HREF_RE = /href\s*=\s*["'][^"']*\/product\/([a-z0-9][a-z0-9-]*)\/?(?:[?#][^"']*)?["']/gi;
+
+function slugOfUrl(pageUrl: string): string | null {
+  try {
+    const m = new URL(pageUrl).pathname.match(/^\/product\/([a-z0-9][a-z0-9-]*)\/?$/i);
+    return m ? m[1]!.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+function collectProductSlugs(window: string, ownSlug: string | null, out: Set<string>): void {
+  PRODUCT_HREF_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = PRODUCT_HREF_RE.exec(window)) != null) {
+    const slug = m[1]!.toLowerCase();
+    if (SKIP_SLUGS.has(slug) || slug === ownSlug) continue;
+    out.add(slug);
+    if (out.size >= MAX_ACCESSORY_SLUGS) return;
+  }
+}
+
+/**
+ * Harvest the PDP accessory-section slug links (compat plan Phase 2, PL4
+ * evidence, live-sampled during planning):
+ *
+ *  - waclighting: an `<h3 id="components">` heading followed by a
+ *    `.product-belt` of `/product/<slug>` links (housing → trims, track head →
+ *    track). The window is the HTML from that heading to the NEXT h2/h3, so a
+ *    later "related products" belt or footer link never leaks in.
+ *  - modernforms: the "Curated For You" `.thumbnail-section` of
+ *    `a.product-link` cards (downrods, remotes, sloped-ceiling kits). The
+ *    window starts at the first thumbnail-section occurrence; only anchors
+ *    carrying the product-link class are read.
+ *
+ * Slugs only (lowercased, deduped, own-page slug and nav slugs dropped) — the
+ * reconcile pass resolves them to SKUs by inverting pdp_urls. Schonbek is
+ * EXCLUDED (JS-injected PDPs), every other site returns [].
+ */
+export function harvestAccessorySlugs(html: string, pageUrl: string, siteKey: string): string[] {
+  const ownSlug = slugOfUrl(pageUrl);
+  const out = new Set<string>();
+
+  if (siteKey === "waclighting") {
+    const h3 = html.search(/<h3\b[^>]*\bid\s*=\s*["']components["']/i);
+    if (h3 < 0) return [];
+    const rest = html.slice(h3);
+    // End the window at the next section heading after this one.
+    const next = rest.slice(4).search(/<h[23][\s>]/i);
+    const window = next >= 0 ? rest.slice(0, next + 4) : rest;
+    collectProductSlugs(window, ownSlug, out);
+    return [...out];
+  }
+
+  if (siteKey === "modernforms") {
+    const start = html.search(/class\s*=\s*["'][^"']*\bthumbnail-section\b/i);
+    if (start < 0) return [];
+    const window = html.slice(start);
+    // Only the curated cards' anchors: class must carry product-link.
+    for (const m of window.matchAll(/<a\b[^>]*>/gi)) {
+      const tag = m[0];
+      const cls = tag.match(/class\s*=\s*["']([^"']*)["']/i)?.[1] ?? "";
+      if (!/\bproduct-link\b/.test(cls)) continue;
+      collectProductSlugs(tag, ownSlug, out);
+      if (out.size >= MAX_ACCESSORY_SLUGS) break;
+    }
+    return [...out];
+  }
+
+  return [];
+}
+
 function harvestEvidence(html: string, pageUrl: string, siteKey: string): PdpEvidence {
   const codes = new Set<string>();
 
@@ -249,7 +331,13 @@ function harvestEvidence(html: string, pageUrl: string, siteKey: string): PdpEvi
     }
   }
 
-  return { modelCodes: [...codes], ppid, specSheetUrl, schonbek };
+  return {
+    modelCodes: [...codes],
+    ppid,
+    specSheetUrl,
+    schonbek,
+    accessorySlugs: harvestAccessorySlugs(html, pageUrl, siteKey),
+  };
 }
 
 // --- assembly ---------------------------------------------------------------

@@ -179,3 +179,67 @@ describe("chunkableText — the header every chunk inherits", () => {
     expect(na).not.toContain("rest of world");
   });
 });
+
+describe("harvestAccessorySlugs — PDP accessory-section evidence (compat Phase 2)", () => {
+  const WAC_COMPONENTS = `
+    <h2>Product Details</h2><p>Recessed housing.</p>
+    <h3 id="components">Components</h3>
+    <div class="product-belt">
+      <a href="https://waclighting.com/product/trim-r2asdt/"><img src="/t1.png">R2 Round Trim</a>
+      <a href="/product/trim-r2asat">R2 Adjustable Trim</a>
+      <a href="/product/trim-r2asdt/?finish=bk">duplicate with params</a>
+    </div>
+    <h3 id="related">Related</h3>
+    <div class="product-belt"><a href="/product/unrelated-thing">Other belt (out of window)</a></div>
+    <footer><a href="/product/all">nav</a></footer>`;
+
+  it("waclighting: harvests the #components product-belt slugs, window-bounded at the next heading", () => {
+    const html = page(WAC_COMPONENTS, `<title>Housing</title>`);
+    const p = extractPage(html, "https://waclighting.com/product/housing-r2asd", { siteKey: "waclighting", brand: "WAC Lighting" });
+    expect(p.evidence.accessorySlugs).toEqual(["trim-r2asdt", "trim-r2asat"]);
+    // The later "related" belt and footer nav slug never leak in.
+    expect(p.evidence.accessorySlugs).not.toContain("unrelated-thing");
+    expect(p.evidence.accessorySlugs).not.toContain("all");
+  });
+
+  it("waclighting: no #components heading -> no slugs (a bare product-belt elsewhere is ignored)", () => {
+    const html = page(`<div class="product-belt"><a href="/product/some-thing">x</a></div>`);
+    const p = extractPage(html, "https://waclighting.com/product/plain", { siteKey: "waclighting", brand: "WAC Lighting" });
+    expect(p.evidence.accessorySlugs).toEqual([]);
+  });
+
+  it("waclighting: the page's own slug is excluded", () => {
+    const html = page(`<h3 id="components">Components</h3><a href="/product/housing-r2asd">self</a><a href="/product/trim-x">trim</a>`);
+    const p = extractPage(html, "https://waclighting.com/product/housing-r2asd", { siteKey: "waclighting", brand: "WAC Lighting" });
+    expect(p.evidence.accessorySlugs).toEqual(["trim-x"]);
+  });
+
+  it("modernforms: harvests Curated For You thumbnail-section a.product-link slugs only", () => {
+    const html = page(`
+      <a class="nav-link" href="/product/nav-decoy">nav decoy before section</a>
+      <section class="thumbnail-section curated">
+        <h2>Curated For You</h2>
+        <a class="card product-link" href="https://modernforms.com/product/xl-downrod-dr72/">Downrod</a>
+        <a class="product-link" href="/product/f-rcbt-remote">Remote</a>
+        <a class="see-all" href="/product/see-all-decoy">not a product-link</a>
+      </section>`, `<title>Wynd XL</title>`);
+    const p = extractPage(html, "https://modernforms.com/product/wynd-xl", { siteKey: "modernforms", brand: "Modern Forms" });
+    expect(p.evidence.accessorySlugs).toEqual(["xl-downrod-dr72", "f-rcbt-remote"]);
+    expect(p.evidence.accessorySlugs).not.toContain("see-all-decoy");
+    expect(p.evidence.accessorySlugs).not.toContain("nav-decoy");
+  });
+
+  it("modernforms: no thumbnail-section -> no slugs even if product-link anchors exist", () => {
+    const html = page(`<a class="product-link" href="/product/loose-card">x</a>`);
+    const p = extractPage(html, "https://modernforms.com/product/plain-fan", { siteKey: "modernforms", brand: "Modern Forms" });
+    expect(p.evidence.accessorySlugs).toEqual([]);
+  });
+
+  it("other sites (schonbek excluded per plan) never harvest", () => {
+    const html = page(`<h3 id="components"></h3><div class="thumbnail-section"><a class="product-link" href="/product/x-1">x</a></div>`);
+    for (const siteKey of ["schonbek", "wacgroup", "aispire", "wacarchitectural"]) {
+      const p = extractPage(html, `https://example.com/product/host`, { siteKey, brand: "b" });
+      expect(p.evidence.accessorySlugs).toEqual([]);
+    }
+  });
+});
