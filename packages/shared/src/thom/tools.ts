@@ -712,11 +712,23 @@ export function formatProductDims(rows: ProductDimRow[]): string[] {
   const sizes = [...bySig.values()].sort((a, b) => (a.width_in ?? 0) - (b.width_in ?? 0));
   const out = ["Sizes:"];
   for (const r of sizes) {
-    const derived = [
-      r.width_in != null ? `${fmtIn(r.width_in)} wide` : null,
-      r.depth_in != null ? `${fmtIn(r.depth_in)} deep` : null,
-      r.height_in != null ? `${fmtIn(r.height_in)} tall` : null,
-    ]
+    // Wall-class sizes are orientation-neutral (the catalog records no
+    // mounting orientation): long/cross axes instead of wide/tall, same
+    // recorded raw axes alongside. Depth (wall projection) is orientation-
+    // invariant and stays.
+    const wallAxes =
+      r.class === "wall"
+        ? wallLongCrossMm([r.width_mm, r.height_mm, r.length_mm, r.diameter_mm])
+        : null;
+    const derived = (
+      wallAxes
+        ? [wallAxisPhrase(wallAxes), r.depth_in != null ? `${fmtIn(r.depth_in)} deep` : null]
+        : [
+            r.width_in != null ? `${fmtIn(r.width_in)} wide` : null,
+            r.depth_in != null ? `${fmtIn(r.depth_in)} deep` : null,
+            r.height_in != null ? `${fmtIn(r.height_in)} tall` : null,
+          ]
+    )
       .filter(Boolean)
       .join(", ");
     const rec = [
@@ -1313,6 +1325,52 @@ export const PRODUCT_LEVEL_LUMENS_SENTENCE =
  *  a number (plan A1/O4). */
 const DEPTH_DEFINED_CLASSES = new Set(["wall", "ceiling", "fan"]);
 
+/** Orientation honesty for wall fixtures (Davis 2026-07-22, the Turbo-14
+ *  sconce): the catalog carries NO mounting-orientation signal anywhere (a
+ *  vertically mounted sconce and a horizontal vanity bar both read as plain
+ *  Wall Lighting), so the derived "width" (greatest recorded axis, 0063/0068
+ *  counter-plan O4) may in fact be a vertical sconce's HEIGHT on the wall.
+ *  Wall-class rows therefore never claim "wide" or "tall": they state the
+ *  LONG axis and the CROSS axis. Definition (pinned): sort the recorded axes
+ *  descending; long = max, cross = second. Pure + exported for tests. */
+export function wallLongCrossMm(
+  axesMm: readonly (number | null | undefined)[],
+): { longMm: number; crossMm: number | null } | null {
+  const vals = axesMm
+    .map((n) => (n == null ? NaN : Number(n)))
+    .filter((n) => Number.isFinite(n))
+    .sort((a, b) => b - a);
+  const longMm = vals[0];
+  if (longMm == null) return null;
+  return { longMm, crossMm: vals[1] ?? null };
+}
+
+/** The axis-honest wall phrase, dual-unit (Addendum 1):
+ *  "long axis 13.9 in (353 mm), cross 5.0 in (127 mm)". */
+export function wallAxisPhrase(a: { longMm: number; crossMm: number | null }): string {
+  return `long axis ${fmtMmAsIn(a.longMm)}${a.crossMm != null ? `, cross ${fmtMmAsIn(a.crossMm)}` : ""}`;
+}
+
+/** The any-orientation clause for a wall row under a stated width cap: honest
+ *  ONLY when the LONG axis is within the cap (then both face axes fit no
+ *  matter which one is the width on the wall). Null when the long axis
+ *  exceeds the cap (the row qualified on the derived width alone, so the
+ *  claim would overreach). */
+export function wallFitsClause(widthMaxIn: number, longMm: number): string | null {
+  const longIn = Math.round((longMm / 25.4) * 10) / 10;
+  if (longIn > widthMaxIn + 0.05) return null;
+  const cap = String(Math.round(widthMaxIn * 10) / 10).replace(/\.0$/, "");
+  return `fits your ${cap} in width limit in any mounting orientation`;
+}
+
+/** One-line coverage caveat when a width cap screened wall-class fixtures:
+ *  the cap was applied to each fixture's LONG axis, so a vertical sconce
+ *  taller than the cap is excluded even though its on-wall width would fit.
+ *  Verbatim contract (tested), authored to the public copy lints. */
+export const WALL_ORIENTATION_CAVEAT =
+  "The catalog does not record mounting orientation for wall fixtures, so the width limit was applied to each fixture's longest axis. " +
+  "Vertically mounted sconces taller than your width limit are not shown; ask to include vertical sconces if wall width is what matters.";
+
 /** Cap on qualifying variant SKUs listed per filter row (mirrors 0069's
  *  [1:6] slice in product_spec_filter). */
 export const QUALIFYING_SKU_CAP = 6;
@@ -1332,6 +1390,10 @@ export function formatFilterRows(
      *  lets a row say the listed SKUs are the QUALIFYING size and that
      *  other sizes exist (the PDP may lead with a different size). */
     sizesBySku?: ReadonlyMap<string, readonly number[]>;
+    /** The stated max-width predicate in inches (buildFilterPredicates) —
+     *  lets a wall row say it fits in any mounting orientation when its
+     *  LONG axis is within the cap. */
+    widthMaxIn?: number | null;
   },
 ): string[] {
   return rows.map((r) => {
@@ -1349,9 +1411,18 @@ export function formatFilterRows(
     const qHi = r.q_width_max_in != null ? Number(r.q_width_max_in) : qLo;
     const otherSizes =
       qLo == null ? [] : allSizes.filter((s) => s < qLo - 0.05 || s > (qHi ?? qLo) + 0.05);
+    // Orientation-neutral wall rows: no orientation is recorded, so a wall
+    // fixture never claims "wide"/"tall" — it states long + cross axes from
+    // the recorded values (per-foot tape keeps the cross-section idiom).
+    const wallAxes =
+      r.class === "wall" && !r.per_ft
+        ? wallLongCrossMm([r.ex_width_mm, r.ex_height_mm, r.ex_length_mm, r.ex_diameter_mm])
+        : null;
+    const qualTag = otherSizes.length ? ", qualifying size" : "";
     const dims: string[] = [];
-    if (r.ex_width_in != null) {
-      const qualTag = otherSizes.length ? ", qualifying size" : "";
+    if (wallAxes) {
+      dims.push(`${wallAxisPhrase(wallAxes)}${qualTag}`);
+    } else if (r.ex_width_in != null) {
       dims.push(
         r.per_ft
           ? `tape cross-section ${fmtIn(r.ex_width_in)} wide${qualTag}`
@@ -1360,7 +1431,9 @@ export function formatFilterRows(
     }
     if (r.ex_depth_in != null) dims.push(`${fmtIn(r.ex_depth_in)} deep`);
     else if (r.class && !DEPTH_DEFINED_CLASSES.has(r.class)) dims.push("depth is not defined for this fixture type");
-    if (r.ex_height_in != null) dims.push(`${fmtIn(r.ex_height_in)} tall`);
+    // The "tall" claim is exactly the axis assertion wall rows must not make;
+    // the recorded H still shows in the raw-axes parenthetical.
+    if (r.ex_height_in != null && !wallAxes) dims.push(`${fmtIn(r.ex_height_in)} tall`);
     const rec = [
       r.ex_width_mm != null ? `W ${fmtMmAsIn(r.ex_width_mm)}` : null,
       r.ex_height_mm != null ? `H ${fmtMmAsIn(r.ex_height_mm)}` : null,
@@ -1369,6 +1442,13 @@ export function formatFilterRows(
     ].filter(Boolean);
     const parts: string[] = [];
     if (dims.length) parts.push(dims.join(", ") + (rec.length ? ` (recorded ${rec.join(" x ")})` : ""));
+    // A wall row whose LONG axis is within the stated width cap fits no
+    // matter which axis ends up horizontal — say so instead of guessing an
+    // orientation.
+    if (wallAxes && opts.widthMaxIn != null) {
+      const fits = wallFitsClause(Number(opts.widthMaxIn), wallAxes.longMm);
+      if (fits) parts.push(fits);
+    }
     // Say the non-qualifying sizes out loud (dual-unit, Addendum 1): the
     // listed SKUs are the qualifying size only, and the linked product page
     // may lead with one of these other sizes' drawings.
@@ -1507,6 +1587,7 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
 
   const lumensStated = preds.p_lumens_min !== null || preds.p_lumens_max !== null;
   const wireStated = preds.p_wire_min_in !== null || preds.p_wire_max_in !== null;
+  const widthCapStated = preds.p_width_max_in !== null;
   const coverage = filterCoverageLine(counts, scope);
   const matched = Number(counts.matched);
   // Honest application framing (0069): when an application hard-filter was
@@ -1515,6 +1596,12 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
   const appNote = appTerm
     ? ` Only ${appTerm} products (matched by name or category) were considered; other fixture types were excluded.`
     : "";
+  // Wall-orientation honesty (presentation only, no RPC change): a stated
+  // width cap screens each wall fixture's LONG axis, so vertical sconces
+  // taller than the cap are excluded even when their on-wall width fits.
+  // Say so once, in the coverage area, whenever wall fixtures are in play.
+  const wallCaveatFor = (wallSeen: boolean): string =>
+    widthCapStated && wallSeen ? `\n${WALL_ORIENTATION_CAVEAT}` : "";
 
   if (matched === 0) {
     // Pinned zero-match relaxation (plan A13/O11): keep the FULL scope and all
@@ -1557,11 +1644,14 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
         `${preamble}No product with recorded dimensions fits all of those limits; the ${word} option ` +
         `with data is ${linkedName(best.name, best.sku, nearPdp)} (${ppidLabel(best.sku!)}${nearSku}) ` +
         `at ${fmtIn(Number(best[valueKey]))} ${words.adj}. ` +
-        `It does NOT meet the stated ${dim} requirement.${appNote}\n\n${coverage}`;
+        `It does NOT meet the stated ${dim} requirement.${appNote}\n\n${coverage}` +
+        wallCaveatFor(cls === "wall" || best.class === "wall");
       return { content, cards: [], citations: [] };
     }
     return {
-      content: `${preamble}Nothing in the catalog fits all of those requirements.${appNote}\n\n${coverage}`,
+      content:
+        `${preamble}Nothing in the catalog fits all of those requirements.${appNote}\n\n${coverage}` +
+        wallCaveatFor(cls === "wall"),
       cards: [],
       citations: [],
     };
@@ -1579,11 +1669,18 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
   ]);
   let content =
     preamble +
-    formatFilterRows(productRows, { lumensStated, wireStated, pdpBySku, sizesBySku }).join("\n");
+    formatFilterRows(productRows, {
+      lumensStated,
+      wireStated,
+      pdpBySku,
+      sizesBySku,
+      widthMaxIn: preds.p_width_max_in,
+    }).join("\n");
   if (lumensStated && productRows.some((r) => r.lumens_source === "product_level")) {
     content += `\n\nNote: ${PRODUCT_LEVEL_LUMENS_SENTENCE}.`;
   }
   content += `\n\n${coverage}`;
+  content += wallCaveatFor(cls === "wall" || productRows.some((r) => r.class === "wall"));
   // No cards here — the model follows up with get_product.
   return { content, cards: [], citations: [] };
 }
