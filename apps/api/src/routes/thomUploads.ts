@@ -29,6 +29,12 @@ export const thomUploadRoutes = new Hono<AppBindings>();
 
 export const ADMIN_UPLOAD_SOURCE = "admin_upload";
 export const EDUCATION_DOC_TYPE = "education";
+/** Dimming-compatibility charts (dimming plan §A.5): admin-uploaded files
+ *  beyond the PIM (rep-desk master charts, SharePoint) land in the SAME
+ *  pending_extract + `--dimming` structured-extraction queue — NEVER the
+ *  chunk/embed path (docs-ingest Step B excludes this doc_type, DC7). Zip
+ *  uploads are accepted for THIS doc_type only. */
+export const DIMMING_UPLOAD_DOC_TYPE = "dimming_report";
 /** Authority tier stamped on education docs (plan R9) — inert while
  *  THOM_AUTHORITY is off, correct the day it flips on. */
 export const EDUCATION_AUTHORITY = 0.9;
@@ -62,16 +68,33 @@ export function isPdfMagic(bytes: ArrayBuffer): boolean {
   return m[0] === 0x25 && m[1] === 0x50 && m[2] === 0x44 && m[3] === 0x46;
 }
 
-/** Size/emptiness/magic checks for the uploaded bytes. */
-export function checkPdfBytes(bytes: ArrayBuffer): { ok: true } | { ok: false; error: string } {
+/** PK\x03\x04 zip magic — accepted ONLY for dimming_report uploads (the PIM
+ *  ships per-size dimming charts as zips; dimming plan §A.5). */
+export function isZipMagic(bytes: ArrayBuffer): boolean {
+  if (bytes.byteLength < 4) return false;
+  const m = new Uint8Array(bytes, 0, 4);
+  return m[0] === 0x50 && m[1] === 0x4b && m[2] === 0x03 && m[3] === 0x04;
+}
+
+/** Size/emptiness/magic checks for the uploaded bytes. `%PDF` always; zip only
+ *  for the dimming_report doc_type. */
+export function checkPdfBytes(
+  bytes: ArrayBuffer,
+  docType: string = EDUCATION_DOC_TYPE,
+): { ok: true } | { ok: false; error: string } {
   if (bytes.byteLength === 0) return { ok: false, error: "empty file" };
   if (bytes.byteLength > MAX_PDF_BYTES) {
     return { ok: false, error: `file exceeds max size (${MAX_PDF_BYTES} bytes)` };
   }
-  if (!isPdfMagic(bytes)) {
-    return { ok: false, error: "file is not a valid PDF (missing %PDF header)" };
-  }
-  return { ok: true };
+  if (isPdfMagic(bytes)) return { ok: true };
+  if (docType === DIMMING_UPLOAD_DOC_TYPE && isZipMagic(bytes)) return { ok: true };
+  return {
+    ok: false,
+    error:
+      docType === DIMMING_UPLOAD_DOC_TYPE
+        ? "file is not a valid PDF or zip (missing %PDF / PK header)"
+        : "file is not a valid PDF (missing %PDF header)",
+  };
 }
 
 const STANDARDS_TITLE_RE =
@@ -97,6 +120,9 @@ export interface UploadFields {
   brand: string | null;
   scope: UploadScope;
   forceVision: boolean;
+  /** 'education' (default) or 'dimming_report' (§A.5 — routed to the
+   *  --dimming structured-extraction queue, never chunk/embed). */
+  docType: string;
 }
 
 /**
@@ -126,7 +152,12 @@ export function parseUploadFields(
   }
   const brand = typeof body.brand === "string" && body.brand.trim() ? body.brand.trim() : null;
   const forceVision = body.force_vision === "true" || body.force_vision === "1" || body.force_vision === true;
-  return { ok: true, fields: { title, brand, scope: scopeRaw, forceVision } };
+  const docTypeRaw =
+    typeof body.doc_type === "string" && body.doc_type.trim() ? body.doc_type.trim() : EDUCATION_DOC_TYPE;
+  if (docTypeRaw !== EDUCATION_DOC_TYPE && docTypeRaw !== DIMMING_UPLOAD_DOC_TYPE) {
+    return { ok: false, error: 'doc_type must be "education" or "dimming_report"' };
+  }
+  return { ok: true, fields: { title, brand, scope: scopeRaw, forceVision, docType: docTypeRaw } };
 }
 
 /** Does a Supabase insert error mean "same content already uploaded"? The 0059
@@ -183,15 +214,19 @@ async function readPdfUpload(c: Context<AppBindings>): Promise<PdfUpload> {
   }
   const file = body.file;
   if (!(file instanceof File)) return { ok: false, error: 'missing "file" part' };
-  if (!/\.pdf$/i.test(file.name)) return { ok: false, error: "file must be a .pdf" };
+  const fields = parseUploadFields(body);
+  if (!fields.ok) return { ok: false, error: fields.error };
+  const isDimming = fields.fields.docType === DIMMING_UPLOAD_DOC_TYPE;
+  // Zip uploads are accepted for dimming_report ONLY (§A.5).
+  if (isDimming ? !/\.(pdf|zip)$/i.test(file.name) : !/\.pdf$/i.test(file.name)) {
+    return { ok: false, error: isDimming ? "file must be a .pdf or .zip" : "file must be a .pdf" };
+  }
   if (file.size > MAX_PDF_BYTES) {
     return { ok: false, error: `file exceeds max size (${MAX_PDF_BYTES} bytes)` };
   }
   const bytes = await file.arrayBuffer();
-  const check = checkPdfBytes(bytes);
+  const check = checkPdfBytes(bytes, fields.fields.docType);
   if (!check.ok) return { ok: false, error: check.error };
-  const fields = parseUploadFields(body);
-  if (!fields.ok) return { ok: false, error: fields.error };
   return { ok: true, bytes, fields: fields.fields };
 }
 
@@ -236,18 +271,21 @@ thomUploadRoutes.post("/", async (c) => {
   const { bytes, fields } = upload;
 
   const id = crypto.randomUUID();
-  const r2Key = `kb/admin_uploads/${id}.pdf`;
+  const isZip = isZipMagic(bytes);
+  const r2Key = `kb/admin_uploads/${id}.${isZip ? "zip" : "pdf"}`;
   const hash = await sha256HexBytes(bytes);
   const admin = serviceSupabase(c.env);
 
   // Insert FIRST: the 0059 partial unique index turns a duplicate content_hash
-  // into an insert conflict — race-free dedup before any R2 write.
+  // into an insert conflict — race-free dedup before any R2 write. Dimming
+  // charts share this queue but are picked up by `--dimming` (Step B excludes
+  // the doc_type at the SQL level — DC7), so they are never chunked/embedded.
   const { error } = await admin
     .from("kb_documents")
     .insert({
       source_system: ADMIN_UPLOAD_SOURCE,
       external_id: id,
-      doc_type: EDUCATION_DOC_TYPE,
+      doc_type: fields.docType,
       scope: fields.scope,
       title: fields.title,
       brand: fields.brand,
@@ -255,7 +293,7 @@ thomUploadRoutes.post("/", async (c) => {
       r2_key: r2Key,
       content_hash: hash,
       status: "pending_extract",
-      authority: EDUCATION_AUTHORITY,
+      authority: fields.docType === EDUCATION_DOC_TYPE ? EDUCATION_AUTHORITY : null,
     })
     .select("id")
     .single();
@@ -277,7 +315,7 @@ thomUploadRoutes.post("/", async (c) => {
 
   try {
     await c.env.ASSETS_BUCKET.put(r2Key, bytes, {
-      httpMetadata: { contentType: "application/pdf" },
+      httpMetadata: { contentType: isZip ? "application/zip" : "application/pdf" },
       customMetadata: fields.forceVision ? { [FORCE_VISION_META_KEY]: "1" } : undefined,
     });
   } catch (e) {

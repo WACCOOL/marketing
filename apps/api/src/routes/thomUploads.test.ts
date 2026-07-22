@@ -32,6 +32,19 @@ describe("isPdfMagic / checkPdfBytes", () => {
     });
   });
 
+  it("accepts a ZIP ONLY for the dimming_report doc_type (dimming plan §A.5)", () => {
+    const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]).buffer;
+    expect(checkPdfBytes(zip, "dimming_report")).toEqual({ ok: true });
+    expect(checkPdfBytes(pdfBuffer(), "dimming_report")).toEqual({ ok: true });
+    // Education never accepts zips; garbage never passes either doc_type.
+    expect(checkPdfBytes(zip, "education").ok).toBe(false);
+    const junk = new Uint8Array([1, 2, 3, 4, 5]).buffer;
+    expect(checkPdfBytes(junk, "dimming_report")).toEqual({
+      ok: false,
+      error: "file is not a valid PDF or zip (missing %PDF / PK header)",
+    });
+  });
+
   it("rejects empty and truncated files", () => {
     expect(checkPdfBytes(new ArrayBuffer(0))).toEqual({ ok: false, error: "empty file" });
     expect(isPdfMagic(new Uint8Array([0x25, 0x50]).buffer)).toBe(false);
@@ -69,6 +82,7 @@ describe("parseUploadFields", () => {
         brand: null,
         scope: "internal",
         forceVision: false,
+        docType: "education",
       },
     });
   });
@@ -101,6 +115,15 @@ describe("parseUploadFields", () => {
       expect(res.fields.brand).toBe("WAC Lighting");
       expect(res.fields.forceVision).toBe(true);
     }
+  });
+
+  it("defaults doc_type to education and accepts dimming_report (§A.5)", () => {
+    const def = parseUploadFields({ title: "T" });
+    expect(def.ok && def.fields.docType).toBe("education");
+    const dim = parseUploadFields({ title: "T", doc_type: "dimming_report" });
+    expect(dim.ok && dim.fields.docType).toBe("dimming_report");
+    const bad = parseUploadFields({ title: "T", doc_type: "spec_sheet" });
+    expect(bad.ok).toBe(false);
   });
 });
 

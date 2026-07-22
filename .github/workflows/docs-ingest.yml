@@ -23,6 +23,14 @@ on:
         description: "Requeue previously-failed docs (e.g. transient 502s) and retry them"
         type: boolean
         default: false
+      dimming:
+        description: "Run ONLY the dimming-chart structured extraction (--dimming; dimming plan §B)"
+        type: boolean
+        default: false
+      sample:
+        description: "With dimming: process at most N units and print the verification report (sample-then-STOP gate)"
+        type: string
+        default: ""
 
 concurrency:
   group: docs-ingest
@@ -80,3 +88,5 @@ jobs:
           ${{ inputs.dry_run && '--dry-run' || '' }}
           ${{ inputs.retry_failed && '--retry-failed' || '' }}
           ${{ inputs.limit && format('--limit {0}', inputs.limit) || '' }}
+          ${{ inputs.dimming && '--dimming' || '' }}
+          ${{ inputs.sample && format('--sample {0}', inputs.sample) || '' }}

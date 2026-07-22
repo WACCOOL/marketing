@@ -59,7 +59,12 @@ describe("docTypeForField", () => {
     expect(docTypeForField("specsheet_pdf")).toEqual({ docType: "spec_sheet", label: "Specification Sheet" });
     expect(docTypeForField("inst_sheet")).toEqual({ docType: "manual", label: "Installation Manual" });
     expect(docTypeForField("ftc_label_pdf").docType).toBe("ftc_label");
-    expect(docTypeForField("dim_report").docType).toBe("dim_report");
+    // The dimming-compatibility chart, NOT a dimensional drawing (dimming plan
+    // audit; the old "Dimensional Report" mapping was a mislabel).
+    expect(docTypeForField("dim_report")).toEqual({
+      docType: "dimming_report",
+      label: "Dimming Compatibility Report",
+    });
   });
 });
 
@@ -85,7 +90,7 @@ describe("collectDocs", () => {
 
 describe("docFieldsFrom", () => {
   it("defaults to the confirmed connector fields", () => {
-    expect(docFieldsFrom({} as Env)).toEqual(["specsheet_pdf", "inst_sheet"]);
+    expect(docFieldsFrom({} as Env)).toEqual(["specsheet_pdf", "inst_sheet", "dim_report"]);
   });
 
   it("honors the CSV override (trimmed, empties dropped)", () => {

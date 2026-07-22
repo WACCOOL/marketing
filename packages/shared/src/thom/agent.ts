@@ -33,6 +33,7 @@ import {
   withConstraintRouting,
   type ThomToolExtension,
 } from "./tools.js";
+import { DIMMING_TOOL_NAMES, DIMMING_TOOLS } from "./dimmingTools.js";
 import { LAYOUT_TOOLS } from "./layoutTool.js";
 import { PHOTOMETRICS_TOOLS } from "./photometricsTools.js";
 import type { Card, Citation, ThomUsage } from "./types.js";
@@ -89,6 +90,26 @@ export function categorySalesEnabled(env: ThomEnv): boolean {
   return env.THOM_CATEGORY_SALES === "1";
 }
 
+/** Dimming tools are OFF unless THOM_DIMMING is explicitly "1" (dark-launch,
+ *  mirroring THOM_SPEC_FILTER). Gates check_dimmer_compatibility +
+ *  find_products_for_dimmer AND the compatibility block's dimming bullets, on
+ *  BOTH surfaces (dimming plan §D — the data is public: the charts ship on
+ *  public PDPs). */
+export function dimmingEnabled(env: ThomEnv): boolean {
+  return env.THOM_DIMMING === "1";
+}
+
+/** Did this request call a dimming-chart tool? DC3 carve-out: dimmer control
+ *  manufacturers printed in WAC Group's OWN tested charts (Lutron, Leviton,
+ *  ...) are tested references, not competitors — so a mixed dimming+web turn
+ *  must NOT be nuked by the competitor screen (screenCompetitors replaces the
+ *  ENTIRE reply with the guardrail template on a denylist hit, and Lutron is
+ *  on the denylist). Build-time decision (plan §E, Davis sign-off item):
+ *  dimming-tool turns BYPASS the screen entirely; normalizeCopy still runs. */
+export function usedDimmingTools(toolCalls: readonly { name: string }[]): boolean {
+  return toolCalls.some((c) => DIMMING_TOOL_NAMES.has(c.name));
+}
+
 /** The base PUBLIC tool set: the retrieval tools + plan_layout, always. The
  *  public surface NEVER carries any injected (crm_*) tool — see composeTools. */
 const PUBLIC_TOOLS: ClaudeTool[] = [...TOOLS, ...LAYOUT_TOOLS];
@@ -118,6 +139,7 @@ export function composeTools(
     if (photometricsEnabled(env)) list.push(...PHOTOMETRICS_TOOLS);
     if (specRankEnabled(env)) list.push(...SPEC_RANK_TOOLS);
     if (specFilterEnabled(env)) list.push(...FILTER_TOOLS);
+    if (dimmingEnabled(env)) list.push(...DIMMING_TOOLS);
     // The search_products constraint back-pointer composes ONLY when the
     // filter tool is actually offered (plan O3 / the R3 rule).
     return withTailCache(specFilterEnabled(env) ? withConstraintRouting(list) : list);
@@ -128,6 +150,7 @@ export function composeTools(
   if (layoutEnabled(env)) list.push(...LAYOUT_TOOLS);
   if (specRankEnabled(env)) list.push(...SPEC_RANK_TOOLS);
   if (specFilterEnabled(env)) list.push(...FILTER_TOOLS);
+  if (dimmingEnabled(env)) list.push(...DIMMING_TOOLS);
   return withTailCache(specFilterEnabled(env) ? withConstraintRouting(list) : list);
 }
 
@@ -401,11 +424,18 @@ export async function runThom(
   const extension = opts.extension;
   // The primer's superlative-tool bullet composes only when the rank tool is
   // actually offered (THOM_SPEC_RANK), the constraint bullets only when the
-  // filter tool is (THOM_SPEC_FILTER), and the CRM guidance's sales bullets
-  // only when the category-sales tool is (THOM_CATEGORY_SALES, CS6) —
+  // filter tool is (THOM_SPEC_FILTER), the CRM guidance's sales bullets only
+  // when the category-sales tool is (THOM_CATEGORY_SALES, CS6), and the
+  // dimming bullets only when the dimming tools are (THOM_DIMMING) —
   // commanding an unadvertised tool would re-create the original superlative
   // failure.
-  const system = systemFor(surface, specRankEnabled(env), specFilterEnabled(env), categorySalesEnabled(env));
+  const system = systemFor(
+    surface,
+    specRankEnabled(env),
+    specFilterEnabled(env),
+    categorySalesEnabled(env),
+    dimmingEnabled(env),
+  );
   // CONSTRAINT_INTENT scans the last N user turns + the current message
   // (plan O6): constraints stated earlier stay binding.
   const constraintWindow = recentUserText(opts.history, opts.userMessage);
@@ -500,10 +530,16 @@ export async function runThom(
       );
       // PUBLIC: normalize copy, and (if this turn used web_search OR cited an
       // education document — plan R10) run the competitor screen, replacing the
-      // answer with the guardrail template when flagged. INTERNAL: raw final
-      // text, unchanged.
+      // answer with the guardrail template when flagged. DC3 carve-out: a
+      // request that called a dimming-chart tool BYPASSES the screen — chart
+      // manufacturers (Lutron, ...) are tested references, and the sync screen
+      // would otherwise nuke the whole chart answer on a mixed dimming+web
+      // turn. INTERNAL: raw final text, unchanged.
+      const screenThisTurn =
+        (turnUsedWebSearch(res.content) || turnUsedEducationDocs(citations)) &&
+        !usedDimmingTools(allToolCalls);
       const text = isPublic
-        ? turnUsedWebSearch(res.content) || turnUsedEducationDocs(citations)
+        ? screenThisTurn
           ? await screenCompetitors(normalizeCopy(finalText(res.content), dictTerms), { judge })
           : normalizeCopy(finalText(res.content), dictTerms)
         : finalText(res.content);
@@ -723,7 +759,13 @@ export async function* runThomStream(
   const surface: ThomSurface = opts.surface ?? "internal";
   const extension = opts.extension;
   // Same flag threading as runThom (primer bullets track the offered tools).
-  const system = systemFor(surface, specRankEnabled(env), specFilterEnabled(env), categorySalesEnabled(env));
+  const system = systemFor(
+    surface,
+    specRankEnabled(env),
+    specFilterEnabled(env),
+    categorySalesEnabled(env),
+    dimmingEnabled(env),
+  );
   // Same O6 constraint window as runThom.
   const constraintWindow = recentUserText(opts.history, opts.userMessage);
   const tools = composeTools(surface, env, extension?.tools ?? []);
@@ -744,12 +786,15 @@ export async function* runThomStream(
   // Sanitize one turn's reconstructed text for the public surface: normalize
   // copy always; screen for competitors when the turn used web_search OR when
   // the request's citations so far include an education document (plan R10 —
-  // DOE/DLC/ENERGY STAR education material names manufacturers).
+  // DOE/DLC/ENERGY STAR education material names manufacturers). DC3
+  // carve-out: a request that called a dimming-chart tool bypasses the screen
+  // (chart manufacturers are tested references — see usedDimmingTools).
   const sanitizePublic = (turn: { content: ClaudeContentBlock[]; text: string }): Promise<string> => {
     const normalized = normalizeCopy(turn.text, dictTerms);
-    return turnUsedWebSearch(turn.content) || turnUsedEducationDocs(citations)
-      ? screenCompetitors(normalized, { judge })
-      : Promise.resolve(normalized);
+    const screen =
+      (turnUsedWebSearch(turn.content) || turnUsedEducationDocs(citations)) &&
+      !usedDimmingTools(allToolCalls);
+    return screen ? screenCompetitors(normalized, { judge }) : Promise.resolve(normalized);
   };
   let toolCallCount = 0;
   const usage: ThomUsage = {

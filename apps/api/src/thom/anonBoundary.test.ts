@@ -102,6 +102,46 @@ describe.skipIf(!HAVE_CREDS)("Thom public anon boundary (0052)", () => {
     expect(error).toBeNull();
   });
 
+  it("reads the three dimming tables (0067: open read, service-role writes)", async () => {
+    const reports = await sb
+      .from("dimming_reports")
+      .select("id,report_code,product_family,skus_tested,status")
+      .limit(1);
+    expect(reports.error).toBeNull();
+    const links = await sb
+      .from("dimming_report_products")
+      .select("report_id,product_sku,link_kind")
+      .limit(1);
+    expect(links.error).toBeNull();
+    const rows = await sb
+      .from("dimming_compat_rows")
+      .select("report_id,dimmer_model,dimmer_model_norm,phase_type,status")
+      .limit(1);
+    expect(rows.error).toBeNull();
+  });
+
+  it("cannot WRITE any dimming table (no write policy exists)", async () => {
+    const rep = await sb
+      .from("dimming_reports")
+      .insert({ content_hash: `probe:anon-boundary:${Date.now()}` });
+    expect(rep.error, "anon must not insert into dimming_reports").not.toBeNull();
+    const link = await sb.from("dimming_report_products").insert({
+      report_id: "00000000-0000-0000-0000-000000000000",
+      product_sku: "probe",
+      link_kind: "pattern",
+    });
+    expect(link.error, "anon must not insert into dimming_report_products").not.toBeNull();
+    const row = await sb.from("dimming_compat_rows").insert({
+      report_id: "00000000-0000-0000-0000-000000000000",
+      manufacturer: "probe",
+      dimmer_model: "probe",
+      dimmer_model_norm: "PROBE",
+      phase_type: "other",
+      status: "tested_issue",
+    });
+    expect(row.error, "anon must not insert into dimming_compat_rows").not.toBeNull();
+  });
+
   it("reads product_photometrics and ies_metrics", async () => {
     const pp = await sb
       .from("product_photometrics")

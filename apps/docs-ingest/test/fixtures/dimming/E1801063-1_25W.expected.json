@@ -1,0 +1,87 @@
+{
+  "comment": "Golden pins for the committed real chart (dimming plan §F, DC9): keyed by zip entry path + content hash, never by size label — TWO 5in units exist with different values. Values below are read from THIS unit's pages (the plan's illustrative Adorne Touch (TRIAC) 21.0% belongs to a different unit; this file prints 18.0%). Public chart content — repo-public-safe, no customer data.",
+  "zip_entry_path": "Tube_Cube_Architectural/5in Tube and Cube/E1801063-1_25W.pdf",
+  "content_hash": "5718d1d23e47b6859c57e2985ba906a57025e76f3546b147dd84de13dc8e78d2",
+  "report": {
+    "report_code_body": null,
+    "report_code_derived_from_filename": "E1801063-1_25W",
+    "product_family_contains": "Tube & Cube",
+    "skus_tested": ["DS-WS05-F30A-WT"],
+    "related_model_patterns_include": [
+      "DS-CD05-*",
+      "DS-PD05-*",
+      "DS-WS05-*",
+      "DS-WD05-*",
+      "DS-WE05-*",
+      "DC-CD05-*",
+      "DC-PD05-*",
+      "DC-WS05-*",
+      "DC-WD05-*",
+      "DC-WE05-*"
+    ],
+    "test_voltage_range": "120-277VAC",
+    "pages": 2,
+    "min_rows": 40
+  },
+  "pinned_rows": [
+    {
+      "why": "plan §F pin — 25W unit, NOT the 17W unit's DVCL-153P 9.0%",
+      "dimmer_model_norm": "DVCL-153PD",
+      "phase_type": "triac",
+      "mode_qualifier": null,
+      "test_voltage": "120",
+      "low_end_pct": 10.0,
+      "status": "not_recommended",
+      "comments_contain": "Not Recommended"
+    },
+    {
+      "why": "plan §F pin",
+      "dimmer_model_norm": "DVELV-300P",
+      "phase_type": "elv",
+      "mode_qualifier": null,
+      "test_voltage": "120",
+      "low_end_pct": 7.0,
+      "status": "tested_compatible"
+    },
+    {
+      "why": "DC2 golden pair (ELV half): mode-qualified row INSIDE the Adaptive section",
+      "dimmer_model_norm": "ADTH700RMTUM1",
+      "phase_type": "adaptive",
+      "mode_qualifier": "elv",
+      "test_voltage": "120",
+      "low_end_pct": 9.0,
+      "status": "tested_compatible",
+      "comments_contain": "Flicker below 9%"
+    },
+    {
+      "why": "DC2 golden pair (TRIAC half): same model + voltage, disambiguated only by the qualifier",
+      "dimmer_model_norm": "ADTH700RMTUM1",
+      "phase_type": "adaptive",
+      "mode_qualifier": "triac",
+      "test_voltage": "120",
+      "low_end_pct": 18.0,
+      "status": "not_recommended",
+      "comments_contain": "Not Recommended"
+    },
+    {
+      "why": "DC1: null low end + issue comment must NEVER be tested_compatible",
+      "dimmer_model_norm": "HRD-5NE",
+      "phase_type": "elv",
+      "mode_qualifier": null,
+      "test_voltage": "120",
+      "low_end_pct": null,
+      "status": "tested_issue",
+      "comments_contain": "Flashing at high dimming level"
+    },
+    {
+      "why": "DC1: null low end + non-function comment -> not_compatible",
+      "dimmer_model_norm": "RH703PTUW",
+      "phase_type": "adaptive",
+      "mode_qualifier": null,
+      "test_voltage": "120",
+      "low_end_pct": null,
+      "status": "not_compatible",
+      "comments_contain": "not responsive"
+    }
+  ]
+}
