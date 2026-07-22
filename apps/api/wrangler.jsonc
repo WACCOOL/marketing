@@ -253,7 +253,12 @@
     // flag lives in apps/thom-bot/wrangler.jsonc and flips after the internal
     // regression conversation (plan G.2, docs/thom-lighting-expert-plan.md).
     // ENABLED 2026-07-21 (0059+0060 applied, G.1 verification passed).
-    "THOM_SPEC_RANK": "1"
+    "THOM_SPEC_RANK": "1",
+    // Attribute filter (filter_products + get_product dims; migs 0063/0064) and
+    // category sales (crm_sales_by_category; migs 0065/0066). ENABLED 2026-07-22
+    // after the 0064 matview fix verified (anon filter 643ms vs prior 57014).
+    "THOM_SPEC_FILTER": "1",
+    "THOM_CATEGORY_SALES": "1"
   },
 
   // Cron schedules, dispatched by the scheduled() export in src/index.ts:
