@@ -141,6 +141,16 @@ describe("constraint bullets (attribute-filter plan §C, THOM_SPEC_FILTER-gated)
     expect(primer).toContain("never downlights");
   });
 
+  it("carries the wall-orientation honesty bullet (no orientation data; long/cross axes, never an axis claim)", () => {
+    const primer = lightingExpertise(false, true);
+    expect(primer).toContain("does not record mounting orientation for wall-mounted fixtures");
+    expect(primer).toContain("long axis and cross axis");
+    expect(primer).toContain("never assert which axis is the width or the height");
+    expect(primer).toContain("a vertically mounted sconce's long axis is its height");
+    // Flag-gated with the rest of the filter bullets (R3).
+    expect(lightingExpertise(true, false)).not.toContain("mounting orientation");
+  });
+
   it("pass normalizeCopy unchanged (public copy lints) in every flag combination", () => {
     for (const rank of [false, true]) {
       for (const filter of [false, true]) {

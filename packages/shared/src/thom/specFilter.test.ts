@@ -30,11 +30,16 @@ import {
   SEARCH_PRODUCTS_FILTER_POINTER,
   SPEC_RANK_CLASSES,
   variantWidthIn,
+  WALL_ORIENTATION_CAVEAT,
+  wallAxisPhrase,
+  wallFitsClause,
+  wallLongCrossMm,
   withConstraintRouting,
   TOOLS,
   type FilterRpcRow,
   type ProductDimRow,
 } from "./tools.js";
+import { hasBareWac, normalizeCopy } from "./publicFilter.js";
 import type { ThomEnv } from "./env.js";
 import type { ToolContext } from "./types.js";
 
@@ -208,15 +213,27 @@ describe("dual-unit formatting", () => {
 // --- row + coverage formatting ------------------------------------------------
 
 describe("formatFilterRows", () => {
-  it("renders NAME-FIRST rows with dual-unit derived values, raw recorded axes, the sizes count, and REAL variant SKUs", () => {
+  it("renders NAME-FIRST rows with dual-unit derived values, raw recorded axes, the sizes count, and REAL variant SKUs (wall rows orientation-neutral)", () => {
+    // Wall class: the catalog records no mounting orientation, so the row
+    // states long/cross axes instead of claiming wide/tall (Turbo-14 defect).
     const [line] = formatFilterRows([frow()], { lumensStated: true, wireStated: false });
     expect(line).toBe(
       "- Slim Bath & Vanity Light (PPID 3554, WAC Lighting, wall): " +
-        "18.0 in (457 mm) wide, 2.6 in (66 mm) deep, 5.0 in (127 mm) tall " +
+        "long axis 18.0 in (457 mm), cross 5.0 in (127 mm), 2.6 in (66 mm) deep " +
         "(recorded W 2.6 in (66 mm) x H 5.0 in (127 mm) x L 18.0 in (457 mm)); " +
         "2 of 6 sizes meet your limits; order SKUs WS-3554-30-BN, WS-3554-36-BN; " +
         "3000K, CRI 90, 1,268 lm",
     );
+  });
+
+  it("keeps the wide/deep/tall phrasing for non-wall classes (orientation is only unknown on the wall)", () => {
+    const [line] = formatFilterRows([frow({ class: "ceiling" })], {
+      lumensStated: true,
+      wireStated: false,
+    });
+    expect(line).toContain("18.0 in (457 mm) wide, 2.6 in (66 mm) deep, 5.0 in (127 mm) tall");
+    expect(line).not.toContain("long axis");
+    expect(line).not.toContain("mounting orientation");
   });
 
   it("NEVER labels the numeric PPID as 'SKU' — the SKU label is reserved for variant part numbers", () => {
@@ -288,9 +305,12 @@ describe("formatFilterRows", () => {
     expect(line).toContain("wire/cord 6 ft (1.83 m)");
   });
 
-  it("labels the shown width as the qualifying size and names the OTHER sizes when the product is also made bigger (the Turbo defect)", () => {
-    // Turbo shape: the 353 mm bar qualifies for a 15-inch limit; the 610 mm
-    // bar exists but does not — and its drawing may lead the linked PDP.
+  it("renders the Turbo-14 shape orientation-neutral: long/cross axes, the any-orientation fit, qualifying size, and the OTHER sizes", () => {
+    // Turbo shape: the 353 mm bar qualifies for a 15-inch limit, but the
+    // 14-inch unit is a VERTICALLY mounted sconce — 13.9 in is its HEIGHT on
+    // the wall (cross axis 5.0 in). The catalog records no orientation, so
+    // the row must never call 13.9 the width; and because the LONG axis is
+    // within the cap it honestly fits in any mounting orientation.
     const [line] = formatFilterRows(
       [
         frow({
@@ -303,18 +323,47 @@ describe("formatFilterRows", () => {
           q_width_min_in: 13.9,
           q_width_max_in: 13.9,
           ex_width_in: 13.9,
+          ex_depth_in: 4.4,
+          ex_width_mm: 111.8, // wall projection (least axis)
+          ex_height_mm: 127, // cross axis on the wall
+          ex_length_mm: 353, // long axis (height when mounted vertically)
         }),
       ],
       {
         lumensStated: false,
         wireStated: false,
         sizesBySku: new Map([["4101", [13.9, 24]]]),
+        widthMaxIn: 15,
       },
     );
-    expect(line).toContain("13.9 in (353 mm) wide, qualifying size");
+    expect(line).toContain("long axis 13.9 in (353 mm), cross 5.0 in (127 mm), qualifying size");
+    expect(line).toContain("fits your 15 in width limit in any mounting orientation");
     expect(line).toContain("also made in 24.0 in (610 mm)");
+    // NEVER an axis claim the catalog cannot back.
+    expect(line).not.toContain("wide");
+    expect(line).not.toContain("tall");
     // The count line still carries the per-size arithmetic.
     expect(line).toContain("1 of 2 sizes meets your limits");
+  });
+
+  it("omits the any-orientation clause when no width cap was stated, and when the LONG axis exceeds it", () => {
+    // No cap stated: axes only, no fit claim.
+    const [noCap] = formatFilterRows([frow()], { lumensStated: false, wireStated: false });
+    expect(noCap).not.toContain("mounting orientation");
+    // Long axis (18.0 in) beyond the cap: the claim would overreach.
+    const [beyond] = formatFilterRows([frow()], {
+      lumensStated: false,
+      wireStated: false,
+      widthMaxIn: 15,
+    });
+    expect(beyond).not.toContain("mounting orientation");
+    // Long axis within the cap: the claim is honest either way up.
+    const [fits] = formatFilterRows([frow()], {
+      lumensStated: false,
+      wireStated: false,
+      widthMaxIn: 20,
+    });
+    expect(fits).toContain("fits your 20 in width limit in any mounting orientation");
   });
 
   it("leaves single-size products unchanged (no qualifying-size tag, no also-made-in note)", () => {
@@ -703,8 +752,68 @@ describe("filter_products dispatch", () => {
     expect(out.content).toContain(
       "[Slim Bath & Vanity Light](https://www.waclighting.com/slim-vanity)",
     );
-    expect(out.content).toContain("18.0 in (457 mm) wide, qualifying size");
+    // Wall row: orientation-neutral axes ride the qualifying-size tag, and
+    // the stated cap threads through to the any-orientation clause.
+    expect(out.content).toContain(
+      "long axis 18.0 in (457 mm), cross 5.0 in (127 mm), qualifying size",
+    );
+    expect(out.content).toContain("fits your 20 in width limit in any mounting orientation");
     expect(out.content).toContain("also made in 24.0 in (610 mm)");
+  });
+
+  it("appends the wall-orientation caveat when a width cap screened wall fixtures, and only then", async () => {
+    // Wall row + stated max width -> the one-line caveat after coverage.
+    const wall = makeCtx([{ data: [frow()], error: null }]);
+    const out = await dispatch(wall.ctx, "filter_products", { max_width_in: 20 });
+    expect(out.content).toContain(WALL_ORIENTATION_CAVEAT);
+    // Same scope, height-capped only: the caveat is about the WIDTH screen.
+    const heightOnly = makeCtx([{ data: [frow()], error: null }]);
+    const out2 = await dispatch(heightOnly.ctx, "filter_products", { max_height_in: 6 });
+    expect(out2.content).not.toContain(WALL_ORIENTATION_CAVEAT);
+    // Width-capped but nothing wall-class in the results or scope: no caveat.
+    const ceiling = makeCtx([{ data: [frow({ class: "ceiling" })], error: null }]);
+    const out3 = await dispatch(ceiling.ctx, "filter_products", { max_width_in: 20 });
+    expect(out3.content).not.toContain(WALL_ORIENTATION_CAVEAT);
+  });
+
+  it("appends the caveat on a width-capped zero-match in wall scope (the vertical sconce may be exactly what was excluded)", async () => {
+    const { ctx } = makeCtx([
+      { data: [countsRow()], error: null }, // strict call: nothing fits
+      { data: [], error: null }, // width relaxation: still nothing
+    ]);
+    const out = await dispatch(ctx, "filter_products", { max_width_in: 5, class: "wall" });
+    expect(out.content).toContain("Nothing in the catalog fits");
+    expect(out.content).toContain(WALL_ORIENTATION_CAVEAT);
+  });
+});
+
+describe("wall orientation helpers (Turbo-14 honesty)", () => {
+  it("wallLongCrossMm sorts the recorded axes: long = max, cross = second", () => {
+    expect(wallLongCrossMm([111.8, 127, 353, null])).toEqual({ longMm: 353, crossMm: 127 });
+    expect(wallLongCrossMm([353])).toEqual({ longMm: 353, crossMm: null });
+    expect(wallLongCrossMm([null, undefined])).toBeNull();
+  });
+
+  it("wallAxisPhrase renders dual-unit long/cross, omitting a missing cross axis", () => {
+    expect(wallAxisPhrase({ longMm: 353, crossMm: 127 })).toBe(
+      "long axis 13.9 in (353 mm), cross 5.0 in (127 mm)",
+    );
+    expect(wallAxisPhrase({ longMm: 353, crossMm: null })).toBe("long axis 13.9 in (353 mm)");
+  });
+
+  it("wallFitsClause claims any-orientation fit ONLY when the long axis is within the cap", () => {
+    expect(wallFitsClause(15, 353)).toBe("fits your 15 in width limit in any mounting orientation");
+    expect(wallFitsClause(15.5, 353)).toBe(
+      "fits your 15.5 in width limit in any mounting orientation",
+    );
+    expect(wallFitsClause(12, 353)).toBeNull(); // 13.9 in long axis exceeds a 12 in cap
+  });
+
+  it("the caveat is a copy-lint-safe verbatim contract (public surface rides tool output)", () => {
+    expect(normalizeCopy(WALL_ORIENTATION_CAVEAT)).toBe(WALL_ORIENTATION_CAVEAT);
+    expect(WALL_ORIENTATION_CAVEAT).not.toContain("—");
+    expect(hasBareWac(WALL_ORIENTATION_CAVEAT)).toBe(false);
+    expect(WALL_ORIENTATION_CAVEAT).toContain("ask to include vertical sconces");
   });
 });
 
@@ -798,7 +907,7 @@ const dimRow = (over: Partial<ProductDimRow> = {}): ProductDimRow => ({
 });
 
 describe("formatProductDims (O1)", () => {
-  it("prints a Sizes: block with recorded axes AND the derived width/depth the filter uses, dual-unit", () => {
+  it("prints a Sizes: block with recorded axes AND the derived values the filter uses, dual-unit (wall rows orientation-neutral)", () => {
     const lines = formatProductDims([
       dimRow(),
       dimRow({ variant_sku: "WS-3554-30-BK", finish: "Black" }), // same size, other finish -> collapsed
@@ -806,11 +915,19 @@ describe("formatProductDims (O1)", () => {
     ]);
     expect(lines[0]).toBe("Sizes:");
     expect(lines).toHaveLength(3); // header + 2 distinct sizes
+    // Wall class: long/cross axes, never wide/tall (no recorded orientation);
+    // the raw recorded axes are unchanged alongside.
     expect(lines[1]).toBe(
-      "- 18.0 in (457 mm) wide, 2.6 in (66 mm) deep, 5.0 in (127 mm) tall " +
+      "- long axis 18.0 in (457 mm), cross 5.0 in (127 mm), 2.6 in (66 mm) deep " +
         "(recorded W 2.6 in (66 mm) x H 5.0 in (127 mm) x L 18.0 in (457 mm))",
     );
-    expect(lines[2]).toContain("24.0 in (610 mm) wide");
+    expect(lines[2]).toContain("long axis 24.0 in (610 mm)");
+  });
+
+  it("keeps the wide/deep/tall derived line for non-wall classes", () => {
+    const lines = formatProductDims([dimRow({ class: "ceiling" })]);
+    expect(lines[1]).toContain("18.0 in (457 mm) wide, 2.6 in (66 mm) deep, 5.0 in (127 mm) tall");
+    expect(lines[1]).not.toContain("long axis");
   });
 
   it("adds the wire/cord line when present, dual-unit ft (m)", () => {
@@ -868,7 +985,8 @@ describe("get_product dimension surface (O1, flag-gated)", () => {
     const out = await dispatch(ctx, "get_product", { sku: "3554" });
     expect(tables).toContain("product_variant_spec_view");
     expect(out.content).toContain("Sizes:");
-    expect(out.content).toContain("18.0 in (457 mm) wide");
+    // Wall class: the derived line is orientation-neutral (long/cross axes).
+    expect(out.content).toContain("long axis 18.0 in (457 mm), cross 5.0 in (127 mm)");
     expect(out.content).toContain("recorded W 2.6 in (66 mm)");
     expect(out.content).toContain("Wire/cord length: 6 ft (1.83 m)");
   });
