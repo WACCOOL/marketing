@@ -1,5 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { canonicalBrand, canonicalPdpUrl, deriveModelCodes } from "@wac/shared";
+import {
+  MODERN_FORMS_SPEC_TEMPLATES,
+  canonicalBrand,
+  canonicalPdpUrl,
+  deriveModelCodes,
+  modernFormsSpecUrl,
+} from "@wac/shared";
 import { siteForHost } from "./sites.js";
 
 /**
@@ -23,7 +29,10 @@ import { siteForHost } from "./sites.js";
  * Healing (--reconcile-write) is GAP-ONLY and never clobbers: url null → set
  * canonical; url '' (resolver attempted, none) → fill; a DIFFERING non-empty
  * url is proposed in the report (WIES stays authoritative). spec_sheet_url
- * only fills null/''. wacarchitectural is EXCLUDED from writes entirely — no
+ * only fills null/'' — plus, on modernforms, the broken PDP-path dispatcher
+ * form an early run wrote (candidates are transformed to the dynamic-specsheet
+ * endpoint and PROBE-VERIFIED as PDFs before any write — see mfSpecCandidates).
+ * wacarchitectural is EXCLUDED from writes entirely — no
  * catalog rows exist yet (evidence harvest only, per the plan addendum).
  * Nothing here reads or writes any price/financial field (none exist on
  * these tables — asserted in tests).
@@ -32,6 +41,9 @@ import { siteForHost } from "./sites.js";
 export interface ReconcileOptions {
   write: boolean;
   log?: (m: string) => void;
+  /** HEAD-probe used to verify Modern Forms dynamic-specsheet candidates
+   *  actually answer a PDF before they are written (injectable for tests). */
+  probePdf?: (url: string) => Promise<boolean>;
 }
 
 export interface ReconcileReport {
@@ -166,6 +178,74 @@ export function resolvePdp(index: ReverseIndex, evidence: string[]): Resolution 
   return classify(index, familyHits);
 }
 
+// --- Modern Forms spec-sheet handling ----------------------------------------
+//
+// Modern Forms' PDP-path dispatcher (`/product/<slug>?download=specsN`) answers
+// HTML (not a PDF) to fetchers — only the dynamic-specsheet endpoint keyed on
+// the PDP's data-ppid serves the real sheet, and its template index must be
+// probed live (the endpoint 200s HTML for a wrong index; specs5 covers ~96%).
+// Same route products-sync's resolveModernFormsSpecSheet uses.
+
+/** The broken Modern Forms form an early reconcile run wrote into pdp_urls —
+ *  treated as a healable gap, and never written again. */
+export function isBadMfSpecForm(url: string | null | undefined): boolean {
+  return !!url && /modernforms\.com\/product\/[^?]*[?&]download=specs/i.test(url);
+}
+
+/**
+ * Ordered dynamic-specsheet candidates for a Modern Forms frontier PDP. PPID
+ * comes from the discovered URL's own `ppid=` param (the fixed harvest form)
+ * or, for legacy bad-form rows, the folded data-ppid evidence — harvest only
+ * ever adds ONE all-digit code on modernforms (ambiguity → no candidates).
+ * The harvested template index is tried first, then the shared probe order.
+ */
+export function mfSpecCandidates(
+  discovered: string | null,
+  modelCodes: string[] | null,
+): string[] {
+  let ppid = discovered?.match(/[?&]ppid=(\d+)/)?.[1] ?? null;
+  if (!ppid) {
+    const digits = (modelCodes ?? []).filter((c) => /^\d+$/.test(c));
+    if (digits.length === 1) ppid = digits[0]!;
+  }
+  if (!ppid) return [];
+  const harvested = Number(discovered?.match(/[?&]download=specs(\d+)/i)?.[1]);
+  const order = [
+    ...(Number.isFinite(harvested) ? [harvested] : []),
+    ...MODERN_FORMS_SPEC_TEMPLATES,
+  ];
+  const seen = new Set<number>();
+  const out: string[] = [];
+  for (const t of order) {
+    if (seen.has(t)) continue;
+    seen.add(t);
+    out.push(modernFormsSpecUrl(ppid, t));
+  }
+  return out;
+}
+
+const PROBE_TIMEOUT_MS = 12_000;
+const PROBE_UA = "WAC-Marketing-App/1.0 (+thom pdp reconcile; contact WAC IT)";
+
+/** HEAD a URL and report whether it actually answers as a PDF (the working
+ *  fetch shape: honest app UA — browser-shaped UAs get 403 from Modern Forms). */
+export async function headIsPdf(url: string): Promise<boolean> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const r = await fetch(url, {
+      method: "HEAD",
+      signal: ctl.signal,
+      headers: { "user-agent": PROBE_UA, accept: "application/pdf,*/*" },
+    });
+    return r.ok && (r.headers.get("content-type") ?? "").toLowerCase().includes("application/pdf");
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const UPSERT = 300;
 
 export async function reconcilePdp(
@@ -236,7 +316,8 @@ export async function reconcilePdp(
 
     // Heal analysis: one_sku only, and never wacarchitectural (no catalog yet).
     if (res.state !== "one_sku") continue;
-    if (siteForHost(pdp.host)?.key === "wacarchitectural") continue;
+    const siteKey = siteForHost(pdp.host)?.key ?? null;
+    if (siteKey === "wacarchitectural") continue;
     const sku = res.skus[0]!;
     const cached = pdpBySku.get(sku);
     const brand = index.brandOf.get(sku);
@@ -260,9 +341,25 @@ export async function reconcilePdp(
         report.urlConflicts.push({ sku, existing, discovered: canonical });
       }
     }
-    const spec = pdp.discovered_spec_sheet_url;
-    const specFill =
-      spec && (cached?.spec_sheet_url == null || cached.spec_sheet_url === "") ? spec : null;
+    let spec = pdp.discovered_spec_sheet_url;
+    const cachedSpec = cached?.spec_sheet_url ?? null;
+    // Gap = never resolved (null), attempted-none (''), or the broken Modern
+    // Forms PDP-path form an early run wrote (healed like the ?s= urls above).
+    const specGap = cachedSpec == null || cachedSpec === "" || isBadMfSpecForm(cachedSpec);
+    if (spec && specGap && siteKey === "modernforms") {
+      // Never write a Modern Forms candidate unverified: transform to the
+      // dynamic-specsheet form and keep the first template that answers a PDF.
+      const probe = opts.probePdf ?? headIsPdf;
+      let resolved: string | null = null;
+      for (const cand of mfSpecCandidates(spec, pdp.model_codes)) {
+        if (await probe(cand)) {
+          resolved = cand;
+          break;
+        }
+      }
+      spec = resolved;
+    }
+    const specFill = spec && specGap && spec !== cachedSpec ? spec : null;
     if (specFill) report.specFills++;
     if ((urlFill || specFill) && opts.write) {
       pdpUpdates.push({

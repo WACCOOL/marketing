@@ -123,6 +123,22 @@ describe("extractPage — PDP evidence harvest", () => {
     expect(p.evidence.ppid).toBe("8817");
   });
 
+  it("Modern Forms dispatcher emits the dynamic-specsheet form, NEVER the PDP path", () => {
+    // The PDP-path dispatcher (`/product/<slug>?download=specsN`) answers HTML
+    // (not a PDF) to fetchers — the working route is dynamic-specsheet + ppid.
+    const html = page(`<div class="pdp" data-ppid="8817"></div><a href="?download=specs5">Spec Sheet</a><p>${PARA}</p>`);
+    const p = extractPage(html, "https://modernforms.com/product/vox-60", { siteKey: "modernforms", brand: "Modern Forms" });
+    expect(p.evidence.specSheetUrl).toBe("https://modernforms.com/dynamic-specsheet/?download=specs5&ppid=8817");
+  });
+
+  it("Modern Forms dispatcher without a data-ppid yields NO spec-sheet URL", () => {
+    // Without a ppid the dynamic endpoint can't be keyed; the PDP-path form is
+    // known-broken, so nothing is emitted rather than a poisoned URL.
+    const html = page(`<a href="?download=specs5">Spec Sheet</a><p>${PARA}</p>`);
+    const p = extractPage(html, "https://modernforms.com/product/vox-60", { siteKey: "modernforms", brand: "Modern Forms" });
+    expect(p.evidence.specSheetUrl).toBeNull();
+  });
+
   it("parses the Schonbek title into family + PPID (both title shapes)", () => {
     const withPpid = page("", `<title>Arlington | 1302E | Signature | Schonbek</title>`);
     const p1 = extractPage(withPpid, "https://schonbek.com/product/arlington-12", { siteKey: "schonbek", brand: "Schonbek" });
