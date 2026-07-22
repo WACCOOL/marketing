@@ -12,15 +12,20 @@ import type { ExtractedDimmingReport } from "@wac/shared/thom";
 import { DIMMING_REPORT_DOC_TYPE } from "@wac/shared/thom";
 import {
   applyExtraction,
+  baseCodeFromReportCode,
   buildPatternBindings,
+  buildVariantSkuIndex,
   computeSupersededDocIds,
   derivedDimReportUrl,
+  groupLinksByReport,
   isPdfMagic,
   isZipMagic,
+  reportBaseCodes,
   sha256Hex,
   unitsFromBytes,
   validZmatdimrep,
   type DimmingDocMeta,
+  type PatternBinding,
 } from "./dimming.js";
 import { processPending, requeueFailed } from "./index.js";
 
@@ -247,6 +252,8 @@ describe("buildPatternBindings", () => {
     product_family: family,
     skus_tested: tested,
     related_model_likes: likes,
+    report_code: null,
+    report_code_derived: false,
     loosePdf: false,
     kb_document_id: null,
   });
@@ -283,6 +290,169 @@ describe("buildPatternBindings", () => {
     );
     expect(overlaps).toEqual([]);
     expect(links).toHaveLength(2);
+  });
+});
+
+// --- BASE-code prefix binding (the 302-active/12-links fix) -------------------
+
+describe("base-code prefix binding", () => {
+  const rep = (
+    id: string,
+    family: string,
+    tested: string[],
+    reportCode: string | null = null,
+    derived = false,
+  ) => ({
+    id,
+    product_family: family,
+    skus_tested: tested,
+    related_model_likes: [] as string[],
+    report_code: reportCode,
+    report_code_derived: derived,
+    loosePdf: false,
+    kb_document_id: null,
+  });
+  const parents = [
+    { sku: "PPID-100", variant_search: null },
+    { sku: "PPID-200", variant_search: null },
+  ];
+  const idx = buildVariantSkuIndex([
+    { sku: "PPID-100", variantSkus: ["FM-W2612-30-BK", "FM-W2612-35-WT"] },
+    { sku: "PPID-200", variantSkus: ["FM-W2620-30-BK", "PD-57317"] },
+  ]);
+
+  it("resolves a tested BASE code to the parent of its suffixed variants", () => {
+    const { links, overlaps } = buildPatternBindings(
+      [rep("r1", "Flush Mount", ["FM-W2612"])],
+      parents,
+      idx,
+    );
+    expect(overlaps).toEqual([]);
+    expect(links).toEqual([{ report_id: "r1", product_sku: "PPID-100", link_kind: "pattern" }]);
+  });
+
+  it("a base equal to a full variant SKU matches too (equals-base case)", () => {
+    const { links } = buildPatternBindings([rep("r1", "Pendant", ["PD-57317"])], parents, idx);
+    expect(links).toEqual([{ report_id: "r1", product_sku: "PPID-200", link_kind: "pattern" }]);
+  });
+
+  it("does NOT false-positive on a non-hyphen-boundary near-miss (FM-W26)", () => {
+    const { links, overlaps } = buildPatternBindings(
+      [rep("r1", "Flush Mount", ["FM-W26"])],
+      parents,
+      idx,
+    );
+    expect(links).toEqual([]);
+    expect(overlaps).toEqual([]);
+  });
+
+  it("resolves the filename-derived report code's base (FM-W2612_DIMREP)", () => {
+    const { links } = buildPatternBindings(
+      [rep("r1", "Flush Mount", [], "FM-W2612_DIMREP", true)],
+      parents,
+      idx,
+    );
+    expect(links).toEqual([{ report_id: "r1", product_sku: "PPID-100", link_kind: "pattern" }]);
+  });
+
+  it("ignores a BODY-carried report code (not filename-derived)", () => {
+    const { links } = buildPatternBindings(
+      [rep("r1", "Flush Mount", [], "FM-W2612_DIMREP", false)],
+      parents,
+      idx,
+    );
+    expect(links).toEqual([]);
+  });
+
+  it("normalizes case/whitespace/U+2010 hyphens on both sides", () => {
+    const uIdx = buildVariantSkuIndex([{ sku: "P1", variantSkus: [" fm‐w2612-30-bk "] }]);
+    const { links } = buildPatternBindings(
+      [rep("r1", "Flush Mount", ["fm-w2612 "])],
+      [{ sku: "P1", variant_search: null }],
+      uIdx,
+    );
+    expect(links).toEqual([{ report_id: "r1", product_sku: "P1", link_kind: "pattern" }]);
+  });
+
+  it("HOLDS a base-prefix match hit by units of 2+ DIFFERENT families (DC4 audit)", () => {
+    const { links, overlaps } = buildPatternBindings(
+      [rep("r1", "Flush Mount", ["FM-W2612"]), rep("r2", "Cube", ["FM-W2612-30"])],
+      parents,
+      idx,
+    );
+    expect(links).toEqual([]);
+    expect(overlaps).toHaveLength(1);
+    expect(overlaps[0]!.sku).toBe("PPID-100");
+    expect(overlaps[0]!.families.sort()).toEqual(["cube", "flush mount"]);
+  });
+
+  it("patterns stay primary when present — pattern matching is unchanged", () => {
+    const { links } = buildPatternBindings(
+      [{ ...rep("r1", "Tube", []), related_model_likes: ["DS-CD05-%"] }],
+      [{ sku: "DS-CD05-F30A", variant_search: null }],
+      idx,
+    );
+    expect(links).toEqual([{ report_id: "r1", product_sku: "DS-CD05-F30A", link_kind: "pattern" }]);
+  });
+
+  it("drops placeholder bases (N/A, 0, -) — the corpus carries them", () => {
+    expect(
+      reportBaseCodes({ skus_tested: ["N/A", "NA", "0", "-", "PD-57317"], report_code: null, report_code_derived: false }),
+    ).toEqual(["PD-57317"]);
+    const naIdx = buildVariantSkuIndex([{ sku: "N/A", variantSkus: ["N/A"] }]);
+    const { links } = buildPatternBindings([rep("r1", "Crescent", ["N/A"])], [{ sku: "N/A", variant_search: null }], naIdx);
+    expect(links).toEqual([]);
+    // ... and via the likes path (charts whose related-models header is "N/A").
+    const { links: likeLinks } = buildPatternBindings(
+      [{ ...rep("r1", "Crescent", []), related_model_likes: ["N/A"] }],
+      [{ sku: "N/A", variant_search: null }],
+      naIdx,
+    );
+    expect(likeLinks).toEqual([]);
+  });
+
+  it("baseCodeFromReportCode + reportBaseCodes helpers", () => {
+    expect(baseCodeFromReportCode("FM-W2612_DIMREP")).toBe("FM-W2612");
+    expect(baseCodeFromReportCode("E1801063-1_25W")).toBe("E1801063-1");
+    expect(baseCodeFromReportCode("  ")).toBeNull();
+    expect(baseCodeFromReportCode(null)).toBeNull();
+    expect(
+      reportBaseCodes({
+        skus_tested: ["pd-57317", "PD-57317 "],
+        report_code: "FM-W2612_DIMREP",
+        report_code_derived: true,
+      }).sort(),
+    ).toEqual(["FM-W2612", "PD-57317"]);
+  });
+});
+
+// --- relink plan (per-report delete+reinsert scaffolding) ---------------------
+
+describe("groupLinksByReport (relink plan)", () => {
+  const links: PatternBinding[] = [
+    { report_id: "r1", product_sku: "P1", link_kind: "pattern" },
+    { report_id: "r1", product_sku: "P1", link_kind: "pattern" }, // dupe -> dropped
+    { report_id: "r1", product_sku: "P2", link_kind: "field" },
+    { report_id: "rX", product_sku: "P9", link_kind: "pattern" }, // out of scope
+  ];
+
+  it("emits an entry for EVERY in-scope report (empty = stale links cleared)", () => {
+    const plan = groupLinksByReport(["r1", "r2"], links);
+    expect([...plan.keys()].sort()).toEqual(["r1", "r2"]);
+    expect(plan.get("r2")).toEqual([]);
+    expect(plan.get("r1")).toHaveLength(2); // dupe dropped
+  });
+
+  it("never writes links for out-of-scope reports", () => {
+    const plan = groupLinksByReport(["r1"], links);
+    expect([...plan.values()].flat().every((l) => l.report_id === "r1")).toBe(true);
+  });
+
+  it("is idempotent: replanning from an applied plan yields the identical plan", () => {
+    const first = groupLinksByReport(["r1", "r2"], links);
+    const applied = [...first.values()].flat(); // the table state after delete+reinsert
+    const second = groupLinksByReport(["r1", "r2"], applied);
+    expect(second).toEqual(first);
   });
 });
 

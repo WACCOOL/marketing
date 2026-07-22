@@ -2,7 +2,7 @@ import { pathToFileURL } from "node:url";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { chunkText, estimateTokens, resolveKbDocStatus, type KbDocStatusRow } from "@wac/shared";
 import { DIMMING_REPORT_DOC_TYPE } from "@wac/shared/thom";
-import { runDimming } from "./dimming.js";
+import { runDimming, runDimmingRelink } from "./dimming.js";
 import {
   articleContentHash,
   articleScope,
@@ -152,6 +152,10 @@ interface Args {
   /** --dimming --sample N: process at most N units and print the verification
    *  report for Davis's gate (sample-then-STOP, plan §G.3). */
   sample: number | null;
+  /** --dimming-relink: recompute dimming_report_products for ALL non-superseded
+   *  reports from their STORED skus_tested/patterns/report_code — no
+   *  re-extraction, no Claude, no CF creds. Runs ONLY the relink, then exits. */
+  dimmingRelink: boolean;
 }
 function parseArgs(argv: string[]): Args {
   const a: Args = {
@@ -171,6 +175,7 @@ function parseArgs(argv: string[]): Args {
     retryFailed: false,
     dimming: false,
     sample: null,
+    dimmingRelink: false,
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--dry-run") a.dryRun = true;
@@ -186,6 +191,7 @@ function parseArgs(argv: string[]): Args {
     else if (argv[i] === "--heal-mf-specs") a.healMfSpecs = true;
     else if (argv[i] === "--retry-failed") a.retryFailed = true;
     else if (argv[i] === "--dimming") a.dimming = true;
+    else if (argv[i] === "--dimming-relink") a.dimmingRelink = true;
     else if (argv[i] === "--sample") a.sample = Number(argv[++i]);
     else if (argv[i] === "--limit") a.limit = Number(argv[++i]);
     else if (argv[i] === "--crawl-limit") a.crawlLimit = Number(argv[++i]);
@@ -749,6 +755,13 @@ async function main(): Promise<void> {
   // ONLY the heal, then exits — needs no CF/Anthropic creds.
   if (args.healMfSpecs) {
     await healMfSpecs(sb, {}, { dryRun: args.dryRun });
+    return;
+  }
+  // --dimming-relink: recompute dimming_report_products for ALL non-superseded
+  // reports from their STORED extraction fields (no re-extraction) — needs
+  // only Supabase creds, so it exits before the CF/Anthropic setup.
+  if (args.dimmingRelink) {
+    await runDimmingRelink(sb, { dryRun: args.dryRun });
     return;
   }
   const cf: CfCreds = { accountId: env("CF_ACCOUNT_ID"), token: env("CF_AI_TOKEN") };
