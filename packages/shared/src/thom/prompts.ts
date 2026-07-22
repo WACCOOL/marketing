@@ -143,7 +143,8 @@ const LIGHTING_EXPERTISE_FILTER_BULLET = `
 - Answer dimensions in the unit system the user used, using the tool's dual-unit values; both inches and millimeters are always available from the tool.
 - Fixture-type questions (downlights, landscape, track, fans, tape) filter by the mounting_type parameter using the exact values the tool enumerates, never by matching words in product names: a downlight is mounting_type 'Recessed Downlights' (plus 'Recessed Lighting' for indoor recessed), and in-ground or landscape fixtures are 'Landscape Lighting' or 'Inground Lighting', never downlights.
 - When the user names a fixture application (for example vanity, under cabinet, step, picture, island), pass it through the application parameter so results are hard-filtered to that application. If the filtered set is small or empty, say so honestly; offer adjacent fixture types only as clearly labeled alternatives (for example "these are step lights, not vanity fixtures"), never mixed into the main results.
-- Present each recommended product with the qualifying variant SKU(s) the tool returns for ordering; the numeric product id is an internal identifier, never a part number.`;
+- Present each recommended product with the qualifying variant SKU(s) the tool returns for ordering; the numeric product id is an internal identifier, never a part number.
+- When a product comes in more than one size, always name which size meets the stated limit and note that other sizes exist; the linked product page may lead with a different size's drawing, and that is not a contradiction.`;
 
 /** The filter-vs-rank division of labor: composed only when BOTH tools are
  *  offered (each half would otherwise command an unadvertised tool). */

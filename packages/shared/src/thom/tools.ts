@@ -506,6 +506,77 @@ async function fetchPdpUrls(
   return out;
 }
 
+/** Mirror of 0063's guarded dimension cast: a variants[] JSON value counts
+ *  only when its text form is a plain unsigned decimal, exactly like the
+ *  view's `(v.val -> 'dimensions_mm' ->> k) ~ '^\d+(\.\d+)?$'` reads. */
+function jsonDimMm(v: unknown): number | null {
+  const s = typeof v === "number" ? String(v) : typeof v === "string" ? v : "";
+  return /^\d+(\.\d+)?$/.test(s) ? Number(s) : null;
+}
+
+/** The slice of one raw products.variants[] entry the size derivation reads. */
+export interface CatalogVariantDims {
+  dimensions_mm?: {
+    width?: unknown;
+    height?: unknown;
+    length?: unknown;
+    diameter?: unknown;
+  } | null;
+  watts?: unknown;
+  lumens?: unknown;
+}
+
+/** Derive one variant's user-facing size (inches, 1dp) EXACTLY like
+ *  product_spec_parse_dims' width_in (0063): greatest(width, length,
+ *  diameter) / 25.4 rounded to 0.1. Per-foot rows (watts/lumens quoted
+ *  "/ft" or "per foot" — 0063's per_ft test) use the cross-section width
+ *  only; the recorded length there is the REEL length (plan A10). */
+export function variantWidthIn(v: CatalogVariantDims | null | undefined): number | null {
+  if (!v || typeof v !== "object") return null;
+  const d = v.dimensions_mm ?? {};
+  const perFt =
+    /\/ft|per foot/i.test(String(v.watts ?? "")) || /\/ft|per foot/i.test(String(v.lumens ?? ""));
+  const w = jsonDimMm(d?.width);
+  const len = perFt ? null : jsonDimMm(d?.length);
+  const dia = perFt ? null : jsonDimMm(d?.diameter);
+  const axes = [w, len, dia].filter((n): n is number => n != null);
+  const mm = perFt ? w : axes.length ? Math.max(...axes) : null;
+  return mm == null ? null : Math.round((mm / 25.4) * 10) / 10;
+}
+
+/** Distinct derived sizes across a product's variants (ascending, 1dp). */
+export function distinctVariantWidthsIn(variants: unknown): number[] {
+  if (!Array.isArray(variants)) return [];
+  const seen = new Set<number>();
+  for (const v of variants) {
+    const w = variantWidthIn(v as CatalogVariantDims);
+    if (w != null) seen.add(w);
+  }
+  return [...seen].sort((a, b) => a - b);
+}
+
+/** Batch-fetch each displayed product's FULL distinct size list from
+ *  products.variants (anon-whitelisted), derived with the view's exact width
+ *  rule — so a filter row can say which size qualified AND that other sizes
+ *  exist (the linked PDP may lead with a different size's drawing, which
+ *  otherwise reads as a contradiction). */
+async function fetchVariantWidths(
+  ctx: ToolContext,
+  skus: readonly (string | null | undefined)[],
+): Promise<Map<string, number[]>> {
+  const out = new Map<string, number[]>();
+  const uniq = [...new Set(skus.filter((s): s is string => Boolean(s)))];
+  if (!uniq.length) return out;
+  const { data } = await ctx.sb
+    .from("products")
+    .select("sku, variants")
+    .in("sku", uniq.slice(0, 200));
+  for (const p of (data ?? []) as { sku: string; variants: unknown }[]) {
+    out.set(p.sku, distinctVariantWidthsIn(p.variants));
+  }
+  return out;
+}
+
 /** Fetch name/family/brand for a set of skus into a map (batched .in()). */
 async function fetchParentInfo(
   ctx: ToolContext,
@@ -1257,13 +1328,35 @@ export function formatFilterRows(
     lumensStated: boolean;
     wireStated: boolean;
     pdpBySku?: ReadonlyMap<string, string>;
+    /** Full distinct size list per displayed sku (fetchVariantWidths) —
+     *  lets a row say the listed SKUs are the QUALIFYING size and that
+     *  other sizes exist (the PDP may lead with a different size). */
+    sizesBySku?: ReadonlyMap<string, readonly number[]>;
   },
 ): string[] {
   return rows.map((r) => {
     const who = [r.sku ? ppidLabel(r.sku) : null, r.brand, r.class].filter(Boolean).join(", ");
+    // Multi-size honesty: sizes the product is ALSO made in that fall outside
+    // the qualifying width range. Bounds and sizes are both 1dp inches
+    // (identical derivations), so a small epsilon absorbs float noise only.
+    const allSizes = (r.sku ? opts.sizesBySku?.get(r.sku) : undefined) ?? [];
+    const qLo =
+      r.q_width_min_in != null
+        ? Number(r.q_width_min_in)
+        : r.ex_width_in != null
+          ? Number(r.ex_width_in)
+          : null;
+    const qHi = r.q_width_max_in != null ? Number(r.q_width_max_in) : qLo;
+    const otherSizes =
+      qLo == null ? [] : allSizes.filter((s) => s < qLo - 0.05 || s > (qHi ?? qLo) + 0.05);
     const dims: string[] = [];
     if (r.ex_width_in != null) {
-      dims.push(r.per_ft ? `tape cross-section ${fmtIn(r.ex_width_in)} wide` : `${fmtIn(r.ex_width_in)} wide`);
+      const qualTag = otherSizes.length ? ", qualifying size" : "";
+      dims.push(
+        r.per_ft
+          ? `tape cross-section ${fmtIn(r.ex_width_in)} wide${qualTag}`
+          : `${fmtIn(r.ex_width_in)} wide${qualTag}`,
+      );
     }
     if (r.ex_depth_in != null) dims.push(`${fmtIn(r.ex_depth_in)} deep`);
     else if (r.class && !DEPTH_DEFINED_CLASSES.has(r.class)) dims.push("depth is not defined for this fixture type");
@@ -1276,6 +1369,10 @@ export function formatFilterRows(
     ].filter(Boolean);
     const parts: string[] = [];
     if (dims.length) parts.push(dims.join(", ") + (rec.length ? ` (recorded ${rec.join(" x ")})` : ""));
+    // Say the non-qualifying sizes out loud (dual-unit, Addendum 1): the
+    // listed SKUs are the qualifying size only, and the linked product page
+    // may lead with one of these other sizes' drawings.
+    if (otherSizes.length) parts.push(`also made in ${otherSizes.map(fmtIn).join(", ")}`);
     const q = Number(r.qualifying_variants ?? 0);
     const m = Number(r.variant_count_with_dims ?? 0);
     if (q > 0 && m > 0) parts.push(`${q} of ${m} size${m === 1 ? "" : "s"} meet${q === 1 ? "s" : ""} your limits`);
@@ -1471,11 +1568,18 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
   }
 
   const productRows = rows.filter((r) => r.sku != null);
-  // Product-page links for the result rows (canonicalPdp-guarded, batched —
-  // mirrors getProduct/get_family).
-  const pdpBySku = await fetchPdpUrls(ctx, productRows.map((r) => r.sku));
+  // Product-page links (canonicalPdp-guarded, mirrors getProduct/get_family)
+  // AND each displayed product's full distinct size list, batched together —
+  // the size list lets the row say the listed SKUs are the qualifying size
+  // when the product is also made bigger or smaller.
+  const displayedSkus = productRows.map((r) => r.sku);
+  const [pdpBySku, sizesBySku] = await Promise.all([
+    fetchPdpUrls(ctx, displayedSkus),
+    fetchVariantWidths(ctx, displayedSkus),
+  ]);
   let content =
-    preamble + formatFilterRows(productRows, { lumensStated, wireStated, pdpBySku }).join("\n");
+    preamble +
+    formatFilterRows(productRows, { lumensStated, wireStated, pdpBySku, sizesBySku }).join("\n");
   if (lumensStated && productRows.some((r) => r.lumens_source === "product_level")) {
     content += `\n\nNote: ${PRODUCT_LEVEL_LUMENS_SENTENCE}.`;
   }
