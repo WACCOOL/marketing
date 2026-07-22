@@ -15,6 +15,7 @@ import {
   dimmerModelPart,
   expandRelatedModels,
   extractedDimmingReportSchema,
+  finalizeVerification,
   likeToRegExp,
   normalizeDimmerModel,
   normalizeHyphens,
@@ -27,8 +28,10 @@ import {
   reportCodeFromEntryPath,
   skuMatchesLikes,
   splitDimmerQuery,
+  tiebreakVerdictFromListings,
   tokenAnchoredContains,
   verifyExtraction,
+  type MembershipDispute,
   type VerifiableRow,
 } from "./dimming.js";
 
@@ -423,7 +426,7 @@ describe("verifyExtraction", () => {
     expect(v.mismatches.join(" ")).toMatch(/low-end/);
   });
 
-  it("flags SECTION MEMBERSHIP disagreement (the catastrophic failure mode)", () => {
+  it("turns SECTION MEMBERSHIP disagreement into a tiebreak dispute (not a direct gate)", () => {
     const v = verifyExtraction(
       sections,
       [
@@ -436,23 +439,198 @@ describe("verifyExtraction", () => {
       ],
       counts,
     );
-    expect(v.ok).toBe(false);
-    expect(v.mismatches.join(" ")).toMatch(/section/);
+    expect(v.ok).toBe(false); // not a clean pass — needs the tiebreak
+    expect(v.mismatches).toEqual([]);
+    expect(v.membershipDisputes).toHaveLength(1);
+    expect(v.membershipDisputes[0]!.extractedPhase).toBe("adaptive");
+    expect(v.membershipDisputes[0]!.verifierPhase).toBe("triac");
+    expect(v.membershipDisputes[0]!.verifierSectionHeader).toBe("Forward Phase Dimmers (TRIAC)");
   });
 
-  it("flags a per-section row-count mismatch", () => {
+  it("a +/-2 row-count mismatch alone is ADVISORY: ok stays true, warning logged", () => {
     const v = verifyExtraction(
       sections,
       [{ index: 0, low_end_pct: 9, comments: "Flicker below 9%", section_header: "Adaptive Phase Dimmers" }],
-      [{ page: 1, section_header: "Adaptive Phase Dimmers", row_count: 3 }],
+      [{ page: 1, section_header: "Adaptive Phase Dimmers", row_count: 3 }], // extracted 1, delta 2
+    );
+    expect(v.ok).toBe(true);
+    expect(v.mismatches).toEqual([]);
+    expect(v.warnings.join(" ")).toMatch(/row count: extracted 1 vs verifier 3/);
+  });
+
+  it("a row-count delta > 3 GATES (gross-error backstop)", () => {
+    // The sample-10 shape: verifier claimed 4 TRIAC rows where 10 are printed.
+    const tenRows: VerifiableRow[] = Array.from({ length: 10 }, (_, i) =>
+      vrow({
+        phase_type: "triac",
+        section_header: "Forward Phase Dimmers (TRIAC)",
+        dimmer_model: `T-${i}`,
+        dimmer_model_norm: `T-${i}`,
+      }),
+    );
+    const triacSections = pickVerificationSamples(tenRows);
+    const v = verifyExtraction(
+      triacSections,
+      [
+        {
+          index: 0,
+          low_end_pct: 5,
+          comments: "",
+          section_header: "Forward Phase Dimmers (TRIAC)",
+        },
+      ],
+      [{ page: 1, section_header: "Forward Phase Dimmers (TRIAC)", row_count: 4 }],
     );
     expect(v.ok).toBe(false);
-    expect(v.mismatches.join(" ")).toMatch(/row count/);
+    expect(v.mismatches.join(" ")).toMatch(/row count: extracted 10 vs verifier 4/);
+    expect(v.mismatches.join(" ")).toMatch(/gross error/);
+  });
+
+  it("a MISSING verifier row count is advisory, not gating", () => {
+    const v = verifyExtraction(
+      sections,
+      [{ index: 0, low_end_pct: 9, comments: "Flicker below 9%", section_header: "Adaptive Phase Dimmers" }],
+      [],
+    );
+    expect(v.ok).toBe(true);
+    expect(v.warnings.join(" ")).toMatch(/no verifier row count/);
   });
 
   it("commentsMatch treats blank forms as equal", () => {
     expect(commentsMatch("", "none")).toBe(true);
     expect(commentsMatch("N/A", "")).toBe(true);
     expect(commentsMatch("Flicker below 9%", "totally different")).toBe(false);
+  });
+});
+
+// --- membership tiebreak (2-of-3) ---------------------------------------------
+
+describe("membership tiebreak", () => {
+  // The real sample-10 dispute: ADTP703TUW4 (ELV) sits under the Adaptive
+  // header; the verifier pattern-matched the (ELV) qualifier as the section.
+  const dispute: MembershipDispute = {
+    sampleIndex: 0,
+    row: vrow({
+      section_header: "Adaptive Phase Dimmers",
+      phase_type: "adaptive",
+      manufacturer: "Legrand",
+      dimmer_model: "ADTP703TUW4 (ELV)",
+      mode_qualifier: "elv",
+      dimmer_model_norm: "ADTP703TUW4",
+    }),
+    extractedPhase: "adaptive",
+    extractedSectionHeader: "Adaptive Phase Dimmers",
+    verifierSectionHeader: "Reverse Phase Dimmers (ELV)",
+    verifierPhase: "elv",
+  };
+
+  it("sides with the EXTRACTOR when the listing puts the row under the extracted header", () => {
+    const verdict = tiebreakVerdictFromListings(
+      dispute,
+      ["ADTP703TUW4 (ELV)", "ADTP703TUW4 (TRIAC)", "ADTH700RMTUM1 (ELV)"],
+      ["DVELV-300P", "NTELV-600"],
+    );
+    expect(verdict).toBe("extractor");
+  });
+
+  it("sides with the VERIFIER when the listing puts the row under the verifier's header", () => {
+    const verdict = tiebreakVerdictFromListings(
+      dispute,
+      ["SOME-OTHER-1"],
+      ["ADTP703TUW4 (ELV)", "DVELV-300P"],
+    );
+    expect(verdict).toBe("verifier");
+  });
+
+  it("is UNRESOLVED when the row appears in both or neither listing", () => {
+    expect(
+      tiebreakVerdictFromListings(dispute, ["ADTP703TUW4 (ELV)"], ["ADTP703TUW4 (ELV)"]),
+    ).toBe("unresolved");
+    expect(tiebreakVerdictFromListings(dispute, [], [])).toBe("unresolved");
+  });
+
+  it("qualifier-aware matching: the (TRIAC) twin under the verifier header does not flip the vote", () => {
+    const verdict = tiebreakVerdictFromListings(
+      dispute,
+      ["ADTP703TUW4 (ELV)"],
+      ["ADTP703TUW4 (TRIAC)"],
+    );
+    expect(verdict).toBe("extractor");
+  });
+
+  it("falls back to base-norm matching when listings drop the qualifier", () => {
+    const verdict = tiebreakVerdictFromListings(dispute, ["ADTP703TUW4"], ["DVELV-300P"]);
+    expect(verdict).toBe("extractor");
+  });
+});
+
+// --- finalizeVerification (status derivation from tiebreak outcomes) ----------
+
+describe("finalizeVerification", () => {
+  const rows: VerifiableRow[] = [
+    vrow({ dimmer_model_norm: "A1", low_end_pct: 9, comments: "Flicker below 9%" }),
+  ];
+  const sections = pickVerificationSamples(rows);
+  const disputedAnswer = [
+    {
+      index: 0,
+      low_end_pct: 9,
+      comments: "Flicker below 9%",
+      section_header: "Reverse Phase Dimmers (ELV)",
+    },
+  ];
+  const counts = [{ page: 1, section_header: "Adaptive Phase Dimmers", row_count: 1 }];
+
+  it("a membership dispute resolved EXTRACTOR-wise leaves the unit active with a note", () => {
+    const v = verifyExtraction(sections, disputedAnswer, counts);
+    expect(v.membershipDisputes).toHaveLength(1);
+    const final = finalizeVerification(v, [{ verdict: "extractor" }]);
+    expect(final.ok).toBe(true);
+    expect(final.gating).toEqual([]);
+    expect(final.notes).toHaveLength(1);
+    expect(final.notes[0]).toMatch(/tiebreak upheld the EXTRACTOR/);
+  });
+
+  it("a membership dispute where the tiebreak sides with the VERIFIER gates", () => {
+    const v = verifyExtraction(sections, disputedAnswer, counts);
+    const final = finalizeVerification(v, [{ verdict: "verifier" }]);
+    expect(final.ok).toBe(false);
+    expect(final.gating.join(" ")).toMatch(/tiebreak sided with VERIFIER/);
+  });
+
+  it("an errored (or missing) tiebreak gates conservatively", () => {
+    const v = verifyExtraction(sections, disputedAnswer, counts);
+    expect(finalizeVerification(v, [{ verdict: "error", detail: "boom" }]).ok).toBe(false);
+    expect(finalizeVerification(v, []).ok).toBe(false);
+  });
+
+  it("an UNRESOLVED tiebreak leaves the unit active with a note", () => {
+    const v = verifyExtraction(sections, disputedAnswer, counts);
+    const final = finalizeVerification(v, [{ verdict: "unresolved" }]);
+    expect(final.ok).toBe(true);
+    expect(final.notes[0]).toMatch(/UNRESOLVED/);
+  });
+
+  it("advisory count warnings alone finalize clean (active with a warning)", () => {
+    const v = verifyExtraction(
+      sections,
+      [{ index: 0, low_end_pct: 9, comments: "Flicker below 9%", section_header: "Adaptive Phase Dimmers" }],
+      [{ page: 1, section_header: "Adaptive Phase Dimmers", row_count: 3 }],
+    );
+    expect(v.warnings).toHaveLength(1);
+    const final = finalizeVerification(v, []);
+    expect(final.ok).toBe(true);
+    expect(final.gating).toEqual([]);
+  });
+
+  it("base cell-value mismatches still gate regardless of tiebreaks", () => {
+    const v = verifyExtraction(
+      sections,
+      [{ index: 0, low_end_pct: 19, comments: "Flicker below 9%", section_header: "Adaptive Phase Dimmers" }],
+      counts,
+    );
+    const final = finalizeVerification(v, []);
+    expect(final.ok).toBe(false);
+    expect(final.gating.join(" ")).toMatch(/low-end/);
   });
 });

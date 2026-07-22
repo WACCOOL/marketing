@@ -18,10 +18,16 @@
 //     conservative status derivation (DC1 — null low end can NEVER become
 //     tested_compatible), slash-expansion (DC8), unknown-vocabulary collection
 //     for Davis's review.
-//  4. Stratified verification gate (DC5): >=1 row per section per page, the
-//     question carries the mode qualifier and asks section membership +
-//     per-section row counts; haiku verifier by default; mismatch ->
-//     needs_review (rows stay invisible to the tools' status='active' filter).
+//  4. Stratified verification gate (DC5, tuned per the 2026-07-22 sample-10
+//     evidence): >=1 row per section per page, the question carries the mode
+//     qualifier and asks section membership + per-section row counts; haiku
+//     verifier by default. Cell-value mismatches gate -> needs_review (rows
+//     stay invisible to the tools' status='active' filter). Row-count deltas
+//     are ADVISORY warnings unless > ROW_COUNT_GATE_DELTA (the verifier counts
+//     visually — headers detach to the page bottom in the text layer).
+//     Section-membership disputes go to a 2-of-3 TIEBREAK (third call, sonnet,
+//     fresh list-the-section framing); only a tiebreak that sides with the
+//     verifier gates.
 //  5. Product binding at extraction time, pattern-primary (DC4): `field` links
 //     only for loose single PDFs; overlap audit (2+ units, different families
 //     -> held for review); links rewritten per product per run.
@@ -38,12 +44,14 @@ import { unzipSync } from "fflate";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   DEFAULT_DIMMING_EXTRACTION_MODEL,
+  DEFAULT_DIMMING_TIEBREAK_MODEL,
   DEFAULT_DIMMING_VERIFIER_MODEL,
   DIMMING_EXTRACTION_TOOL,
   DIMMING_EXTRACTION_VERSION,
   DIMMING_REPORT_DOC_TYPE,
   deriveRowStatus,
   extractedDimmingReportSchema,
+  finalizeVerification,
   normalizeDimmerModel,
   normalizeHyphens,
   normalizeRelatedModels,
@@ -53,11 +61,14 @@ import {
   pickVerificationSamples,
   reportCodeFromEntryPath,
   skuMatchesLikes,
+  tiebreakVerdictFromListings,
   verifyExtraction,
   type DimmingModeQualifier,
   type DimmingPhaseType,
   type DimmingRowStatus,
   type ExtractedDimmingReport,
+  type MembershipDispute,
+  type MembershipTiebreakOutcome,
   type VerifiableRow,
   type VerifierAnswer,
   type VerifierSectionCount,
@@ -494,6 +505,10 @@ export function verifierPrompt(samples: readonly VerifiableRow[]): string {
     "Answer these spot-check questions by reading the chart directly. A '(ELV)' or '(TRIAC)' " +
     "qualifier in a question refers to the parenthetical printed in that row's model/series cell " +
     "(two rows can share a model number and differ only by that qualifier).\n" +
+    "IMPORTANT: a parenthetical mode qualifier like (ELV) or (TRIAC) printed in a model or series " +
+    "cell is NOT the section. Judge section membership ONLY by which printed section header band " +
+    "the row physically sits under (e.g. a row reading 'ADTP703TU (ELV)' can sit under 'Adaptive " +
+    "Phase Dimmers' — its section is Adaptive, not Reverse Phase (ELV)).\n" +
     questions +
     "\nAlso report section_counts: for EVERY section header band on EVERY page (including 'Cont.' " +
     "bands), the page number and how many data rows sit under it on that page."
@@ -503,6 +518,86 @@ export function verifierPrompt(samples: readonly VerifiableRow[]): string {
 interface VerifierOutput {
   answers: VerifierAnswer[];
   section_counts: VerifierSectionCount[];
+}
+
+// --- membership tiebreak (2-of-3, third call, fresh framing) ------------------
+
+const TIEBREAK_TOOL = {
+  name: "list_section_rows",
+  description:
+    "List, in printed order, every data row that appears under each requested section header of " +
+    "this dimming chart, by reading the chart directly.",
+  input_schema: {
+    type: "object",
+    properties: {
+      sections: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            page: { type: "integer" },
+            section_header: { type: "string" },
+            rows: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "The model-number cell of every data row under this header on this page, in order, " +
+                "verbatim (including any '(ELV)'/'(TRIAC)' parenthetical). [] when the header does " +
+                "not appear on that page.",
+            },
+          },
+          required: ["page", "section_header", "rows"],
+        },
+      },
+    },
+    required: ["sections"],
+  },
+} as const;
+
+export function tiebreakPrompt(dispute: MembershipDispute): string {
+  const p = dispute.row.page;
+  return (
+    `List, in order, every row that appears under the '${dispute.extractedSectionHeader}' header ` +
+    `on page ${p}, and separately every row that appears under the '${dispute.verifierSectionHeader}' ` +
+    `header on page ${p}. Return one sections entry per header, with each data row's model-number ` +
+    "cell verbatim (keep any '(ELV)'/'(TRIAC)' parenthetical as printed). If a header does not " +
+    "appear on that page, return an empty rows list for it.\n" +
+    "IMPORTANT: a parenthetical mode qualifier like (ELV) or (TRIAC) printed in a model or series " +
+    "cell is NOT the section. Judge membership ONLY by which printed section header band the row " +
+    "physically sits under."
+  );
+}
+
+interface TiebreakOutput {
+  sections: { page: number; section_header: string; rows: string[] }[];
+}
+
+/** Issue the third call for one membership dispute and fold its listings into
+ *  a 2-of-3 verdict (listings matched to the claimed sections by phase
+ *  bucket — a dispute always spans two different buckets). */
+async function tiebreakMembership(
+  cfg: ClaudeToolCallCfg,
+  pdfBytes: Uint8Array,
+  dispute: MembershipDispute,
+): Promise<MembershipTiebreakOutcome> {
+  const raw = (await claudeForcedTool(
+    cfg,
+    pdfBytes,
+    TIEBREAK_TOOL as unknown as { name: string; description: string; input_schema: unknown },
+    tiebreakPrompt(dispute),
+    4000,
+  )) as TiebreakOutput;
+  const listings = raw.sections ?? [];
+  const rowsForPhase = (phase: DimmingPhaseType): string[] =>
+    listings
+      .filter((s) => phaseFromSectionHeader(s.section_header ?? "") === phase)
+      .flatMap((s) => s.rows ?? []);
+  const verdict = tiebreakVerdictFromListings(
+    dispute,
+    rowsForPhase(dispute.extractedPhase),
+    rowsForPhase(dispute.verifierPhase),
+  );
+  return { verdict };
 }
 
 // -----------------------------------------------------------------------------
@@ -557,6 +652,7 @@ export interface RunDimmingOptions {
   apiKey: string | null;
   model?: string;
   verifierModel?: string;
+  tiebreakModel?: string;
 }
 
 interface KbDimDoc {
@@ -687,6 +783,7 @@ export async function runDimming(
 ): Promise<void> {
   const model = opts.model || DEFAULT_DIMMING_EXTRACTION_MODEL;
   const verifierModel = opts.verifierModel || DEFAULT_DIMMING_VERIFIER_MODEL;
+  const tiebreakModel = opts.tiebreakModel || DEFAULT_DIMMING_TIEBREAK_MODEL;
   const report: string[] = [];
   const unknownVocab = new Set<string>();
 
@@ -741,6 +838,9 @@ export async function runDimming(
   const cfg: ClaudeToolCallCfg | null = opts.apiKey ? { apiKey: opts.apiKey, model } : null;
   const verifierCfg: ClaudeToolCallCfg | null = opts.apiKey
     ? { apiKey: opts.apiKey, model: verifierModel }
+    : null;
+  const tiebreakCfg: ClaudeToolCallCfg | null = opts.apiKey
+    ? { apiKey: opts.apiKey, model: tiebreakModel }
     : null;
   if (!cfg) {
     console.warn("[dimming] ANTHROPIC_API_KEY unset — units discovered but not extracted");
@@ -900,23 +1000,47 @@ export async function runDimming(
         );
 
         const unitLabel = entryPath ?? doc.url ?? unit.contentHash.slice(0, 12);
-        if (verdict.ok) {
+        // Advisory row-count warnings: logged, never gate on their own.
+        for (const w of verdict.warnings) report.push(`COUNT WARNING ${unitLabel}: ${w}`);
+
+        // 2-of-3 membership tiebreak: a third call (sonnet, fresh framing) per
+        // dispute; only a tiebreak that sides with the verifier gates.
+        const outcomes: MembershipTiebreakOutcome[] = [];
+        for (const dispute of verdict.membershipDisputes) {
+          try {
+            outcomes.push(await tiebreakMembership(tiebreakCfg!, unit.bytes, dispute));
+          } catch (e) {
+            outcomes.push({
+              verdict: "error",
+              detail: String(e instanceof Error ? e.message : e).slice(0, 200),
+            });
+          }
+        }
+        const final = finalizeVerification(verdict, outcomes);
+        for (const n of final.notes) report.push(`TIEBREAK ${unitLabel}: ${n}`);
+
+        if (final.ok) {
           active++;
           await sb
             .from("dimming_reports")
             .update({ status: "active", verified_at: new Date().toISOString(), last_error: null })
             .eq("id", reportId);
+          const extras = [
+            verdict.warnings.length ? `${verdict.warnings.length} count warning(s)` : null,
+            final.notes.length ? `${final.notes.length} tiebreak note(s)` : null,
+          ].filter(Boolean);
           report.push(
-            `PASS ${unitLabel}: ${applied.rows.length} rows, ${samples.length} cells verified across ${sections.length} sections`,
+            `PASS ${unitLabel}: ${applied.rows.length} rows, ${samples.length} cells verified across ` +
+              `${sections.length} sections${extras.length ? ` (${extras.join(", ")})` : ""}`,
           );
         } else {
           needsReview++;
           await sb
             .from("dimming_reports")
-            .update({ status: "needs_review", last_error: verdict.mismatches.join("; ").slice(0, 900) })
+            .update({ status: "needs_review", last_error: final.gating.join("; ").slice(0, 900) })
             .eq("id", reportId);
           report.push(
-            `NEEDS_REVIEW ${unitLabel}: ${applied.rows.length} rows; mismatches: ${verdict.mismatches.join(" | ")}`,
+            `NEEDS_REVIEW ${unitLabel}: ${applied.rows.length} rows; mismatches: ${final.gating.join(" | ")}`,
           );
         }
       } catch (e) {
@@ -1072,7 +1196,7 @@ export async function runDimming(
   console.log("\n[dimming] ================ RUN REPORT ================");
   console.log(
     `[dimming] units: ${processed} processed (${active} active, ${needsReview} needs_review, ` +
-      `${failed} failed), ${skippedCurrent} already current; model=${model} verifier=${verifierModel}`,
+      `${failed} failed), ${skippedCurrent} already current; model=${model} verifier=${verifierModel} tiebreak=${tiebreakModel}`,
   );
   console.log(`[dimming] links: ${dedupRows.length} written; overlaps held: ${overlaps.length}`);
   console.log(`[dimming] supersession sweep: ${supersededDocIds.size} source docs retired`);
