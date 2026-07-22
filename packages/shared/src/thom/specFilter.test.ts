@@ -14,6 +14,7 @@ import {
   canonicalPdp,
   dimToInches,
   dispatch,
+  distinctVariantWidthsIn,
   FILTER_TOOLS,
   filterCoverageLine,
   fmtIn,
@@ -28,6 +29,7 @@ import {
   PUBLIC_TOOL_NAMES,
   SEARCH_PRODUCTS_FILTER_POINTER,
   SPEC_RANK_CLASSES,
+  variantWidthIn,
   withConstraintRouting,
   TOOLS,
   type FilterRpcRow,
@@ -115,28 +117,34 @@ const countsRow = (over: Partial<FilterRpcRow> = {}): FilterRpcRow =>
   });
 
 /** Fake ctx whose sb.rpc records every call and returns queued results, and
- *  whose sb.from serves `pdps` rows (for the pdp_urls link batch-join). */
+ *  whose sb.from serves `pdps` rows (for the pdp_urls link batch-join) and
+ *  `products` rows (for the full-size-list batch — variants json). Every
+ *  from() table name is recorded in `froms`. */
 function makeCtx(
   results: { data: unknown; error: { message: string } | null }[],
   pdps: { sku: string; url: string | null }[] = [],
+  products: { sku: string; variants?: unknown }[] = [],
 ) {
   const calls: { fn: string; params: Record<string, unknown> }[] = [];
+  const froms: string[] = [];
   const sb = {
     rpc(fn: string, params: Record<string, unknown>) {
       calls.push({ fn, params });
       return Promise.resolve(results[calls.length - 1] ?? { data: [], error: null });
     },
-    from(_table: string) {
+    from(table: string) {
+      froms.push(table);
+      const rows = table === "products" ? products : pdps;
       const b: Record<string, unknown> = {};
       for (const m of ["select", "eq", "in", "limit", "order", "ilike"]) b[m] = () => b;
-      b.maybeSingle = () => Promise.resolve({ data: pdps[0] ?? null, error: null });
+      b.maybeSingle = () => Promise.resolve({ data: rows[0] ?? null, error: null });
       b.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
-        Promise.resolve({ data: pdps, error: null }).then(res, rej);
+        Promise.resolve({ data: rows, error: null }).then(res, rej);
       return b;
     },
   };
   const ctx = { env: env(), sb: sb as unknown as ToolContext["sb"] } as ToolContext;
-  return { ctx, calls };
+  return { ctx, calls, froms };
 }
 
 // --- unit conversion (O10 — TS-side, never the model) ------------------------
@@ -278,6 +286,104 @@ describe("formatFilterRows", () => {
       wireStated: true,
     });
     expect(line).toContain("wire/cord 6 ft (1.83 m)");
+  });
+
+  it("labels the shown width as the qualifying size and names the OTHER sizes when the product is also made bigger (the Turbo defect)", () => {
+    // Turbo shape: the 353 mm bar qualifies for a 15-inch limit; the 610 mm
+    // bar exists but does not — and its drawing may lead the linked PDP.
+    const [line] = formatFilterRows(
+      [
+        frow({
+          sku: "4101",
+          name: "Turbo Bath & Vanity Light",
+          qualifying_variants: 1,
+          variant_count_with_dims: 2,
+          example_variant_sku: "WS-180414-30-BN",
+          qualifying_variant_skus: ["WS-180414-30-BN"],
+          q_width_min_in: 13.9,
+          q_width_max_in: 13.9,
+          ex_width_in: 13.9,
+        }),
+      ],
+      {
+        lumensStated: false,
+        wireStated: false,
+        sizesBySku: new Map([["4101", [13.9, 24]]]),
+      },
+    );
+    expect(line).toContain("13.9 in (353 mm) wide, qualifying size");
+    expect(line).toContain("also made in 24.0 in (610 mm)");
+    // The count line still carries the per-size arithmetic.
+    expect(line).toContain("1 of 2 sizes meets your limits");
+  });
+
+  it("leaves single-size products unchanged (no qualifying-size tag, no also-made-in note)", () => {
+    const plain = formatFilterRows([frow()], { lumensStated: true, wireStated: false })[0];
+    const withSizes = formatFilterRows([frow()], {
+      lumensStated: true,
+      wireStated: false,
+      sizesBySku: new Map([["3554", [18]]]),
+    })[0];
+    expect(withSizes).toBe(plain);
+    expect(withSizes).not.toContain("qualifying size");
+    expect(withSizes).not.toContain("also made in");
+  });
+
+  it("stays silent when EVERY size qualifies (multi-size product, all within the limits)", () => {
+    const [line] = formatFilterRows(
+      [frow({ q_width_min_in: 16, q_width_max_in: 18 })],
+      {
+        lumensStated: false,
+        wireStated: false,
+        sizesBySku: new Map([["3554", [16, 18]]]),
+      },
+    );
+    expect(line).not.toContain("qualifying size");
+    expect(line).not.toContain("also made in");
+  });
+});
+
+// --- full-size-list derivation parity with 0063's width rule --------------------
+
+describe("variantWidthIn / distinctVariantWidthsIn (0063 parity)", () => {
+  it("derives greatest(width, length, diameter) / 25.4 rounded to 0.1, like product_spec_parse_dims", () => {
+    // Turbo's two bars: 353.5 mm and 610 mm lengths dominate their axes.
+    expect(variantWidthIn({ dimensions_mm: { width: 64, height: 110, length: 353.5 } })).toBe(13.9);
+    expect(variantWidthIn({ dimensions_mm: { width: 64, height: 110, length: 610 } })).toBe(24);
+    // Diameter-only rows (round fixtures) ride the diameter axis.
+    expect(variantWidthIn({ dimensions_mm: { diameter: 152.4 } })).toBe(6);
+    // greatest() picks the diameter when it exceeds width.
+    expect(variantWidthIn({ dimensions_mm: { width: 100, diameter: 152.4 } })).toBe(6);
+  });
+
+  it("excludes the reel length/diameter on per-foot rows (plan A10) — cross-section width only", () => {
+    expect(
+      variantWidthIn({ watts: "4.9W/ft", dimensions_mm: { width: 8.13, length: 30480 } }),
+    ).toBe(0.3);
+    expect(
+      variantWidthIn({ lumens: "250 lm per foot", dimensions_mm: { length: 30480 } }),
+    ).toBeNull();
+  });
+
+  it("mirrors the view's numeric guard: non-decimal strings and missing axes yield null", () => {
+    expect(variantWidthIn({ dimensions_mm: { length: "18 in" } })).toBeNull();
+    expect(variantWidthIn({ dimensions_mm: { width: "-5" } })).toBeNull();
+    expect(variantWidthIn({ dimensions_mm: { length: "353.5" } })).toBe(13.9); // string decimals DO count
+    expect(variantWidthIn({})).toBeNull();
+    expect(variantWidthIn(null)).toBeNull();
+  });
+
+  it("collapses variants to distinct ascending sizes; non-array variants yield []", () => {
+    expect(
+      distinctVariantWidthsIn([
+        { dimensions_mm: { length: 610 } },
+        { dimensions_mm: { length: 353.5 } },
+        { dimensions_mm: { length: 353.5 } }, // second finish, same size
+        { dimensions_mm: { length: "nope" } },
+      ]),
+    ).toEqual([13.9, 24]);
+    expect(distinctVariantWidthsIn(null)).toEqual([]);
+    expect(distinctVariantWidthsIn("not an array")).toEqual([]);
   });
 });
 
@@ -573,6 +679,32 @@ describe("filter_products dispatch", () => {
     const out2 = await dispatch(searchy.ctx, "filter_products", { max_width_in: 20 });
     expect(out2.content).not.toContain("](");
     expect(out2.content).toContain("- Slim Bath & Vanity Light (PPID 3554");
+  });
+
+  it("batch-fetches pdp_urls AND products.variants for the displayed rows, and renders qualifying vs other sizes", async () => {
+    const { ctx, froms } = makeCtx(
+      [{ data: [frow()], error: null }],
+      [{ sku: "3554", url: "https://www.waclighting.com/slim-vanity" }],
+      [
+        {
+          sku: "3554",
+          variants: [
+            { dimensions_mm: { width: 66.04, height: 127, length: 457.2 } }, // 18.0 in — qualifies
+            { dimensions_mm: { width: 66.04, height: 127, length: 610 } }, // 24.0 in — does not
+          ],
+        },
+      ],
+    );
+    const out = await dispatch(ctx, "filter_products", { max_width_in: 20 });
+    // Both lookups ride the same displayed-row batch (Promise.all), one
+    // .in() query per table.
+    expect(froms.filter((t) => t === "pdp_urls")).toHaveLength(1);
+    expect(froms.filter((t) => t === "products")).toHaveLength(1);
+    expect(out.content).toContain(
+      "[Slim Bath & Vanity Light](https://www.waclighting.com/slim-vanity)",
+    );
+    expect(out.content).toContain("18.0 in (457 mm) wide, qualifying size");
+    expect(out.content).toContain("also made in 24.0 in (610 mm)");
   });
 });
 
