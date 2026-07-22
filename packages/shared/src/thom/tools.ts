@@ -521,16 +521,13 @@ export interface CatalogVariantDims {
     height?: unknown;
     length?: unknown;
     diameter?: unknown;
-    wire_length?: unknown;
   } | null;
   watts?: unknown;
   lumens?: unknown;
 }
 
-/** The fuller variants[] slice the variant-grain application matching reads
- *  on top of the dims: the variant NAME (the ONLY place the catalog records
- *  fixture type — "ELEMENTUM Wall Sconce" vs "ELEMENTUM Bath & Wall Light"
- *  under one product) and its orderable SKU. */
+/** The fuller variants[] slice fetchVariantRecords returns on top of the
+ *  dims: the variant name and its orderable SKU. */
 export interface CatalogVariant extends CatalogVariantDims {
   name?: unknown;
   sku?: unknown;
@@ -566,11 +563,9 @@ export function distinctVariantWidthsIn(variants: unknown): number[] {
 }
 
 /** Batch-fetch each displayed product's RAW variants from products.variants
- *  (anon-whitelisted). The variants drive BOTH the full distinct size list a
+ *  (anon-whitelisted). The variants yield the full distinct size list a
  *  filter row renders (via distinctVariantWidthsIn — the view's exact width
- *  rule, so a row can say which size qualified and that other sizes exist)
- *  AND the variant-grain application matching (variant NAMES carry the
- *  fixture type the catalog otherwise lacks). */
+ *  rule, so a row can say which size qualified and that other sizes exist). */
 async function fetchVariantRecords(
   ctx: ToolContext,
   skus: readonly (string | null | undefined)[],
@@ -1243,7 +1238,6 @@ export function hasNumericPredicate(preds: Record<string, number | null>): boole
 export const APPLICATION_SYNONYMS: Record<string, string[]> = {
   vanity: ["%vanit%", "%bath%"],
   bath: ["%vanit%", "%bath%"],
-  sconce: ["%sconce%"],
   "under cabinet": ["%under%cab%"],
   undercabinet: ["%under%cab%"],
   step: ["%step%"],
@@ -1266,32 +1260,6 @@ export function applicationPatterns(raw: unknown): string[] | null {
   if (hit) return hit;
   const term = (stripped || t).replace(/[\\%_]/g, (m) => `\\${m}`);
   return [`%${term}%`];
-}
-
-/** Every fixture-type name marker the variant-grain application matching
- *  recognizes: the union of the application synonym patterns (incl. sconce).
- *  A variant name hitting ANY of these carries type vocabulary, meaning the
- *  product's variants are type-differentiated by name and only the REQUESTED
- *  application's variants may qualify. */
-export const VARIANT_TYPE_PATTERNS: readonly string[] = [
-  ...new Set(Object.values(APPLICATION_SYNONYMS).flat()),
-];
-
-/** Match one SQL ILIKE pattern (% and _ wildcards, backslash escapes) against
- *  a string, case-insensitively — the TS mirror of the RPC's ILIKE, so the
- *  variant-grain check speaks the exact same pattern language as
- *  p_application_patterns. Pure + exported for tests. */
-export function ilikeMatches(pattern: string, text: string): boolean {
-  const esc = (c: string) => c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  let re = "";
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i]!;
-    if (c === "\\" && i + 1 < pattern.length) re += esc(pattern[++i]!);
-    else if (c === "%") re += "[\\s\\S]*";
-    else if (c === "_") re += "[\\s\\S]";
-    else re += esc(c);
-  }
-  return new RegExp(`^${re}$`, "i").test(text);
 }
 
 /** One product_spec_filter RPC row (0063). A null-sku row is the zero-match
@@ -1413,107 +1381,6 @@ export const WALL_ORIENTATION_CAVEAT =
  *  [1:6] slice in product_spec_filter). */
 export const QUALIFYING_SKU_CAP = 6;
 
-/** Variant-grain application refinement for ONE filter row (Davis
- *  2026-07-22, the Turbo re-present): the catalog records fixture TYPE only
- *  in VARIANT names, invisible to the RPC's product-level application
- *  pre-filter. ELEMENTUM carries a "Wall Sconce" variant line and a
- *  "Bath & Wall Light" variant line under one product; every Turbo variant
- *  is named "TURBO 14IN/24IN WALL SCONCE" even though the product is a
- *  "Bath & Vanity Light". Rule:
- *  - no variant name carries type vocabulary → the product-level match
- *    stands (row unchanged, sizes = all variants — current behavior);
- *  - type vocabulary present but NO variant name matches the requested
- *    application → the row is dropped (null): Turbo on a vanity ask;
- *  - a strict subset matches → the row is recomputed from that subset only:
- *    its SKUs (the RPC's qualifying SKUs intersected with the subset when
- *    that intersection is non-empty — those met every numeric predicate —
- *    else the subset's own SKUs), its sizes, its dims from the narrowest
- *    qualifying variant. A stated width bound is re-checked against the
- *    subset's derived sizes; when none fit, the row is dropped.
- *  Width is the only predicate re-checked tool-side (the same derivation the
- *  size machinery uses); the remaining predicates stay RPC-enforced at the
- *  row grain. Pure + exported for tests. */
-export function refineRowByVariantApplication(
-  row: FilterRpcRow,
-  variants: readonly CatalogVariant[],
-  appPatterns: readonly string[],
-  widthMinIn: number | null,
-  widthMaxIn: number | null,
-): { row: FilterRpcRow; sizes: number[] } | null {
-  const passthrough = { row, sizes: distinctVariantWidthsIn(variants) };
-  const named = variants.filter(
-    (v): v is CatalogVariant & { name: string } =>
-      Boolean(v) && typeof v.name === "string" && v.name.length > 0,
-  );
-  const typed = named.some((v) => VARIANT_TYPE_PATTERNS.some((p) => ilikeMatches(p, v.name)));
-  if (!typed) return passthrough;
-  const appVariants = named.filter((v) => appPatterns.some((p) => ilikeMatches(p, v.name)));
-  if (!appVariants.length) return null;
-  if (appVariants.length === variants.length) return passthrough; // nothing trimmed
-  const width = (v: CatalogVariant) => variantWidthIn(v);
-  const withDims = appVariants.filter((v) => width(v) != null);
-  const widthStated = widthMinIn != null || widthMaxIn != null;
-  const fits = (s: number) =>
-    (widthMaxIn == null || s <= widthMaxIn + 0.05) && (widthMinIn == null || s >= widthMinIn - 0.05);
-  const qual = withDims.filter((v) => fits(width(v)!));
-  if (widthStated && !qual.length) return null;
-  const chosen = (qual.length ? qual : withDims.length ? withDims : appVariants)
-    .slice()
-    .sort((a, b) => (width(a) ?? Infinity) - (width(b) ?? Infinity));
-  const skuOf = (v: CatalogVariant): string | null =>
-    typeof v.sku === "string" && v.sku ? v.sku : null;
-  const appSkus = new Set(appVariants.map(skuOf).filter(Boolean));
-  const rpcSkus = (row.qualifying_variant_skus ?? []).filter((s): s is string => Boolean(s));
-  const inter = rpcSkus.filter((s) => appSkus.has(s));
-  const skus = inter.length
-    ? inter
-    : chosen
-        .map(skuOf)
-        .filter((s): s is string => Boolean(s))
-        .slice(0, QUALIFYING_SKU_CAP);
-  const qSizes = chosen.map(width).filter((n): n is number => n != null);
-  const rep = chosen[0]!;
-  const d = rep.dimensions_mm ?? {};
-  const wMm = jsonDimMm(d?.width);
-  const hMm = jsonDimMm(d?.height);
-  const lMm = jsonDimMm(d?.length);
-  const diaMm = jsonDimMm(d?.diameter);
-  const axes = [wMm, hMm, lMm, diaMm].filter((n): n is number => n != null);
-  const inOf = (mm: number) => Math.round((mm / 25.4) * 10) / 10;
-  const depthDefined = row.class != null && DEPTH_DEFINED_CLASSES.has(row.class);
-  return {
-    row: {
-      ...row,
-      qualifying_variants: chosen.length,
-      variant_count_with_dims: withDims.length,
-      example_variant_sku: skus[0] ?? null,
-      qualifying_variant_skus: skus,
-      q_width_min_in: qSizes.length ? Math.min(...qSizes) : null,
-      q_width_max_in: qSizes.length ? Math.max(...qSizes) : null,
-      ex_width_in: width(rep),
-      ex_depth_in: depthDefined && axes.length >= 2 ? inOf(Math.min(...axes)) : null,
-      ex_height_in: hMm != null ? inOf(hMm) : null,
-      ex_width_mm: wMm,
-      ex_height_mm: hMm,
-      ex_length_mm: lMm,
-      ex_diameter_mm: diaMm,
-      ex_wire_length_mm: jsonDimMm(d?.wire_length),
-    },
-    sizes: distinctVariantWidthsIn(appVariants),
-  };
-}
-
-/** The honest one-liner when variant-name matching set aside whole matched
- *  products (verbatim contract, authored to the public copy lints: no em
- *  dashes, no bare WAC, passes normalizeCopy unchanged). */
-export function variantTypeExclusionLine(dropped: number, appTerm: string): string {
-  const s = dropped === 1 ? "" : "s";
-  return (
-    `Excluded ${dropped} matched product${s} whose variants are all named a different fixture type than ${appTerm}; ` +
-    "in this catalog the variant name is what records the fixture type, so a product-level match is not enough."
-  );
-}
-
 /** Render filter rows NAME-FIRST with real geometry: derived values dual-unit,
  *  raw recorded axes alongside (plan A.2), per-size counts, the qualifying
  *  variants' REAL orderable SKUs (0069 — the catalog id is the internal PPID
@@ -1526,9 +1393,9 @@ export function formatFilterRows(
     wireStated: boolean;
     pdpBySku?: ReadonlyMap<string, string>;
     /** Full distinct size list per displayed sku (derived from the raw
-     *  variants batch, application-trimmed when variant-grain matching ran) —
-     *  lets a row say the listed SKUs are the QUALIFYING size and that
-     *  other sizes exist (the PDP may lead with a different size). */
+     *  variants batch) — lets a row say the listed SKUs are the QUALIFYING
+     *  size and that other sizes exist (the PDP may lead with a different
+     *  size). */
     sizesBySku?: ReadonlyMap<string, readonly number[]>;
     /** The stated max-width predicate in inches (buildFilterPredicates) —
      *  lets a wall row say it fits in any mounting orientation when its
@@ -1799,9 +1666,10 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
 
   const productRows = rows.filter((r) => r.sku != null);
   // Product-page links (canonicalPdp-guarded, mirrors getProduct/get_family)
-  // AND each displayed product's raw variants (names + SKUs + dims), batched
-  // together — the variants drive both the full-size list a row renders and
-  // the variant-grain application matching below.
+  // AND each displayed product's raw variants, batched together — the
+  // variants yield the full distinct size list, which lets the row say the
+  // listed SKUs are the qualifying size when the product is also made
+  // bigger or smaller.
   const displayedSkus = productRows.map((r) => r.sku);
   const [pdpBySku, variantsBySku] = await Promise.all([
     fetchPdpUrls(ctx, displayedSkus),
@@ -1809,53 +1677,19 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
   ]);
   const sizesBySku = new Map<string, number[]>();
   for (const [sku, vars] of variantsBySku) sizesBySku.set(sku, distinctVariantWidthsIn(vars));
-  // Variant-grain application matching (Davis 2026-07-22, Turbo/ELEMENTUM):
-  // fixture type lives in VARIANT names, which the RPC's product-level
-  // application pre-filter cannot see — one product can carry both a "Wall
-  // Sconce" and a "Bath & Wall Light" variant line, and every Turbo variant
-  // is a "WALL SCONCE" under a "Bath & Vanity Light" product name. When an
-  // application was requested and a product's variant names carry
-  // fixture-type vocabulary, only the variants named for the REQUESTED
-  // application qualify: rows are recomputed from those variants (their
-  // SKUs, their sizes, their dims) and dropped entirely when none match.
-  // Products whose variant names carry no type vocabulary keep the
-  // product-level match; non-application queries are untouched.
-  let displayRows = productRows;
-  let droppedByVariantType = 0;
-  if (appPatterns) {
-    displayRows = [];
-    for (const r of productRows) {
-      const refined = refineRowByVariantApplication(
-        r,
-        (r.sku ? variantsBySku.get(r.sku) : undefined) ?? [],
-        appPatterns,
-        preds.p_width_min_in ?? null,
-        preds.p_width_max_in ?? null,
-      );
-      if (!refined) {
-        droppedByVariantType++;
-        continue;
-      }
-      displayRows.push(refined.row);
-      if (r.sku) sizesBySku.set(r.sku, refined.sizes);
-    }
-  }
   let content =
     preamble +
-    formatFilterRows(displayRows, {
+    formatFilterRows(productRows, {
       lumensStated,
       wireStated,
       pdpBySku,
       sizesBySku,
       widthMaxIn: preds.p_width_max_in,
     }).join("\n");
-  if (lumensStated && displayRows.some((r) => r.lumens_source === "product_level")) {
+  if (lumensStated && productRows.some((r) => r.lumens_source === "product_level")) {
     content += `\n\nNote: ${PRODUCT_LEVEL_LUMENS_SENTENCE}.`;
   }
-  content += displayRows.length ? `\n\n${coverage}` : coverage;
-  if (droppedByVariantType > 0) {
-    content += `\n${variantTypeExclusionLine(droppedByVariantType, appTerm ?? "the requested application")}`;
-  }
+  content += `\n\n${coverage}`;
   content += wallCaveatFor(cls === "wall" || productRows.some((r) => r.class === "wall"));
   // No cards here — the model follows up with get_product.
   return { content, cards: [], citations: [] };
