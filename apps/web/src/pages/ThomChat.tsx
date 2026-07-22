@@ -402,6 +402,7 @@ function FeedbackRow({
   return (
     <div className="thom-feedback" ref={boxRef}>
       <div className="thom-feedback-row">
+        <span className="thom-feedback-label muted">Was this response helpful?</span>
         <button
           className={`thom-feedback-btn${feedback === 1 ? " selected" : ""}`}
           aria-label="Good answer"
@@ -529,12 +530,12 @@ function TurnView({
             ))}
           </div>
         )}
-        {onFeedback &&
-          turn.messageId &&
-          showFeedbackRow({ role: turn.role, error: turn.error, id: turn.messageId, streaming }) && (
-            <FeedbackRow messageId={turn.messageId} feedback={turn.feedback} onFeedback={onFeedback} />
-          )}
       </div>
+      {onFeedback &&
+        turn.messageId &&
+        showFeedbackRow({ role: turn.role, error: turn.error, id: turn.messageId, streaming }) && (
+          <FeedbackRow messageId={turn.messageId} feedback={turn.feedback} onFeedback={onFeedback} />
+        )}
     </div>
   );
 }

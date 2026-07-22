@@ -1587,11 +1587,14 @@ button.slim {
   flex-direction: column;
   gap: 16px;
 }
+/* A column so the feedback block can sit below the bubble. */
 .thom-turn {
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
 }
 .thom-turn.user {
-  justify-content: flex-end;
+  align-items: flex-end;
 }
 .thom-bubble {
   max-width: 760px;
@@ -1793,16 +1796,21 @@ button.slim {
 .thom-cite:hover {
   border-color: var(--accent);
 }
-/* feedback (thumbs) */
+/* feedback (thumbs) — below the answer bubble, outside it */
 .thom-feedback {
-  margin-top: 10px;
+  margin-top: 6px;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 .thom-feedback-row {
   display: flex;
+  align-items: center;
   gap: 6px;
+}
+.thom-feedback-label {
+  font-size: 12px;
+  margin-right: 2px;
 }
 .thom-feedback-btn {
   display: inline-flex;
