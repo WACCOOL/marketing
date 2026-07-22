@@ -15,13 +15,20 @@ import { siteForHost } from "./sites.js";
  * the same --reconcile-write gate as the PDP heal.
  *
  * Resolution is pdp_urls INVERSION: pdp_urls maps sku → (brand, slug, url),
- * so (site, slug) → sku answers both sides — the OWNING product (the PDP the
- * section was found on) and each referenced slug. A slug two SKUs share is
- * ambiguous and never resolved (counted, like the PDP reconciler's
- * collisions). Unresolved referenced slugs are KEPT with
- * related_product_sku=null (the raw slug is the evidence, same posture as
- * unresolved Sales Layer codes); an unresolved OWNER is skipped — no
- * product_sku, no row.
+ * so (site, slug) → sku[] answers both sides — the OWNING product(s) (the
+ * PDP the section was found on) and each referenced slug. All keying goes
+ * through one normalizer (normalizeSlug/pdpSlugFromUrl): trailing slash,
+ * case, www/alias hosts, query/hash tails, and repeated slashes can never
+ * break the join on EITHER side.
+ *
+ * A slug shared by several SKUs is legitimate on the OWNER side — WIES maps
+ * multiple catalog products (fan sizes, housing variants) at the SAME brand
+ * PDP, so the page's accessory section belongs to every one of them (capped
+ * at MAX_OWNERS_PER_SLUG against family/landing-page mappings). On the
+ * RELATED side one row carries one related_product_sku, so only uniquely
+ * claimed slugs resolve; shared ones are KEPT with related_product_sku=null
+ * (the raw slug is the evidence, same posture as unresolved Sales Layer
+ * codes). An unresolved OWNER is skipped — no product_sku, no row.
  *
  * Provenance labeling (§D: MF's curated scope is unverified, algorithmic
  * cross-sell risk — the prompt must be able to say "listed together on the
@@ -58,7 +65,8 @@ export interface AccessoryReconcileReport {
   /** Referenced-slug refs kept (post-dedupe). */
   refs: number;
   refsUnresolved: number;
-  /** Slugs shared by 2+ SKUs in pdp_urls — never resolved. */
+  /** Slugs shared by 2+ SKUs in pdp_urls — owner-side fan-out, related-side
+   *  unresolvable. */
   slugCollisions: number;
   written: number;
   pruned: number;
@@ -98,55 +106,84 @@ const SITE_BY_DOMAIN = new Map(
 );
 
 /**
- * Invert pdp_urls into a (siteKey, slug) → sku map. The site comes from the
- * row's url host when present (authoritative), else from the canonical brand's
- * domain. Slugs claimed by two DIFFERENT SKUs are ambiguous: dropped from the
- * map and counted.
+ * Normalize any slug-ish value to the matching key form: trimmed, lowercased,
+ * stripped of surrounding slashes and any query/hash tail. Every place a slug
+ * is KEYED goes through this — pdp_urls url paths AND slug column, frontier
+ * discovered_slug / url, and the harvested accessory slugs — so a trailing
+ * slash, case difference, or copied query string on either side can never
+ * break the (site, slug) join.
+ */
+export function normalizeSlug(v: string | null | undefined): string | null {
+  if (!v) return null;
+  const s = v.trim().toLowerCase().replace(/[?#].*$/, "").replace(/^\/+|\/+$/g, "");
+  return s || null;
+}
+
+/** Slug from any PDP url form: tolerates www/case (host handled by
+ *  siteForHost's aliases), repeated slashes, query/hash, and a trailing
+ *  slash. Null for non-PDP urls (legacy `?s=` search fallbacks). */
+export function pdpSlugFromUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const path = new URL(url).pathname;
+    const m = path.match(/\/product\/+([a-z0-9][a-z0-9-]*)\/*$/i);
+    return m ? normalizeSlug(m[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Invert pdp_urls into a (siteKey, slug) → sku[] map. The site comes from the
+ * row's url host when present (authoritative, www/alias-normalized), else
+ * from the canonical brand's domain.
+ *
+ * A slug CAN legitimately map to several SKUs: WIES points multiple catalog
+ * products (fan sizes, housing variants) at the SAME brand PDP, so the
+ * page's own SKU set is the value, not a single sku — dropping shared slugs
+ * as "ambiguous" is exactly the bug that left WYND XL (1884) with zero rows.
+ * Shared slugs are still counted (they stay unresolvable on the RELATED
+ * side, where one row needs one related_product_sku).
  */
 export function invertPdpUrls(rows: readonly PdpUrlRow[]): {
-  bySlug: Map<string, string>;
-  collisions: number;
+  bySlug: Map<string, string[]>;
+  sharedSlugs: number;
 } {
-  const bySlug = new Map<string, string>();
-  const ambiguous = new Set<string>();
+  const bySlug = new Map<string, string[]>();
   for (const r of rows) {
     let site: string | null = null;
     let slug: string | null = null;
     if (r.url) {
       try {
-        const u = new URL(r.url);
-        site = siteForHost(u.host)?.key ?? null;
-        slug = u.pathname.match(/^\/product\/([a-z0-9][a-z0-9-]*)\/?$/i)?.[1]?.toLowerCase() ?? null;
+        site = siteForHost(new URL(r.url).host.toLowerCase())?.key ?? null;
       } catch {
-        /* fall through to the brand/slug columns */
+        /* fall through to the brand column */
       }
+      slug = pdpSlugFromUrl(r.url);
     }
     if (!site) {
       const brand = canonicalBrand(r.brand) ?? r.brand;
       site = brand ? (SITE_BY_DOMAIN.get(brand) ?? null) : null;
     }
-    if (!slug && r.slug) slug = r.slug.toLowerCase();
+    if (!slug) slug = normalizeSlug(r.slug);
     if (!site || !slug) continue;
     const key = `${site} ${slug}`;
-    if (ambiguous.has(key)) continue;
-    const existing = bySlug.get(key);
-    if (existing && existing !== r.sku) {
-      bySlug.delete(key);
-      ambiguous.add(key);
-      continue;
-    }
-    bySlug.set(key, r.sku);
+    const list = bySlug.get(key);
+    if (!list) bySlug.set(key, [r.sku]);
+    else if (!list.includes(r.sku)) list.push(r.sku);
   }
-  return { bySlug, collisions: ambiguous.size };
+  let sharedSlugs = 0;
+  for (const list of bySlug.values()) if (list.length > 1) sharedSlugs++;
+  return { bySlug, sharedSlugs };
 }
 
+/** Cap on owners written per shared slug — fan-size sharing is 2..6 SKUs; a
+ *  slug claimed by more than this smells like a family/landing page mapping
+ *  and is skipped for safety. */
+export const MAX_OWNERS_PER_SLUG = 8;
+
 function slugOfPdp(pdp: FrontierAccessoryPdp): string | null {
-  if (pdp.discovered_slug) return pdp.discovered_slug.toLowerCase();
-  try {
-    return new URL(pdp.url).pathname.match(/^\/product\/([a-z0-9][a-z0-9-]*)\/?$/i)?.[1]?.toLowerCase() ?? null;
-  } catch {
-    return null;
-  }
+  return normalizeSlug(pdp.discovered_slug) ?? pdpSlugFromUrl(pdp.url);
 }
 
 /**
@@ -157,7 +194,7 @@ function slugOfPdp(pdp: FrontierAccessoryPdp): string | null {
  */
 export function buildPdpAccessoryRows(
   pdps: readonly FrontierAccessoryPdp[],
-  bySlug: ReadonlyMap<string, string>,
+  bySlug: ReadonlyMap<string, string[]>,
   syncedAt: string,
 ): {
   rows: WebAccessoryRow[];
@@ -176,37 +213,49 @@ export function buildPdpAccessoryRows(
     const labels = ACCESSORY_SITES[pdp.site];
     if (!labels) continue;
     const ownSlug = slugOfPdp(pdp);
-    const owner = ownSlug ? bySlug.get(`${pdp.site} ${ownSlug}`) : undefined;
+    // OWNER side: every catalog SKU WIES mapped onto this PDP owns the page's
+    // accessory section (fan sizes share one PDP — the Wynd XL fix), capped
+    // against family/landing-page mappings.
+    const ownerList = ownSlug ? (bySlug.get(`${pdp.site} ${ownSlug}`) ?? []) : [];
+    const owners = ownerList.length <= MAX_OWNERS_PER_SLUG ? ownerList : [];
     // Every RESOLVABLE scanned PDP counts as "still in the feed" for the
     // prune guard, whether or not it carried slugs this run.
-    if (owner) ownerSkusSeen.add(owner);
-    const slugs = (pdp.accessory_slugs ?? []).map((s) => s.toLowerCase());
+    for (const o of owners) ownerSkusSeen.add(o);
+    const slugs = (pdp.accessory_slugs ?? [])
+      .map((s) => normalizeSlug(s))
+      .filter((s): s is string => s !== null);
     if (!slugs.length) continue;
     withSlugs++;
-    if (!owner) {
+    if (!owners.length) {
       ownersUnresolved++;
       continue;
     }
     ownersResolved++;
     slugs.forEach((slug, i) => {
       if (slug === ownSlug) return;
-      const related = bySlug.get(`${pdp.site} ${slug}`) ?? null;
-      const key = `${owner} ${slug} ${labels.kind}`;
-      const kept = byKey.get(key);
-      if (!kept) {
-        byKey.set(key, {
-          product_sku: owner,
-          related_sku: slug,
-          related_product_sku: related,
-          kind: labels.kind,
-          label: null,
-          source_system: "web_crawl",
-          source_field: labels.sourceField,
-          position: i + 1,
-          synced_at: syncedAt,
-        });
-      } else if (!kept.related_product_sku && related) {
-        kept.related_product_sku = related;
+      // RELATED side: one row carries ONE related_product_sku, so only a
+      // slug uniquely claimed by a single SKU resolves; shared slugs stay
+      // unresolved (raw slug kept as the evidence).
+      const relatedList = bySlug.get(`${pdp.site} ${slug}`) ?? [];
+      const related = relatedList.length === 1 ? relatedList[0]! : null;
+      for (const owner of owners) {
+        const key = `${owner} ${slug} ${labels.kind}`;
+        const kept = byKey.get(key);
+        if (!kept) {
+          byKey.set(key, {
+            product_sku: owner,
+            related_sku: slug,
+            related_product_sku: related,
+            kind: labels.kind,
+            label: null,
+            source_system: "web_crawl",
+            source_field: labels.sourceField,
+            position: i + 1,
+            synced_at: syncedAt,
+          });
+        } else if (!kept.related_product_sku && related) {
+          kept.related_product_sku = related;
+        }
       }
     });
   }
@@ -233,7 +282,7 @@ export async function reconcileAccessories(
     pdpRows.push(...((data ?? []) as PdpUrlRow[]));
     if ((data?.length ?? 0) < 1000) break;
   }
-  const { bySlug, collisions } = invertPdpUrls(pdpRows);
+  const { bySlug, sharedSlugs } = invertPdpUrls(pdpRows);
 
   // Frontier PDPs for the two harvestable sites — ALL of them, not just the
   // slug-bearing ones: resolvable owners feed the prune guard's "still in the
@@ -259,7 +308,7 @@ export async function reconcileAccessories(
     ownersUnresolved: built.ownersUnresolved,
     refs: built.rows.length,
     refsUnresolved: built.rows.filter((r) => !r.related_product_sku).length,
-    slugCollisions: collisions,
+    slugCollisions: sharedSlugs,
     written: 0,
     pruned: 0,
     pruneAborted: false,
@@ -318,7 +367,7 @@ export async function reconcileAccessories(
   log(
     `[reconcile-accessories] ${report.scanned} PDPs scanned, ${report.withSlugs} with harvested slugs ` +
     `(${report.ownersResolved} owners resolved, ${report.ownersUnresolved} unresolved) | ` +
-    `${report.refs} refs (${report.refsUnresolved} unresolved, ${report.slugCollisions} slug collisions) | ` +
+    `${report.refs} refs (${report.refsUnresolved} unresolved, ${report.slugCollisions} shared slugs) | ` +
     (opts.write
       ? `${report.written} rows written, ${report.pruned} pruned${report.pruneAborted ? " (PRUNE ABORTED)" : ""}`
       : "REPORT-ONLY (no writes)"),
