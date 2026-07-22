@@ -164,6 +164,34 @@ describe("constraint bullets (attribute-filter plan §C, THOM_SPEC_FILTER-gated)
   });
 });
 
+describe("product identifier rules (PPID vs variant SKU, Davis 2026-07-22)", () => {
+  it("internal persona forbids presenting a PPID as a part number and asks for links + variant SKUs", () => {
+    const text = joined(internalSystem());
+    expect(text).toContain("PPID");
+    expect(text).toMatch(/internal identifier/i);
+    expect(text).toContain("variant-level SKUs");
+    expect(text).toContain("markdown links to their product page");
+  });
+
+  it("public persona keeps the internal-identifier rule and adds the variant-SKU + link guidance", () => {
+    const text = joined(publicSystem());
+    expect(text).toContain("internal identifier");
+    expect(text).toContain("qualifying variant SKU");
+    expect(text).toContain("real orderable part number");
+    expect(text).toContain("markdown links to their product page");
+  });
+
+  it("filter bullets route named applications through the application parameter, flag-gated (R3)", () => {
+    const primer = lightingExpertise(true, true);
+    expect(primer).toContain("application parameter");
+    expect(primer).toContain("clearly labeled alternatives");
+    expect(primer).toContain("never mixed into the main results");
+    expect(primer).toContain("qualifying variant SKU(s)");
+    // Off when the filter tool isn't offered — never command an unadvertised tool.
+    expect(lightingExpertise(true, false)).not.toContain("application parameter");
+  });
+});
+
 describe("internalSystem is unchanged by the public work", () => {
   it("still carries the CRM + web-search guidance (internal only)", () => {
     const text = joined(internalSystem());
