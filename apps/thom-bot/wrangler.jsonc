@@ -59,6 +59,10 @@
     // Spec-rank tool (rank_products_by_spec + the primer's superlative bullet).
     // Enabled after the internal regression passed (plan G.2, 2026-07-21).
     "THOM_SPEC_RANK": "1",
+    // Web-crawl plan authority tiebreak (0054): tiny band-gated nudge toward
+    // official corporate pages on company-shaped doc queries only; product/SKU
+    // queries bypass it entirely. ENABLED 2026-07-22 per Davis.
+    "THOM_AUTHORITY": "1",
     // Filter + feedback enabled 2026-07-22 (public bubble = still-testing surface,
     // both-surfaces-at-once per Davis). THOM_DIMMING stays dark pending sample-10.
     "THOM_SPEC_FILTER": "1",
