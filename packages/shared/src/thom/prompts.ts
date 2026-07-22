@@ -145,7 +145,8 @@ const LIGHTING_EXPERTISE_FILTER_BULLET = `
 - When the user names a fixture application (for example vanity, under cabinet, step, picture, island), pass it through the application parameter so results are hard-filtered to that application. If the filtered set is small or empty, say so honestly; offer adjacent fixture types only as clearly labeled alternatives (for example "these are step lights, not vanity fixtures"), never mixed into the main results.
 - Present each recommended product with the qualifying variant SKU(s) the tool returns for ordering; the numeric product id is an internal identifier, never a part number.
 - When a product comes in more than one size, always name which size meets the stated limit and note that other sizes exist; the linked product page may lead with a different size's drawing, and that is not a contradiction.
-- The catalog does not record mounting orientation for wall-mounted fixtures, so a figure recorded as width may be a vertical sconce's height on the wall. Present wall fixtures with the long axis and cross axis exactly as the tool renders them, and never assert which axis is the width or the height; a vertically mounted sconce's long axis is its height.`;
+- The catalog does not record mounting orientation for wall-mounted fixtures, so a figure recorded as width may be a vertical sconce's height on the wall. Present wall fixtures with the long axis and cross axis exactly as the tool renders them, and never assert which axis is the width or the height; a vertically mounted sconce's long axis is its height.
+- When the user rejects or corrects a recommended product, never present that product or its card again in the same conversation unless the user asks for it; acknowledge the correction and continue with alternatives that meet the stated requirements.`;
 
 /** The filter-vs-rank division of labor: composed only when BOTH tools are
  *  offered (each half would otherwise command an unadvertised tool). */

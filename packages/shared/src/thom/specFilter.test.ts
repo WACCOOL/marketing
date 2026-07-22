@@ -23,12 +23,16 @@ import {
   formatFilterRows,
   formatProductDims,
   hasNumericPredicate,
+  ilikeMatches,
   MOUNTING_TYPE_VALUES,
   ppidLabel,
   PRODUCT_LEVEL_LUMENS_SENTENCE,
   PUBLIC_TOOL_NAMES,
+  refineRowByVariantApplication,
   SEARCH_PRODUCTS_FILTER_POINTER,
   SPEC_RANK_CLASSES,
+  VARIANT_TYPE_PATTERNS,
+  variantTypeExclusionLine,
   variantWidthIn,
   WALL_ORIENTATION_CAVEAT,
   wallAxisPhrase,
@@ -784,6 +788,187 @@ describe("filter_products dispatch", () => {
     const out = await dispatch(ctx, "filter_products", { max_width_in: 5, class: "wall" });
     expect(out.content).toContain("Nothing in the catalog fits");
     expect(out.content).toContain(WALL_ORIENTATION_CAVEAT);
+  });
+});
+
+// --- variant-grain application matching (Davis 2026-07-22) ----------------------
+// Fixture type lives in VARIANT names: one ELEMENTUM product carries both a
+// "Wall Sconce" line (WS-7213*) and a "Bath & Wall Light" line (WS-7222*), and
+// every Turbo variant is named "TURBO 14IN/24IN WALL SCONCE" even though the
+// product is a "Bath & Vanity Light".
+
+const elementumVariants = [
+  { sku: "WS-7213-27-BK", name: "ELEMENTUM Wall Sconce", dimensions_mm: { width: 64, height: 305, length: 89 } },
+  { sku: "WS-7222-27-BK", name: "ELEMENTUM Bath & Wall Light", dimensions_mm: { width: 64, height: 110, length: 560 } },
+  { sku: "WS-7222-27-BN", name: "ELEMENTUM Bath & Wall Light", dimensions_mm: { width: 64, height: 110, length: 560 } },
+];
+const turboVariants = [
+  { sku: "WS-180414-30-BN", name: "TURBO 14IN WALL SCONCE", dimensions_mm: { width: 111.8, height: 127, length: 353.5 } },
+  { sku: "WS-180424-30-BN", name: "TURBO 24IN WALL SCONCE", dimensions_mm: { width: 111.8, height: 127, length: 610 } },
+];
+const turboRow = () =>
+  frow({
+    sku: "4101",
+    name: "Turbo Bath & Vanity Light",
+    qualifying_variants: 1,
+    variant_count_with_dims: 2,
+    example_variant_sku: "WS-180414-30-BN",
+    qualifying_variant_skus: ["WS-180414-30-BN"],
+    q_width_min_in: 13.9,
+    q_width_max_in: 13.9,
+    ex_width_in: 13.9,
+    ex_depth_in: 4.4,
+    ex_width_mm: 111.8,
+    ex_height_mm: 127,
+    ex_length_mm: 353,
+  });
+
+describe("variant-grain application matching (filter_products)", () => {
+  it("ELEMENTUM shape: only the requested application's variants qualify — their SKUs and dims, never the sconce line", async () => {
+    const row = frow({
+      sku: "7213",
+      name: "ELEMENTUM Bath & Vanity",
+      qualifying_variants: 3,
+      qualifying_variant_skus: ["WS-7213-27-BK", "WS-7222-27-BK", "WS-7222-27-BN"],
+      example_variant_sku: "WS-7213-27-BK",
+    });
+    const { ctx } = makeCtx(
+      [{ data: [row], error: null }],
+      [],
+      [{ sku: "7213", variants: elementumVariants }],
+    );
+    const out = await dispatch(ctx, "filter_products", { application: "vanity", max_width_in: 24 });
+    // The RPC's qualifying SKUs are intersected down to the bath line only.
+    expect(out.content).toContain("order SKUs WS-7222-27-BK, WS-7222-27-BN");
+    expect(out.content).not.toContain("WS-7213-27-BK");
+    // Dims come from the qualifying (bath) variants, not the sconce line.
+    expect(out.content).toContain("long axis 22.0 in (560 mm), cross 4.3 in (110 mm)");
+    expect(out.content).toContain("2 of 2 sizes meet your limits");
+    // Nothing was dropped whole, so no exclusion line.
+    expect(out.content).not.toContain("Excluded");
+  });
+
+  it("Turbo shape: every variant is a wall sconce by name, so a vanity ask drops the row and says so", async () => {
+    const { ctx } = makeCtx(
+      [{ data: [turboRow(), frow()], error: null }],
+      [],
+      [{ sku: "4101", variants: turboVariants }],
+    );
+    const out = await dispatch(ctx, "filter_products", { application: "vanity", max_width_in: 15 });
+    expect(out.content).not.toContain("Turbo");
+    expect(out.content).not.toContain("WS-180414");
+    // The untyped product keeps its product-level match.
+    expect(out.content).toContain("Slim Bath & Vanity Light");
+    expect(out.content).toContain(variantTypeExclusionLine(1, "vanity"));
+  });
+
+  it("when EVERY matched product is dropped, no rows render and the exclusion line explains the gap", async () => {
+    const { ctx } = makeCtx(
+      [{ data: [turboRow()], error: null }],
+      [],
+      [{ sku: "4101", variants: turboVariants }],
+    );
+    const out = await dispatch(ctx, "filter_products", { application: "vanity", max_width_in: 15 });
+    expect(out.content).not.toMatch(/^- /m); // no product bullets at all
+    expect(out.content).toContain(variantTypeExclusionLine(1, "vanity"));
+    expect(out.content).toContain("Screened the 28 of 30 vanity products"); // counts stay honest
+    expect(out.content).toContain(WALL_ORIENTATION_CAVEAT);
+  });
+
+  it("keeps the product-level match when variant names carry no fixture-type vocabulary", async () => {
+    const { ctx } = makeCtx(
+      [{ data: [frow()], error: null }],
+      [],
+      [
+        {
+          sku: "3554",
+          variants: [
+            { sku: "WS-3554-30-BN", name: "Slim 18in Brushed Nickel", dimensions_mm: { width: 66.04, height: 127, length: 457.2 } },
+            { sku: "WS-3554-36-BN", name: "Slim 24in Brushed Nickel", dimensions_mm: { width: 66.04, height: 127, length: 610 } },
+          ],
+        },
+      ],
+    );
+    const out = await dispatch(ctx, "filter_products", { application: "vanity", max_width_in: 20 });
+    // RPC row untouched: its own qualifying SKUs and the FULL size list.
+    expect(out.content).toContain("order SKUs WS-3554-30-BN, WS-3554-36-BN");
+    expect(out.content).toContain("also made in 24.0 in (610 mm)");
+    expect(out.content).not.toContain("Excluded");
+  });
+
+  it("non-application queries are byte-identical: variant names never perturb a plain width-cap query", async () => {
+    const row = turboRow();
+    const { ctx } = makeCtx(
+      [{ data: [row], error: null }],
+      [],
+      [{ sku: "4101", variants: turboVariants }],
+    );
+    const out = await dispatch(ctx, "filter_products", { max_width_in: 15 });
+    const expected =
+      formatFilterRows([row], {
+        lumensStated: false,
+        wireStated: false,
+        pdpBySku: new Map(),
+        sizesBySku: new Map([["4101", [13.9, 24]]]),
+        widthMaxIn: 15,
+      }).join("\n") +
+      `\n\n${filterCoverageLine(row, "catalog")}\n${WALL_ORIENTATION_CAVEAT}`;
+    expect(out.content).toBe(expected);
+  });
+});
+
+describe("refineRowByVariantApplication / ilikeMatches (pure)", () => {
+  it("ilikeMatches mirrors ILIKE: % wildcards, case-insensitive, escaped literals", () => {
+    expect(ilikeMatches("%bath%", "ELEMENTUM Bath & Wall Light")).toBe(true);
+    expect(ilikeMatches("%vanit%", "TURBO 14IN WALL SCONCE")).toBe(false);
+    expect(ilikeMatches("%sconce%", "TURBO 14IN WALL SCONCE")).toBe(true);
+    expect(ilikeMatches("%under%cab%", "Straight Edge Under Cabinet Light")).toBe(true);
+    expect(ilikeMatches("%100\\% weird term%", "a 100% weird term!")).toBe(true);
+    expect(ilikeMatches("%100\\% weird term%", "a 100x weird term!")).toBe(false);
+  });
+
+  it("VARIANT_TYPE_PATTERNS carries the sconce marker alongside the application synonyms", () => {
+    expect(VARIANT_TYPE_PATTERNS).toContain("%sconce%");
+    expect(VARIANT_TYPE_PATTERNS).toContain("%vanit%");
+    expect(VARIANT_TYPE_PATTERNS).toContain("%bath%");
+    expect(applicationPatterns("sconce")).toEqual(["%sconce%"]);
+  });
+
+  it("reverse direction: a sconce ask on the mixed product keeps ONLY the sconce line", () => {
+    const out = refineRowByVariantApplication(frow(), elementumVariants, ["%sconce%"], null, null);
+    expect(out!.row.qualifying_variant_skus).toEqual(["WS-7213-27-BK"]);
+    expect(out!.row.qualifying_variants).toBe(1);
+    expect(out!.sizes).toEqual([3.5]); // greatest(64, 89) mm -> 3.5 in
+  });
+
+  it("re-checks a stated width cap against the surviving variants (bath line too wide -> dropped)", () => {
+    // Vanity ask capped at 15 in: the sconce line is excluded by NAME and the
+    // 22.0 in bath line by WIDTH — nothing survives.
+    expect(
+      refineRowByVariantApplication(frow(), elementumVariants, ["%vanit%", "%bath%"], null, 15),
+    ).toBeNull();
+  });
+
+  it("passes through unchanged when nothing is trimmed or no name carries type vocabulary", () => {
+    const r = frow();
+    const allBath = [{ sku: "A-1", name: "X Bath Light", dimensions_mm: { length: 560 } }];
+    expect(refineRowByVariantApplication(r, allBath, ["%vanit%", "%bath%"], null, null)!.row).toBe(r);
+    const noVocab = [{ sku: "A-1", name: "X 18in", dimensions_mm: { length: 560 } }];
+    const out = refineRowByVariantApplication(r, noVocab, ["%vanit%", "%bath%"], null, null)!;
+    expect(out.row).toBe(r);
+    expect(out.sizes).toEqual([22]); // full size list, untouched
+  });
+
+  it("the exclusion line is a copy-lint-safe verbatim contract", () => {
+    const one = variantTypeExclusionLine(1, "vanity");
+    const two = variantTypeExclusionLine(2, "vanity");
+    expect(one).toContain("Excluded 1 matched product whose");
+    expect(two).toContain("Excluded 2 matched products whose");
+    for (const line of [one, two]) {
+      expect(normalizeCopy(line)).toBe(line);
+      expect(line).not.toContain("—");
+      expect(hasBareWac(line)).toBe(false);
+    }
   });
 });
 

@@ -151,6 +151,16 @@ describe("constraint bullets (attribute-filter plan §C, THOM_SPEC_FILTER-gated)
     expect(lightingExpertise(true, false)).not.toContain("mounting orientation");
   });
 
+  it("carries the no-re-present rule: a rejected product never comes back unless asked (Davis 2026-07-22)", () => {
+    const primer = lightingExpertise(false, true);
+    expect(primer).toContain("rejects or corrects a recommended product");
+    expect(primer).toContain("never present that product or its card again");
+    expect(primer).toContain("unless the user asks for it");
+    expect(primer).toContain("continue with alternatives");
+    // Flag-gated with the rest of the filter bullets (R3).
+    expect(lightingExpertise(true, false)).not.toContain("rejects or corrects");
+  });
+
   it("pass normalizeCopy unchanged (public copy lints) in every flag combination", () => {
     for (const rank of [false, true]) {
       for (const filter of [false, true]) {
