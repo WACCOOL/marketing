@@ -17,6 +17,7 @@
     "@mozilla/readability": "^0.6.0",
     "@supabase/supabase-js": "^2.46.2",
     "@wac/shared": "workspace:*",
+    "fflate": "^0.8.2",
     "linkedom": "^0.18.13",
     "unpdf": "^0.12.1"
   },

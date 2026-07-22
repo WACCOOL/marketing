@@ -45,6 +45,12 @@ export interface ThomEnv {
   // views). Same dark-launch idiom; enabling is a committed wrangler `vars`
   // edit per surface (internal first, then public).
   THOM_SPEC_FILTER?: string;
+  // Dimming-compatibility tool gate ("1" = check_dimmer_compatibility +
+  // find_products_for_dimmer offered + the compatibility block's dimming
+  // bullets composed, superseding the search_docs dimmer bullet). Same
+  // dark-launch idiom as THOM_SPEC_FILTER; enabling is a committed wrangler
+  // `vars` edit per surface (internal first, then public — plan §G.5/G.6).
+  THOM_DIMMING?: string;
   // Authority-weighted retrieval ("1" = search_docs passes a non-zero
   // authority_weight to kb_search for company/ambiguous-shaped queries;
   // product/SKU-shaped queries ALWAYS pass 0). Off by default — with it off,

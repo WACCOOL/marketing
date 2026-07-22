@@ -167,8 +167,25 @@ const COMPATIBILITY_GUIDANCE_BASE = `Compatibility and accessories:
 - Track head fitment (H, J, and L track): which track systems a WAC Lighting head fits is carried in the product NAME (for example "H/J/L Track Luminaire") and in letter-prefixed variant SKUs, so enumerate the heads for a track type with search_products on those name markers. The track-system data behind plan_layout can size and build a bill of materials for a KNOWN system, but it cannot list which heads fit a track; never use it to answer that question.
 - Accessory tables inside spec sheets often survive PDF extraction with scrambled column pairings. Name the accessory codes the sheet lists and cite the sheet; NEVER reconstruct which code pairs with which description or finish from a retrieved chunk.
 - Existence vs fitment: for "is there an accessory or lens for X?" follow the never-assert-absence rule, keep searching with broader or alternate wording. For "does X fit Y?" an honest non-confirmation is required when no source confirms the pairing: say it is not confirmed in the data you have and suggest verifying with a WAC Group sales rep before ordering.
-- Dimmer compatibility: pull it from the product's spec sheet or manual with search_docs and cite the document; do not answer dimmer compatibility from memory.
 - AiSpire accessory and component answers should note that AiSpire products are specified and supplied through the AiSpire custom-integrator channel.`;
+
+/** The pre-dimming dimmer bullet (kept verbatim while THOM_DIMMING is off;
+ *  SUPERSEDED by DIMMING_GUIDANCE when the flag is on — plan §E). */
+const COMPATIBILITY_DIMMER_SEARCH_DOCS_BULLET = `
+- Dimmer compatibility: pull it from the product's spec sheet or manual with search_docs and cite the document; do not answer dimmer compatibility from memory.`;
+
+/** Dimming-chart guidance (plan §E), composed ONLY when THOM_DIMMING=1 (the
+ *  R3 rule: never command an unadvertised tool). AUTHORED TO THE PUBLIC COPY
+ *  LINTS (no em dashes, "WAC Group", passes normalizeCopy unchanged; the block
+ *  rides both surfaces). Carries the DC3 competitor-guardrail carve-out:
+ *  dimmer control manufacturers printed in WAC Group's own tested charts are
+ *  tested references, not competitors. */
+const DIMMING_GUIDANCE = `
+- Dimmer compatibility comes from check_dimmer_compatibility and find_products_for_dimmer FIRST; these carry WAC Group's tested dimming charts. NEVER answer dimmer compatibility from memory and NEVER infer it from a spec sheet chunk's scrambled table text.
+- Always state the phase mode (Adaptive, ELV, TRIAC, 0-10V) AND the row's ELV or TRIAC mode qualifier when present, with any verdict, and include the tested low-end percentage and any "Not Recommended" or issue note verbatim.
+- Dimmer control manufacturers named in WAC Group's own tested dimming charts (Lutron, Legrand, Leviton, Cooper, and the rest as printed) are tested references, not competitors: name them exactly as printed in the chart, with their model numbers and results.
+- Not found is honest: say "that pairing is not in WAC Group's tested dimming charts; check the product's spec sheet or confirm with your WAC Group rep." Absence of a chart row is never "not compatible". A family-level answer names the tested sizes and wattages rather than guessing a unit.
+- Keep the chart disclaimer with any dimming verdict: results reflect a single-fixture test, and fixture count per dimmer is governed by the dimmer manufacturer's load rating.`;
 
 const COMPATIBILITY_INTERNAL_CODES = `
 - Some accessory references are raw codes with no catalog product page (unresolved). You may show the raw code to internal users, but flag that it is not a catalog page and confirm availability through sales before quoting it.`;
@@ -176,11 +193,16 @@ const COMPATIBILITY_INTERNAL_CODES = `
 const COMPATIBILITY_PUBLIC_CODES = `
 - Some accessory references have no catalog product page. NEVER show such a raw code to the user: present the item by its descriptive name when one exists, as "available through your WAC Group sales rep".`;
 
-/** The compatibility block for a surface: shared base + the surface's
- *  unresolved-code presentation rule (PL8a: public never sees bare codes). */
-export function compatibilityGuidance(surface: ThomSurface): string {
+/** The compatibility block for a surface: shared base + EITHER the dimming
+ *  chart-tool bullets (THOM_DIMMING=1, superseding the search_docs dimmer
+ *  bullet — plan §E) OR the pre-dimming search_docs dimmer bullet, + the
+ *  surface's unresolved-code presentation rule (PL8a: public never sees bare
+ *  codes). The bullet swap is conditional on the same flag that composes the
+ *  tools, so the prompt never advertises a tool that is not offered. */
+export function compatibilityGuidance(surface: ThomSurface, hasDimming = false): string {
   return (
     COMPATIBILITY_GUIDANCE_BASE +
+    (hasDimming ? DIMMING_GUIDANCE : COMPATIBILITY_DIMMER_SEARCH_DOCS_BULLET) +
     (surface === "public" ? COMPATIBILITY_PUBLIC_CODES : COMPATIBILITY_INTERNAL_CODES)
   );
 }
@@ -200,11 +222,14 @@ You may have a web_search tool. It is a LAST RESORT — use it ONLY for things t
  *  block. `hasSpecRank` composes the primer's rank-tool bullet (THOM_SPEC_RANK,
  *  threaded by agent.ts); flipping it is a one-time prompt-cache invalidation.
  *  `hasCategorySales` (THOM_CATEGORY_SALES) composes the CRM guidance's sales
- *  bullets — CS6: they appear only when crm_sales_by_category is offered. */
+ *  bullets — CS6: they appear only when crm_sales_by_category is offered.
+ *  `hasDimming` (THOM_DIMMING) swaps the compatibility block's search_docs
+ *  dimmer bullet for the dimming chart-tool bullets (dimming plan §E). */
 export function internalSystem(
   hasSpecRank = false,
   hasSpecFilter = false,
   hasCategorySales = false,
+  hasDimming = false,
 ): ClaudeSystemBlock[] {
   return [
     { type: "text", text: PERSONA },
@@ -214,7 +239,7 @@ export function internalSystem(
     { type: "text", text: PHOTOMETRICS_GUIDANCE },
     { type: "text", text: LAYOUT_GUIDANCE },
     { type: "text", text: lightingExpertise(hasSpecRank, hasSpecFilter) },
-    { type: "text", text: compatibilityGuidance("internal") },
+    { type: "text", text: compatibilityGuidance("internal", hasDimming) },
     { type: "text", text: WEB_SEARCH_GUIDANCE, cache_control: { type: "ephemeral" } },
   ];
 }
@@ -273,14 +298,18 @@ const PUBLIC_WEB_SEARCH_GUIDANCE = `Open-web search:
  *  block. No CRM / internal-ticket guidance ever appears here. Every block is
  *  passed through normalizeCopy so the whole public prompt obeys the public copy
  *  rules (including the reused shared blocks, which use em dashes). */
-export function publicSystem(hasSpecRank = false, hasSpecFilter = false): ClaudeSystemBlock[] {
+export function publicSystem(
+  hasSpecRank = false,
+  hasSpecFilter = false,
+  hasDimming = false,
+): ClaudeSystemBlock[] {
   const texts = [
     PUBLIC_PERSONA,
     BRAND_CONTEXT,
     PHOTOMETRICS_GUIDANCE,
     LAYOUT_GUIDANCE,
     lightingExpertise(hasSpecRank, hasSpecFilter),
-    compatibilityGuidance("public"),
+    compatibilityGuidance("public", hasDimming),
     PUBLIC_WEB_SEARCH_GUIDANCE,
   ];
   return texts.map((text, i) => ({
@@ -290,9 +319,9 @@ export function publicSystem(hasSpecRank = false, hasSpecFilter = false): Claude
   }));
 }
 
-/** Pick the system prompt for a surface. `hasSpecRank` (THOM_SPEC_RANK) and
- *  `hasSpecFilter` (THOM_SPEC_FILTER), threaded by agent.ts, compose the
- *  primer's rank-tool bullet and constraint bullets on either surface.
+/** Pick the system prompt for a surface. `hasSpecRank` (THOM_SPEC_RANK),
+ *  `hasSpecFilter` (THOM_SPEC_FILTER), and `hasDimming` (THOM_DIMMING),
+ *  threaded by agent.ts, compose the flag-gated bullets on either surface.
  *  `hasCategorySales` (THOM_CATEGORY_SALES) composes the CRM sales bullets on
  *  the INTERNAL surface only — publicSystem never sees it (no CRM guidance
  *  exists there at all). */
@@ -301,8 +330,9 @@ export function systemFor(
   hasSpecRank = false,
   hasSpecFilter = false,
   hasCategorySales = false,
+  hasDimming = false,
 ): ClaudeSystemBlock[] {
   return surface === "public"
-    ? publicSystem(hasSpecRank, hasSpecFilter)
-    : internalSystem(hasSpecRank, hasSpecFilter, hasCategorySales);
+    ? publicSystem(hasSpecRank, hasSpecFilter, hasDimming)
+    : internalSystem(hasSpecRank, hasSpecFilter, hasCategorySales, hasDimming);
 }

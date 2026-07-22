@@ -1,5 +1,8 @@
+import { pathToFileURL } from "node:url";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { chunkText, estimateTokens, resolveKbDocStatus, type KbDocStatusRow } from "@wac/shared";
+import { DIMMING_REPORT_DOC_TYPE } from "@wac/shared/thom";
+import { runDimming } from "./dimming.js";
 import {
   articleContentHash,
   articleScope,
@@ -131,6 +134,13 @@ interface Args {
   /** Requeue previously status='failed' rows to pending_extract before Step B,
    *  so a re-run retries them (e.g. after a burst of transient upstream 502s). */
   retryFailed: boolean;
+  /** Dimming-chart structured extraction (dimming plan §B): runs ONLY the
+   *  dimming step (unzip -> Claude forced-tool extraction -> verification gate
+   *  -> product binding -> supersession sweep). */
+  dimming: boolean;
+  /** --dimming --sample N: process at most N units and print the verification
+   *  report for Davis's gate (sample-then-STOP, plan §G.3). */
+  sample: number | null;
 }
 function parseArgs(argv: string[]): Args {
   const a: Args = {
@@ -146,6 +156,8 @@ function parseArgs(argv: string[]): Args {
     reconcilePdp: false,
     reconcileWrite: false,
     retryFailed: false,
+    dimming: false,
+    sample: null,
   };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--dry-run") a.dryRun = true;
@@ -158,6 +170,8 @@ function parseArgs(argv: string[]): Args {
     else if (argv[i] === "--reconcile-pdp") a.reconcilePdp = true;
     else if (argv[i] === "--reconcile-write") a.reconcileWrite = true;
     else if (argv[i] === "--retry-failed") a.retryFailed = true;
+    else if (argv[i] === "--dimming") a.dimming = true;
+    else if (argv[i] === "--sample") a.sample = Number(argv[++i]);
     else if (argv[i] === "--limit") a.limit = Number(argv[++i]);
     else if (argv[i] === "--crawl-limit") a.crawlLimit = Number(argv[++i]);
   }
@@ -644,7 +658,7 @@ async function processDoc(
   }
 }
 
-async function processPending(
+export async function processPending(
   sb: SupabaseClient,
   cf: CfCreds,
   claude: ClaudeCfg | null,
@@ -656,11 +670,18 @@ async function processPending(
   const counts: Counts = { active: 0, failed: 0, chunks: 0 };
   let remaining = limit ?? Infinity;
 
+  // Dimming charts are STRUCTURED-EXTRACTION-ONLY (dimming plan DC7): the
+  // .neq below keeps their pending rows out of the chunk/embed loop — landing
+  // capture without this exclusion would text-extract and embed the mangled
+  // grids on the next nightly run, the exact RAG poison the plan exists to
+  // prevent. The `--dimming` step flips them to 'active' (zero chunks =
+  // invisible to search_docs by construction).
   if (dryRun) {
     const { count, error } = await sb
       .from("kb_documents")
       .select("id", { count: "exact", head: true })
-      .eq("status", "pending_extract");
+      .eq("status", "pending_extract")
+      .neq("doc_type", DIMMING_REPORT_DOC_TYPE);
     if (error) throw new Error(`count failed: ${error.message}`);
     console.log(`[docs-ingest] (dry-run) ${count ?? 0} documents pending extraction`);
     return counts;
@@ -673,6 +694,7 @@ async function processPending(
       .from("kb_documents")
       .select("id, url, scope, doc_type, brand, source_system, external_id, r2_key")
       .eq("status", "pending_extract")
+      .neq("doc_type", DIMMING_REPORT_DOC_TYPE)
       .order("created_at", { ascending: true })
       .limit(take);
     if (error) throw new Error(`pending read failed: ${error.message}`);
@@ -685,6 +707,21 @@ async function processPending(
     if (batch.length < take) break;
   }
   return counts;
+}
+
+/** --retry-failed requeue. Dimming charts are excluded (DC7) — their failures
+ *  belong to the `--dimming` step, never to the chunk/embed loop. Exported for
+ *  the Step-B exclusion test. */
+export async function requeueFailed(sb: SupabaseClient): Promise<number> {
+  const { data, error } = await sb
+    .from("kb_documents")
+    .update({ status: "pending_extract" })
+    .eq("status", "failed")
+    .neq("doc_type", DIMMING_REPORT_DOC_TYPE)
+    .select("id");
+  if (error) throw new Error(`retry-failed requeue failed: ${error.message}`);
+  console.log(`[docs-ingest] retry-failed: requeued ${data?.length ?? 0} previously-failed docs`);
+  return data?.length ?? 0;
 }
 
 async function main(): Promise<void> {
@@ -712,6 +749,21 @@ async function main(): Promise<void> {
 
   // R2 page cache for Step W / Step B (optional — see crawl/store.ts).
   const webStore = webStoreFromEnv(process.env);
+
+  // --dimming: run ONLY the dimming-chart structured extraction (plan §B) —
+  // unzip, forced-tool extraction, verification gate, product binding, and the
+  // supersession sweep — then exit. Kept separate from the chunk/embed steps
+  // so the gated `--dimming --sample 10` Actions run is exactly one thing.
+  if (args.dimming) {
+    await runDimming(sb, webStore, {
+      dryRun: args.dryRun,
+      sample: args.sample,
+      apiKey: process.env.ANTHROPIC_API_KEY ?? null,
+      model: process.env.ANTHROPIC_DIMMING_MODEL || undefined,
+      verifierModel: process.env.ANTHROPIC_DIMMING_VERIFIER_MODEL || undefined,
+    });
+    return;
+  }
 
   if (!args.skipPdp) {
     const added = await syncPdpSpecSheets(sb, args.dryRun);
@@ -768,13 +820,7 @@ async function main(): Promise<void> {
   // Step B picks them up again. Permanently-bad ones (empty/non-PDF) just
   // re-fail, which is harmless.
   if (args.retryFailed && !args.dryRun) {
-    const { data, error } = await sb
-      .from("kb_documents")
-      .update({ status: "pending_extract" })
-      .eq("status", "failed")
-      .select("id");
-    if (error) throw new Error(`retry-failed requeue failed: ${error.message}`);
-    console.log(`[docs-ingest] retry-failed: requeued ${data?.length ?? 0} previously-failed docs`);
+    await requeueFailed(sb);
   }
   const counts = await processPending(sb, cf, claude, zd, webStore, args.limit, args.dryRun);
   console.log(
@@ -782,7 +828,11 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch((e) => {
-  console.error(`[docs-ingest] fatal: ${e instanceof Error ? e.stack : String(e)}`);
-  process.exit(1);
-});
+// Only run as a CLI — processPending/requeueFailed are imported by the Step-B
+// exclusion test, and a bare import must never launch the pipeline.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => {
+    console.error(`[docs-ingest] fatal: ${e instanceof Error ? e.stack : String(e)}`);
+    process.exit(1);
+  });
+}

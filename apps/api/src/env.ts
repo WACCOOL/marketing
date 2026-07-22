@@ -306,6 +306,13 @@ export interface Env {
   // the prompt. Needs product_photometrics populated (head IES/lumens) and, for
   // track BOMs, the track_systems/track_components seed (migrations 0049/0050).
   THOM_LAYOUT?: string;
+  // Thom dimming-compatibility tool gate (dark-launched, mirrors
+  // THOM_SPEC_FILTER; dimming plan §D). Unset/"0" = check_dimmer_compatibility
+  // + find_products_for_dimmer are NOT offered and the compatibility prompt
+  // keeps its search_docs dimmer bullet; "1" = both tools composed + the
+  // dimming-chart bullets (incl. the DC3 competitor carve-out) emitted.
+  // Needs migration 0067 + the gated `--dimming` extraction run for data.
+  THOM_DIMMING?: string;
   // Thom Bot — dark-launch flag for ZenDesk Help Center ARTICLE capture in the
   // docs-ingest CLI (apps/docs-ingest). Unset/"0" = no article capture; "1" =
   // list published articles and fold them into kb_documents/kb_chunks so Thom's

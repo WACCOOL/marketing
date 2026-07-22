@@ -56,6 +56,9 @@ export interface PublicEnv extends ThomEnv {
   THOM_PHOTOMETRICS?: string;
   THOM_LAYOUT?: string;
   THOM_TIERING?: string;
+  // Dimming-chart tools (dimming plan §G.6: public enable is the SECOND vars
+  // commit, after internal soak + the §F guardrail-survival tests are proven).
+  THOM_DIMMING?: string;
   // Per-turn native web_search cap on the public surface (default 2, clamp 1..3).
   THOM_PUBLIC_WEB_SEARCH_MAX_USES?: string;
 

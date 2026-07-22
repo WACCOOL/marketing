@@ -3,6 +3,7 @@ import type { ThomSurface } from "./env.js";
 import { normalizeSkuKey } from "../accessories/parse.js";
 import { authorityWeightFor, detectDocsQueryIntent, type DocsQueryIntent } from "./authority.js";
 import { embedQuery } from "./embed.js";
+import { DIMMING_TOOL_NAMES, dimmingDispatch } from "./dimmingTools.js";
 import { layoutDispatch } from "./layoutTool.js";
 import { photometricsDispatch } from "./photometricsTools.js";
 import type {
@@ -624,6 +625,13 @@ async function getProduct(
   push("Input voltage", repr.volt_in);
   push("IP rating", repr.ip_rating);
   push("Finish", repr.finish);
+  // Supplemental PDP-parity dimming ranges (dimming plan §D.4) — catalog
+  // attributes, independent of (and never a substitute for) the tested charts.
+  const dimRanges = [
+    str(repr.elv_dim) ? `ELV ${str(repr.elv_dim)}%` : null,
+    str(repr.zero10_dim) ? `0-10V ${str(repr.zero10_dim)}%` : null,
+  ].filter(Boolean);
+  if (dimRanges.length) push("Dimming range", dimRanges.join(", "));
 
   // Variant availability: surface anything not plainly available so the model
   // flags retired/limited products instead of presenting them as current.
@@ -1545,6 +1553,10 @@ export const PUBLIC_TOOL_NAMES: ReadonlySet<string> = new Set([
   "lighting_requirement",
   "rank_products_by_spec",
   "filter_products",
+  // Dimming-chart tools (THOM_DIMMING): allow-listing is inert until the flag
+  // advertises them (dimming plan §D — public data, files ship on public PDPs).
+  "check_dimmer_compatibility",
+  "find_products_for_dimmer",
 ]);
 
 export async function dispatch(
@@ -1584,6 +1596,11 @@ export async function dispatch(
   // agent.ts); routing here is harmless otherwise since it isn't advertised.
   if (name === "filter_products") {
     return filterProducts(ctx, input);
+  }
+  // Dimming tools are only offered when THOM_DIMMING=1 (composed by agent.ts);
+  // routing here is harmless otherwise since they aren't advertised.
+  if (DIMMING_TOOL_NAMES.has(name)) {
+    return dimmingDispatch(ctx, name, input);
   }
   switch (name) {
     case "search_products":

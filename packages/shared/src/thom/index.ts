@@ -21,5 +21,7 @@ export * from "./analyticsWords.js";
 export * from "./analyticsSources.js";
 export * from "./feedback.js";
 export * from "./photometricsTools.js";
+export * from "./dimming.js";
+export * from "./dimmingTools.js";
 export * from "./layoutTool.js";
 export * from "./agent.js";

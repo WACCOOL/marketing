@@ -113,6 +113,12 @@ interface VariantRow {
   watts: string | null; // zpwrin
   lumens: string | null; // zlmt
   ip_rating: string | null; // ziprat
+  /** Supplemental dimming-range facts (dimming plan §D.4 — the PDP's
+   * "Dimming: 100-5%" line): variant `zelvdim` (ELV range, e.g. "100-10") and
+   * `z010dim` (0-10V range, e.g. "100-1"). Cheap PDP-parity spec data, never a
+   * substitute for the tested dimming charts. */
+  elv_dim: string | null;
+  zero10_dim: string | null;
   /** SAP lifecycle code (A/B/W/N/P) driving site/Thom visibility. Variant-level
    * in the connector (`zusage`). N/P variants are dropped at stitch time. */
   zusage: string | null;
@@ -364,6 +370,8 @@ export function makeProductAdapter(env: Env): ProductAdapter {
             watts: cleanText(str(v.zpwrin)),
             lumens: cleanText(str(v.zlmt)),
             ip_rating: cleanText(str(v.ziprat)),
+            elv_dim: cleanText(str(v.zelvdim)),
+            zero10_dim: cleanText(str(v.z010dim)),
             zusage: pickField(v, ZUSAGE_VARIANT_FIELDS),
             plant_status: pickField(v, plantStatusFields),
           };
@@ -859,13 +867,18 @@ function stripImages(row: Record<string, unknown>): Record<string, unknown> {
 // -----------------------------------------------------------------------------
 
 /**
- * Sales Layer FILE-type fields that carry Thom-ingestible PDFs, confirmed
- * against the live connector schema (2026-07). Both exist on products AND
- * variants. Others exist but are deferred (see docs/thom-bot-deferred-sources):
- * `dim_report` ships `.zip` not PDF; `ftc_label_pdf` is sparse; `ies_files`/
- * `revit` are binary. Override with the SALES_LAYER_DOC_FIELDS env (CSV).
+ * Sales Layer FILE-type fields that carry Thom-ingestible files, confirmed
+ * against the live connector schema (2026-07). All exist on products AND
+ * variants; the variant-level `dim_report` pass is a harmless accepted no-op
+ * (audited 0/8,611 populated — dimming plan DC13). `dim_report` is the DIMMING
+ * COMPATIBILITY report (a per-fixture dimmer test chart, sometimes a `.zip` of
+ * per-size PDFs) — captured here for the download button + the structured
+ * `--dimming` extraction, and NEVER chunked/embedded (docs-ingest Step B
+ * excludes doc_type 'dimming_report' at the SQL level, DC7). Others are
+ * deferred (see docs/thom-bot-deferred-sources): `ftc_label_pdf` is sparse;
+ * `ies_files`/`revit` are binary. Override with SALES_LAYER_DOC_FIELDS (CSV).
  */
-const DEFAULT_DOC_FIELDS = ["specsheet_pdf", "inst_sheet"];
+const DEFAULT_DOC_FIELDS = ["specsheet_pdf", "inst_sheet", "dim_report"];
 
 export function docFieldsFrom(env: Env): string[] {
   const override = env.SALES_LAYER_DOC_FIELDS?.split(",")
@@ -879,7 +892,9 @@ export function docTypeForField(field: string): { docType: string; label: string
   if (/spec/i.test(field)) return { docType: "spec_sheet", label: "Specification Sheet" };
   if (/inst|manual/i.test(field)) return { docType: "manual", label: "Installation Manual" };
   if (/ftc/i.test(field)) return { docType: "ftc_label", label: "Lighting Facts Label" };
-  if (/dim/i.test(field)) return { docType: "dim_report", label: "Dimensional Report" };
+  // NOT a dimensional drawing: `dim_report` is the dimming-compatibility test
+  // chart (dimming plan audit — the v1 "Dimensional Report" label was wrong).
+  if (/dim/i.test(field)) return { docType: "dimming_report", label: "Dimming Compatibility Report" };
   return { docType: "document", label: "Document" };
 }
 
