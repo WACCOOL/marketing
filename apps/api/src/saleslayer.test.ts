@@ -1,9 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   extractFileEntries,
   collectDocs,
   docTypeForField,
   docFieldsFrom,
+  refreshSpecMatview,
+  type SpecMatviewRpcClient,
 } from "./saleslayer.js";
 import type { Env } from "./env.js";
 
@@ -89,5 +91,33 @@ describe("docFieldsFrom", () => {
   it("honors the CSV override (trimmed, empties dropped)", () => {
     const env = { SALES_LAYER_DOC_FIELDS: " specsheet_pdf , inst_sheet , ftc_label_pdf ," } as Env;
     expect(docFieldsFrom(env)).toEqual(["specsheet_pdf", "inst_sheet", "ftc_label_pdf"]);
+  });
+});
+
+// The 0064 spec-matview refresh is a post-success, best-effort sync step: it
+// must call the service-role-only RPC, and NO failure mode may throw (a stale
+// filter surface beats a failed product sync).
+describe("refreshSpecMatview", () => {
+  it("calls the refresh RPC and reports success + duration", async () => {
+    const rpc = vi.fn().mockResolvedValue({ error: null });
+    const res = await refreshSpecMatview({ rpc } as SpecMatviewRpcClient);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledWith("refresh_product_spec_mat");
+    expect(res.ok).toBe(true);
+    expect(res.ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("swallows a PostgREST error result (never throws)", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      error: { message: "canceling statement due to statement timeout" },
+    });
+    const res = await refreshSpecMatview({ rpc } as SpecMatviewRpcClient);
+    expect(res.ok).toBe(false);
+  });
+
+  it("swallows a thrown/rejected rpc (never throws)", async () => {
+    const rpc = vi.fn().mockRejectedValue(new Error("network down"));
+    const res = await refreshSpecMatview({ rpc } as SpecMatviewRpcClient);
+    expect(res.ok).toBe(false);
   });
 });

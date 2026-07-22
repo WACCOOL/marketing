@@ -158,6 +158,22 @@ describe.skipIf(!HAVE_CREDS)("Thom public anon boundary (0052)", () => {
     }
   });
 
+  it("reads the materialized spec surface (0064: anon-safe by construction)", async () => {
+    const { error } = await sb
+      .from("product_variant_spec_mat")
+      .select("sku,variant_key,class,width_in,lumens_max")
+      .limit(1);
+    expect(error).toBeNull();
+  });
+
+  it("cannot execute refresh_product_spec_mat (0064: service_role only)", async () => {
+    // The refresh function is SECURITY DEFINER and owner-refreshes the
+    // matview; anon (and authenticated) must get a hard permission error,
+    // never a refresh.
+    const { error } = await sb.rpc("refresh_product_spec_mat");
+    expect(error, "anon must not execute refresh_product_spec_mat").not.toBeNull();
+  });
+
   it("cannot read OR write thom_feedback (0062: admin select, service write)", async () => {
     // Select: RLS admin-only → anon gets nothing (empty set or denial).
     const read = await sb.from("thom_feedback").select("*").limit(1);
