@@ -635,6 +635,13 @@ export function makeProductAdapter(env: Env): ProductAdapter {
         );
       }
 
+      // Spec matview refresh (0064) — product_spec_filter / product_spec_rank
+      // read the MATERIALIZED product_variant_spec_mat, which only changes on
+      // refresh. Same post-success best-effort idiom as doc/accessory capture:
+      // runs only after the upsert + guards, and a refresh failure can never
+      // fail the catalog sync (the filter surface just stays one sync stale).
+      await refreshSpecMatview(admin);
+
       return {
         upserted: rows.length,
         pruned: pruned?.length ?? 0,
@@ -1165,6 +1172,42 @@ async function captureAccessories(
       `(${unresolved} unresolved), pruned ${prunedCount}`,
   );
   return { captured: refs.length, unresolved };
+}
+
+// -----------------------------------------------------------------------------
+// Spec matview refresh (0064) — product_variant_spec_mat feeds the
+// product_spec_filter / product_spec_rank surfaces and only changes on
+// REFRESH, so the sync triggers one after every successful catalog run.
+// -----------------------------------------------------------------------------
+
+/** Minimal client surface so tests can stub the service-role client. */
+export interface SpecMatviewRpcClient {
+  rpc(fn: "refresh_product_spec_mat"): PromiseLike<{ error: { message: string } | null }>;
+}
+
+/**
+ * Refresh the materialized spec view via the service-role-only
+ * `refresh_product_spec_mat()` RPC (migration 0064). Best-effort by contract:
+ * logs the duration on success, warns on failure, NEVER throws — a stale
+ * filter surface (at most one sync behind) beats a failed product sync.
+ */
+export async function refreshSpecMatview(
+  admin: SpecMatviewRpcClient,
+): Promise<{ ok: boolean; ms: number }> {
+  const t0 = Date.now();
+  try {
+    const { error } = await admin.rpc("refresh_product_spec_mat");
+    if (error) throw new Error(error.message);
+    const ms = Date.now() - t0;
+    console.log(`[products] spec matview refreshed in ${ms}ms (refresh_product_spec_mat)`);
+    return { ok: true, ms };
+  } catch (e) {
+    const ms = Date.now() - t0;
+    console.warn(
+      `[products] spec matview refresh failed (non-fatal, ${ms}ms): ${String(e).slice(0, 200)}`,
+    );
+    return { ok: false, ms };
+  }
 }
 
 const ENTITIES: Record<string, string> = {
