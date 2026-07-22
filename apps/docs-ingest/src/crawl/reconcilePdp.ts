@@ -287,9 +287,28 @@ export async function reconcilePdp(
     }
   }
 
-  if (opts.write && pdpUpdates.length) {
-    for (let i = 0; i < pdpUpdates.length; i += UPSERT) {
-      const slice = pdpUpdates.slice(i, i + UPSERT).map((p) => ({
+  // Two crawled PDPs can resolve to the SAME sku (variant pages, regional
+  // mirrors), and a batch upsert that touches one row twice fails with
+  // "ON CONFLICT DO UPDATE command cannot affect row a second time".
+  // Merge duplicates per sku, first row wins per column, later rows only
+  // fill nulls (heals are gap-only, so any non-null candidate is equivalent).
+  const bySku = new Map<string, (typeof pdpUpdates)[number]>();
+  for (const p of pdpUpdates) {
+    const prev = bySku.get(p.sku);
+    if (!prev) {
+      bySku.set(p.sku, p);
+    } else {
+      prev.brand = prev.brand ?? p.brand;
+      prev.slug = prev.slug ?? p.slug;
+      prev.url = prev.url ?? p.url;
+      prev.spec_sheet_url = prev.spec_sheet_url ?? p.spec_sheet_url;
+    }
+  }
+  const dedupedUpdates = [...bySku.values()];
+
+  if (opts.write && dedupedUpdates.length) {
+    for (let i = 0; i < dedupedUpdates.length; i += UPSERT) {
+      const slice = dedupedUpdates.slice(i, i + UPSERT).map((p) => ({
         ...p,
         resolved_at: new Date().toISOString(),
       }));
