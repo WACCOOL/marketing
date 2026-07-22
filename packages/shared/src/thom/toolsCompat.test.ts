@@ -38,7 +38,7 @@ describe("formatAccessoryLines", () => {
     const lines = formatAccessoryLines(rows, parents, "internal");
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("Colored Lens Accessory");
-    expect(lines[0]).toContain("SKU 528");
+    expect(lines[0]).toContain("PPID 528"); // numeric catalog id is the internal PPID, never "SKU"
     expect(lines[0]).toContain("WAC Lighting");
     expect(lines[0]).toContain("11 options");
     // Option codes capped at 8 shown.
@@ -121,7 +121,7 @@ const parent = (sku: string, over: Partial<ReverseFitParent> = {}): ReverseFitPa
 describe("rollupReverseFit", () => {
   it("names hosts individually when there are 5 or fewer", () => {
     const out = rollupReverseFit([parent("100"), parent("200")], 2);
-    expect(out).toBe("Fits 2 products: Name 100 (SKU 100), Name 200 (SKU 200).");
+    expect(out).toBe("Fits 2 products: Name 100 (PPID 100), Name 200 (PPID 200).");
   });
 
   it("rolls large fan-in up BY FAMILY with counts, never a PPID list", () => {
@@ -308,7 +308,7 @@ describe("get_product reverse-fit fallback (AA1/PL1)", () => {
       return { data: [] };
     });
     const out = await dispatch(ctxOf(sb), "get_product", { sku: "WS-100-BK" }, { surface: "internal" });
-    expect(out.content).toContain("WS-100-BK is a variant of Paloma Sconce (SKU 1001)");
+    expect(out.content).toContain("WS-100-BK is a variant of Paloma Sconce (PPID 1001)");
     expect(out.cards).toHaveLength(1);
   });
 

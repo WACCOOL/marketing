@@ -35,13 +35,25 @@ const rpcRow = (over: Partial<RpcRow> = {}): RpcRow => ({
   ...over,
 });
 
-/** Fake ctx whose sb.rpc records every call and returns queued results. */
-function makeCtx(results: { data: unknown; error: { message: string } | null }[]) {
+/** Fake ctx whose sb.rpc records every call and returns queued results, and
+ *  whose sb.from serves `pdps` rows (for the pdp_urls link batch-join). */
+function makeCtx(
+  results: { data: unknown; error: { message: string } | null }[],
+  pdps: { sku: string; url: string | null }[] = [],
+) {
   const calls: { fn: string; params: Record<string, unknown> }[] = [];
   const sb = {
     rpc(fn: string, params: Record<string, unknown>) {
       calls.push({ fn, params });
       return Promise.resolve(results[calls.length - 1] ?? { data: [], error: null });
+    },
+    from(_table: string) {
+      const b: Record<string, unknown> = {};
+      for (const m of ["select", "eq", "in", "limit", "order", "ilike"]) b[m] = () => b;
+      b.maybeSingle = () => Promise.resolve({ data: pdps[0] ?? null, error: null });
+      b.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
+        Promise.resolve({ data: pdps, error: null }).then(res, rej);
+      return b;
     },
   };
   const ctx = { env: env(), sb: sb as unknown as ToolContext["sb"] } as ToolContext;
@@ -78,11 +90,13 @@ describe("rank_products_by_spec output", () => {
     });
 
     // Name-first rows (never a bare leading catalog number) with the IES vs
-    // catalog source tag, under per-class section headers.
+    // catalog source tag, under per-class section headers. Numeric catalog
+    // ids are internal PPIDs — never labeled "SKU".
     expect(out.content).toContain(
-      "- Endurance Flood Pro Wallpack (SKU 452, WAC Lighting, outdoor): 2,071 lm [IES-measured]",
+      "- Endurance Flood Pro Wallpack (PPID 452, WAC Lighting, outdoor): 2,071 lm [IES-measured]",
     );
-    expect(out.content).toContain("- Silo Flood (SKU 881, WAC Lighting, outdoor): 1,800 lm [catalog-listed]");
+    expect(out.content).toContain("- Silo Flood (PPID 881, WAC Lighting, outdoor): 1,800 lm [catalog-listed]");
+    expect(out.content).not.toContain("SKU 452");
     expect(out.content).toContain("outdoor:\n");
     expect(out.content).toContain("track:\n- Paloma Track Head");
 
@@ -144,6 +158,7 @@ describe("rank_products_by_spec output", () => {
     ]);
     const out = await dispatch(ctx, "rank_products_by_spec", { metric: "watts", per_foot: true });
     expect(calls[0]!.params).toMatchObject({ per_ft_filter: true, grouped: false });
+    // Non-numeric catalog ids ARE part-number-shaped, so "SKU" stays honest.
     expect(out.content).toContain("- InvisiLED Pro High Output Tape (SKU T24, WAC Lighting, per-foot): 5.5 W/ft");
     expect(out.content).toContain(
       "Ranked among the 150 of 180 catalog per-foot (tape/strip) products with watts/ft data.",
@@ -192,6 +207,26 @@ describe("rank_products_by_spec output", () => {
     expect(out.content).toContain("free text");
     expect(out.content).toContain("Endurance Flood Pro Wallpack");
     expect(out.content).toContain("catalog products with output data");
+  });
+
+  it("renders product names as markdown links from pdp_urls, guarded by canonicalPdp", async () => {
+    const linked = makeCtx(
+      [{ data: [rpcRow()], error: null }],
+      [{ sku: "452", url: "https://www.waclighting.com/endurance-flood" }],
+    );
+    const out = await dispatch(linked.ctx, "rank_products_by_spec", { metric: "lumens" });
+    expect(out.content).toContain(
+      "- [Endurance Flood Pro Wallpack](https://www.waclighting.com/endurance-flood) (PPID 452",
+    );
+
+    // Legacy search-result urls never become links.
+    const searchy = makeCtx(
+      [{ data: [rpcRow()], error: null }],
+      [{ sku: "452", url: "https://www.waclighting.com/?s=452" }],
+    );
+    const out2 = await dispatch(searchy.ctx, "rank_products_by_spec", { metric: "lumens" });
+    expect(out2.content).not.toContain("](");
+    expect(out2.content).toContain("- Endurance Flood Pro Wallpack (PPID 452");
   });
 
   it("empty UNFILTERED result says the data isn't indexed (single call)", async () => {

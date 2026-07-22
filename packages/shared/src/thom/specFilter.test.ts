@@ -9,7 +9,9 @@
 import { describe, expect, it } from "vitest";
 import { composeTools, specFilterEnabled } from "./agent.js";
 import {
+  applicationPatterns,
   buildFilterPredicates,
+  canonicalPdp,
   dimToInches,
   dispatch,
   FILTER_TOOLS,
@@ -21,6 +23,7 @@ import {
   formatProductDims,
   hasNumericPredicate,
   MOUNTING_TYPE_VALUES,
+  ppidLabel,
   PRODUCT_LEVEL_LUMENS_SENTENCE,
   PUBLIC_TOOL_NAMES,
   SEARCH_PRODUCTS_FILTER_POINTER,
@@ -47,6 +50,7 @@ const frow = (over: Partial<FilterRpcRow> = {}): FilterRpcRow => ({
   qualifying_variants: 2,
   variant_count_with_dims: 6,
   example_variant_sku: "WS-3554-30-BN",
+  qualifying_variant_skus: ["WS-3554-30-BN", "WS-3554-36-BN"],
   q_width_min_in: 18,
   q_width_max_in: 18,
   q_depth_min_in: 2.6,
@@ -85,6 +89,7 @@ const countsRow = (over: Partial<FilterRpcRow> = {}): FilterRpcRow =>
     qualifying_variants: null,
     variant_count_with_dims: null,
     example_variant_sku: null,
+    qualifying_variant_skus: null,
     q_width_min_in: null,
     q_width_max_in: null,
     q_depth_min_in: null,
@@ -109,13 +114,25 @@ const countsRow = (over: Partial<FilterRpcRow> = {}): FilterRpcRow =>
     ...over,
   });
 
-/** Fake ctx whose sb.rpc records every call and returns queued results. */
-function makeCtx(results: { data: unknown; error: { message: string } | null }[]) {
+/** Fake ctx whose sb.rpc records every call and returns queued results, and
+ *  whose sb.from serves `pdps` rows (for the pdp_urls link batch-join). */
+function makeCtx(
+  results: { data: unknown; error: { message: string } | null }[],
+  pdps: { sku: string; url: string | null }[] = [],
+) {
   const calls: { fn: string; params: Record<string, unknown> }[] = [];
   const sb = {
     rpc(fn: string, params: Record<string, unknown>) {
       calls.push({ fn, params });
       return Promise.resolve(results[calls.length - 1] ?? { data: [], error: null });
+    },
+    from(_table: string) {
+      const b: Record<string, unknown> = {};
+      for (const m of ["select", "eq", "in", "limit", "order", "ilike"]) b[m] = () => b;
+      b.maybeSingle = () => Promise.resolve({ data: pdps[0] ?? null, error: null });
+      b.then = (res: (v: unknown) => unknown, rej: (e: unknown) => unknown) =>
+        Promise.resolve({ data: pdps, error: null }).then(res, rej);
+      return b;
     },
   };
   const ctx = { env: env(), sb: sb as unknown as ToolContext["sb"] } as ToolContext;
@@ -183,14 +200,49 @@ describe("dual-unit formatting", () => {
 // --- row + coverage formatting ------------------------------------------------
 
 describe("formatFilterRows", () => {
-  it("renders NAME-FIRST rows with dual-unit derived values, raw recorded axes, and the sizes count", () => {
+  it("renders NAME-FIRST rows with dual-unit derived values, raw recorded axes, the sizes count, and REAL variant SKUs", () => {
     const [line] = formatFilterRows([frow()], { lumensStated: true, wireStated: false });
     expect(line).toBe(
-      "- Slim Bath & Vanity Light (SKU 3554, WAC Lighting, wall): " +
+      "- Slim Bath & Vanity Light (PPID 3554, WAC Lighting, wall): " +
         "18.0 in (457 mm) wide, 2.6 in (66 mm) deep, 5.0 in (127 mm) tall " +
         "(recorded W 2.6 in (66 mm) x H 5.0 in (127 mm) x L 18.0 in (457 mm)); " +
-        "2 of 6 sizes meet your limits; 3000K, CRI 90, 1,268 lm",
+        "2 of 6 sizes meet your limits; order SKUs WS-3554-30-BN, WS-3554-36-BN; " +
+        "3000K, CRI 90, 1,268 lm",
     );
+  });
+
+  it("NEVER labels the numeric PPID as 'SKU' — the SKU label is reserved for variant part numbers", () => {
+    const [line] = formatFilterRows([frow()], { lumensStated: false, wireStated: false });
+    expect(line).toContain("(PPID 3554");
+    expect(line).not.toContain("SKU 3554");
+    expect(line).toContain("order SKUs WS-3554-30-BN");
+    expect(ppidLabel("822")).toBe("PPID 822");
+    expect(ppidLabel("WS-180414-30-BN")).toBe("SKU WS-180414-30-BN"); // non-numeric ids ARE part numbers
+  });
+
+  it("falls back to the single example variant SKU when the 0069 array is absent (pre-apply rows)", () => {
+    const [line] = formatFilterRows([frow({ qualifying_variant_skus: undefined })], {
+      lumensStated: false,
+      wireStated: false,
+    });
+    expect(line).toContain("e.g. order SKU WS-3554-30-BN");
+  });
+
+  it("adds a +N more tail when more variants qualify than the capped SKU list carries", () => {
+    const [line] = formatFilterRows(
+      [frow({ qualifying_variants: 9, qualifying_variant_skus: ["A-1", "A-2", "A-3", "A-4", "A-5", "A-6"] })],
+      { lumensStated: false, wireStated: false },
+    );
+    expect(line).toContain("order SKUs A-1, A-2, A-3, A-4, A-5, A-6 (+3 more)");
+  });
+
+  it("renders the product name as a markdown link when a canonical PDP url is known", () => {
+    const [line] = formatFilterRows([frow()], {
+      lumensStated: false,
+      wireStated: false,
+      pdpBySku: new Map([["3554", "https://www.waclighting.com/slim-vanity"]]),
+    });
+    expect(line).toContain("- [Slim Bath & Vanity Light](https://www.waclighting.com/slim-vanity) (PPID 3554");
   });
 
   it("says depth is not defined for depth-undefined classes instead of inventing a number", () => {
@@ -238,6 +290,51 @@ describe("filterCoverageLine", () => {
   });
 });
 
+// --- application hard-filter mapping (0069) ------------------------------------
+
+describe("applicationPatterns", () => {
+  it("maps known applications through the synonym table", () => {
+    expect(applicationPatterns("vanity")).toEqual(["%vanit%", "%bath%"]);
+    expect(applicationPatterns("Under Cabinet")).toEqual(["%under%cab%"]);
+    expect(applicationPatterns("undercabinet")).toEqual(["%under%cab%"]);
+    expect(applicationPatterns("step")).toEqual(["%step%"]);
+    expect(applicationPatterns("picture")).toEqual(["%picture%"]);
+    expect(applicationPatterns("island")).toEqual(["%island%", "%linear%pend%"]);
+  });
+
+  it("strips trailing light/fixture noise before lookup", () => {
+    expect(applicationPatterns("vanity lights")).toEqual(["%vanit%", "%bath%"]);
+    expect(applicationPatterns("step light")).toEqual(["%step%"]);
+    expect(applicationPatterns("picture lighting")).toEqual(["%picture%"]);
+  });
+
+  it("builds a literal pattern from unknown terms (ILIKE wildcards escaped, separators normalized)", () => {
+    expect(applicationPatterns("cove")).toEqual(["%cove%"]);
+    // "%" is escaped so it matches literally; "_"/"-" normalize to spaces
+    // BEFORE escaping (same separator normalization as the synonym lookup).
+    expect(applicationPatterns("100% weird_term")).toEqual(["%100\\% weird term%"]);
+  });
+
+  it("returns null when no application was stated", () => {
+    expect(applicationPatterns(undefined)).toBeNull();
+    expect(applicationPatterns("")).toBeNull();
+    expect(applicationPatterns("   ")).toBeNull();
+  });
+});
+
+// --- link guard (canonicalPdp) --------------------------------------------------
+
+describe("canonicalPdp link guard", () => {
+  it("rejects brand-site search URLs (legacy ?s= rows) and keeps real pages", () => {
+    expect(canonicalPdp("https://www.waclighting.com/?s=3554")).toBeNull();
+    expect(canonicalPdp("https://www.waclighting.com/slim-vanity")).toBe(
+      "https://www.waclighting.com/slim-vanity",
+    );
+    expect(canonicalPdp(null)).toBeNull();
+    expect(canonicalPdp("")).toBeNull();
+  });
+});
+
 // --- the tool end-to-end -------------------------------------------------------
 
 describe("filter_products dispatch", () => {
@@ -258,6 +355,7 @@ describe("filter_products dispatch", () => {
       p_category: null,
       p_class: null,
       p_mounting_type: null,
+      p_application_patterns: null, // no application stated
       p_query_text: "vanity light",
       p_match_count: 25, // clamped
     });
@@ -310,7 +408,9 @@ describe("filter_products dispatch", () => {
       p_lumens_min: 1000,
     });
     expect(out.content).toContain("No product with recorded dimensions fits");
-    expect(out.content).toContain("the narrowest option with data is Metro Vanity (SKU 9001) at 16.0 in (406 mm) wide");
+    expect(out.content).toContain(
+      "the narrowest option with data is Metro Vanity (PPID 9001, e.g. order SKU WS-3554-30-BN) at 16.0 in (406 mm) wide",
+    );
     expect(out.content).toContain("does NOT meet the stated width requirement");
     // Near-misses are never carded: no product bullet rows in the output.
     expect(out.content).not.toMatch(/^- /m);
@@ -401,6 +501,78 @@ describe("filter_products dispatch", () => {
     const { ctx } = makeCtx([{ data: null, error: { message: "boom" } }]);
     const out = await dispatch(ctx, "filter_products", { max_width_in: 15 });
     expect(out.content).toContain("filter_products error: boom");
+  });
+
+  it("passes the mapped application patterns through to the RPC (0069 hard-filter)", async () => {
+    const { ctx, calls } = makeCtx([{ data: [frow()], error: null }]);
+    await dispatch(ctx, "filter_products", {
+      query: "vanity light",
+      application: "vanity",
+      max_width_in: 15,
+    });
+    expect(calls[0]!.params).toMatchObject({
+      p_application_patterns: ["%vanit%", "%bath%"],
+    });
+  });
+
+  it("keeps the application filter through relaxation and says the exclusion out loud on an empty result", async () => {
+    const { ctx, calls } = makeCtx([
+      { data: [countsRow()], error: null }, // original: 0 matched
+      { data: [countsRow()], error: null }, // width relaxed: still 0
+    ]);
+    const out = await dispatch(ctx, "filter_products", {
+      application: "vanity",
+      max_width_in: 5,
+    });
+    // The application is a REQUIREMENT: present on every call, never relaxed.
+    expect(calls[0]!.params).toMatchObject({ p_application_patterns: ["%vanit%", "%bath%"] });
+    expect(calls[1]!.params).toMatchObject({
+      p_application_patterns: ["%vanit%", "%bath%"],
+      p_width_max_in: null,
+    });
+    expect(out.content).toContain(
+      "Only vanity products (matched by name or category) were considered; other fixture types were excluded.",
+    );
+    // The coverage scope names the application too.
+    expect(out.content).toContain("vanity products that carry data");
+  });
+
+  it("passes mounting_type AND application together, both kept through relaxation and the brand rescope", async () => {
+    const { ctx, calls } = makeCtx([
+      { data: [countsRow({ in_scope_total: 0, in_scope_screened: 0 })], error: null }, // brand scope empty
+      { data: [countsRow()], error: null }, // rescoped: 0 matched
+      { data: [countsRow()], error: null }, // width relaxed: still 0
+    ]);
+    await dispatch(ctx, "filter_products", {
+      brand: "WAC Lighting",
+      mounting_type: "Wall Lighting",
+      application: "vanity",
+      max_width_in: 15,
+    });
+    const both = { p_mounting_type: "Wall Lighting", p_application_patterns: ["%vanit%", "%bath%"] };
+    expect(calls[0]!.params).toMatchObject({ ...both, p_brand: "WAC Lighting" });
+    expect(calls[1]!.params).toMatchObject({ ...both, p_brand: null }); // rescope drops brand only
+    expect(calls[2]!.params).toMatchObject({ ...both, p_width_max_in: null }); // relaxation drops the dim only
+  });
+
+  it("renders product names as markdown links from pdp_urls, guarded by canonicalPdp", async () => {
+    const linked = makeCtx(
+      [{ data: [frow()], error: null }],
+      [{ sku: "3554", url: "https://www.waclighting.com/slim-vanity" }],
+    );
+    const out = await dispatch(linked.ctx, "filter_products", { max_width_in: 20 });
+    expect(out.content).toContain(
+      "[Slim Bath & Vanity Light](https://www.waclighting.com/slim-vanity)",
+    );
+
+    // A legacy search-result url is never a link (canonicalPdp guard).
+    const searchy = makeCtx(
+      [{ data: [frow()], error: null }],
+      [{ sku: "3554", url: "https://www.waclighting.com/?s=3554" }],
+    );
+    const out2 = await dispatch(searchy.ctx, "filter_products", { max_width_in: 20 });
+    expect(out2.content).not.toContain("](");
+    expect(out2.content).toContain("- Slim Bath & Vanity Light (PPID 3554");
   });
 });
 

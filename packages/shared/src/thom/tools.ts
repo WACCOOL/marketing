@@ -33,6 +33,27 @@ export function canonicalPdp(url: unknown): string | null {
   return u;
 }
 
+/** Label a products-table id for display. Catalog product ids are internal
+ *  PPIDs (numeric — e.g. 822) and must NEVER be presented as an orderable
+ *  part number: the real part numbers are the variant-level SKUs
+ *  (WS-180414-30-BN). Non-numeric ids ARE part-number-shaped, so "SKU" stays
+ *  honest there. */
+export function ppidLabel(id: string): string {
+  return /^\d+$/.test(id) ? `PPID ${id}` : `SKU ${id}`;
+}
+
+/** Render a product name as a markdown link when a canonical product-page URL
+ *  is known, else the plain name. */
+export function linkedName(
+  name: string | null,
+  sku: string | null,
+  pdpBySku?: ReadonlyMap<string, string>,
+): string {
+  const nm = name ?? sku ?? "";
+  const url = sku ? pdpBySku?.get(sku) : undefined;
+  return url ? `[${nm}](${url})` : nm;
+}
+
 /** Tool JSON schemas advertised to Claude. The cache breakpoint after the tool
  *  block is owned by agent.ts (withTailCache), which composes this set with any
  *  injected internal-only tools (e.g. HubSpot CRM) and marks the tail — so
@@ -228,6 +249,11 @@ export const FILTER_TOOLS: ClaudeTool[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Descriptive part of the request for semantic ordering, e.g. 'vanity light', 'outdoor sconce'." },
+        application: {
+          type: "string",
+          description:
+            "The fixture application the user named (vanity, under cabinet, step, picture, island). Hard-filters by product name/category match; results outside it are never returned.",
+        },
         unit: {
           type: "string",
           enum: ["in", "ft", "cm", "mm"],
@@ -387,7 +413,7 @@ export function formatAccessoryLines(
       const more = distinct.length > MAX_GROUP_CODES ? `, +${distinct.length - MAX_GROUP_CODES} more` : "";
       options = ` (${distinct.length} option${distinct.length === 1 ? "" : "s"}: ${shown}${more})`;
     }
-    lines.push(`- ${name} (SKU ${parentSku}${brand}) [${kindLabel(g.kind)}]${options}`);
+    lines.push(`- ${name} (${ppidLabel(parentSku)}${brand}) [${kindLabel(g.kind)}]${options}`);
   }
 
   if (surface === "public") {
@@ -436,7 +462,7 @@ export interface ReverseFitParent {
 export function rollupReverseFit(parents: readonly ReverseFitParent[], totalCount: number): string {
   if (!parents.length) return "";
   if (totalCount <= 5 && parents.length === totalCount) {
-    const names = parents.map((p) => `${p.name ?? p.sku} (SKU ${p.sku})`).join(", ");
+    const names = parents.map((p) => `${p.name ?? p.sku} (${ppidLabel(p.sku)})`).join(", ");
     return `Fits ${totalCount} product${totalCount === 1 ? "" : "s"}: ${names}.`;
   }
   const byFamily = new Map<string, number>();
@@ -457,6 +483,27 @@ export function rollupReverseFit(parents: readonly ReverseFitParent[], totalCoun
  *  (ILIKE without wildcards = case-insensitive equality). */
 function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (m) => `\\${m}`);
+}
+
+/** Batch-resolve canonical product-page URLs for a set of product ids,
+ *  mirroring getProduct's canonicalPdp guard (legacy `?s=` search rows never
+ *  become a link). Shared by the filter/rank formatters and get_family. */
+async function fetchPdpUrls(
+  ctx: ToolContext,
+  skus: readonly (string | null | undefined)[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const uniq = [...new Set(skus.filter((s): s is string => Boolean(s)))];
+  if (!uniq.length) return out;
+  const { data } = await ctx.sb
+    .from("pdp_urls")
+    .select("sku, url")
+    .in("sku", uniq.slice(0, 200));
+  for (const p of (data ?? []) as { sku: string; url: string | null }[]) {
+    const cu = canonicalPdp(p.url);
+    if (cu) out.set(p.sku, cu);
+  }
+  return out;
 }
 
 /** Fetch name/family/brand for a set of skus into a map (batched .in()). */
@@ -526,7 +573,7 @@ async function reverseFitFallback(
     if (resolvedParent) {
       const pinfo = infoBySku.get(resolvedParent) ?? (await fetchParentInfo(ctx, [resolvedParent])).get(resolvedParent);
       lines.push(
-        `It is an option of ${pinfo?.name ?? resolvedParent} (SKU ${resolvedParent}); use get_product with ${resolvedParent} for full details.`,
+        `It is an option of ${pinfo?.name ?? resolvedParent} (${ppidLabel(resolvedParent)}); use get_product with ${resolvedParent} for full details.`,
       );
     }
     return { content: lines.filter(Boolean).join("\n"), cards: [], citations: [] };
@@ -547,7 +594,7 @@ async function reverseFitFallback(
     const out = await getProduct(ctx, { sku: parent.sku }, surface);
     return {
       ...out,
-      content: `${norm} is a variant of ${parent.name ?? parent.sku} (SKU ${parent.sku}).\n\n${out.content}`,
+      content: `${norm} is a variant of ${parent.name ?? parent.sku} (${ppidLabel(parent.sku)}).\n\n${out.content}`,
     };
   }
 
@@ -719,7 +766,9 @@ async function getProduct(
   // Text summary so Claude can answer spec questions and reference the card.
   const finishes = variants.map((v) => str(v.finish)).filter(Boolean);
   const lines = [
-    `${card.name ?? sku} (SKU ${sku}${card.brand ? `, ${card.brand}` : ""})`,
+    // The catalog id is the internal PPID for most products — never present
+    // it as "SKU" (orderable part numbers are the variant-level SKUs below).
+    `${card.name ?? sku} (${ppidLabel(sku)}${card.brand ? `, ${card.brand}` : ""})`,
     key_specs.length ? key_specs.map((k) => `${k.label}: ${k.value}`).join("; ") : "No spec attributes on file.",
     variants.length ? `${variants.length} variant(s)${finishes.length ? `; finishes: ${[...new Set(finishes)].join(", ")}` : ""}.` : "",
     downloads.length ? `Documents: ${downloads.map((d) => d.label).join(", ")}.` : "No documents on file yet.",
@@ -906,16 +955,18 @@ export function formatSpecRankRows(
   metric: string,
   perFoot: boolean,
   grouped: boolean,
+  pdpBySku?: ReadonlyMap<string, string>,
 ): string {
   const line = (r: SpecRankRow): string => {
-    const who = [`SKU ${r.sku}`, r.brand, r.class].filter(Boolean).join(", ");
+    // ppidLabel: the catalog id is the internal PPID — never label it "SKU".
+    const who = [ppidLabel(r.sku), r.brand, r.class].filter(Boolean).join(", ");
     const tag =
       metric === "lumens" && !perFoot && r.lumens_source
         ? r.lumens_source === "ies"
           ? " [IES-measured]"
           : " [catalog-listed]"
         : "";
-    return `- ${r.name ?? r.sku} (${who}): ${fmtMetric(Number(r.metric_value), metric, perFoot)}${tag}`;
+    return `- ${linkedName(r.name, r.sku, pdpBySku)} (${who}): ${fmtMetric(Number(r.metric_value), metric, perFoot)}${tag}`;
   };
   if (!grouped) return rows.map(line).join("\n");
   // Per-class sections, preserving the RPC's class ordering.
@@ -1014,9 +1065,11 @@ async function rankProductsBySpec(ctx: ToolContext, input: Record<string, unknow
     };
   }
 
+  // Product-page links for the result rows (canonicalPdp-guarded, batched).
+  const pdpBySku = await fetchPdpUrls(ctx, rows.map((r) => r.sku));
   const content =
     preamble +
-    formatSpecRankRows(rows, metric, perFoot, grouped) +
+    formatSpecRankRows(rows, metric, perFoot, grouped, pdpBySku) +
     `\n\n${specRankCoverageLine(rows[0]!, scope, perFoot)}`;
   // No cards here — the model follows up with get_product for specifics.
   return { content, cards: [], citations: [] };
@@ -1087,6 +1140,39 @@ export function hasNumericPredicate(preds: Record<string, number | null>): boole
   return Object.values(preds).some((v) => v !== null);
 }
 
+/** Application → name/category ILIKE patterns (0069). The tool owns this
+ *  mapping so the SQL stays dumb: `p_application_patterns` hard-filters the
+ *  scope to rows whose name OR category matches ANY pattern. Kept small and
+ *  tested; an unknown term falls back to a pattern built from the term
+ *  itself, so a named application ALWAYS filters (never silently degrades to
+ *  ordering-only, which is how step sconces leaked into a vanity ask). */
+export const APPLICATION_SYNONYMS: Record<string, string[]> = {
+  vanity: ["%vanit%", "%bath%"],
+  bath: ["%vanit%", "%bath%"],
+  "under cabinet": ["%under%cab%"],
+  undercabinet: ["%under%cab%"],
+  step: ["%step%"],
+  picture: ["%picture%"],
+  island: ["%island%", "%linear%pend%"],
+};
+
+/** Map the tool's `application` input to ILIKE patterns (null = not stated).
+ *  Trailing "light(s)/lighting/fixture(s)" noise is stripped before lookup
+ *  ("vanity lights" → vanity); ILIKE wildcards in a raw fallback term are
+ *  escaped so it matches literally. Pure + exported for tests. */
+export function applicationPatterns(raw: unknown): string[] | null {
+  const t = String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, " ");
+  if (!t) return null;
+  const stripped = t.replace(/\s+(lights?|lighting|fixtures?)$/, "");
+  const hit = APPLICATION_SYNONYMS[t] ?? APPLICATION_SYNONYMS[stripped];
+  if (hit) return hit;
+  const term = (stripped || t).replace(/[\\%_]/g, (m) => `\\${m}`);
+  return [`%${term}%`];
+}
+
 /** One product_spec_filter RPC row (0063). A null-sku row is the zero-match
  *  counts carrier. */
 export interface FilterRpcRow {
@@ -1099,6 +1185,11 @@ export interface FilterRpcRow {
   qualifying_variants: number | string | null;
   variant_count_with_dims: number | string | null;
   example_variant_sku: string | null;
+  /** 0069: the qualifying variants' OWN orderable SKUs, width-then-ordinal
+   *  order, capped at QUALIFYING_SKU_CAP SQL-side. Absent (undefined) until
+   *  migration 0069 is applied — the formatter falls back to
+   *  example_variant_sku. */
+  qualifying_variant_skus?: string[] | null;
   q_width_min_in: number | null;
   q_width_max_in: number | null;
   q_depth_min_in: number | null;
@@ -1151,14 +1242,25 @@ export const PRODUCT_LEVEL_LUMENS_SENTENCE =
  *  a number (plan A1/O4). */
 const DEPTH_DEFINED_CLASSES = new Set(["wall", "ceiling", "fan"]);
 
+/** Cap on qualifying variant SKUs listed per filter row (mirrors 0069's
+ *  [1:6] slice in product_spec_filter). */
+export const QUALIFYING_SKU_CAP = 6;
+
 /** Render filter rows NAME-FIRST with real geometry: derived values dual-unit,
- *  raw recorded axes alongside (plan A.2), per-size counts, spec tail. Pure. */
+ *  raw recorded axes alongside (plan A.2), per-size counts, the qualifying
+ *  variants' REAL orderable SKUs (0069 — the catalog id is the internal PPID
+ *  and is never labeled "SKU"), spec tail, and a markdown product link when a
+ *  canonical PDP is known. Pure. */
 export function formatFilterRows(
   rows: FilterRpcRow[],
-  opts: { lumensStated: boolean; wireStated: boolean },
+  opts: {
+    lumensStated: boolean;
+    wireStated: boolean;
+    pdpBySku?: ReadonlyMap<string, string>;
+  },
 ): string[] {
   return rows.map((r) => {
-    const who = [`SKU ${r.sku}`, r.brand, r.class].filter(Boolean).join(", ");
+    const who = [r.sku ? ppidLabel(r.sku) : null, r.brand, r.class].filter(Boolean).join(", ");
     const dims: string[] = [];
     if (r.ex_width_in != null) {
       dims.push(r.per_ft ? `tape cross-section ${fmtIn(r.ex_width_in)} wide` : `${fmtIn(r.ex_width_in)} wide`);
@@ -1177,6 +1279,15 @@ export function formatFilterRows(
     const q = Number(r.qualifying_variants ?? 0);
     const m = Number(r.variant_count_with_dims ?? 0);
     if (q > 0 && m > 0) parts.push(`${q} of ${m} size${m === 1 ? "" : "s"} meet${q === 1 ? "s" : ""} your limits`);
+    // Real orderable part numbers (0069): the qualifying variants' own SKUs;
+    // pre-0069 rows fall back to the single example variant SKU.
+    const vskus = (r.qualifying_variant_skus ?? []).filter((s): s is string => Boolean(s));
+    if (vskus.length) {
+      const more = q > vskus.length ? ` (+${q - vskus.length} more)` : "";
+      parts.push(`order SKU${vskus.length === 1 ? "" : "s"} ${vskus.join(", ")}${more}`);
+    } else if (r.example_variant_sku) {
+      parts.push(`e.g. order SKU ${r.example_variant_sku}`);
+    }
     const specs = [
       r.cct_summary,
       r.cri != null ? `CRI ${r.cri}` : null,
@@ -1185,7 +1296,7 @@ export function formatFilterRows(
       opts.wireStated && r.ex_wire_length_mm != null ? `wire/cord ${fmtWire(r.ex_wire_length_mm)}` : null,
     ].filter(Boolean);
     if (specs.length) parts.push(specs.join(", "));
-    return `- ${r.name ?? r.sku} (${who}): ${parts.join("; ")}`;
+    return `- ${linkedName(r.name, r.sku, opts.pdpBySku)} (${who}): ${parts.join("; ")}`;
   });
 }
 
@@ -1221,12 +1332,18 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
   const category = str(input.category);
   const cls = str(input.class);
   const mountingType = str(input.mounting_type);
+  // Application hard-filter (0069): a named application is a REQUIREMENT —
+  // it scopes the RPC (name/category ILIKE), it is never relaxed, and it is
+  // never dropped by the brand/category rescope below.
+  const appTerm = str(input.application);
+  const appPatterns = applicationPatterns(input.application);
   const limit = Math.min(Number(input.limit) || 10, 25);
 
   // Empty-filter free-text fallback: no numeric predicate stated -> this is a
   // search, not a filter. Never dump the unconstrained catalog.
   if (!hasNumericPredicate(preds)) {
-    if (!query) {
+    const fallbackQuery = query ?? appTerm;
+    if (!fallbackQuery) {
       return {
         content: "filter_products: state at least one numeric constraint, or provide a query.",
         cards: [],
@@ -1234,7 +1351,7 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
       };
     }
     const out = await searchProducts(ctx, {
-      query,
+      query: fallbackQuery,
       brand: brand ?? undefined,
       category: category ?? undefined,
       limit,
@@ -1253,8 +1370,11 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
       p_category: c,
       p_class: cls,
       // mounting_type is AUTHORITATIVE taxonomy (schema-enumerated), not free
-      // text — it is never dropped by the empty-scope retry below.
+      // text — it is never dropped by the empty-scope retry below. The
+      // application patterns (0069) are likewise a requirement, kept on
+      // every call including relaxation.
       p_mounting_type: mountingType,
+      p_application_patterns: appPatterns,
       p_query_embedding: embedding,
       p_query_text: query,
       p_match_count: limit,
@@ -1262,7 +1382,7 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
 
   let curBrand = brand;
   let curCategory = category;
-  let scope = [brand, mountingType, cls, category].filter(Boolean).join(" ") || "catalog";
+  let scope = [brand, mountingType, cls, appTerm, category].filter(Boolean).join(" ") || "catalog";
   let preamble = "";
   let res = await call(preds, curBrand, curCategory);
   if (res.error) return { content: `filter_products error: ${res.error.message}`, cards: [], citations: [] };
@@ -1279,7 +1399,7 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
     if (res.error) return { content: `filter_products error: ${res.error.message}`, cards: [], citations: [] };
     rows = (res.data ?? []) as FilterRpcRow[];
     counts = rows[0];
-    scope = [mountingType, cls].filter(Boolean).join(" ") || "catalog";
+    scope = [mountingType, cls, appTerm].filter(Boolean).join(" ") || "catalog";
     preamble =
       "No catalog products matched that brand or category filter. Catalog categories are free text, " +
       "so the filter wording may not match the catalog's; screened the whole catalog instead.\n\n";
@@ -1292,6 +1412,12 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
   const wireStated = preds.p_wire_min_in !== null || preds.p_wire_max_in !== null;
   const coverage = filterCoverageLine(counts, scope);
   const matched = Number(counts.matched);
+  // Honest application framing (0069): when an application hard-filter was
+  // active, an empty/near-miss answer must say the exclusion out loud so the
+  // model reports it rather than quietly blending in adjacent fixture types.
+  const appNote = appTerm
+    ? ` Only ${appTerm} products (matched by name or category) were considered; other fixture types were excluded.`
+    : "";
 
   if (matched === 0) {
     // Pinned zero-match relaxation (plan A13/O11): keep the FULL scope and all
@@ -1326,21 +1452,30 @@ async function filterProducts(ctx: ToolContext, input: Record<string, unknown>):
       );
       const words = NEAR_MISS_WORDS[dim];
       const word = maxStated ? words.maxWord : words.minWord;
+      // Near-miss presentation: linked name + PPID label + the real variant
+      // SKU, same identifier rules as the result rows.
+      const nearPdp = await fetchPdpUrls(ctx, [best.sku]);
+      const nearSku = best.example_variant_sku ? `, e.g. order SKU ${best.example_variant_sku}` : "";
       const content =
         `${preamble}No product with recorded dimensions fits all of those limits; the ${word} option ` +
-        `with data is ${best.name ?? best.sku} (SKU ${best.sku}) at ${fmtIn(Number(best[valueKey]))} ${words.adj}. ` +
-        `It does NOT meet the stated ${dim} requirement.\n\n${coverage}`;
+        `with data is ${linkedName(best.name, best.sku, nearPdp)} (${ppidLabel(best.sku!)}${nearSku}) ` +
+        `at ${fmtIn(Number(best[valueKey]))} ${words.adj}. ` +
+        `It does NOT meet the stated ${dim} requirement.${appNote}\n\n${coverage}`;
       return { content, cards: [], citations: [] };
     }
     return {
-      content: `${preamble}Nothing in the catalog fits all of those requirements.\n\n${coverage}`,
+      content: `${preamble}Nothing in the catalog fits all of those requirements.${appNote}\n\n${coverage}`,
       cards: [],
       citations: [],
     };
   }
 
   const productRows = rows.filter((r) => r.sku != null);
-  let content = preamble + formatFilterRows(productRows, { lumensStated, wireStated }).join("\n");
+  // Product-page links for the result rows (canonicalPdp-guarded, batched —
+  // mirrors getProduct/get_family).
+  const pdpBySku = await fetchPdpUrls(ctx, productRows.map((r) => r.sku));
+  let content =
+    preamble + formatFilterRows(productRows, { lumensStated, wireStated, pdpBySku }).join("\n");
   if (lumensStated && productRows.some((r) => r.lumens_source === "product_level")) {
     content += `\n\nNote: ${PRODUCT_LEVEL_LUMENS_SENTENCE}.`;
   }
@@ -1555,15 +1690,7 @@ async function getFamily(ctx: ToolContext, input: Record<string, unknown>): Prom
   }
 
   // Batch-fetch product-page URLs for the (deduped) member skus.
-  const skus = [...new Set(rows.map((r) => r.sku).filter(Boolean))];
-  const pdpBySku = new Map<string, string>();
-  if (skus.length) {
-    const { data: pdps } = await ctx.sb.from("pdp_urls").select("sku, url").in("sku", skus);
-    for (const p of (pdps ?? []) as { sku: string; url: string | null }[]) {
-      const cu = canonicalPdp(p.url);
-      if (cu) pdpBySku.set(p.sku, cu);
-    }
-  }
+  const pdpBySku = await fetchPdpUrls(ctx, rows.map((r) => r.sku));
 
   const familyName = useFamily ? (val as string) : (category as string) ?? (val as string);
   const card = buildFamilyCard({ family: familyName, category: category ?? null }, rows, pdpBySku);
