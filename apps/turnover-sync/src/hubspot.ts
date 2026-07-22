@@ -404,7 +404,12 @@ interface OrderGroup {
  * it and put the line value in "YTD Total" instead — confirmed 2026-07-09 by
  * reconciling per-account against Power BI YTD sales (Home Depot
  * $1,535,327.16 = Power BI to the cent). When both are nonzero, Discounted
- * Sales wins (it is the after-discount value; those rows match Power BI). */
+ * Sales wins (it is the after-discount value; those rows match Power BI).
+ *
+ * PARITY: public.thom_line_value() (supabase/migrations/0065_category_sales.sql)
+ * is the SQL mirror of this function, used by Thom's category-sales rollups.
+ * The groupOrders.test.ts literals are asserted in that migration's verify
+ * block — change EITHER side only together with the other. */
 export function lineValue(l: Pick<TurnoverDbRow, "discounted_sales" | "ytd_total">): number {
   const ds = l.discounted_sales ?? 0;
   return ds !== 0 ? ds : (l.ytd_total ?? 0);

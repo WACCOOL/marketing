@@ -25,6 +25,16 @@ describe("bucketSourceUsage", () => {
     expect(out).toContainEqual({ source: "Education library (uploads)", hits: 1 });
   });
 
+  it("buckets crm_sales_by_category as the sales warehouse, not HubSpot CRM (category-sales plan §D)", () => {
+    const out = bucketSourceUsage([
+      { kind: "tool", key: "crm_sales_by_category", hits: 7 },
+      { kind: "tool", key: "crm_get_company", hits: 3 },
+    ]);
+    expect(out).toContainEqual({ source: "Sales warehouse (category rollups)", hits: 7 });
+    expect(out).toContainEqual({ source: "HubSpot CRM", hits: 3 });
+    expect(out.some((b) => b.source.startsWith("Other ("))).toBe(false);
+  });
+
   it("skips search_docs plumbing but surfaces unknown keys as Other", () => {
     const out = bucketSourceUsage([
       { kind: "tool", key: "search_docs", hits: 99 },
