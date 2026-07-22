@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildReverseIndex, resolvePdp, slugTokens } from "./reconcilePdp.js";
+import {
+  buildReverseIndex,
+  isBadMfSpecForm,
+  mfSpecCandidates,
+  resolvePdp,
+  slugTokens,
+} from "./reconcilePdp.js";
 
 /** Catalog fixtures spanning the shapes the plan calls out: a lighting
  *  product with finish-suffixed asset codes, a FAN family (per-Kelvin/CRI
@@ -112,6 +118,44 @@ describe("resolvePdp", () => {
   it("unresolved: no evidence matched", () => {
     expect(resolvePdp(index, ["totally-unknown"]).state).toBe("unresolved");
     expect(resolvePdp(index, []).state).toBe("unresolved");
+  });
+});
+
+describe("Modern Forms spec-sheet transform (403/HTML PDP-path dispatcher)", () => {
+  it("recognizes the bad heal form and ONLY that form", () => {
+    expect(isBadMfSpecForm("https://modernforms.com/product/cinema-7?download=specs5")).toBe(true);
+    // The correct dynamic endpoint also carries download=specs — never a match.
+    expect(isBadMfSpecForm("https://modernforms.com/dynamic-specsheet/?download=specs5&ppid=4003")).toBe(false);
+    // WAC Lighting's PDP-path dispatcher WORKS — it must stay untouched.
+    expect(isBadMfSpecForm("https://waclighting.com/product/j2-track?download=specs12")).toBe(false);
+    expect(isBadMfSpecForm(null)).toBe(false);
+    expect(isBadMfSpecForm("")).toBe(false);
+  });
+
+  it("builds probe candidates from the new harvest form (ppid param), harvested template first", () => {
+    const cands = mfSpecCandidates("https://modernforms.com/dynamic-specsheet/?download=specs3&ppid=8817", null);
+    expect(cands[0]).toBe("https://modernforms.com/dynamic-specsheet/?download=specs3&ppid=8817");
+    expect(cands[1]).toBe("https://modernforms.com/dynamic-specsheet/?download=specs5&ppid=8817");
+    // De-duped: specs3 appears once even though it's also in the shared order.
+    expect(new Set(cands).size).toBe(cands.length);
+    expect(cands).toHaveLength(8);
+  });
+
+  it("legacy bad-form rows fall back to the folded data-ppid evidence", () => {
+    // data-ppid is folded into model_codes as the single all-digit entry
+    // (asset/title codes always carry a hyphen) — and it is NOT always the
+    // catalog sku, so the sku must never be used as the ppid.
+    const cands = mfSpecCandidates(
+      "https://modernforms.com/product/fusion?download=specs5",
+      ["WS-6028-BN", "WS-6036", "1539"],
+    );
+    expect(cands[0]).toBe("https://modernforms.com/dynamic-specsheet/?download=specs5&ppid=1539");
+  });
+
+  it("no ppid, or an ambiguous one, yields no candidates", () => {
+    expect(mfSpecCandidates("https://modernforms.com/product/fusion?download=specs5", ["WS-6028-BN"])).toEqual([]);
+    expect(mfSpecCandidates("https://modernforms.com/product/fusion?download=specs5", ["1539", "4003"])).toEqual([]);
+    expect(mfSpecCandidates(null, null)).toEqual([]);
   });
 });
 

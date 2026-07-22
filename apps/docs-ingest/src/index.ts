@@ -23,6 +23,7 @@ import { htmlToText } from "./html.js";
 import { enabledSites } from "./crawl/sites.js";
 import { webStoreFromEnv, type WebStore } from "./crawl/store.js";
 import { crawlSite, extractWebDocText } from "./crawl/stepW.js";
+import { healMfSpecs } from "./crawl/healMfSpecs.js";
 import { reconcilePdp } from "./crawl/reconcilePdp.js";
 import { redactTicketText } from "./redact.js";
 import {
@@ -91,7 +92,8 @@ async function extractTicketText(
  *
  * Flags: --dry-run (no writes; report), --limit N (process at most N docs),
  *        --skip-pdp (extract only, skip step A), --skip-products (skip A2),
- *        --skip-zendesk (skip step C).
+ *        --skip-zendesk (skip step C), --heal-mf-specs (one-off Modern Forms
+ *        spec-sheet heal ONLY — see crawl/healMfSpecs.ts).
  * Env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, CF_ACCOUNT_ID, CF_AI_TOKEN,
  *      ANTHROPIC_API_KEY (optional — enables the vision fallback),
  *      ANTHROPIC_PDF_MODEL (optional, default claude-haiku-4-5),
@@ -131,6 +133,10 @@ interface Args {
    *  Report-only unless --reconcile-write is ALSO passed (gap-only heals). */
   reconcilePdp: boolean;
   reconcileWrite: boolean;
+  /** One-off Modern Forms spec-sheet heal: rewrite the bad PDP-path dispatcher
+   *  heals to verified dynamic-specsheet URLs and requeue their failed kb rows
+   *  (see crawl/healMfSpecs.ts). Runs ONLY the heal, then exits. */
+  healMfSpecs: boolean;
   /** Requeue previously status='failed' rows to pending_extract before Step B,
    *  so a re-run retries them (e.g. after a burst of transient upstream 502s). */
   retryFailed: boolean;
@@ -155,6 +161,7 @@ function parseArgs(argv: string[]): Args {
     includeOptIn: false,
     reconcilePdp: false,
     reconcileWrite: false,
+    healMfSpecs: false,
     retryFailed: false,
     dimming: false,
     sample: null,
@@ -169,6 +176,7 @@ function parseArgs(argv: string[]): Args {
     else if (argv[i] === "--include-optin") a.includeOptIn = true;
     else if (argv[i] === "--reconcile-pdp") a.reconcilePdp = true;
     else if (argv[i] === "--reconcile-write") a.reconcileWrite = true;
+    else if (argv[i] === "--heal-mf-specs") a.healMfSpecs = true;
     else if (argv[i] === "--retry-failed") a.retryFailed = true;
     else if (argv[i] === "--dimming") a.dimming = true;
     else if (argv[i] === "--sample") a.sample = Number(argv[++i]);
@@ -729,6 +737,13 @@ async function main(): Promise<void> {
   const sb = createClient(env("SUPABASE_URL"), env("SUPABASE_SERVICE_ROLE_KEY"), {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+  // --heal-mf-specs: one-off Modern Forms spec-sheet heal (bad PDP-path
+  // dispatcher heals -> verified dynamic-specsheet URLs + kb requeue). Runs
+  // ONLY the heal, then exits — needs no CF/Anthropic creds.
+  if (args.healMfSpecs) {
+    await healMfSpecs(sb, {}, { dryRun: args.dryRun });
+    return;
+  }
   const cf: CfCreds = { accountId: env("CF_ACCOUNT_ID"), token: env("CF_AI_TOKEN") };
   const claude: ClaudeCfg | null = process.env.ANTHROPIC_API_KEY
     ? {

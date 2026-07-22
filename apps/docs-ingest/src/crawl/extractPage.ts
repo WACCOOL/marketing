@@ -1,6 +1,6 @@
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
-import { codeFromAssetUrl } from "@wac/shared";
+import { codeFromAssetUrl, modernFormsSpecUrl } from "@wac/shared";
 import { htmlToText } from "../html.js";
 
 /**
@@ -47,7 +47,8 @@ export interface PdpEvidence {
   /** data-ppid when present (Modern Forms / WordPress PDPs). */
   ppid: string | null;
   /** First discovered spec-sheet URL (static _SPSHT.pdf href preferred,
-   *  ?download=specs dispatcher second). */
+   *  ?download=specs dispatcher second — emitted as the dynamic-specsheet
+   *  form on modernforms, whose PDP-path dispatcher is non-PDF to fetchers). */
   specSheetUrl: string | null;
   /** Schonbek: "{Family} | {PPID} | {SubBrand} | ..." title parse. */
   schonbek: { family: string | null; ppid: string | null } | null;
@@ -229,11 +230,21 @@ function harvestEvidence(html: string, pageUrl: string, siteKey: string): PdpEvi
   if (!specSheetUrl) {
     const dl = html.match(DOWNLOAD_SPECS_RE)?.[0];
     if (dl) {
-      try {
-        const u = new URL(pageUrl);
-        specSheetUrl = `${u.origin}${u.pathname}${dl.replace(/^&/, "?")}`;
-      } catch {
-        specSheetUrl = null;
+      if (siteKey === "modernforms") {
+        // Modern Forms' PDP-path dispatcher answers HTML (not a PDF) to
+        // fetchers — the WORKING route is the dynamic-specsheet endpoint keyed
+        // on data-ppid (same as products-sync resolveModernFormsSpecSheet).
+        // The page's own template index is a hint only (the true index needs a
+        // live probe — see the reconciler's heal-time probe); no ppid → no URL.
+        const t = Number(dl.match(/download=specs(\d+)/i)?.[1]);
+        specSheetUrl = ppid ? modernFormsSpecUrl(ppid, Number.isFinite(t) ? t : 5) : null;
+      } else {
+        try {
+          const u = new URL(pageUrl);
+          specSheetUrl = `${u.origin}${u.pathname}${dl.replace(/^&/, "?")}`;
+        } catch {
+          specSheetUrl = null;
+        }
       }
     }
   }
