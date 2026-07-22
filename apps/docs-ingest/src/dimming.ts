@@ -28,9 +28,14 @@
 //     Section-membership disputes go to a 2-of-3 TIEBREAK (third call, sonnet,
 //     fresh list-the-section framing); only a tiebreak that sides with the
 //     verifier gates.
-//  5. Product binding at extraction time, pattern-primary (DC4): `field` links
-//     only for loose single PDFs; overlap audit (2+ units, different families
-//     -> held for review); links rewritten per product per run.
+//  5. Product binding at extraction time, pattern-primary (DC4) + BASE-code
+//     prefix resolution (skus_tested and the filename-derived report code
+//     resolve to parent PPIDs via a variant-SKU prefix index — most charts
+//     carry base codes like "FM-W2612" while catalog variants are suffixed);
+//     `field` links only for loose single PDFs; overlap audit (2+ units,
+//     different families -> held for review); links rewritten per product per
+//     run. `--dimming-relink` reruns ONLY this binding over all stored
+//     non-superseded reports (per-report delete+reinsert, no re-extraction).
 //  6. Supersession sweep (DC6): units whose source doc is no longer current ->
 //     status='superseded'; their links die.
 //
@@ -314,16 +319,109 @@ export function computeSupersededDocIds(
 }
 
 // --- product binding (DC4, pattern-primary) ----------------------------------
+//
+// Patterns stay PRIMARY when a chart carries them. But the live corpus proved
+// most charts carry NO related-model wildcards at all — just `skus_tested`
+// BASE codes from the chart/filename ("FM-W2612") while catalog variant SKUs
+// are suffixed ("FM-W2612-30-BK"), so exact matching bound ~nothing (12 links
+// across 302 active reports). BASE-CODE PREFIX matching closes that gap: a
+// base resolves to every parent product one of whose variant SKUs equals the
+// base or starts with `base + "-"` (normalized trim/upper), via a
+// hyphen-boundary prefix index over products.variants built once per run (the
+// accessories variant-index idiom). The DC4 overlap audit applies unchanged.
 
 export interface BindableReport {
   id: string;
   product_family: string | null;
   skus_tested: string[];
   related_model_likes: string[];
+  /** The chart's own code, or the filename-derived one (DC9). */
+  report_code: string | null;
+  /** True when report_code came from the zip-entry/loose filename — only then
+   *  is it a usable BASE-code candidate ("FM-W2612_DIMREP" -> "FM-W2612"). */
+  report_code_derived: boolean;
   /** Loose single PDF (zip_entry_path null) — the only shape where file
    *  identity = unit identity and `field` links are permitted. */
   loosePdf: boolean;
   kb_document_id: string | null;
+}
+
+/** Trim/uppercase + U+2010 normalization for SKU identity comparisons (the
+ *  accessories normalizeSkuKey posture — identity, not visibility). */
+export function normalizeSkuForIndex(v: string): string {
+  return normalizeHyphens(v).trim().toUpperCase();
+}
+
+/** The BASE code hiding in a filename-derived report code: the segment before
+ *  the first underscore ("FM-W2612_DIMREP" -> "FM-W2612", "E1801063-1_25W" ->
+ *  "E1801063-1" — the latter matches no variant, harmlessly). */
+export function baseCodeFromReportCode(reportCode: string | null | undefined): string | null {
+  const s = normalizeHyphens(reportCode ?? "").trim();
+  if (!s) return null;
+  const first = s.split("_")[0]!.trim();
+  return first || null;
+}
+
+/** Placeholder cells that are NOT base codes ("N/A" skus_tested exist in the
+ *  live corpus and the catalog even carries a junk "N/A" entry to match). */
+export function isPlaceholderBase(norm: string): boolean {
+  return !norm || norm === "0" || norm === "-" || /^N\/?A$/.test(norm);
+}
+
+/** Every BASE-code candidate a report carries: its skus_tested, plus the
+ *  filename-derived report code's base when report_code_derived. */
+export function reportBaseCodes(
+  r: Pick<BindableReport, "skus_tested" | "report_code" | "report_code_derived">,
+): string[] {
+  const bases = new Set<string>();
+  for (const s of r.skus_tested) {
+    const k = normalizeSkuForIndex(s);
+    if (!isPlaceholderBase(k)) bases.add(k);
+  }
+  if (r.report_code_derived) {
+    const b = baseCodeFromReportCode(r.report_code);
+    if (b) {
+      const k = normalizeSkuForIndex(b);
+      if (!isPlaceholderBase(k)) bases.add(k);
+    }
+  }
+  return [...bases];
+}
+
+/** Hyphen-boundary prefix index over variant SKUs: normalized "S1", "S1-S2",
+ *  ... full-SKU keys each map to the set of parent product PPIDs. A BASE code
+ *  lookup is then O(1) and hits exactly when some variant sku equals the base
+ *  or startsWith(base + "-") — "FM-W26" is NOT a key of "FM-W2612-30-BK"
+ *  (not on a hyphen boundary), so near-miss bases cannot false-positive. */
+export type VariantSkuIndex = ReadonlyMap<string, ReadonlySet<string>>;
+
+export function addVariantSkusToIndex(
+  idx: Map<string, Set<string>>,
+  parentSku: string,
+  variantSkus: readonly string[],
+): void {
+  for (const v of variantSkus) {
+    const norm = normalizeSkuForIndex(v);
+    if (!norm) continue;
+    const segs = norm.split("-");
+    for (let i = 1; i <= segs.length; i++) {
+      const key = segs.slice(0, i).join("-");
+      let set = idx.get(key);
+      if (!set) {
+        set = new Set<string>();
+        idx.set(key, set);
+      }
+      set.add(parentSku);
+    }
+  }
+}
+
+export function buildVariantSkuIndex(
+  products: readonly { sku: string; variantSkus: readonly string[] }[],
+): VariantSkuIndex {
+  const idx = new Map<string, Set<string>>();
+  for (const p of products) addVariantSkusToIndex(idx, p.sku, p.variantSkus);
+  return idx;
 }
 
 export interface BindableProduct {
@@ -346,11 +444,16 @@ export interface BindingResult {
 }
 
 /** Pattern-primary product binding (pure): a product binds to a unit when its
- *  SKU (or any variant SKU) matches the unit's related_model_likes or exactly
- *  matches a tested SKU. Overlapping multi-family matches are held. */
+ *  SKU (or any variant SKU) matches the unit's related_model_likes, exactly
+ *  matches a tested SKU, or (via `variantIndex`) has a variant SKU that the
+ *  unit's BASE codes prefix-match (skus_tested + filename-derived code —
+ *  variant sku equals base or startsWith(base + "-")). Patterns stay primary
+ *  when present; base-prefix resolution is what binds the pattern-less
+ *  majority. Overlapping multi-family matches are held (DC4 audit). */
 export function buildPatternBindings(
   reports: readonly BindableReport[],
   products: readonly BindableProduct[],
+  variantIndex?: VariantSkuIndex,
 ): BindingResult {
   const links: PatternBinding[] = [];
   const matchesBySku = new Map<string, Set<string>>(); // sku -> report ids
@@ -362,14 +465,32 @@ export function buildPatternBindings(
       Boolean,
     );
     for (const r of reports) {
-      const tested = new Set(r.skus_tested.map((s) => s.toUpperCase()));
-      const hit = candidates.some(
-        (c) => skuMatchesLikes(c, r.related_model_likes) || tested.has(c.toUpperCase()),
+      const tested = new Set(
+        r.skus_tested.map((s) => s.toUpperCase()).filter((s) => !isPlaceholderBase(normalizeSkuForIndex(s))),
       );
+      // Placeholder "patterns" exist in the live corpus (charts whose
+      // related-models header literally reads "N/A") — never match on them.
+      const likes = r.related_model_likes.filter((l) => !isPlaceholderBase(normalizeSkuForIndex(l)));
+      const hit = candidates.some((c) => skuMatchesLikes(c, likes) || tested.has(c.toUpperCase()));
       if (!hit) continue;
       const set = matchesBySku.get(p.sku) ?? new Set<string>();
       set.add(r.id);
       matchesBySku.set(p.sku, set);
+    }
+  }
+
+  // BASE-code prefix resolution against the variant index -> parent PPIDs.
+  if (variantIndex) {
+    for (const r of reports) {
+      for (const base of reportBaseCodes(r)) {
+        const parents = variantIndex.get(base);
+        if (!parents) continue;
+        for (const parent of parents) {
+          const set = matchesBySku.get(parent) ?? new Set<string>();
+          set.add(r.id);
+          matchesBySku.set(parent, set);
+        }
+      }
     }
   }
 
@@ -678,6 +799,118 @@ async function pageAll<T>(
     if (rows.length < 1000) break;
   }
   return out;
+}
+
+// --- shared binding compute (step 5 of the run + --dimming-relink) -----------
+
+const BINDABLE_COLS =
+  "id, product_family, skus_tested, related_model_likes, report_code, report_code_derived, zip_entry_path, kb_document_id";
+
+interface BindableRow {
+  id: string;
+  product_family: string | null;
+  skus_tested: string[] | null;
+  related_model_likes: string[] | null;
+  report_code: string | null;
+  report_code_derived: boolean | null;
+  zip_entry_path: string[] | null;
+  kb_document_id: string | null;
+}
+
+function toBindableReport(b: BindableRow): BindableReport {
+  return {
+    id: b.id,
+    product_family: b.product_family,
+    skus_tested: b.skus_tested ?? [],
+    related_model_likes: b.related_model_likes ?? [],
+    report_code: b.report_code,
+    report_code_derived: b.report_code_derived ?? false,
+    loosePdf: b.zip_entry_path === null,
+    kb_document_id: b.kb_document_id,
+  };
+}
+
+/** Load the binding catalog ONCE per run: BindableProduct rows plus the
+ *  variant-SKU prefix index built from products.variants (page-by-page; the
+ *  jsonb is dropped as soon as its SKUs are indexed). */
+async function loadBindingCatalog(
+  sb: SupabaseClient,
+): Promise<{ products: BindableProduct[]; variantIndex: VariantSkuIndex }> {
+  const products: BindableProduct[] = [];
+  const idx = new Map<string, Set<string>>();
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await sb
+      .from("products")
+      .select("sku, variant_search, variants")
+      .range(from, from + 999);
+    if (error) throw new Error(`products read failed: ${error.message}`);
+    const rows = (data ?? []) as { sku: string; variant_search: string | null; variants: unknown }[];
+    for (const r of rows) {
+      products.push({ sku: r.sku, variant_search: r.variant_search });
+      const variantSkus = (Array.isArray(r.variants) ? r.variants : [])
+        .map((v) => (typeof (v as { sku?: unknown })?.sku === "string" ? (v as { sku: string }).sku : ""))
+        .filter(Boolean);
+      addVariantSkusToIndex(idx, r.sku, variantSkus);
+    }
+    if (rows.length < 1000) break;
+  }
+  return { products, variantIndex: idx };
+}
+
+/** Compute the full fresh link set for a report set: pattern/base-prefix
+ *  bindings (overlap-audited) plus `field` links for loose single-PDF units
+ *  (rule unchanged — file identity = unit identity only there). */
+async function computeBindings(
+  sb: SupabaseClient,
+  rows: readonly BindableRow[],
+): Promise<BindingResult> {
+  const reports = rows.map(toBindableReport);
+  const { products, variantIndex } = await loadBindingCatalog(sb);
+  const { links, overlaps } = buildPatternBindings(reports, products, variantIndex);
+
+  // Field links: ONLY loose single-PDF units (file identity = unit identity).
+  const looseByDoc = new Map<string, string>(); // kb_document_id -> report_id
+  for (const r of reports) {
+    if (r.loosePdf && r.kb_document_id) looseByDoc.set(r.kb_document_id, r.id);
+  }
+  if (looseByDoc.size) {
+    const fieldLinks = await pageAll<{ document_id: string; product_sku: string }>(
+      (from, to) =>
+        sb
+          .from("product_documents")
+          .select("document_id, product_sku")
+          .eq("doc_type", DIMMING_REPORT_DOC_TYPE)
+          .in("document_id", [...looseByDoc.keys()])
+          .range(from, to) as never,
+      "product_documents(dimming)",
+    );
+    for (const fl of fieldLinks) {
+      const reportId = looseByDoc.get(fl.document_id);
+      if (reportId) links.push({ report_id: reportId, product_sku: fl.product_sku, link_kind: "field" });
+    }
+  }
+  return { links, overlaps };
+}
+
+/** Group a computed link set per report, with an entry (possibly empty) for
+ *  EVERY in-scope report — the property that makes the relink's per-report
+ *  delete+reinsert both stale-link-clearing and idempotent. Pure for tests. */
+export function groupLinksByReport(
+  reportIds: readonly string[],
+  links: readonly PatternBinding[],
+): Map<string, PatternBinding[]> {
+  const by = new Map<string, PatternBinding[]>();
+  for (const id of reportIds) by.set(id, []);
+  const seen = new Set<string>();
+  for (const l of links) {
+    const list = by.get(l.report_id);
+    if (!list) continue; // out-of-scope report — never write
+    const key = `${l.report_id}|${l.product_sku}|${l.link_kind}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    list.push(l);
+  }
+  return by;
 }
 
 /** Step 0 — derived-URL fallback capture (§A.4). Failures logged, never fatal. */
@@ -1078,62 +1311,20 @@ export async function runDimming(
     }
   }
 
-  // Step 5 — product binding, pattern-primary, links rewritten per product.
-  const bindable = await pageAll<{
-    id: string;
-    product_family: string | null;
-    skus_tested: string[];
-    related_model_likes: string[];
-    zip_entry_path: string[] | null;
-    kb_document_id: string | null;
-  }>(
+  // Step 5 — product binding: pattern-primary + BASE-code prefix resolution
+  // against the once-per-run variant index; links rewritten per product.
+  const bindable = await pageAll<BindableRow>(
     (from, to) =>
       sb
         .from("dimming_reports")
-        .select("id, product_family, skus_tested, related_model_likes, zip_entry_path, kb_document_id")
+        .select(BINDABLE_COLS)
         .eq("status", "active")
         .range(from, to) as never,
     "dimming_reports(active)",
   );
-  const products = await pageAll<BindableProduct>(
-    (from, to) => sb.from("products").select("sku, variant_search").range(from, to) as never,
-    "products",
-  );
-  const { links, overlaps } = buildPatternBindings(
-    bindable.map((b) => ({
-      id: b.id,
-      product_family: b.product_family,
-      skus_tested: b.skus_tested ?? [],
-      related_model_likes: b.related_model_likes ?? [],
-      loosePdf: b.zip_entry_path === null,
-      kb_document_id: b.kb_document_id,
-    })),
-    products,
-  );
+  const { links, overlaps } = await computeBindings(sb, bindable);
   for (const o of overlaps) {
     report.push(`OVERLAP AUDIT (links held): ${o.sku} matched by units of families [${o.families.join(", ")}]`);
-  }
-
-  // Field links: ONLY loose single-PDF units (file identity = unit identity).
-  const looseByDoc = new Map<string, string>(); // kb_document_id -> report_id
-  for (const b of bindable) {
-    if (b.zip_entry_path === null && b.kb_document_id) looseByDoc.set(b.kb_document_id, b.id);
-  }
-  if (looseByDoc.size) {
-    const fieldLinks = await pageAll<{ document_id: string; product_sku: string }>(
-      (from, to) =>
-        sb
-          .from("product_documents")
-          .select("document_id, product_sku")
-          .eq("doc_type", DIMMING_REPORT_DOC_TYPE)
-          .in("document_id", [...looseByDoc.keys()])
-          .range(from, to) as never,
-      "product_documents(dimming)",
-    );
-    for (const fl of fieldLinks) {
-      const reportId = looseByDoc.get(fl.document_id);
-      if (reportId) links.push({ report_id: reportId, product_sku: fl.product_sku, link_kind: "field" });
-    }
   }
 
   // Rewrite links per product: delete every product's rows, insert the fresh
@@ -1213,6 +1404,101 @@ export async function runDimming(
     console.log(
       `[dimming] SAMPLE RUN (--sample ${opts.sample}) — STOP: review this report (incl. the ` +
         "unmatched vocabulary and overlap flags) and get explicit approval before the full run.",
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// --dimming-relink: recompute dimming_report_products for ALL existing
+// non-superseded reports from their STORED skus_tested / related_model_likes /
+// report_code — no re-fetch, no re-extraction, no Claude. Links are rewritten
+// per report (delete + reinsert, one report at a time), the DC4 overlap audit
+// applies, and the loose-PDF `field` rule is unchanged. Idempotent: a second
+// run recomputes the identical set.
+// -----------------------------------------------------------------------------
+
+export interface RunDimmingRelinkOptions {
+  dryRun: boolean;
+}
+
+async function countLinks(sb: SupabaseClient): Promise<number> {
+  const { count, error } = await sb
+    .from("dimming_report_products")
+    .select("id", { count: "exact", head: true });
+  if (error) throw new Error(`link count failed: ${error.message}`);
+  return count ?? 0;
+}
+
+export async function runDimmingRelink(
+  sb: SupabaseClient,
+  opts: RunDimmingRelinkOptions,
+): Promise<void> {
+  const rows = await pageAll<BindableRow & { status: string }>(
+    (from, to) =>
+      sb
+        .from("dimming_reports")
+        .select(`${BINDABLE_COLS}, status`)
+        .neq("status", "superseded")
+        .range(from, to) as never,
+    "dimming_reports(non-superseded)",
+  );
+  console.log(`[dimming-relink] ${rows.length} non-superseded reports in scope`);
+
+  const before = await countLinks(sb);
+  const { links, overlaps } = await computeBindings(sb, rows);
+  const byReport = groupLinksByReport(rows.map((r) => r.id), links);
+
+  const unlinked = rows.filter((r) => (byReport.get(r.id) ?? []).length === 0);
+  const linkTotal = [...byReport.values()].reduce((n, l) => n + l.length, 0);
+
+  console.log(`[dimming-relink] links before: ${before}; computed fresh set: ${linkTotal}`);
+  console.log(`[dimming-relink] overlap audit holds: ${overlaps.length}`);
+  for (const o of overlaps) {
+    console.log(
+      `[dimming-relink] OVERLAP AUDIT (links held): ${o.sku} matched by units of families [${o.families.join(", ")}]`,
+    );
+  }
+
+  if (opts.dryRun) {
+    console.log(
+      `[dimming-relink] (dry-run) would rewrite links for ${rows.length} reports; ` +
+        `${unlinked.length} would remain unlinked`,
+    );
+    return;
+  }
+
+  // Per-report delete + reinsert (transactional per report in intent: the
+  // delete and insert are adjacent; a failure is counted and leaves only that
+  // one report unlinked until the next run — never a mixed stale set).
+  let rewritten = 0;
+  let failures = 0;
+  for (const r of rows) {
+    const fresh = byReport.get(r.id) ?? [];
+    try {
+      const del = await sb.from("dimming_report_products").delete().eq("report_id", r.id);
+      if (del.error) throw new Error(`delete: ${del.error.message}`);
+      for (let i = 0; i < fresh.length; i += UPSERT) {
+        const ins = await sb.from("dimming_report_products").insert(fresh.slice(i, i + UPSERT));
+        if (ins.error) throw new Error(`insert: ${ins.error.message}`);
+      }
+      rewritten++;
+    } catch (e) {
+      failures++;
+      console.warn(`[dimming-relink] FAIL report ${r.id}: ${String(e).slice(0, 300)}`);
+    }
+  }
+
+  const after = await countLinks(sb);
+  console.log("\n[dimming-relink] ================ RUN REPORT ================");
+  console.log(
+    `[dimming-relink] reports: ${rows.length} in scope, ${rewritten} rewritten, ${failures} failed`,
+  );
+  console.log(`[dimming-relink] links: ${before} before -> ${after} after`);
+  console.log(`[dimming-relink] overlap holds: ${overlaps.length}`);
+  console.log(`[dimming-relink] reports still unlinked: ${unlinked.length}`);
+  for (const u of unlinked.slice(0, 10)) {
+    console.log(
+      `[dimming-relink]   unlinked ${u.id} status=${u.status} skus_tested=[${(u.skus_tested ?? []).join(", ")}] report_code=${u.report_code ?? "-"}`,
     );
   }
 }
