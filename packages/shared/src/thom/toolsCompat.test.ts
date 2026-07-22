@@ -8,8 +8,10 @@ import {
   composeRelatedSections,
   dispatch,
   formatAccessoryLines,
+  formatWebCrawlAccessoryLines,
   MAX_ACCESSORY_LINES,
   MAX_REVERSE_FAMILIES,
+  partitionAccessoryRows,
   rollupReverseFit,
   type AccessoryParentInfo,
   type ProductAccessoryRow,
@@ -441,5 +443,207 @@ describe("get_related_products two sections (AA12)", () => {
     expect(none.content).toContain("provide a sku, family, or category");
     const empty = await dispatch(ctxOf(makeSb((q) => (q.table === "products" && filterVal(q, "eq", "sku") ? { data: { family: null, category: null } } : { data: [] }))), "get_related_products", { sku: "X9" }, { surface: "internal" });
     expect(empty.content).toBe("No related products found.");
+  });
+});
+
+// --- Phase 2: PDP-harvested (web_crawl) page associations (§D) ---------------
+
+describe("partitionAccessoryRows (§D provenance split)", () => {
+  it("splits web_crawl rows out; missing source_system stays catalog (pre-Phase-2 rows)", () => {
+    const rows = [
+      accRow({ related_sku: "A" }),
+      accRow({ related_sku: "b-slug", source_system: "web_crawl", source_field: "curated_for_you" }),
+      accRow({ related_sku: "C", source_system: "sales_layer" }),
+    ];
+    const { catalog, webCrawl } = partitionAccessoryRows(rows);
+    expect(catalog.map((r) => r.related_sku)).toEqual(["A", "C"]);
+    expect(webCrawl.map((r) => r.related_sku)).toEqual(["b-slug"]);
+  });
+});
+
+describe("formatWebCrawlAccessoryLines", () => {
+  const webRow = (over: Partial<ProductAccessoryRow>): ProductAccessoryRow =>
+    accRow({ source_system: "web_crawl", ...over });
+
+  it("labels the Modern Forms section 'listed together on the product page', never 'confirmed'", () => {
+    const lines = formatWebCrawlAccessoryLines(
+      [webRow({ related_sku: "xl-downrod-dr72", related_product_sku: "8901", source_field: "curated_for_you" })],
+      new Map([["8901", { name: "XL Downrod", brand: "Modern Forms" }]]),
+      "public",
+    );
+    expect(lines[0]).toContain("Listed together on the product page");
+    expect(lines[0]).toContain("Curated For You");
+    expect(lines[0]).toContain("verify fitment");
+    expect(lines.join("\n")).not.toMatch(/confirmed/i);
+    expect(lines[1]).toContain("XL Downrod");
+    expect(lines[1]).toContain("Modern Forms");
+  });
+
+  it("labels the waclighting section as the product page's Components list (page-derived)", () => {
+    const lines = formatWebCrawlAccessoryLines(
+      [webRow({ related_sku: "trim-r2asdt", related_product_sku: "2002", kind: "component", source_field: "components_section" })],
+      new Map([["2002", { name: "R2 Round Trim", brand: "WAC Lighting" }]]),
+      "internal",
+    );
+    expect(lines[0]).toContain("Components listed on the WAC Lighting product page");
+    expect(lines[1]).toContain("R2 Round Trim");
+  });
+
+  it("PUBLIC: unresolved page slugs are never shown bare, they aggregate to a count line", () => {
+    const lines = formatWebCrawlAccessoryLines(
+      [
+        webRow({ related_sku: "mystery-slug-1", source_field: "curated_for_you" }),
+        webRow({ related_sku: "mystery-slug-2", source_field: "curated_for_you" }),
+      ],
+      new Map(),
+      "public",
+    );
+    const joined = lines.join("\n");
+    expect(joined).not.toContain("mystery-slug-1");
+    expect(joined).not.toContain("mystery-slug-2");
+    expect(joined).toContain("2 more items shown on the product page");
+  });
+
+  it("INTERNAL: unresolved slugs are visible as page links with no catalog match", () => {
+    const lines = formatWebCrawlAccessoryLines(
+      [webRow({ related_sku: "mystery-slug-1", source_field: "curated_for_you" })],
+      new Map(),
+      "internal",
+    );
+    expect(lines.join("\n")).toContain('Page link "mystery-slug-1" (no catalog match');
+  });
+
+  it("collapses duplicate resolved parents and caps output at MAX_ACCESSORY_LINES", () => {
+    const dup = [
+      webRow({ related_sku: "slug-a", related_product_sku: "P1", source_field: "curated_for_you" }),
+      webRow({ related_sku: "slug-a-alias", related_product_sku: "P1", source_field: "curated_for_you" }),
+    ];
+    expect(formatWebCrawlAccessoryLines(dup, new Map(), "internal")).toHaveLength(2); // header + one line
+    const many = Array.from({ length: MAX_ACCESSORY_LINES + 10 }, (_, i) =>
+      webRow({ related_sku: `s-${i}`, related_product_sku: `P${i}`, source_field: "curated_for_you" }),
+    );
+    const lines = formatWebCrawlAccessoryLines(many, new Map(), "internal");
+    expect(lines).toHaveLength(MAX_ACCESSORY_LINES + 1);
+    expect(lines[lines.length - 1]).toMatch(/^\(\+\d+ more\)$/);
+  });
+
+  it("returns [] for no rows", () => {
+    expect(formatWebCrawlAccessoryLines([], new Map(), "public")).toEqual([]);
+  });
+});
+
+describe("composeRelatedSections with webLines (§D ordering)", () => {
+  it("orders confirmed FIRST, page associations second, family expansion last", () => {
+    const out = composeRelatedSections({
+      sku: "8817",
+      explicitLines: ["- Remote (PPID 500) [accessory]"],
+      explicitCount: 1,
+      webLines: ["Listed together on the product page (x):", "- XL Downrod (PPID 8901)"],
+      familyScope: 'category "Fans"',
+      familyLines: ["- 8818 — Wynd 60"],
+      familyCount: 1,
+    });
+    const confirmedAt = out.indexOf("Confirmed accessories and components");
+    const webAt = out.indexOf("Listed together on the product page");
+    const familyAt = out.indexOf("Same family or category, verify fitment");
+    expect(confirmedAt).toBe(0);
+    expect(webAt).toBeGreaterThan(confirmedAt);
+    expect(familyAt).toBeGreaterThan(webAt);
+  });
+
+  it("web section renders alone when there are no confirmed rows", () => {
+    const out = composeRelatedSections({
+      sku: "8817",
+      explicitLines: [],
+      explicitCount: 0,
+      webLines: ["Listed together on the product page (x):", "- XL Downrod (PPID 8901)"],
+      familyScope: "the catalog",
+      familyLines: [],
+      familyCount: 0,
+    });
+    expect(out).toContain("XL Downrod");
+    expect(out).not.toContain("Confirmed");
+  });
+});
+
+describe("rollupReverseFit verb override (web page associations)", () => {
+  it("small fan-in uses the verb verbatim", () => {
+    const out = rollupReverseFit([parent("8817", { name: "Wynd XL" })], 1, "Shown on the product pages of");
+    expect(out).toBe("Shown on the product pages of 1 product: Wynd XL (PPID 8817).");
+  });
+
+  it("family rollup keeps the verb too", () => {
+    const parents = Array.from({ length: 9 }, (_, i) => parent(`F${i}`, { family: "Wynd" }));
+    const out = rollupReverseFit(parents, 9, "Shown on the product pages of");
+    expect(out).toContain("Shown on the product pages of 9 products");
+  });
+});
+
+describe("get_product with web_crawl rows (Wynd XL downrod shape — the Phase 2 flagship)", () => {
+  const fanRow = {
+    sku: "8817",
+    name: "Wynd XL",
+    brand: "Modern Forms",
+    category: null,
+    primary_image_url: null,
+    variants: [],
+  };
+
+  it("renders the confirmed section and the page-association section separately", async () => {
+    const sb = makeSb((q) => {
+      if (q.table === "products" && filterVal(q, "eq", "sku") === "8817") return { data: fanRow };
+      if (q.table === "product_accessories" && filterVal(q, "eq", "product_sku") === "8817") {
+        return {
+          data: [
+            { related_sku: "F-RC-WT", related_product_sku: "500", kind: "accessory", label: null, source_system: "sales_layer", source_field: "zacc1_1" },
+            { related_sku: "xl-downrod-dr72", related_product_sku: "8901", kind: "accessory", label: null, source_system: "web_crawl", source_field: "curated_for_you" },
+          ],
+        };
+      }
+      if (q.table === "product_accessories" && filterVal(q, "eq", "related_product_sku") === "8817") {
+        return { data: [], count: 0 };
+      }
+      if (q.table === "products" && filterVal(q, "in", "sku")) {
+        return {
+          data: [
+            { sku: "500", name: "Remote Control", family: null, brand: "Modern Forms" },
+            { sku: "8901", name: "XL Downrod 72in", family: null, brand: "Modern Forms" },
+          ],
+        };
+      }
+      return { data: [] };
+    });
+    const out = await dispatch(ctxOf(sb), "get_product", { sku: "8817" }, { surface: "public" });
+    // Confirmed section counts ONLY the catalog row.
+    expect(out.content).toContain("Confirmed accessories and components (1 reference, from catalog reference data):");
+    expect(out.content).toContain("Remote Control");
+    // Page-association section carries the §D label and the resolved product name.
+    expect(out.content).toContain("Listed together on the product page");
+    expect(out.content).toContain("XL Downrod 72in");
+    // The web row is never counted as confirmed.
+    const confirmedBlock = out.content.slice(
+      out.content.indexOf("Confirmed accessories"),
+      out.content.indexOf("Listed together"),
+    );
+    expect(confirmedBlock).not.toContain("XL Downrod");
+  });
+
+  it("reverse: a downrod referenced ONLY by web_crawl rows is a page association, not a confirmed accessory", async () => {
+    const downrod = { ...fanRow, sku: "8901", name: "XL Downrod 72in" };
+    const sb = makeSb((q) => {
+      if (q.table === "products" && filterVal(q, "eq", "sku") === "8901") return { data: downrod };
+      if (q.table === "product_accessories" && filterVal(q, "eq", "product_sku") === "8901") return { data: [] };
+      if (q.table === "product_accessories" && filterVal(q, "eq", "related_product_sku") === "8901") {
+        return { data: [{ product_sku: "8817", source_system: "web_crawl" }], count: 1 };
+      }
+      if (q.table === "products" && filterVal(q, "in", "sku")) {
+        return { data: [{ sku: "8817", name: "Wynd XL", family: "Wynd", brand: "Modern Forms" }] };
+      }
+      return { data: [] };
+    });
+    const out = await dispatch(ctxOf(sb), "get_product", { sku: "8901" }, { surface: "public" });
+    expect(out.content).not.toContain("confirmed accessory");
+    expect(out.content).toContain("page association, verify fitment");
+    expect(out.content).toContain("Shown on the product pages of 1 product: Wynd XL (PPID 8817).");
   });
 });

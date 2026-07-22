@@ -181,6 +181,9 @@ interface FrontierRow {
   discovered_slug?: string | null;
   discovered_spec_sheet_url?: string | null;
   model_codes?: string[] | null;
+  /** PDP accessory-section slug links (compat Phase 2) — waclighting
+   *  Components / modernforms Curated For You; resolved at reconcile time. */
+  accessory_slugs?: string[] | null;
   published_at?: string | null;
 }
 
@@ -395,6 +398,7 @@ export async function crawlSite(
     const evidence: Partial<FrontierRow> = {
       model_codes: evidenceCodes.size ? [...evidenceCodes] : null,
       discovered_spec_sheet_url: page.evidence.specSheetUrl,
+      accessory_slugs: page.evidence.accessorySlugs.length ? page.evidence.accessorySlugs : null,
       published_at: page.publishedAt,
     };
 

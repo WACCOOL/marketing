@@ -24,6 +24,7 @@ import { enabledSites } from "./crawl/sites.js";
 import { webStoreFromEnv, type WebStore } from "./crawl/store.js";
 import { crawlSite, extractWebDocText } from "./crawl/stepW.js";
 import { healMfSpecs } from "./crawl/healMfSpecs.js";
+import { reconcileAccessories } from "./crawl/reconcileAccessories.js";
 import { reconcilePdp } from "./crawl/reconcilePdp.js";
 import { redactTicketText } from "./redact.js";
 import {
@@ -132,6 +133,10 @@ interface Args {
   /** Run the PDP reconciliation pass (plan E) over crawl_frontier evidence.
    *  Report-only unless --reconcile-write is ALSO passed (gap-only heals). */
   reconcilePdp: boolean;
+  /** Run the PDP ACCESSORY reconciliation (compat plan Phase 2): harvested
+   *  accessory-section slugs → product_accessories (source_system='web_crawl').
+   *  Report-only unless --reconcile-write is ALSO passed. */
+  reconcileAccessories: boolean;
   reconcileWrite: boolean;
   /** One-off Modern Forms spec-sheet heal: rewrite the bad PDP-path dispatcher
    *  heals to verified dynamic-specsheet URLs and requeue their failed kb rows
@@ -160,6 +165,7 @@ function parseArgs(argv: string[]): Args {
     harvestPdp: false,
     includeOptIn: false,
     reconcilePdp: false,
+    reconcileAccessories: false,
     reconcileWrite: false,
     healMfSpecs: false,
     retryFailed: false,
@@ -175,6 +181,7 @@ function parseArgs(argv: string[]): Args {
     else if (argv[i] === "--harvest-pdp") a.harvestPdp = true;
     else if (argv[i] === "--include-optin") a.includeOptIn = true;
     else if (argv[i] === "--reconcile-pdp") a.reconcilePdp = true;
+    else if (argv[i] === "--reconcile-accessories") a.reconcileAccessories = true;
     else if (argv[i] === "--reconcile-write") a.reconcileWrite = true;
     else if (argv[i] === "--heal-mf-specs") a.healMfSpecs = true;
     else if (argv[i] === "--retry-failed") a.retryFailed = true;
@@ -831,6 +838,12 @@ async function main(): Promise<void> {
   // unless --reconcile-write; wacarchitectural is excluded from writes either way.
   if (args.reconcilePdp) {
     await reconcilePdp(sb, { write: args.reconcileWrite && !args.dryRun });
+  }
+  // Step D (compat plan Phase 2) — PDP accessory-section slugs →
+  // product_accessories (source_system='web_crawl'). Report-only unless
+  // --reconcile-write; the prune is web_crawl-scoped behind the PL7 guard.
+  if (args.reconcileAccessories) {
+    await reconcileAccessories(sb, { write: args.reconcileWrite && !args.dryRun });
   }
   // --retry-failed: requeue prior failures (e.g. transient upstream 502s) so
   // Step B picks them up again. Permanently-bad ones (empty/non-PDF) just
