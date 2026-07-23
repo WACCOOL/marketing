@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyContentApprove,
   applyContentSave,
+  attachContentError,
   brandLikePattern,
   buildVoiceDeriveMessages,
   dedupSkus,
@@ -52,6 +53,79 @@ describe("trayAssignError (tray reassignment guard)", () => {
 
   it("allows unassignment (null target) of a tray image", () => {
     expect(trayAssignError({ slot: "schonbek_pdf" }, null)).toBeNull();
+  });
+});
+
+describe("attachContentError (orphan attach guard)", () => {
+  const orphan = { content_key: "dweled:zalta" };
+  const emptyTarget = {
+    status: "none",
+    description_ai: null,
+    description_final: null,
+    meta_ai: null,
+    meta_final: null,
+    title_override: null,
+  };
+
+  it("404s a missing content row", () => {
+    expect(attachContentError(null, false, null, null)).toEqual({
+      error: "content row not found",
+      status: 404,
+    });
+  });
+
+  it("rejects moving copy that is still attached to a live product", () => {
+    const res = attachContentError(orphan, true, { content_key: "dweled:x" }, null);
+    expect(res).toMatchObject({ status: 400 });
+  });
+
+  it("404s an unknown target key", () => {
+    const res = attachContentError(orphan, false, null, null);
+    expect(res).toMatchObject({ status: 404 });
+  });
+
+  it("rejects attaching onto itself", () => {
+    const res = attachContentError(
+      orphan,
+      false,
+      { content_key: "dweled:zalta" },
+      null,
+    );
+    expect(res).toMatchObject({ status: 400 });
+  });
+
+  it("rejects a target that already holds copy or review state", () => {
+    for (const existing of [
+      { ...emptyTarget, description_ai: "AI draft" },
+      { ...emptyTarget, description_final: "edited" },
+      { ...emptyTarget, meta_ai: "meta" },
+      { ...emptyTarget, meta_final: "meta" },
+      { ...emptyTarget, title_override: "T" },
+      { ...emptyTarget, status: "generated" },
+      { ...emptyTarget, status: "approved" },
+    ]) {
+      const res = attachContentError(
+        orphan,
+        false,
+        { content_key: "dweled:nuvio" },
+        existing,
+      );
+      expect(res).toMatchObject({ status: 409 });
+    }
+  });
+
+  it("allows attach onto a bare product, replacing an empty placeholder row", () => {
+    expect(
+      attachContentError(orphan, false, { content_key: "dweled:nuvio" }, null),
+    ).toEqual({ ok: true, replaceEmptyTarget: false });
+    expect(
+      attachContentError(
+        orphan,
+        false,
+        { content_key: "dweled:nuvio" },
+        emptyTarget,
+      ),
+    ).toEqual({ ok: true, replaceEmptyTarget: true });
   });
 });
 

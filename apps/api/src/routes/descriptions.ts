@@ -17,6 +17,7 @@ import {
   clearFeatureOverlay,
   computeCommitDiff,
   contentRowEdited,
+  countPreservedContent,
   extractExistingCopy,
   firstSentence,
   isDescMasterSlot,
@@ -773,6 +774,186 @@ descriptionsRoutes.patch("/content/:target", async (c) => {
   }
   if (iErr) return c.json({ error: iErr.message }, 500);
   return c.json({ content: inserted }, 201);
+});
+
+// ---------------------------------------------------------------------------
+// Orphan management (Stage 5) — POST /content/:id/attach, DELETE /content/:id
+// Orphans are desc_content rows whose (slot, content_key) no longer matches a
+// product after a re-import. Attach moves the preserved copy onto a chosen
+// product of the SAME slot; delete discards a draft the user is sure about.
+// ---------------------------------------------------------------------------
+
+const AttachContentSchema = z.object({
+  content_key: z.string().min(1).max(200),
+});
+
+/** True when a content row holds no text and no review state at all — a
+ * placeholder created by a stray save, safe to replace during an attach. */
+function contentRowEmpty(row: {
+  status: string;
+  description_ai: string | null;
+  description_final: string | null;
+  meta_ai: string | null;
+  meta_final: string | null;
+  title_override: string | null;
+}): boolean {
+  return (
+    row.status === "none" &&
+    !row.description_ai &&
+    !row.description_final &&
+    !row.meta_ai &&
+    !row.meta_final &&
+    !row.title_override
+  );
+}
+
+/**
+ * Pure guard for orphan attach (unit-tested). Rules: the source content row
+ * must exist and actually be an orphan (its own product is gone), the target
+ * key must belong to a product in the SAME slot, and the target must not
+ * already hold copy — an empty placeholder row is replaced, anything with
+ * text or review state rejects with a clear error (plan Stage 5 merge rule).
+ */
+export function attachContentError(
+  content: { content_key: string } | null,
+  sourceProductExists: boolean,
+  targetProduct: { content_key: string } | null,
+  targetContent: Parameters<typeof contentRowEmpty>[0] | null,
+):
+  | { error: string; status: 400 | 404 | 409 }
+  | { ok: true; replaceEmptyTarget: boolean } {
+  if (!content) return { error: "content row not found", status: 404 };
+  if (sourceProductExists) {
+    return {
+      error:
+        "this copy is still attached to a product; only orphaned copy can be moved",
+      status: 400,
+    };
+  }
+  if (!targetProduct) {
+    return {
+      error: "no product with that key in this file; pick one from the list",
+      status: 404,
+    };
+  }
+  if (targetProduct.content_key === content.content_key) {
+    return { error: "the copy is already attached to that product", status: 400 };
+  }
+  if (targetContent && !contentRowEmpty(targetContent)) {
+    return {
+      error:
+        "the target product already has copy of its own; edit or delete that copy first",
+      status: 409,
+    };
+  }
+  return { ok: true, replaceEmptyTarget: !!targetContent };
+}
+
+descriptionsRoutes.post("/content/:id/attach", async (c) => {
+  const id = c.req.param("id");
+  if (!UUID_RE.test(id)) return c.json({ error: "content row not found" }, 404);
+  const parsed = AttachContentSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { data: row, error } = await sb
+    .from("desc_content")
+    .select(CONTENT_COLS)
+    .eq("id", id)
+    .maybeSingle();
+  if (error) return c.json({ error: error.message }, 500);
+  const content = row as ContentRow | null;
+
+  let sourceProductExists = false;
+  let targetProduct: { content_key: string } | null = null;
+  let targetContent: ContentRow | null = null;
+  if (content) {
+    const [srcRes, tgtRes, tgtContentRes] = await Promise.all([
+      sb
+        .from("desc_products")
+        .select("id")
+        .eq("slot", content.slot)
+        .eq("content_key", content.content_key)
+        .maybeSingle(),
+      sb
+        .from("desc_products")
+        .select("content_key")
+        .eq("slot", content.slot)
+        .eq("content_key", parsed.data.content_key)
+        .maybeSingle(),
+      sb
+        .from("desc_content")
+        .select(CONTENT_COLS)
+        .eq("slot", content.slot)
+        .eq("content_key", parsed.data.content_key)
+        .maybeSingle(),
+    ]);
+    for (const res of [srcRes, tgtRes, tgtContentRes]) {
+      if (res.error) return c.json({ error: res.error.message }, 500);
+    }
+    sourceProductExists = !!srcRes.data;
+    targetProduct = tgtRes.data as { content_key: string } | null;
+    targetContent = tgtContentRes.data as ContentRow | null;
+  }
+
+  const guard = attachContentError(
+    content,
+    sourceProductExists,
+    targetProduct,
+    targetContent,
+  );
+  if ("error" in guard) return c.json({ error: guard.error }, guard.status);
+
+  // The empty placeholder on the target (if any) must vanish before the move
+  // or unique(slot, content_key) rejects the update. RLS delete is admin-only
+  // by design, so this single surgical delete runs on the service role after
+  // the guard proved the row holds no work at all.
+  if (guard.replaceEmptyTarget && targetContent) {
+    const admin = serviceSupabase(c.env);
+    const del = await admin.from("desc_content").delete().eq("id", targetContent.id);
+    if (del.error) return c.json({ error: del.error.message }, 500);
+  }
+
+  const { data: updated, error: uErr } = await sb
+    .from("desc_content")
+    .update({ content_key: parsed.data.content_key, note: null })
+    .eq("id", id)
+    .select(CONTENT_COLS)
+    .single();
+  if (uErr) return c.json({ error: uErr.message }, 500);
+  return c.json({ content: updated });
+});
+
+descriptionsRoutes.delete("/content/:id", async (c) => {
+  const id = c.req.param("id");
+  if (!UUID_RE.test(id)) return c.json({ error: "content row not found" }, 404);
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { data: row, error } = await sb
+    .from("desc_content")
+    .select("id, status")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) return c.json({ error: error.message }, 500);
+  if (!row) return c.json({ error: "content row not found" }, 404);
+  const status = (row as { status: string }).status;
+  if (status === "approved" && c.req.query("confirm") !== "approved") {
+    return c.json(
+      {
+        error:
+          "this copy is approved; deleting it needs an explicit confirmation (confirm=approved)",
+      },
+      400,
+    );
+  }
+  // RLS restricts DELETE to admins; the endpoint is for every internal user
+  // (plan Stage 5), so the delete itself runs on the service role after the
+  // user-client read above proved visibility + the approved confirm.
+  const admin = serviceSupabase(c.env);
+  const del = await admin.from("desc_content").delete().eq("id", id);
+  if (del.error) return c.json({ error: del.error.message }, 500);
+  return c.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -1753,7 +1934,9 @@ async function commitMaster(c: Ctx, slot: DescMasterSlot): Promise<Response> {
       .limit(2000),
     sb
       .from("desc_content")
-      .select("content_key, status, description_final, meta_final, title_override")
+      .select(
+        "content_key, status, description_ai, description_final, meta_final, title_override",
+      )
       .eq("slot", slot)
       .limit(4000),
   ]);
@@ -1769,6 +1952,7 @@ async function commitMaster(c: Ctx, slot: DescMasterSlot): Promise<Response> {
   const contentRows = (contentRes.data ?? []) as {
     content_key: string;
     status: string;
+    description_ai: string | null;
     description_final: string | null;
     meta_final: string | null;
     title_override: string | null;
@@ -1796,6 +1980,15 @@ async function commitMaster(c: Ctx, slot: DescMasterSlot): Promise<Response> {
     removed: diff.removed.map((r) => r.name ?? r.content_key),
     relinked: diff.relinks.length,
     orphaned: diff.orphaned,
+    // Content rows carrying a description that survive this commit (in place
+    // or relinked) — the "descriptions kept on N products" summary line.
+    kept: countPreservedContent(
+      diff,
+      contentRows.map((r) => ({
+        content_key: r.content_key,
+        hasCopy: !!(r.description_final ?? r.description_ai),
+      })),
+    ),
     warnings: payload.warnings,
     sheets: payload.sheets,
   };
