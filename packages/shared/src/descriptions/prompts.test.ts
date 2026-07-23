@@ -7,6 +7,7 @@ import {
   buildDescriptionPrompt,
   buildFactSheet,
   buildMetaPrompt,
+  clampMetaDescription,
   firstSentence,
   structureSeed,
   type PromptProduct,
@@ -135,6 +136,30 @@ describe("buildFactSheet — assembly completeness", () => {
     const sheet = buildFactSheet({ ...fullProduct, attributes: {} });
     expect(sheet).toContain("Model numbers: ZZ12345-BK");
   });
+
+  it("labels coded-only finishes as non-expandable codes (F2)", () => {
+    const sheet = buildFactSheet({
+      ...fullProduct,
+      finishes: ["AB", "BK"],
+      attributes: {
+        variants: [{ model: "ZZ12345-BK", finish: "BK", cct: null, size: null }],
+      },
+    });
+    expect(sheet).toContain("Finish codes");
+    expect(sheet).toContain("NEVER expand");
+    expect(sheet).toContain("AB, BK");
+    expect(sheet).not.toContain("Finishes:");
+    expect(sheet).toContain("finish code BK");
+  });
+
+  it("keeps the plain Finishes label when any finish is spelled out", () => {
+    const sheet = buildFactSheet({
+      ...fullProduct,
+      finishes: ["Matte Black", "AB"],
+    });
+    expect(sheet).toContain("Finishes: Matte Black, AB");
+    expect(sheet).not.toContain("Finish codes");
+  });
 });
 
 describe("buildDescriptionPrompt", () => {
@@ -168,6 +193,12 @@ describe("buildDescriptionPrompt", () => {
     expect(systemText).toContain("em dashes");
     expect(systemText).toContain("WAC Group, never WAC alone");
     expect(systemText).not.toMatch(/—/); // scaffolding itself has no em dash
+  });
+
+  it("forbids expanding or guessing finish/material codes", () => {
+    expect(systemText).toContain("Never expand or guess");
+    expect(systemText).toContain("offered in two finishes");
+    expect(systemText).toContain("ONLY when the fact sheet spells it out");
   });
 
   it("user = profile prompt + complete fact sheet", () => {
@@ -236,5 +267,46 @@ describe("buildMetaPrompt", () => {
 
   it("DESC_META_RANGE is the docx 50-160 rule", () => {
     expect(DESC_META_RANGE).toEqual({ min: 50, max: 160 });
+  });
+});
+
+describe("clampMetaDescription", () => {
+  it("passes in-range text through untouched", () => {
+    const ok = "Discover a slim pendant that warms the entry with dimmable light.";
+    expect(clampMetaDescription(ok)).toBe(ok);
+    expect(clampMetaDescription(`  ${ok}  `)).toBe(ok);
+  });
+
+  it("cuts an over-length meta at the last complete sentence that fits", () => {
+    const first =
+      "Discover the Fictona pendant, a sculpted glass fixture that brings warm dimmable light to entries and halls.";
+    const out = clampMetaDescription(
+      `${first} It also meets ADA and Energy Star requirements for commercial installs everywhere.`,
+    );
+    expect(out).toBe(first);
+    expect(out.length).toBeLessThanOrEqual(DESC_META_RANGE.max);
+  });
+
+  it("never ends on a dangling fragment when no sentence boundary fits", () => {
+    const run =
+      "Discover the Fictona pendant with sculpted glass and warm dimmable light for entries halls stairwells lounges and every other room that meets ADA and Energy";
+    const out = clampMetaDescription(`${run} Star requirements`);
+    expect(out.length).toBeLessThanOrEqual(DESC_META_RANGE.max);
+    expect(out).not.toMatch(/\s(?:and|or|with|for|of|the|a|an|to)$/i);
+  });
+
+  it("ignores decimal points as sentence boundaries", () => {
+    const long = `Discover a fixture spanning 26.5 inches of shelf space ${"with warm light ".repeat(10)}done`;
+    const out = clampMetaDescription(long);
+    expect(out.length).toBeLessThanOrEqual(DESC_META_RANGE.max);
+    expect(out).not.toBe("Discover a fixture spanning 26.");
+  });
+
+  it("skips a sentence boundary under the 50-char floor", () => {
+    const out = clampMetaDescription(
+      `Short start. ${"word ".repeat(40)}tail`,
+    );
+    expect(out.length).toBeLessThanOrEqual(DESC_META_RANGE.max);
+    expect(out).not.toBe("Short start.");
   });
 });

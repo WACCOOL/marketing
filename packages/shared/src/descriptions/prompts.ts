@@ -1,4 +1,5 @@
 import { ANTI_FORMULAIC_RULE } from "./voiceDefaults.js";
+import { truncateAtWord } from "../productinfo.js";
 import type { DescVariant, SizeTuple } from "./schema.js";
 
 /**
@@ -69,6 +70,35 @@ export function firstSentence(text: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// clampMetaDescription — over-length metas end on a sentence, not a fragment
+// ---------------------------------------------------------------------------
+
+/** Trailing conjunctions/prepositions stripped after a word-boundary cut so a
+ * truncated meta never ends "…and" / "…with". */
+const DANGLING_TAIL_RE =
+  /\s+(?:and|or|but|nor|with|without|for|from|of|in|on|at|by|to|into|onto|over|under|the|a|an|as|plus|via)$/i;
+
+/**
+ * Clamp a meta description to the 160-char cap WITHOUT leaving a dangling
+ * fragment: prefer cutting at the last complete sentence that fits (and is
+ * not shorter than the 50-char floor); otherwise fall back to a word-boundary
+ * cut with any trailing conjunction/preposition stripped.
+ */
+export function clampMetaDescription(text: string): string {
+  const t = text.trim();
+  if (t.length <= DESC_META_RANGE.max) return t;
+  const window = t.slice(0, DESC_META_RANGE.max);
+  for (let i = window.length - 1; i >= DESC_META_RANGE.min - 1; i--) {
+    const ch = window[i]!;
+    if (!".!?".includes(ch)) continue;
+    const next = i + 1 < t.length ? t[i + 1]! : " ";
+    if (!/\s/.test(next)) continue; // mid-number "26.5" is not a boundary
+    return window.slice(0, i + 1).trim();
+  }
+  return truncateAtWord(t, DESC_META_RANGE.max).replace(DANGLING_TAIL_RE, "");
+}
+
+// ---------------------------------------------------------------------------
 // Fact sheet
 // ---------------------------------------------------------------------------
 
@@ -103,9 +133,20 @@ export interface ReferenceCopy {
 const sizeLine = (s: SizeTuple): string =>
   [s.length ?? "?", s.width ?? "?", s.height ?? "?"].join(" x ");
 
+/** A finish value that is a bare internal code (AB, BK, 26…), not a word.
+ * Codes are labeled as such in the fact sheet so the model never expands
+ * them into a guessed color or material name. */
+export function isFinishCode(value: string): boolean {
+  return /^[A-Z0-9]{1,4}$/.test(value.trim());
+}
+
 const variantLine = (v: DescVariant): string => {
   const parts = [
-    v.finish ? `finish ${v.finish}` : null,
+    v.finish
+      ? isFinishCode(v.finish)
+        ? `finish code ${v.finish}`
+        : `finish ${v.finish}`
+      : null,
     v.cct ? `CCT ${v.cct}` : null,
     v.size ? `size ${v.size}` : null,
   ].filter((p): p is string => !!p);
@@ -129,7 +170,16 @@ export function buildFactSheet(product: PromptProduct): string {
   add("Family", product.family);
   add("Product type", product.product_type);
   add("Diffuser type", product.diffuser_type);
-  add("Finishes", product.finishes.join(", "));
+  if (product.finishes.length > 0 && product.finishes.every(isFinishCode)) {
+    // Coded-only finishes are labeled at the source: the strongest guard
+    // against the model "helpfully" expanding BK or AB into a color name.
+    add(
+      "Finish codes (internal codes with no stated color or material; NEVER expand or guess what they stand for)",
+      product.finishes.join(", "),
+    );
+  } else {
+    add("Finishes", product.finishes.join(", "));
+  }
   add(
     "Sizes (L x W x H, inches)",
     product.sizes.map(sizeLine).join("; "),
@@ -174,6 +224,7 @@ export interface DescriptionPromptInput {
 const DESCRIPTION_RULES = [
   "Write about 75 words of flowing catalog prose. Never invent specifications: use only the facts in the fact sheet. No spec-dump sentences; weave the facts into the prose.",
   "If a fact-sheet value is a bare internal code a shopper would not understand (for example a finish given only as a number), leave it out rather than echoing the code.",
+  "Never expand or guess what a finish or material code stands for, even when it seems obvious: short codes like BK, AB or WT (or bare numbers) must NEVER be turned into color or material names, because the same code means different things across product lines. When finishes are given only as codes, describe them generically, for example \"offered in two finishes\" or \"in a single finish\". Name a specific color or material ONLY when the fact sheet spells it out in words.",
   "Do not use em dashes. When referring to the company, always write WAC Group, never WAC alone.",
 ].join("\n");
 
@@ -258,7 +309,7 @@ export function buildMetaPrompt(input: MetaPromptInput): BuiltPrompt {
   ];
   if (input.avoidMetas.length > 0) {
     userParts.push(
-      `Recently used meta descriptions on sibling pages (write something clearly different): ${input.avoidMetas
+      `Recently used meta descriptions on sibling pages, or their opening verbs (write something clearly different and start with a DIFFERENT verb): ${input.avoidMetas
         .map((m) => `"${m}"`)
         .join(" | ")}`,
     );

@@ -159,6 +159,25 @@ describe("applyContentApprove (row-level approval)", () => {
       applyContentApprove(row(), { description: "   " }).error,
     ).toContain("nothing to approve");
   });
+
+  it("rejects approve-with-edits on an already approved row (reopen lock)", () => {
+    const approvedRow = row({ status: "approved" });
+    for (const patch of [
+      { description: "sneaked edit" },
+      { meta: "sneaked meta" },
+      { title_override: "sneaked title" },
+    ]) {
+      const res = applyContentApprove(approvedRow, patch);
+      expect(res.error).toContain("reopen");
+      expect(res.fields).toEqual({});
+    }
+  });
+
+  it("a plain re-approve of an approved row stays a harmless no-op", () => {
+    const { fields, error } = applyContentApprove(row({ status: "approved" }), {});
+    expect(error).toBeUndefined();
+    expect(fields).toEqual({ status: "approved" });
+  });
 });
 
 describe("pickVoiceProfile", () => {

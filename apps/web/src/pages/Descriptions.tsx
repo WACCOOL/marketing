@@ -75,6 +75,7 @@ interface GenResult {
   skipped?: boolean;
   error?: string;
   opening?: string;
+  metaOpening?: string;
   content?: ContentRow;
 }
 
@@ -561,11 +562,14 @@ export function Descriptions() {
 
   /**
    * Client-driven chunk loop (plan decision 7): 6 ids per request, openings
-   * threaded across chunks so a long run stays self-diversifying, per-row
-   * spinner via `inflight`, "Stop after this batch" between chunks. Approved
-   * rows are excluded client-side (the server enforces the same skip).
+   * (and meta opening verbs) threaded across chunks so a long run stays
+   * self-diversifying, per-row spinner via `inflight`, "Stop after this
+   * batch" between chunks. Approved rows are excluded client-side (the
+   * server enforces the same skip). Batch runs never overwrite manual edits
+   * (the server skips those rows per-id); only the per-row Regenerate button
+   * opts into `overwriteEdits` after an explicit confirm.
    */
-  async function runGenerate(ids: string[]) {
+  async function runGenerate(ids: string[], opts?: { overwriteEdits?: boolean }) {
     const targets = rows.filter((r) => ids.includes(r.id));
     const eligible = targets.filter((r) => statusOf(r) !== "approved");
     const excluded = targets.length - eligible.length;
@@ -584,6 +588,7 @@ export function Descriptions() {
     setGenNotice(null);
     const errors: { id: string; name: string; error: string }[] = [];
     const openings: string[] = [];
+    const metaOpenings: string[] = [];
     let done = 0;
     const CHUNK = 6;
     const note = (extra = "") =>
@@ -606,6 +611,8 @@ export function Descriptions() {
               // The server also mixes in the 8 most recent DB openings; this
               // carries the CURRENT run across request boundaries (≤24).
               priorOpenings: openings.slice(-24),
+              priorMetaOpenings: metaOpenings.slice(-24),
+              overwriteEdits: opts?.overwriteEdits ?? false,
             }),
           },
         );
@@ -615,6 +622,7 @@ export function Descriptions() {
             updateContent(result.id, result.content);
             done++;
             if (result.opening) openings.push(result.opening);
+            if (result.metaOpening) metaOpenings.push(result.metaOpening);
           } else {
             errors.push({
               id: result.id,
@@ -1020,7 +1028,24 @@ export function Descriptions() {
                             }
                             onUnassign={(imageId) => void assignTrayImage(imageId, null)}
                             onContent={(content) => updateContent(r.id, content)}
-                            onGenerate={() => void runGenerate([r.id])}
+                            onGenerate={() => {
+                              // Per-row Regenerate opts into overwriting
+                              // manual edits, but only after an explicit
+                              // confirm when edits actually exist.
+                              const hasEdits = !!(
+                                r.content?.description_final ||
+                                r.content?.meta_final
+                              );
+                              if (
+                                hasEdits &&
+                                !confirm(
+                                  "This will replace your edited text with fresh AI copy. Continue?",
+                                )
+                              ) {
+                                return;
+                              }
+                              void runGenerate([r.id], { overwriteEdits: true });
+                            }}
                             generating={genBusy || inflight.has(r.id)}
                           />
                         </td>

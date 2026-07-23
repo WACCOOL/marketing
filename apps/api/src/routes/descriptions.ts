@@ -13,6 +13,7 @@ import {
   buildDescriptionPrompt,
   buildMetaPrompt,
   buildSupplementOverlay,
+  clampMetaDescription,
   clearFeatureOverlay,
   computeCommitDiff,
   contentRowEdited,
@@ -26,7 +27,6 @@ import {
   slugKey,
   structureSeed,
   titleFor,
-  truncateAtWord,
   type DescContentStatus,
   type DescMasterSlot,
   type DescSlot,
@@ -608,6 +608,19 @@ export function applyContentApprove(
   } | null,
   patch: Pick<ContentPatch, "title_override" | "description" | "meta">,
 ): { fields: Record<string, string | null>; error?: string } {
+  const hasEdits =
+    patch.title_override !== undefined ||
+    patch.description !== undefined ||
+    patch.meta !== undefined;
+  if (current?.status === "approved" && hasEdits) {
+    // Approve-with-edits must not bypass the approved lock: an already
+    // approved row only changes after an explicit reopen. A plain re-approve
+    // (no fields) stays a harmless no-op.
+    return {
+      fields: {},
+      error: "this row is already approved; reopen it before editing",
+    };
+  }
   const fields: Record<string, string | null> = {};
   if (patch.title_override !== undefined) {
     fields.title_override = norm(patch.title_override);
@@ -772,6 +785,14 @@ const GenerateSchema = z.object({
   /** Openings produced by earlier chunks of the same client run, threaded
    * through so a 40-product batch stays self-diversifying across requests. */
   priorOpenings: z.array(z.string().max(200)).max(24).default([]),
+  /** Opening words of metas from earlier chunks — same threading, so meta
+   * verbs keep varying across request boundaries. */
+  priorMetaOpenings: z.array(z.string().max(60)).max(24).default([]),
+  /** False (batch default): rows holding manual edits (description_final or
+   * meta_final) are skipped per-id so a batch never silently buries human
+   * work. True (per-row Regenerate after an explicit confirm): the edits are
+   * CLEARED so the fresh AI copy is actually visible (final ?? ai). */
+  overwriteEdits: z.boolean().default(false),
 });
 
 const RegenerateMetaSchema = z.object({ id: z.string().uuid() });
@@ -790,7 +811,14 @@ interface GenerateResult {
   /** firstSentence of the generated description — the client threads these
    * into the next chunk's priorOpenings. */
   opening?: string;
+  /** First word of the generated meta — threads into priorMetaOpenings. */
+  metaOpening?: string;
   content?: ContentRow;
+}
+
+/** First whitespace-delimited word (meta opening verb) — avoid-list entry. */
+function firstWord(text: string): string {
+  return text.trim().split(/\s+/)[0] ?? "";
 }
 
 /**
@@ -845,10 +873,13 @@ function effectiveTitle(product: ProductRow, content: ContentRow | null): string
 }
 
 /**
- * One meta call, clamped to the docx range: truncateAtWord at 160, and one
- * retry with an explicit length complaint when the first attempt lands under
- * the 50-char floor (the result is persisted either way — the UI counter
- * flags anything still out of range).
+ * One meta call with a single corrective retry in EITHER direction: under the
+ * 50-char floor → ask for a fuller meta; over the 160 cap → ask for a
+ * shorter one with complete sentences. Whatever remains over-length after the
+ * retry is clamped by clampMetaDescription (last complete sentence that
+ * fits, else word-boundary cut with no dangling conjunction) so a persisted
+ * meta never ends mid-fragment. Returns the built prompt too, so the caller
+ * can fold it into prompt_hash.
  */
 async function generateMetaText(
   env: Ctx["env"],
@@ -856,7 +887,7 @@ async function generateMetaText(
   title: string,
   description: string,
   avoidMetas: readonly string[],
-): Promise<string> {
+): Promise<{ meta: string; prompt: ReturnType<typeof buildMetaPrompt> }> {
   const prompt = buildMetaPrompt({ product, title, description, avoidMetas });
   const opts = {
     system: prompt.system,
@@ -864,39 +895,53 @@ async function generateMetaText(
     model: claudeModel(env),
     maxTokens: 250,
   };
-  let meta = truncateAtWord(claudeText(await claudeMessages(env, opts)), DESC_META_RANGE.max);
+  const retryWith = async (complaint: string): Promise<string> =>
+    claudeText(
+      await claudeMessages(env, {
+        ...opts,
+        messages: [
+          { role: "user" as const, content: `${prompt.user}\n\n${complaint}` },
+        ],
+      }),
+    );
+
+  let meta = claudeText(await claudeMessages(env, opts));
   if (meta.length < DESC_META_RANGE.min) {
-    const retry = await claudeMessages(env, {
-      ...opts,
-      messages: [
-        {
-          role: "user" as const,
-          content: `${prompt.user}\n\nYour previous attempt ("${meta}") was under ${DESC_META_RANGE.min} characters. Write a fuller meta description between ${DESC_META_RANGE.min} and ${DESC_META_RANGE.max} characters.`,
-        },
-      ],
-    });
-    const second = truncateAtWord(claudeText(retry), DESC_META_RANGE.max);
+    const second = await retryWith(
+      `Your previous attempt ("${meta}") was under ${DESC_META_RANGE.min} characters. Write a fuller meta description between ${DESC_META_RANGE.min} and ${DESC_META_RANGE.max} characters.`,
+    );
     if (second.length >= meta.length) meta = second;
+  } else if (meta.length > DESC_META_RANGE.max) {
+    const second = await retryWith(
+      `Your previous attempt ("${meta}") was too long at ${meta.length} characters. Shorten it to under ${DESC_META_RANGE.max} characters, complete sentences only.`,
+    );
+    if (second && second.length < meta.length) meta = second;
   }
-  return meta;
+  return { meta: clampMetaDescription(meta), prompt };
 }
 
-/** Upsert the generated copy by (slot, content_key), racing-insert safe. */
+/**
+ * Upsert the generated copy by (slot, content_key), racing-insert safe.
+ * Updates carry a `.neq(status, approved)` guard so a row approved BETWEEN
+ * the eligibility check and this write is never clobbered (TOCTOU); a null
+ * return means exactly that — the caller reports it as an approved-skip.
+ */
 async function persistGenerated(
   sb: ReturnType<typeof userSupabase>,
   product: ProductRow,
   current: ContentRow | null,
   fields: Record<string, string | null>,
-): Promise<ContentRow> {
+): Promise<ContentRow | null> {
   if (current) {
     const { data, error } = await sb
       .from("desc_content")
       .update(fields)
       .eq("id", current.id)
+      .neq("status", "approved")
       .select(CONTENT_COLS)
-      .single();
+      .maybeSingle();
     if (error) throw new Error(error.message);
-    return data as ContentRow;
+    return (data as ContentRow | null) ?? null;
   }
   const { data, error } = await sb
     .from("desc_content")
@@ -909,22 +954,24 @@ async function persistGenerated(
       .update(fields)
       .eq("slot", product.slot)
       .eq("content_key", product.content_key)
+      .neq("status", "approved")
       .select(CONTENT_COLS)
-      .single();
+      .maybeSingle();
     if (rErr) throw new Error(rErr.message);
-    return updated as ContentRow;
+    return (updated as ContentRow | null) ?? null;
   }
   if (error) throw new Error(error.message);
   return data as ContentRow;
 }
 
-/** The 8 most recent generated openings in the product's brand+collection.
- * desc_content has no FK to desc_products, so keys resolve through the
- * sibling products' (slot, content_key) pairs. */
+/** The 8 most recent generated openings (description first sentences) and
+ * meta opening words in the product's brand+collection. desc_content has no
+ * FK to desc_products, so keys resolve through the sibling products'
+ * (slot, content_key) pairs. */
 async function recentSiblingOpenings(
   sb: ReturnType<typeof userSupabase>,
   product: ProductRow,
-): Promise<string[]> {
+): Promise<{ openings: string[]; metaOpenings: string[] }> {
   const { data: keyRows, error: kErr } = await sb
     .from("desc_products")
     .select("content_key")
@@ -936,20 +983,26 @@ async function recentSiblingOpenings(
   const keys = ((keyRows ?? []) as { content_key: string }[]).map(
     (r) => r.content_key,
   );
-  if (keys.length === 0) return [];
+  if (keys.length === 0) return { openings: [], metaOpenings: [] };
   const { data: recent, error: rErr } = await sb
     .from("desc_content")
-    .select("description_ai, generated_at")
+    .select("description_ai, meta_ai, generated_at")
     .eq("slot", product.slot)
     .in("content_key", keys)
-    .not("description_ai", "is", null)
     .not("generated_at", "is", null)
     .order("generated_at", { ascending: false })
     .limit(8);
   if (rErr) throw new Error(rErr.message);
-  return ((recent ?? []) as { description_ai: string | null }[])
-    .map((r) => firstSentence(r.description_ai ?? ""))
-    .filter(Boolean);
+  const rows = (recent ?? []) as {
+    description_ai: string | null;
+    meta_ai: string | null;
+  }[];
+  return {
+    openings: rows
+      .map((r) => firstSentence(r.description_ai ?? ""))
+      .filter(Boolean),
+    metaOpenings: rows.map((r) => firstWord(r.meta_ai ?? "")).filter(Boolean),
+  };
 }
 
 descriptionsRoutes.post("/generate", async (c) => {
@@ -1007,6 +1060,21 @@ descriptionsRoutes.post("/generate", async (c) => {
         });
         continue;
       }
+      const hasManualEdits = !!(
+        current?.description_final || current?.meta_final
+      );
+      if (hasManualEdits && !parsed.data.overwriteEdits) {
+        // A batch run must never bury human edits under fresh AI text (the
+        // UI shows final ?? ai, so the new copy would be invisible anyway).
+        // The per-row Regenerate button opts in via overwriteEdits.
+        results.push({
+          id,
+          ok: false,
+          skipped: true,
+          error: "has manual edits; use the row's Regenerate to overwrite them",
+        });
+        continue;
+      }
 
       const profile = pickVoiceProfile(
         profiles,
@@ -1029,7 +1097,8 @@ descriptionsRoutes.post("/generate", async (c) => {
         const { data: refRows, error: refErr } = await sb
           .from("products")
           .select("sku, name, raw_json")
-          .in("sku", profile.reference_skus.slice(0, 5));
+          // PIM SKUs are uppercase; legacy profiles may hold pasted lowercase.
+          .in("sku", profile.reference_skus.slice(0, 5).map((s) => s.toUpperCase()));
         if (refErr) throw new Error(refErr.message);
         referenceCopy = (
           (refRows ?? []) as {
@@ -1049,12 +1118,19 @@ descriptionsRoutes.post("/generate", async (c) => {
           .filter((r) => !!r.copy);
       }
 
-      const dbOpenings = await recentSiblingOpenings(sb, product);
+      const siblings = await recentSiblingOpenings(sb, product);
       const avoidOpenings = [
         ...new Set([
-          ...dbOpenings,
+          ...siblings.openings,
           ...parsed.data.priorOpenings,
           ...runOpenings,
+        ]),
+      ].slice(-32);
+      const avoidMetas = [
+        ...new Set([
+          ...siblings.metaOpenings,
+          ...parsed.data.priorMetaOpenings,
+          ...runMetas,
         ]),
       ].slice(-32);
 
@@ -1079,30 +1155,56 @@ descriptionsRoutes.post("/generate", async (c) => {
       if (!description) throw new Error("Claude returned an empty description");
 
       const title = effectiveTitle(product, current);
-      const meta = await generateMetaText(
+      const { meta, prompt: metaPrompt } = await generateMetaText(
         c.env,
         product,
         title,
         description,
-        runMetas,
+        avoidMetas,
       );
 
+      // The hash covers BOTH assembled prompts, so the stored hash always
+      // matches the stored description AND meta.
       const promptHash = await sha256HexText(
-        JSON.stringify({ system: prompt.system, user: prompt.user }),
+        JSON.stringify({ description: prompt, meta: metaPrompt }),
       );
-      const saved = await persistGenerated(sb, product, current, {
+      const fields: Record<string, string | null> = {
         description_ai: description,
         meta_ai: meta,
         status: "generated",
         model,
         prompt_hash: promptHash,
         generated_at: new Date().toISOString(),
-      });
+      };
+      if (parsed.data.overwriteEdits && hasManualEdits) {
+        // The row's editor confirmed the overwrite: clear the stale human
+        // edits so the fresh AI copy is what final ?? ai resolves to.
+        fields.description_final = null;
+        fields.meta_final = null;
+      }
+      const saved = await persistGenerated(sb, product, current, fields);
+      if (!saved) {
+        results.push({
+          id,
+          ok: false,
+          skipped: true,
+          error: "approved while generating; nothing was overwritten",
+        });
+        continue;
+      }
 
       const opening = firstSentence(description);
       runOpenings.push(opening);
       runMetas.push(meta);
-      results.push({ id, ok: true, description, meta, opening, content: saved });
+      results.push({
+        id,
+        ok: true,
+        description,
+        meta,
+        opening,
+        metaOpening: firstWord(meta),
+        content: saved,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       results.push({ id, ok: false, error: msg });
@@ -1161,21 +1263,32 @@ descriptionsRoutes.post("/regenerate-meta", async (c) => {
   }
 
   try {
-    const meta = await generateMetaText(
+    // Sibling meta opening verbs keep single-row regenerations from echoing
+    // the collection's recent metas.
+    const siblings = await recentSiblingOpenings(sb, product);
+    const { meta, prompt: metaPrompt } = await generateMetaText(
       c.env,
       product,
       effectiveTitle(product, current),
       description,
-      [],
+      siblings.metaOpenings,
     );
     const fields: Record<string, string | null> = {
       meta_ai: meta,
       model: claudeModel(c.env),
+      // Meta-only regeneration: the stored hash must match the stored meta.
+      prompt_hash: await sha256HexText(JSON.stringify({ meta: metaPrompt })),
       generated_at: new Date().toISOString(),
     };
     // A none-status row becomes generated; edited/generated statuses stay.
     if (!current || current.status === "none") fields.status = "generated";
     const saved = await persistGenerated(sb, product, current, fields);
+    if (!saved) {
+      return c.json(
+        { error: "this row was approved while generating; reopen it first" },
+        409,
+      );
+    }
     return c.json({ content: saved, meta });
   } catch (e) {
     return c.json(
@@ -1344,7 +1457,11 @@ descriptionsRoutes.put("/voice/:id", async (c) => {
     .update({
       prompt: parsed.data.prompt,
       voice_guidance: parsed.data.voice_guidance,
-      reference_skus: dedupSkus(parsed.data.reference_skus),
+      // Normalized to uppercase (PIM SKUs are uppercase) so generation-time
+      // romance lookups always resolve, then de-duped.
+      reference_skus: dedupSkus(
+        parsed.data.reference_skus.map((s) => s.toUpperCase()),
+      ),
       updated_by: c.get("user").id,
     })
     .eq("id", c.req.param("id"))
@@ -1454,7 +1571,8 @@ descriptionsRoutes.post("/voice/derive", async (c) => {
     const { data: refRows, error: rErr } = await sb
       .from("products")
       .select("sku, name, raw_json")
-      .in("sku", profile.reference_skus.slice(0, 5));
+      // PIM SKUs are uppercase; legacy profiles may hold pasted lowercase.
+      .in("sku", profile.reference_skus.slice(0, 5).map((s) => s.toUpperCase()));
     if (rErr) return c.json({ error: rErr.message }, 500);
     pimRows = (refRows ?? []) as PimRow[];
   }
