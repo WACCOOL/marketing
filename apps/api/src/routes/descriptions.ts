@@ -3,6 +3,7 @@ import type { Context } from "hono";
 import { z } from "zod";
 import {
   DESC_SLOTS,
+  DESC_VOICE_DEFAULTS,
   DescImageKeySchema,
   ImportPayloadSchema,
   MASTER_SUPPLEMENT,
@@ -12,17 +13,20 @@ import {
   clearFeatureOverlay,
   computeCommitDiff,
   contentRowEdited,
+  extractExistingCopy,
   isDescMasterSlot,
   isDescSlot,
   isDescSupplementSlot,
   matchSupplementUnits,
   overlayFeatures,
   slugKey,
+  type DescContentStatus,
   type DescMasterSlot,
   type DescSlot,
   type DescSupplementSlot,
   type ParsedProduct,
 } from "@wac/shared";
+import { anthropicConfigured, claudeMessages, claudeModel } from "../anthropic.js";
 import type { AppBindings } from "../auth.js";
 import { requireAuth, requireFeature } from "../auth.js";
 import { emailsForUserIds, serviceSupabase, userSupabase } from "../supabase.js";
@@ -519,6 +523,418 @@ descriptionsRoutes.patch("/images/:id", async (c) => {
     .single();
   if (uerr) return c.json({ error: uerr.message }, 500);
   return c.json({ image: updated });
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /content/:target — save copy fields (Stage 3: title override; the
+// route already accepts description/meta so the Stage 4 editors reuse it).
+// desc_content rows are created lazily: a product may have no content row
+// until its first save, so this endpoint upserts by (slot, content_key).
+// ---------------------------------------------------------------------------
+
+const ContentPatchSchema = z.object({
+  action: z.enum(["save", "approve", "reopen"]),
+  title_override: z.string().max(300).nullable().optional(),
+  description: z.string().max(6000).nullable().optional(),
+  meta: z.string().max(600).nullable().optional(),
+});
+type ContentPatch = z.infer<typeof ContentPatchSchema>;
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Pure field mapper for `action: "save"` (unit-tested): trims values, folds
+ * empty strings to null, and bumps an untouched/generated row to `in_review`
+ * only when the description or meta actually changed by hand. A title
+ * override on its own never moves the status — status tracks the description
+ * lifecycle (plan decision 11).
+ */
+export function applyContentSave(
+  current: { status: DescContentStatus } | null,
+  patch: Pick<ContentPatch, "title_override" | "description" | "meta">,
+): { fields: Record<string, string | null>; error?: string } {
+  const norm = (v: string | null | undefined): string | null => {
+    const t = v?.trim();
+    return t ? t : null;
+  };
+  const fields: Record<string, string | null> = {};
+  if (patch.title_override !== undefined) {
+    fields.title_override = norm(patch.title_override);
+  }
+  if (patch.description !== undefined) {
+    fields.description_final = norm(patch.description);
+  }
+  if (patch.meta !== undefined) {
+    fields.meta_final = norm(patch.meta);
+  }
+  if (Object.keys(fields).length === 0) {
+    return { fields, error: "nothing to save" };
+  }
+  const status = current?.status ?? "none";
+  const editedCopy = !!(fields.description_final || fields.meta_final);
+  if (editedCopy && (status === "none" || status === "generated")) {
+    fields.status = "in_review";
+  }
+  return { fields };
+}
+
+descriptionsRoutes.patch("/content/:target", async (c) => {
+  const parsed = ContentPatchSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  if (parsed.data.action !== "save") {
+    // Approve/reopen belong to the generation stage's review workflow.
+    return c.json({ error: "approve and reopen arrive with the generation stage" }, 400);
+  }
+
+  const target = c.req.param("target");
+  const sb = userSupabase(c.env, c.get("jwt"));
+
+  // Resolve the target to (slot, content_key): a desc_content id, a
+  // desc_products id, or a bare content_key (must be unambiguous across
+  // slots — keys are content-derived, so cross-slot collisions are possible
+  // in principle).
+  let slot: string | null = null;
+  let contentKey: string | null = null;
+  if (UUID_RE.test(target)) {
+    const { data: byContent, error: cErr } = await sb
+      .from("desc_content")
+      .select("slot, content_key")
+      .eq("id", target)
+      .maybeSingle();
+    if (cErr) return c.json({ error: cErr.message }, 500);
+    if (byContent) {
+      slot = (byContent as { slot: string }).slot;
+      contentKey = (byContent as { content_key: string }).content_key;
+    } else {
+      const { data: byProduct, error: pErr } = await sb
+        .from("desc_products")
+        .select("slot, content_key")
+        .eq("id", target)
+        .maybeSingle();
+      if (pErr) return c.json({ error: pErr.message }, 500);
+      if (byProduct) {
+        slot = (byProduct as { slot: string }).slot;
+        contentKey = (byProduct as { content_key: string }).content_key;
+      }
+    }
+  } else {
+    const { data: byKey, error: kErr } = await sb
+      .from("desc_products")
+      .select("slot, content_key")
+      .eq("content_key", target)
+      .limit(2);
+    if (kErr) return c.json({ error: kErr.message }, 500);
+    const hits = (byKey ?? []) as { slot: string; content_key: string }[];
+    if (hits.length > 1) {
+      return c.json(
+        { error: "content key exists in more than one slot; use the product id" },
+        400,
+      );
+    }
+    if (hits.length === 1) {
+      slot = hits[0]!.slot;
+      contentKey = hits[0]!.content_key;
+    }
+  }
+  if (!slot || !contentKey) return c.json({ error: "product not found" }, 404);
+
+  const { data: existing, error: exErr } = await sb
+    .from("desc_content")
+    .select(CONTENT_COLS)
+    .eq("slot", slot)
+    .eq("content_key", contentKey)
+    .maybeSingle();
+  if (exErr) return c.json({ error: exErr.message }, 500);
+  const current = existing as ContentRow | null;
+
+  const { fields, error: saveErr } = applyContentSave(current, parsed.data);
+  if (saveErr) return c.json({ error: saveErr }, 400);
+
+  if (current) {
+    const { data: updated, error: uErr } = await sb
+      .from("desc_content")
+      .update(fields)
+      .eq("id", current.id)
+      .select(CONTENT_COLS)
+      .single();
+    if (uErr) return c.json({ error: uErr.message }, 500);
+    return c.json({ content: updated });
+  }
+  const insertRow = { slot, content_key: contentKey, status: "none", ...fields };
+  const { data: inserted, error: iErr } = await sb
+    .from("desc_content")
+    .insert(insertRow)
+    .select(CONTENT_COLS)
+    .single();
+  if (iErr && iErr.code === "23505") {
+    // Lost a create race — fall back to updating the row that beat us.
+    const { data: updated, error: rErr } = await sb
+      .from("desc_content")
+      .update(fields)
+      .eq("slot", slot)
+      .eq("content_key", contentKey)
+      .select(CONTENT_COLS)
+      .single();
+    if (rErr) return c.json({ error: rErr.message }, 500);
+    return c.json({ content: updated });
+  }
+  if (iErr) return c.json({ error: iErr.message }, 500);
+  return c.json({ content: inserted }, 201);
+});
+
+// ---------------------------------------------------------------------------
+// Voice profiles — GET /voice, PUT /voice/:id, POST /voice/:id/reset,
+// POST /voice/derive (draft only; NEVER auto-saves)
+// ---------------------------------------------------------------------------
+
+const VOICE_COLS =
+  "id, brand, collection, prompt, voice_guidance, reference_skus, updated_by, updated_at";
+
+interface VoiceRow {
+  id: string;
+  brand: string;
+  collection: string;
+  prompt: string;
+  voice_guidance: string;
+  reference_skus: string[];
+  updated_by: string | null;
+  updated_at: string;
+}
+
+/** Tab order = the seeded defaults order (unknown rows sort last). */
+const VOICE_ORDER = new Map(
+  DESC_VOICE_DEFAULTS.map((d, i) => [`${d.brand}|${d.collection}`, i]),
+);
+
+const VoicePutSchema = z.object({
+  prompt: z.string().trim().min(1, "prompt must not be empty").max(8000),
+  voice_guidance: z.string().trim().max(8000).default(""),
+  reference_skus: z
+    .array(z.string().trim().min(1, "reference SKUs must not be empty").max(60))
+    .max(5, "at most 5 reference products"),
+});
+
+function voiceJson(row: VoiceRow, email: string | null) {
+  return {
+    id: row.id,
+    brand: row.brand,
+    collection: row.collection,
+    prompt: row.prompt,
+    voice_guidance: row.voice_guidance,
+    reference_skus: row.reference_skus,
+    updated_at: row.updated_at,
+    updated_by_email: email,
+  };
+}
+
+descriptionsRoutes.get("/voice", async (c) => {
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { data, error } = await sb
+    .from("desc_voice_profiles")
+    .select(VOICE_COLS)
+    .limit(50);
+  if (error) return c.json({ error: error.message }, 500);
+  const rows = ((data ?? []) as VoiceRow[]).slice().sort((a, b) => {
+    const ai = VOICE_ORDER.get(`${a.brand}|${a.collection}`) ?? 99;
+    const bi = VOICE_ORDER.get(`${b.brand}|${b.collection}`) ?? 99;
+    return ai - bi || a.brand.localeCompare(b.brand) || a.collection.localeCompare(b.collection);
+  });
+  const emails = await emailsForUserIds(
+    c.env,
+    rows.map((r) => r.updated_by ?? "").filter(Boolean),
+  );
+  return c.json({
+    profiles: rows.map((r) =>
+      voiceJson(r, r.updated_by ? (emails.get(r.updated_by) ?? null) : null),
+    ),
+  });
+});
+
+descriptionsRoutes.put("/voice/:id", async (c) => {
+  const parsed = VoicePutSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { data, error } = await sb
+    .from("desc_voice_profiles")
+    .update({
+      prompt: parsed.data.prompt,
+      voice_guidance: parsed.data.voice_guidance,
+      reference_skus: parsed.data.reference_skus,
+      updated_by: c.get("user").id,
+    })
+    .eq("id", c.req.param("id"))
+    .select(VOICE_COLS)
+    .maybeSingle();
+  if (error) return c.json({ error: error.message }, 500);
+  if (!data) return c.json({ error: "voice profile not found" }, 404);
+  return c.json({ profile: voiceJson(data as VoiceRow, c.get("user").email) });
+});
+
+descriptionsRoutes.post("/voice/:id/reset", async (c) => {
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { data: row, error } = await sb
+    .from("desc_voice_profiles")
+    .select(VOICE_COLS)
+    .eq("id", c.req.param("id"))
+    .maybeSingle();
+  if (error) return c.json({ error: error.message }, 500);
+  if (!row) return c.json({ error: "voice profile not found" }, 404);
+  const profile = row as VoiceRow;
+  const seed = DESC_VOICE_DEFAULTS.find(
+    (d) => d.brand === profile.brand && d.collection === profile.collection,
+  );
+  if (!seed) {
+    return c.json({ error: "this profile has no seeded default" }, 400);
+  }
+  // Reset restores the seeded TEXT only; the picked reference products are
+  // the editor's and survive a text reset.
+  const { data: updated, error: uErr } = await sb
+    .from("desc_voice_profiles")
+    .update({
+      prompt: seed.prompt,
+      voice_guidance: seed.voice_guidance,
+      updated_by: c.get("user").id,
+    })
+    .eq("id", profile.id)
+    .select(VOICE_COLS)
+    .single();
+  if (uErr) return c.json({ error: uErr.message }, 500);
+  return c.json({ profile: voiceJson(updated as VoiceRow, c.get("user").email) });
+});
+
+const VoiceDeriveSchema = z.object({
+  brand: z.string().trim().min(1).max(60),
+  collection: z.string().trim().min(1).max(60),
+});
+
+/** ilike pattern matching a voice-profile brand against the PIM's brand
+ * strings (which drift: "WAC", "dwelLED", "Modern Forms Fans"…). */
+export function brandLikePattern(brand: string): string {
+  const word = brand.trim().split(/\s+/)[0] ?? brand;
+  return `%${word}%`;
+}
+
+/**
+ * Pure prompt builder for voice derivation (unit-tested): asks for a ~120
+ * word voice profile from the references' existing romance copy. Draft only —
+ * the caller returns it to the editor and never persists it.
+ */
+export function buildVoiceDeriveMessages(
+  brand: string,
+  collection: string,
+  refs: { sku: string; name: string; copy: string }[],
+): { system: string; user: string } {
+  const system =
+    "You are a senior brand copywriter at WAC Group. You analyze existing product copy and describe the brand voice so another writer can match it.";
+  const blocks = refs
+    .map((r) => `${r.name} (${r.sku}):\n${r.copy.slice(0, 1200)}`)
+    .join("\n\n");
+  const user = [
+    `Existing ${brand} ${collection} product copy:`,
+    blocks,
+    "Describe this brand's copywriting voice in about 120 words: vocabulary, sentence rhythm, and what it never says. Write plain-text guidance addressed to a copywriter, no headings or lists. Do not use em dashes. When referring to the company, always write WAC Group, never WAC alone.",
+  ].join("\n\n");
+  return { system, user };
+}
+
+descriptionsRoutes.post("/voice/derive", async (c) => {
+  const parsed = VoiceDeriveSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  if (!anthropicConfigured(c.env)) {
+    return c.json(
+      { error: "Claude is not configured (set the ANTHROPIC_API_KEY secret)" },
+      503,
+    );
+  }
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { data: row, error } = await sb
+    .from("desc_voice_profiles")
+    .select(VOICE_COLS)
+    .eq("brand", parsed.data.brand)
+    .eq("collection", parsed.data.collection)
+    .maybeSingle();
+  if (error) return c.json({ error: error.message }, 500);
+  if (!row) return c.json({ error: "voice profile not found" }, 404);
+  const profile = row as VoiceRow;
+
+  interface PimRow {
+    sku: string;
+    name: string;
+    raw_json: Record<string, unknown> | null;
+  }
+  let pimRows: PimRow[] = [];
+  if (profile.reference_skus.length > 0) {
+    const { data: refRows, error: rErr } = await sb
+      .from("products")
+      .select("sku, name, raw_json")
+      .in("sku", profile.reference_skus.slice(0, 5));
+    if (rErr) return c.json({ error: rErr.message }, 500);
+    pimRows = (refRows ?? []) as PimRow[];
+  }
+  let usedFallback = false;
+  if (pimRows.length === 0) {
+    // No saved references (or none resolve): fall back to the most recently
+    // synced same-brand products that carry romance copy.
+    usedFallback = true;
+    const { data: fbRows, error: fErr } = await sb
+      .from("products")
+      .select("sku, name, raw_json")
+      .ilike("brand", brandLikePattern(profile.brand))
+      .order("synced_at", { ascending: false })
+      .limit(40);
+    if (fErr) return c.json({ error: fErr.message }, 500);
+    pimRows = (fbRows ?? []) as PimRow[];
+  }
+
+  const refs = pimRows
+    .map((p) => ({
+      sku: p.sku,
+      name: p.name,
+      copy: extractExistingCopy(p.raw_json ?? {}, c.env.SALES_LAYER_ROMANCE_FIELD),
+    }))
+    .filter((r): r is { sku: string; name: string; copy: string } => !!r.copy)
+    .slice(0, 8);
+  if (refs.length === 0) {
+    return c.json(
+      {
+        error:
+          "No existing copy found for these references. Pick reference products that already have descriptions, save, and try again.",
+      },
+      400,
+    );
+  }
+
+  const { system, user } = buildVoiceDeriveMessages(
+    profile.brand,
+    profile.collection,
+    refs,
+  );
+  const res = await claudeMessages(c.env, {
+    system: [{ type: "text", text: system }],
+    messages: [{ role: "user", content: user }],
+    model: claudeModel(c.env),
+    maxTokens: 500,
+  });
+  const draft = res.content
+    .filter((b): b is { type: "text"; text: string } => b.type === "text")
+    .map((b) => b.text)
+    .join("")
+    .trim();
+  if (!draft) return c.json({ error: "Claude returned an empty draft" }, 502);
+  // Draft only: the editor reviews it in the guidance textarea and saves
+  // explicitly — this endpoint never writes to desc_voice_profiles.
+  return c.json({
+    draft,
+    reference_skus: refs.map((r) => r.sku),
+    used_fallback: usedFallback,
+  });
 });
 
 // ---------------------------------------------------------------------------
