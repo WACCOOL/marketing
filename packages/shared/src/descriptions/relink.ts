@@ -113,6 +113,26 @@ export function computeCommitDiff(
   return { added, updated, relinks, removed, orphaned, deletableContentKeys };
 }
 
+/**
+ * How many content rows carrying an actual description survive this commit:
+ * rows whose key stays attached to a product (the `updated` set) plus rows
+ * carried across a rename by the model-base relink. Drives the import
+ * summary's "descriptions kept on N products" line (Stage 5).
+ */
+export function countPreservedContent(
+  diff: Pick<CommitDiff, "updated" | "relinks">,
+  content: readonly { content_key: string; hasCopy: boolean }[],
+): number {
+  const withCopy = new Set(
+    content.filter((c) => c.hasCopy).map((c) => c.content_key),
+  );
+  const updated = new Set(diff.updated);
+  let kept = 0;
+  for (const key of withCopy) if (updated.has(key)) kept++;
+  for (const { from } of diff.relinks) if (withCopy.has(from)) kept++;
+  return kept;
+}
+
 /** Whether a content row holds human work worth preserving across imports. */
 export function contentRowEdited(row: {
   status: string;

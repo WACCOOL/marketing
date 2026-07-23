@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeCommitDiff,
   contentRowEdited,
+  countPreservedContent,
   type DiffContentRow,
   type DiffProduct,
 } from "./relink.js";
@@ -124,6 +125,33 @@ describe("computeCommitDiff", () => {
     );
     expect(diff.relinks).toHaveLength(1);
     expect(diff.orphaned).toHaveLength(1);
+  });
+});
+
+describe("countPreservedContent", () => {
+  it("counts copy-bearing rows that survive in place plus relinked rows", () => {
+    const kept = countPreservedContent(
+      {
+        updated: ["dweled:zalta", "dweled:kiglo"],
+        relinks: [{ from: "dweled:old", to: "dweled:new" }],
+      },
+      [
+        { content_key: "dweled:zalta", hasCopy: true }, // survives in place
+        { content_key: "dweled:kiglo", hasCopy: false }, // no copy → not counted
+        { content_key: "dweled:old", hasCopy: true }, // carried by relink
+        { content_key: "dweled:gone", hasCopy: true }, // orphaned → not kept
+      ],
+    );
+    expect(kept).toBe(2);
+  });
+
+  it("is zero with no content or no survivors", () => {
+    expect(countPreservedContent({ updated: [], relinks: [] }, [])).toBe(0);
+    expect(
+      countPreservedContent({ updated: ["a"], relinks: [] }, [
+        { content_key: "b", hasCopy: true },
+      ]),
+    ).toBe(0);
   });
 });
 
