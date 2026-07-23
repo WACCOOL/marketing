@@ -8,6 +8,7 @@ import {
 } from "react";
 import {
   DESC_MASTER_SLOTS,
+  DESC_META_RANGE,
   DESC_SLOT_LABELS,
   DESC_STATUS_LABELS,
   DESC_SUPPLEMENT_SLOTS,
@@ -36,10 +37,12 @@ import {
 } from "../lib/descriptions/importSupplement.js";
 
 /**
- * Descriptions (plan Stages 1–2): import the seasonal master lists and the
+ * Descriptions (plan Stages 1–4): import the seasonal master lists and the
  * supplemental deck/pdfs in the browser, review the grouped PPID table with
- * thumbnails, lightbox, expanded product panel and the Schonbek tray.
- * Generation, titles and export layer on in later stages.
+ * thumbnails, lightbox, expanded product panel and the Schonbek tray, then
+ * batch-generate descriptions + metas in each brand's voice and walk them
+ * through the none → generated → edited → approved review workflow.
+ * Export and orphan management layer on in Stage 5.
  */
 
 const XLSX_ACCEPT =
@@ -63,6 +66,16 @@ interface ContentRow {
   status: DescContentStatus;
   note: string | null;
   updated_at: string;
+}
+
+/** One per-product result from POST /generate. */
+interface GenResult {
+  id: string;
+  ok: boolean;
+  skipped?: boolean;
+  error?: string;
+  opening?: string;
+  content?: ContentRow;
 }
 
 interface ImageRow {
@@ -192,6 +205,32 @@ function formulaTitleFor(row: DescRow): string {
 /** Effective title: a saved override wins over the formula. */
 function effectiveTitle(row: DescRow): string {
   return row.content?.title_override ?? formulaTitleFor(row);
+}
+
+/** The effective description/meta shown everywhere: human edit wins. */
+function descriptionOf(row: DescRow): string | null {
+  return row.content?.description_final ?? row.content?.description_ai ?? null;
+}
+function metaOf(row: DescRow): string | null {
+  return row.content?.meta_final ?? row.content?.meta_ai ?? null;
+}
+
+/** Live meta character counter, colored against the 50-160 docx range. */
+function MetaCounter({ value }: { value: string }) {
+  const len = value.length;
+  const color =
+    len === 0
+      ? undefined
+      : len < DESC_META_RANGE.min
+        ? "var(--warn)"
+        : len > DESC_META_RANGE.max
+          ? "var(--bad)"
+          : "var(--good)";
+  return (
+    <span className="muted" style={{ fontSize: 11, color }}>
+      {len} / {DESC_META_RANGE.min}–{DESC_META_RANGE.max}
+    </span>
+  );
 }
 
 /** Green-in-range / amber-out-of-range length dot with the count on hover. */
@@ -397,6 +436,15 @@ export function Descriptions() {
   const selectAllRef = useRef<HTMLInputElement>(null);
   const voiceBtnRef = useRef<HTMLButtonElement>(null);
 
+  // Batch generation state (ProductInfo runGenerateBatch pattern).
+  const [genBusy, setGenBusy] = useState(false);
+  const [genNotice, setGenNotice] = useState<string | null>(null);
+  const [genErrors, setGenErrors] = useState<
+    { id: string; name: string; error: string }[]
+  >([]);
+  const [inflight, setInflight] = useState<Set<string>>(new Set());
+  const cancelRef = useRef(false);
+
   useEffect(() => {
     const t = setTimeout(() => setQd(q.trim().toLowerCase()), 150);
     return () => clearTimeout(t);
@@ -509,6 +557,133 @@ export function Descriptions() {
     setRows((prev) =>
       prev.map((r) => (r.id === rowId ? { ...r, content } : r)),
     );
+  }
+
+  /**
+   * Client-driven chunk loop (plan decision 7): 6 ids per request, openings
+   * threaded across chunks so a long run stays self-diversifying, per-row
+   * spinner via `inflight`, "Stop after this batch" between chunks. Approved
+   * rows are excluded client-side (the server enforces the same skip).
+   */
+  async function runGenerate(ids: string[]) {
+    const targets = rows.filter((r) => ids.includes(r.id));
+    const eligible = targets.filter((r) => statusOf(r) !== "approved");
+    const excluded = targets.length - eligible.length;
+    if (eligible.length === 0) {
+      setGenNotice(
+        targets.length > 0
+          ? "All selected rows are approved. Reopen them to regenerate."
+          : "Nothing selected.",
+      );
+      return;
+    }
+    cancelRef.current = false;
+    setGenBusy(true);
+    setGenErrors([]);
+    setErr(null);
+    setGenNotice(null);
+    const errors: { id: string; name: string; error: string }[] = [];
+    const openings: string[] = [];
+    let done = 0;
+    const CHUNK = 6;
+    const note = (extra = "") =>
+      setGenNotice(
+        `Generating descriptions… ${done} done, ${eligible.length - done - errors.length} remaining${
+          errors.length ? `, ${errors.length} failed` : ""
+        }${excluded ? ` (${excluded} approved excluded)` : ""}${extra}`,
+      );
+    try {
+      for (let i = 0; i < eligible.length; i += CHUNK) {
+        const chunk = eligible.slice(i, i + CHUNK);
+        setInflight(new Set(chunk.map((r) => r.id)));
+        note();
+        const res = await api<{ results: GenResult[] }>(
+          "/api/descriptions/generate",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              ids: chunk.map((r) => r.id),
+              // The server also mixes in the 8 most recent DB openings; this
+              // carries the CURRENT run across request boundaries (≤24).
+              priorOpenings: openings.slice(-24),
+            }),
+          },
+        );
+        for (const result of res.results) {
+          const row = chunk.find((x) => x.id === result.id);
+          if (result.ok && result.content) {
+            updateContent(result.id, result.content);
+            done++;
+            if (result.opening) openings.push(result.opening);
+          } else {
+            errors.push({
+              id: result.id,
+              name: row?.name ?? row?.content_key ?? result.id,
+              error:
+                result.error ?? (result.skipped ? "approved; skipped" : "failed"),
+            });
+          }
+        }
+        setGenErrors([...errors]);
+        if (cancelRef.current) break;
+      }
+      setGenNotice(
+        `${cancelRef.current ? "Stopped: " : ""}${done} generated${
+          errors.length ? `, ${errors.length} failed` : ""
+        }${excluded ? `, ${excluded} approved excluded` : ""}.`,
+      );
+    } catch (e) {
+      setErr(errorMessage(e));
+      setGenNotice(null);
+    } finally {
+      setInflight(new Set());
+      setGenBusy(false);
+    }
+  }
+
+  /** Rows currently eligible for bulk approval among the checked set. */
+  function approvableChecked(): DescRow[] {
+    return rows.filter((r) => {
+      if (!checked.has(r.id)) return false;
+      const st = statusOf(r);
+      return (st === "generated" || st === "in_review") && !!descriptionOf(r);
+    });
+  }
+
+  async function bulkApprove() {
+    const targets = approvableChecked();
+    if (targets.length === 0) {
+      setGenNotice(
+        "No selected rows are ready to approve (they need a description and must not be approved already).",
+      );
+      return;
+    }
+    if (
+      !confirm(
+        `Approve ${targets.length} product description${targets.length === 1 ? "" : "s"}? Approval covers the description and meta together.`,
+      )
+    ) {
+      return;
+    }
+    setGenBusy(true);
+    setErr(null);
+    try {
+      const res = await api<{ approved: number; skipped: number }>(
+        "/api/descriptions/bulk-approve",
+        {
+          method: "POST",
+          body: JSON.stringify({ ids: targets.map((r) => r.id) }),
+        },
+      );
+      setGenNotice(
+        `Approved ${res.approved}${res.skipped ? `, skipped ${res.skipped}` : ""}.`,
+      );
+      await load();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setGenBusy(false);
+    }
   }
 
   async function assignTrayImage(imageId: string, productId: string | null) {
@@ -638,6 +813,19 @@ export function Descriptions() {
           </span>
         )}
       </div>
+
+      <BatchCard
+        checkedRows={rows.filter((r) => checked.has(r.id))}
+        approvable={approvableChecked().length}
+        busy={genBusy}
+        notice={genNotice}
+        errors={genErrors}
+        onGenerate={() => void runGenerate([...checked])}
+        onStop={() => {
+          cancelRef.current = true;
+        }}
+        onApprove={() => void bulkApprove()}
+      />
 
       {err && <div className="alert error">{err}</div>}
 
@@ -793,11 +981,29 @@ export function Descriptions() {
                           </span>
                         </span>
                       </td>
-                      <td className="muted" title="Meta descriptions arrive in a later stage">
-                        {meta ?? "—"}
+                      <td style={{ maxWidth: 200 }}>
+                        {meta ? (
+                          <span
+                            title={`${meta} (${meta.length} chars)`}
+                            style={{
+                              display: "block",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {meta}
+                          </span>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
                       </td>
                       <td>
-                        <StatusTag status={st} />
+                        {inflight.has(r.id) ? (
+                          <span className="spinner" aria-label="Generating" />
+                        ) : (
+                          <StatusTag status={st} />
+                        )}
                       </td>
                     </tr>
                     {isOpen && (
@@ -814,6 +1020,8 @@ export function Descriptions() {
                             }
                             onUnassign={(imageId) => void assignTrayImage(imageId, null)}
                             onContent={(content) => updateContent(r.id, content)}
+                            onGenerate={() => void runGenerate([r.id])}
+                            generating={genBusy || inflight.has(r.id)}
                           />
                         </td>
                       </tr>
@@ -878,7 +1086,92 @@ export function Descriptions() {
 }
 
 // ---------------------------------------------------------------------------
-// Expanded row — left product panel (editors arrive in a later stage)
+// Batch card — Generate (N) / Stop / Approve selected + progress + errors
+// ---------------------------------------------------------------------------
+
+function BatchCard({
+  checkedRows,
+  approvable,
+  busy,
+  notice,
+  errors,
+  onGenerate,
+  onStop,
+  onApprove,
+}: {
+  checkedRows: DescRow[];
+  approvable: number;
+  busy: boolean;
+  notice: string | null;
+  errors: { id: string; name: string; error: string }[];
+  onGenerate: () => void;
+  onStop: () => void;
+  onApprove: () => void;
+}) {
+  const eligible = checkedRows.filter((r) => statusOf(r) !== "approved").length;
+  const excluded = checkedRows.length - eligible;
+  return (
+    <div className="card col" style={{ gap: 10 }}>
+      <div className="row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <strong style={{ fontSize: 13 }}>Batch</strong>
+        <button onClick={onGenerate} disabled={busy || eligible === 0}>
+          {busy ? <span className="spinner" /> : null}
+          Generate descriptions ({eligible})
+        </button>
+        {busy && (
+          <button className="secondary" onClick={onStop}>
+            Stop after this batch
+          </button>
+        )}
+        <button
+          className="secondary"
+          onClick={onApprove}
+          disabled={busy || approvable === 0}
+          title={
+            approvable === 0
+              ? "Selected rows need a generated or edited description first"
+              : undefined
+          }
+        >
+          Approve selected ({approvable})
+        </button>
+        {excluded > 0 && (
+          <span className="muted" style={{ fontSize: 12 }}>
+            {excluded} approved row{excluded === 1 ? "" : "s"} excluded from
+            generation
+          </span>
+        )}
+        {checkedRows.length === 0 && (
+          <span className="muted" style={{ fontSize: 12 }}>
+            Select rows with the checkboxes to generate or approve in bulk.
+          </span>
+        )}
+      </div>
+      {notice && (
+        <div className="alert" style={{ margin: 0 }}>
+          {notice}
+        </div>
+      )}
+      {errors.length > 0 && (
+        <details>
+          <summary style={{ cursor: "pointer", fontSize: 12 }}>
+            {errors.length} product{errors.length === 1 ? "" : "s"} failed
+          </summary>
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18, fontSize: 12 }}>
+            {errors.map((e) => (
+              <li key={e.id}>
+                <strong>{e.name}</strong>: {e.error}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Expanded row — left product panel + right copy editors
 // ---------------------------------------------------------------------------
 
 function ExpandedRow({
@@ -886,11 +1179,15 @@ function ExpandedRow({
   onLightbox,
   onUnassign,
   onContent,
+  onGenerate,
+  generating,
 }: {
   row: DescRow;
   onLightbox: (index: number) => void;
   onUnassign: (imageId: string) => void;
   onContent: (content: ContentRow) => void;
+  onGenerate: () => void;
+  generating: boolean;
 }) {
   const enriched = Array.isArray(row.attributes?.sheetFeatures);
   const marker = row.slot === "dweled_master" ? "(deck)" : "(pdf)";
@@ -975,11 +1272,243 @@ function ExpandedRow({
         </div>
       </div>
       <div className="desc-expand-right col" style={{ gap: 16 }}>
+        <DescriptionEditor
+          row={row}
+          onSaved={onContent}
+          onGenerate={onGenerate}
+          generating={generating}
+        />
+        <MetaEditor row={row} onSaved={onContent} />
         <TitleEditor row={row} onSaved={onContent} />
-        <div className="muted" style={{ fontSize: 12 }}>
-          Description and meta editors arrive with the generation stage.
-        </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Description editor — draft + Save edits / Generate / Approve / Reopen.
+// ONE status per row (plan decision 11): approving here approves the whole
+// row (description + meta together); there are no per-field statuses.
+// ---------------------------------------------------------------------------
+
+function DescriptionEditor({
+  row,
+  onSaved,
+  onGenerate,
+  generating,
+}: {
+  row: DescRow;
+  onSaved: (content: ContentRow) => void;
+  onGenerate: () => void;
+  generating: boolean;
+}) {
+  const saved = descriptionOf(row) ?? "";
+  const [value, setValue] = useState(saved);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  // Re-seed the draft when the underlying content changes (a generation or
+  // save landed) — the fresh server text is the new baseline.
+  useEffect(() => {
+    setValue(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saved]);
+
+  const st = statusOf(row);
+  const approved = st === "approved";
+  const dirty = value.trim() !== saved.trim();
+  const hasAny = !!descriptionOf(row);
+
+  async function patch(body: Record<string, unknown>) {
+    setBusy(true);
+    setErr(null);
+    try {
+      const { content } = await api<{ content: ContentRow }>(
+        `/api/descriptions/content/${row.id}`,
+        { method: "PATCH", body: JSON.stringify(body) },
+      );
+      onSaved(content);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="col" style={{ gap: 6 }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <strong style={{ fontSize: 13 }}>Description</strong>
+        <span className="row" style={{ gap: 8, alignItems: "center" }}>
+          {generating && <span className="spinner" />}
+          <StatusTag status={st} />
+        </span>
+      </div>
+      <textarea
+        rows={7}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        disabled={approved || busy}
+        placeholder="No description yet. Generate one, or write it by hand."
+        aria-label={`Description for ${row.name ?? row.content_key}`}
+      />
+      <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button
+          className="secondary"
+          onClick={onGenerate}
+          disabled={generating || busy || approved}
+          title={approved ? "Reopen first" : undefined}
+        >
+          {hasAny ? "Regenerate" : "Generate"}
+        </button>
+        <button
+          onClick={() => void patch({ action: "save", description: value })}
+          disabled={busy || approved || !dirty}
+        >
+          {busy ? "Saving…" : "Save edits"}
+        </button>
+        {!approved ? (
+          <button
+            onClick={() => {
+              const body: Record<string, unknown> = { action: "approve" };
+              if (dirty) body.description = value; // approve-with-edits
+              void patch(body);
+            }}
+            disabled={busy || generating || (!hasAny && !value.trim())}
+            title={
+              !hasAny && !value.trim()
+                ? "Write or generate a description first"
+                : "Approves the row: description and meta together"
+            }
+          >
+            Approve
+          </button>
+        ) : (
+          <a
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              void patch({ action: "reopen" });
+            }}
+          >
+            Reopen
+          </a>
+        )}
+        {dirty && !approved && (
+          <span className="muted" style={{ fontSize: 11 }}>
+            unsaved
+          </span>
+        )}
+      </div>
+      {err && (
+        <div className="alert error" style={{ margin: 0 }}>
+          {err}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Meta editor — 50-160 counter + Generate meta (from the CURRENT saved
+// description, via regenerate-meta) + Save. Approval is row-level above.
+// ---------------------------------------------------------------------------
+
+function MetaEditor({
+  row,
+  onSaved,
+}: {
+  row: DescRow;
+  onSaved: (content: ContentRow) => void;
+}) {
+  const saved = metaOf(row) ?? "";
+  const [value, setValue] = useState(saved);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    setValue(saved);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saved]);
+
+  const st = statusOf(row);
+  const approved = st === "approved";
+  const dirty = value.trim() !== saved.trim();
+  const hasDescription = !!descriptionOf(row);
+
+  async function save() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const { content } = await api<{ content: ContentRow }>(
+        `/api/descriptions/content/${row.id}`,
+        { method: "PATCH", body: JSON.stringify({ action: "save", meta: value }) },
+      );
+      onSaved(content);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateMeta() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const { content } = await api<{ content: ContentRow; meta: string }>(
+        "/api/descriptions/regenerate-meta",
+        { method: "POST", body: JSON.stringify({ id: row.id }) },
+      );
+      onSaved(content);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="col" style={{ gap: 6 }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <strong style={{ fontSize: 13 }}>Meta description</strong>
+        <MetaCounter value={value.trim()} />
+      </div>
+      <textarea
+        rows={3}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        disabled={approved || busy}
+        placeholder="Generated from the description, or write it by hand."
+        aria-label={`Meta description for ${row.name ?? row.content_key}`}
+      />
+      <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button
+          className="secondary"
+          onClick={() => void generateMeta()}
+          disabled={busy || approved || !hasDescription}
+          title={
+            approved
+              ? "Reopen first"
+              : !hasDescription
+                ? "Generate or write a description first"
+                : "Uses the current saved description (save your edits first)"
+          }
+        >
+          {busy ? "Working…" : "Generate meta"}
+        </button>
+        <button onClick={() => void save()} disabled={busy || approved || !dirty}>
+          Save
+        </button>
+        {dirty && !approved && (
+          <span className="muted" style={{ fontSize: 11 }}>
+            unsaved
+          </span>
+        )}
+      </div>
+      {err && (
+        <div className="alert error" style={{ margin: 0 }}>
+          {err}
+        </div>
+      )}
     </div>
   );
 }
