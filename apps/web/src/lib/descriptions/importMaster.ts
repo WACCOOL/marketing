@@ -154,6 +154,8 @@ export interface CommitSummary {
   removed: string[];
   relinked: number;
   orphaned: string[];
+  /** Content rows with a description preserved across the re-import. */
+  kept: number;
   warnings: string[];
 }
 

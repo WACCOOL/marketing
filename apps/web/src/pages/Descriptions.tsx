@@ -13,6 +13,8 @@ import {
   DESC_STATUS_LABELS,
   DESC_SUPPLEMENT_SLOTS,
   DESC_TITLE_RANGE,
+  buildExportRows,
+  descriptionsCsv,
   titleFor,
   titleLengthOk,
   type DescContentStatus,
@@ -41,8 +43,9 @@ import {
  * supplemental deck/pdfs in the browser, review the grouped PPID table with
  * thumbnails, lightbox, expanded product panel and the Schonbek tray, then
  * batch-generate descriptions + metas in each brand's voice and walk them
- * through the none → generated → edited → approved review workflow.
- * Export and orphan management layer on in Stage 5.
+ * through the none → generated → edited → approved review workflow. Stage 5
+ * adds client-side export (XLSX/CSV, from the loaded dataset) and the
+ * orphaned-copy card (attach preserved copy to a product, or delete drafts).
  */
 
 const XLSX_ACCEPT =
@@ -419,6 +422,7 @@ export function Descriptions() {
   const { user } = useAuth();
   const [rows, setRows] = useState<DescRow[]>([]);
   const [tray, setTray] = useState<ImageRow[]>([]);
+  const [orphans, setOrphans] = useState<ContentRow[]>([]);
   const [files, setFiles] = useState<SlotMeta[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -462,6 +466,7 @@ export function Descriptions() {
       ]);
       setRows(data.products);
       setTray(data.tray ?? []);
+      setOrphans(data.orphans ?? []);
       setFiles(fileRes.files);
       // Product ids are replaced wholesale on re-import; a stale selection
       // would silently point at dead UUIDs (and bite batch actions later).
@@ -543,6 +548,14 @@ export function Descriptions() {
       }
       return next;
     });
+  }
+  const hasFilters = !!(brand || collection || ptype || status || q);
+  function clearFilters() {
+    setBrand("");
+    setCollection("");
+    setPtype("");
+    setStatus("");
+    setQ("");
   }
   function toggleChecked(id: string) {
     setChecked((prev) => {
@@ -743,7 +756,7 @@ export function Descriptions() {
         </div>
         {filesOpen && (
           <>
-            <div className="grid-3" style={{ gap: 12 }}>
+            <div className="desc-slots">
               {DESC_MASTER_SLOTS.map((slot) => (
                 <MasterSlotCard
                   key={slot}
@@ -753,7 +766,7 @@ export function Descriptions() {
                 />
               ))}
             </div>
-            <div className="grid-3" style={{ gap: 12 }}>
+            <div className="desc-slots">
               {DESC_SUPPLEMENT_SLOTS.map((slot) => (
                 <SupplementSlotCard
                   key={slot}
@@ -824,6 +837,8 @@ export function Descriptions() {
 
       <BatchCard
         checkedRows={rows.filter((r) => checked.has(r.id))}
+        filteredRows={filtered}
+        allRows={rows}
         approvable={approvableChecked().length}
         busy={genBusy}
         notice={genNotice}
@@ -1057,9 +1072,24 @@ export function Descriptions() {
               {filtered.length === 0 && !loading && (
                 <tr>
                   <td colSpan={15} className="muted">
-                    {rows.length === 0
-                      ? "No products yet. Upload the master lists above to populate the table."
-                      : "No products match the current filters."}
+                    {rows.length === 0 ? (
+                      "No products yet. Drop the seasonal master lists into the file cards above and the table fills in from there."
+                    ) : (
+                      <>
+                        No products match.{" "}
+                        {hasFilters && (
+                          <a
+                            href="#"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              clearFilters();
+                            }}
+                          >
+                            Clear filters
+                          </a>
+                        )}
+                      </>
+                    )}
                   </td>
                 </tr>
               )}
@@ -1077,6 +1107,15 @@ export function Descriptions() {
           {filtered.length} of {rows.length} products
         </div>
       </div>
+
+      {orphans.length > 0 && (
+        <OrphansCard
+          orphans={orphans}
+          rows={rows}
+          onChanged={load}
+          onError={setErr}
+        />
+      )}
 
       {tray.length > 0 && (
         <TrayCard
@@ -1116,6 +1155,8 @@ export function Descriptions() {
 
 function BatchCard({
   checkedRows,
+  filteredRows,
+  allRows,
   approvable,
   busy,
   notice,
@@ -1125,6 +1166,8 @@ function BatchCard({
   onApprove,
 }: {
   checkedRows: DescRow[];
+  filteredRows: DescRow[];
+  allRows: DescRow[];
   approvable: number;
   busy: boolean;
   notice: string | null;
@@ -1160,6 +1203,11 @@ function BatchCard({
         >
           Approve selected ({approvable})
         </button>
+        <ExportMenu
+          filteredRows={filteredRows}
+          checkedRows={checkedRows}
+          allRows={allRows}
+        />
         {excluded > 0 && (
           <span className="muted" style={{ fontSize: 12 }}>
             {excluded} approved row{excluded === 1 ? "" : "s"} excluded from
@@ -1192,6 +1240,143 @@ function BatchCard({
         </details>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Export menu — XLSX/CSV × (filtered | selected | approved only), fully
+// client-side from the loaded dataset (plan decision 9). XLSX reuses the
+// SheetJS chunk the import lane already dynamic-imports; CSV is a blob with
+// a UTF-8 BOM so Excel opens it correctly.
+// ---------------------------------------------------------------------------
+
+type ExportScope = "filtered" | "selected" | "approved";
+
+const EXPORT_SCOPE_LABELS: Record<ExportScope, string> = {
+  filtered: "Filtered rows",
+  selected: "Selected rows",
+  approved: "Approved only",
+};
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function ExportMenu({
+  filteredRows,
+  checkedRows,
+  allRows,
+}: {
+  filteredRows: DescRow[];
+  checkedRows: DescRow[];
+  allRows: DescRow[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [working, setWorking] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const scopeRows: Record<ExportScope, DescRow[]> = {
+    filtered: filteredRows,
+    selected: checkedRows,
+    approved: allRows.filter((r) => statusOf(r) === "approved"),
+  };
+
+  async function runExport(format: "xlsx" | "csv", scope: ExportScope) {
+    const products = scopeRows[scope];
+    if (products.length === 0) return;
+    setOpen(false);
+    setWorking(true);
+    setErr(null);
+    try {
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      const filename = `descriptions-${scope}-${stamp}.${format}`;
+      if (format === "xlsx") {
+        // Same dynamic chunk as the import lane's cell extraction.
+        const XLSX = await import("xlsx");
+        const ws = XLSX.utils.aoa_to_sheet(buildExportRows(products));
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Descriptions");
+        XLSX.writeFile(wb, filename);
+      } else {
+        downloadBlob(
+          new Blob(["\ufeff", descriptionsCsv(products)], {
+            type: "text/csv;charset=utf-8",
+          }),
+          filename,
+        );
+      }
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  const anyRows = Object.values(scopeRows).some((list) => list.length > 0);
+
+  return (
+    <span className="desc-menu">
+      <button
+        className="secondary"
+        onClick={() => setOpen((v) => !v)}
+        disabled={working || !anyRows}
+        title={anyRows ? undefined : "Nothing to export yet"}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        {working ? <span className="spinner" /> : null}
+        Export ▾
+      </button>
+      {open && (
+        <>
+          <span className="desc-menu-backdrop" onClick={() => setOpen(false)} />
+          <span className="desc-menu-pop" role="menu">
+            {(["xlsx", "csv"] as const).map((format) => (
+              <span key={format} className="desc-menu-group">
+                <span className="desc-menu-title">
+                  {format === "xlsx" ? "Excel (.xlsx)" : "CSV"}
+                </span>
+                {(Object.keys(EXPORT_SCOPE_LABELS) as ExportScope[]).map(
+                  (scope) => {
+                    const count = scopeRows[scope].length;
+                    return (
+                      <button
+                        key={scope}
+                        role="menuitem"
+                        className="desc-menu-item"
+                        disabled={count === 0}
+                        onClick={() => void runExport(format, scope)}
+                        title={
+                          count === 0
+                            ? scope === "selected"
+                              ? "Select rows with the checkboxes first"
+                              : scope === "approved"
+                                ? "No rows are approved yet"
+                                : "No rows match the current filters"
+                            : undefined
+                        }
+                      >
+                        {EXPORT_SCOPE_LABELS[scope]} ({count})
+                      </button>
+                    );
+                  },
+                )}
+              </span>
+            ))}
+          </span>
+        </>
+      )}
+      {err && (
+        <span className="muted" style={{ fontSize: 11, color: "var(--bad)" }}>
+          {err}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -1760,6 +1945,259 @@ function TrayItem({
 }
 
 // ---------------------------------------------------------------------------
+// Orphaned copy — desc_content rows whose product vanished from a re-import.
+// Edited/approved text is preserved, never auto-deleted (plan decision 4);
+// this card lets the user attach it to a product of the same file, or delete
+// a draft they are sure about.
+// ---------------------------------------------------------------------------
+
+function snippet(text: string | null, max = 140): string | null {
+  if (!text) return null;
+  const t = text.trim();
+  if (!t) return null;
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+
+function OrphansCard({
+  orphans,
+  rows,
+  onChanged,
+  onError,
+}: {
+  orphans: ContentRow[];
+  rows: DescRow[];
+  onChanged: () => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="card col" style={{ gap: 10 }}>
+      <div
+        className="row"
+        style={{ justifyContent: "space-between", cursor: "pointer" }}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <div>
+          <strong>Orphaned copy ({orphans.length})</strong>
+          <div className="muted" style={{ fontSize: 12 }}>
+            These descriptions were kept when their product disappeared from a
+            re-imported master list. Attach each one to a product, or delete
+            drafts you no longer need.
+          </div>
+        </div>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {open ? "Hide" : "Show"}
+        </span>
+      </div>
+      {open && (
+        <div className="col" style={{ gap: 10 }}>
+          {orphans.map((o) => (
+            <OrphanItem
+              key={o.id}
+              orphan={o}
+              rows={rows}
+              onChanged={onChanged}
+              onError={onError}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OrphanItem({
+  orphan,
+  rows,
+  onChanged,
+  onError,
+}: {
+  orphan: ContentRow;
+  rows: DescRow[];
+  onChanged: () => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [picking, setPicking] = useState(false);
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  // Attach targets: products of the SAME slot; rows already holding copy are
+  // shown but disabled (the server rejects them with the same rule).
+  const matches = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    if (!needle) return [];
+    return rows
+      .filter((r) => {
+        if (r.slot !== orphan.slot) return false;
+        const hay = [r.name ?? "", r.family ?? "", ...r.model_numbers]
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(needle);
+      })
+      .slice(0, 8);
+  }, [q, rows, orphan.slot]);
+
+  const description = snippet(
+    orphan.description_final ?? orphan.description_ai,
+  );
+  const meta = snippet(orphan.meta_final ?? orphan.meta_ai, 100);
+
+  async function attach(row: DescRow) {
+    setBusy(true);
+    try {
+      await api(`/api/descriptions/content/${orphan.id}/attach`, {
+        method: "POST",
+        body: JSON.stringify({ content_key: row.content_key }),
+      });
+      await onChanged();
+    } catch (e) {
+      onError(errorMessage(e));
+    } finally {
+      setBusy(false);
+      setPicking(false);
+      setQ("");
+    }
+  }
+
+  async function remove() {
+    const approved = orphan.status === "approved";
+    const ok = confirm(
+      approved
+        ? "This copy is APPROVED. Delete it permanently anyway?"
+        : "Delete this orphaned draft permanently?",
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await api(
+        `/api/descriptions/content/${orphan.id}${approved ? "?confirm=approved" : ""}`,
+        { method: "DELETE" },
+      );
+      await onChanged();
+    } catch (e) {
+      onError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** Rows that hold copy of their own cannot absorb the orphan (server rule). */
+  const rowHasCopy = (r: DescRow): boolean =>
+    !!r.content &&
+    !!(
+      r.content.description_final ??
+      r.content.description_ai ??
+      r.content.meta_final ??
+      r.content.meta_ai ??
+      r.content.title_override
+    );
+
+  return (
+    <div className="desc-orphan">
+      <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <span
+          className="product-sku"
+          style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12 }}
+        >
+          {orphan.content_key}
+        </span>
+        <StatusTag status={orphan.status} />
+        <span className="muted" style={{ fontSize: 11 }}>
+          {DESC_SLOT_LABELS[orphan.slot] ?? orphan.slot}
+        </span>
+      </div>
+      {orphan.note && (
+        <div className="muted" style={{ fontSize: 12 }}>
+          {orphan.note}
+        </div>
+      )}
+      {description && <div style={{ fontSize: 13 }}>{description}</div>}
+      {meta && (
+        <div className="muted" style={{ fontSize: 12 }}>
+          Meta: {meta}
+        </div>
+      )}
+      {orphan.title_override && (
+        <div className="muted" style={{ fontSize: 12 }}>
+          Title: {orphan.title_override}
+        </div>
+      )}
+      {picking ? (
+        <div className="col" style={{ gap: 4, maxWidth: 420 }}>
+          <input
+            autoFocus
+            placeholder="Search product by name, family or model…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            style={{ fontSize: 12 }}
+          />
+          {matches.map((r) => {
+            const taken = rowHasCopy(r);
+            return (
+              <span key={r.id} className="row" style={{ gap: 6, alignItems: "center" }}>
+                {taken ? (
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {r.name ?? r.content_key} · already has copy
+                  </span>
+                ) : (
+                  <a
+                    href="#"
+                    style={{ fontSize: 12 }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      if (!busy) void attach(r);
+                    }}
+                  >
+                    {r.name ?? r.content_key}
+                    <span className="muted"> · {r.collection}</span>
+                  </a>
+                )}
+              </span>
+            );
+          })}
+          {q.trim() && matches.length === 0 && (
+            <span className="muted" style={{ fontSize: 12 }}>
+              No products match in this file.
+            </span>
+          )}
+          <a
+            href="#"
+            className="muted"
+            style={{ fontSize: 11 }}
+            onClick={(e) => {
+              e.preventDefault();
+              setPicking(false);
+              setQ("");
+            }}
+          >
+            Cancel
+          </a>
+        </div>
+      ) : (
+        <div className="row" style={{ gap: 8 }}>
+          <button
+            className="secondary"
+            style={{ fontSize: 12 }}
+            disabled={busy}
+            onClick={() => setPicking(true)}
+          >
+            Attach to product…
+          </button>
+          <button
+            className="secondary"
+            style={{ fontSize: 12, color: "var(--danger)" }}
+            disabled={busy}
+            onClick={() => void remove()}
+          >
+            {busy ? "Working…" : "Delete draft"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Master slot upload card (PricingSlot pattern, client-side phases)
 // ---------------------------------------------------------------------------
 
@@ -1949,6 +2387,14 @@ function MasterSlotCard({
             : ""}
           {phase.summary.images > 0 ? `, ${phase.summary.images} images` : ""}
           ).
+          {(phase.summary.kept > 0 || phase.summary.orphaned.length > 0) &&
+            ` Descriptions kept on ${phase.summary.kept} product${
+              phase.summary.kept === 1 ? "" : "s"
+            }${
+              phase.summary.orphaned.length > 0
+                ? `, ${phase.summary.orphaned.length} orphaned (see the orphaned copy card below the table)`
+                : ""
+            }.`}
           {phase.summary.warnings.length > 0 && (
             <details style={{ marginTop: 6 }}>
               <summary style={{ cursor: "pointer" }}>
