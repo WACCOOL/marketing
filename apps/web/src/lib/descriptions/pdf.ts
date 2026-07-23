@@ -9,11 +9,6 @@ import type { PdfPageInput } from "@wac/shared";
  *    the unassigned tray).
  */
 
-// The worker asset resolves to a URL string at compile time (build emits the
-// asset; dev serves it) — the pdf.js library itself stays a dynamic import so
-// the ~480KB chunk loads only when a pdf lane actually runs.
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?worker&url";
-
 type Pdfjs = typeof import("pdfjs-dist");
 
 let pdfjsPromise: Promise<Pdfjs> | null = null;
@@ -22,7 +17,13 @@ async function loadPdfjs(): Promise<Pdfjs> {
   if (!pdfjsPromise) {
     pdfjsPromise = (async () => {
       const pdfjs = await import("pdfjs-dist");
-      pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+      // Vite-native worker wiring: `?worker` yields a Worker constructor in
+      // both dev and build (the `?worker&url` suffix form breaks under dev,
+      // where the .mjs is served as a module with no default export).
+      const PdfWorker = (
+        await import("pdfjs-dist/build/pdf.worker.min.mjs?worker")
+      ).default;
+      pdfjs.GlobalWorkerOptions.workerPort = new PdfWorker();
       return pdfjs;
     })();
   }
