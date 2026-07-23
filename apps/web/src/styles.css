@@ -1989,3 +1989,42 @@ a.thom-family-member:hover {
   display: inline-flex;
   align-items: center;
 }
+
+/* ---- Descriptions (master-list import + copy review) ---- */
+/* Wide table scrolls inside its card; the page never scrolls horizontally.
+   First 3 columns (checkbox, images, name) stay sticky. Tokens only. */
+.desc-table-wrap {
+  overflow-x: auto;
+}
+.desc-table-wrap table {
+  min-width: 1280px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.desc-table-wrap th:nth-child(1),
+.desc-table-wrap td:nth-child(1) {
+  position: sticky;
+  left: 0;
+  width: 36px;
+  min-width: 36px;
+  background: var(--panel);
+  z-index: 2;
+}
+.desc-table-wrap th:nth-child(2),
+.desc-table-wrap td:nth-child(2) {
+  position: sticky;
+  left: 36px;
+  width: 64px;
+  min-width: 64px;
+  background: var(--panel);
+  z-index: 2;
+}
+.desc-table-wrap th:nth-child(3),
+.desc-table-wrap td:nth-child(3) {
+  position: sticky;
+  left: 100px;
+  min-width: 150px;
+  background: var(--panel);
+  z-index: 2;
+  border-right: 1px solid var(--border);
+}

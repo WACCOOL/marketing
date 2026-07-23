@@ -14,6 +14,7 @@ import { RenderQueue } from "./pages/RenderQueue.js";
 import { UtmQr } from "./pages/UtmQr.js";
 import { VocabAdmin } from "./pages/VocabAdmin.js";
 import { Products } from "./pages/Products.js";
+import { Descriptions } from "./pages/Descriptions.js";
 import { ThomChat } from "./pages/ThomChat.js";
 import { ThomContentAdmin } from "./pages/ThomContentAdmin.js";
 import { ThomDictionary } from "./pages/ThomDictionary.js";
@@ -133,6 +134,7 @@ function Shell() {
           <Route path="/utm-vocab" element={gate("utm-vocab", <VocabAdmin />)} />
           <Route path="/short-links" element={<Navigate to="/utm-qr" replace />} />
           <Route path="/products" element={gate("product", <Products />)} />
+          <Route path="/descriptions" element={gate("product", <Descriptions />)} />
           <Route path="/thom" element={gate("thom", <ThomChat />)} />
           <Route
             path="/thom-content"
