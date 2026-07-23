@@ -874,19 +874,26 @@ async function computeBindings(
     if (r.loosePdf && r.kb_document_id) looseByDoc.set(r.kb_document_id, r.id);
   }
   if (looseByDoc.size) {
-    const fieldLinks = await pageAll<{ document_id: string; product_sku: string }>(
-      (from, to) =>
-        sb
-          .from("product_documents")
-          .select("document_id, product_sku")
-          .eq("doc_type", DIMMING_REPORT_DOC_TYPE)
-          .in("document_id", [...looseByDoc.keys()])
-          .range(from, to) as never,
-      "product_documents(dimming)",
-    );
-    for (const fl of fieldLinks) {
-      const reportId = looseByDoc.get(fl.document_id);
-      if (reportId) links.push({ report_id: reportId, product_sku: fl.product_sku, link_kind: "field" });
+    // Chunk the id list: 1,000+ ids in one PostgREST .in() blows the URL
+    // length limit (Bad Request — killed relay leg 4 at full-corpus scale).
+    const allDocIds = [...looseByDoc.keys()];
+    const ID_CHUNK = 150;
+    for (let i = 0; i < allDocIds.length; i += ID_CHUNK) {
+      const chunk = allDocIds.slice(i, i + ID_CHUNK);
+      const fieldLinks = await pageAll<{ document_id: string; product_sku: string }>(
+        (from, to) =>
+          sb
+            .from("product_documents")
+            .select("document_id, product_sku")
+            .eq("doc_type", DIMMING_REPORT_DOC_TYPE)
+            .in("document_id", chunk)
+            .range(from, to) as never,
+        "product_documents(dimming)",
+      );
+      for (const fl of fieldLinks) {
+        const reportId = looseByDoc.get(fl.document_id);
+        if (reportId) links.push({ report_id: reportId, product_sku: fl.product_sku, link_kind: "field" });
+      }
     }
   }
   return { links, overlaps };
