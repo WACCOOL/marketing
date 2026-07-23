@@ -14,18 +14,25 @@ export const DESC_MASTER_SLOTS = [
   "schonbek_master",
 ] as const;
 
-/** All six file slots (masters + supplemental pptx/pdf enrichment). */
-export const DESC_SLOTS = [
-  ...DESC_MASTER_SLOTS,
+/** The three supplemental enrichment slots (pptx/pdf). */
+export const DESC_SUPPLEMENT_SLOTS = [
   "dweled_pptx",
   "mf_pdf",
   "schonbek_pdf",
 ] as const;
 
+/** All six file slots (masters + supplemental pptx/pdf enrichment). */
+export const DESC_SLOTS = [
+  ...DESC_MASTER_SLOTS,
+  ...DESC_SUPPLEMENT_SLOTS,
+] as const;
+
 export type DescSlot = (typeof DESC_SLOTS)[number];
 export type DescMasterSlot = (typeof DESC_MASTER_SLOTS)[number];
+export type DescSupplementSlot = (typeof DESC_SUPPLEMENT_SLOTS)[number];
 
 export const DescMasterSlotSchema = z.enum(DESC_MASTER_SLOTS);
+export const DescSupplementSlotSchema = z.enum(DESC_SUPPLEMENT_SLOTS);
 export const DescSlotSchema = z.enum(DESC_SLOTS);
 
 export function isDescSlot(v: string): v is DescSlot {
@@ -34,6 +41,27 @@ export function isDescSlot(v: string): v is DescSlot {
 export function isDescMasterSlot(v: string): v is DescMasterSlot {
   return (DESC_MASTER_SLOTS as readonly string[]).includes(v);
 }
+export function isDescSupplementSlot(v: string): v is DescSupplementSlot {
+  return (DESC_SUPPLEMENT_SLOTS as readonly string[]).includes(v);
+}
+
+/**
+ * Which master slot a supplemental file enriches. schonbek_pdf is
+ * deliberately null: its pages carry no extractable text, so they land in
+ * the unassigned image tray for manual attach — no matcher runs.
+ */
+export const SUPPLEMENT_MASTER: Record<DescSupplementSlot, DescMasterSlot | null> = {
+  dweled_pptx: "dweled_master",
+  mf_pdf: "mf_master",
+  schonbek_pdf: null,
+};
+
+/** Reverse map: the supplemental slot re-applied after a master re-import. */
+export const MASTER_SUPPLEMENT: Record<DescMasterSlot, DescSupplementSlot> = {
+  dweled_master: "dweled_pptx",
+  mf_master: "mf_pdf",
+  schonbek_master: "schonbek_pdf",
+};
 
 /**
  * One distinct (L, W, H) tuple. Source strings are preserved verbatim (the
@@ -105,6 +133,26 @@ export const SheetReportSchema = z.object({
 export type SheetReport = z.infer<typeof SheetReportSchema>;
 
 /**
+ * R2 key of an uploaded (already downscaled + content-hashed) image. The
+ * slot segment is re-checked against the payload slot in each superRefine so
+ * a commit can only reference its own slot's prefix (plan §2 whitelist).
+ */
+export const DescImageKeySchema = z
+  .string()
+  .regex(
+    /^descriptions\/img\/(?:dweled_master|mf_master|schonbek_master|dweled_pptx|mf_pdf|schonbek_pdf)\/[a-f0-9]{16,64}\.(?:jpg|png|webp)$/,
+    "not a descriptions image key",
+  );
+
+/** One xlsx-anchored image reference inside a master ImportPayload. */
+export const ImportImageSchema = z.object({
+  content_key: z.string().min(1).max(200),
+  r2_key: DescImageKeySchema,
+  sort_order: z.number().int().min(0).max(100_000),
+});
+export type ImportImage = z.infer<typeof ImportImageSchema>;
+
+/**
  * The commit payload for a master slot. Caps are sanity rails (~150 real
  * groups exist) so a hostile/buggy client can't flood the table.
  */
@@ -112,6 +160,8 @@ export const ImportPayloadSchema = z
   .object({
     slot: DescMasterSlotSchema,
     products: z.array(ParsedProductSchema).min(1).max(400),
+    /** Sheet-embedded renders mapped to groups via drawing anchors. */
+    images: z.array(ImportImageSchema).max(400).default([]),
     warnings: z.array(z.string().max(500)).max(300).default([]),
     sheets: z.array(SheetReportSchema).max(10).default([]),
   })
@@ -132,8 +182,69 @@ export const ImportPayloadSchema = z
         });
       }
     }
+    for (const img of payload.images) {
+      if (!seen.has(img.content_key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `image references unknown content_key "${img.content_key}"`,
+        });
+      }
+      if (!img.r2_key.startsWith(`descriptions/img/${payload.slot}/`)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `image key "${img.r2_key}" does not belong to slot "${payload.slot}"`,
+        });
+      }
+    }
   });
 export type ImportPayload = z.infer<typeof ImportPayloadSchema>;
+
+/**
+ * One supplemental unit (pptx product slide / MF pdf product page / Schonbek
+ * pdf page). Persisted to desc_enrichment so the matcher can re-run
+ * server-side whenever either side re-imports.
+ */
+export const SupplementUnitSchema = z.object({
+  /** Human reference: "slide 12" / "page 7" — drives the unmatched list. */
+  ref: z.string().min(1).max(60),
+  name: z.string().max(200).nullable(),
+  model_numbers: z.array(z.string().max(80)).max(120).default([]),
+  model_bases: z.array(z.string().max(80)).max(120).default([]),
+  bullets: z.array(z.string().max(500)).max(16).default([]),
+  image_keys: z.array(DescImageKeySchema).max(40).default([]),
+});
+export type SupplementUnit = z.infer<typeof SupplementUnitSchema>;
+
+/** The commit payload for a supplemental (pptx/pdf) slot. */
+export const SupplementPayloadSchema = z
+  .object({
+    slot: DescSupplementSlotSchema,
+    units: z.array(SupplementUnitSchema).min(1).max(400),
+    /** Section slides / summary pages that were deliberately not imported. */
+    skipped: z.array(z.string().max(300)).max(400).default([]),
+    warnings: z.array(z.string().max(500)).max(300).default([]),
+  })
+  .superRefine((payload, ctx) => {
+    const seen = new Set<string>();
+    for (const u of payload.units) {
+      if (seen.has(u.ref)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `duplicate unit ref "${u.ref}"`,
+        });
+      }
+      seen.add(u.ref);
+      for (const key of u.image_keys) {
+        if (!key.startsWith(`descriptions/img/${payload.slot}/`)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `image key "${key}" does not belong to slot "${payload.slot}"`,
+          });
+        }
+      }
+    }
+  });
+export type SupplementPayload = z.infer<typeof SupplementPayloadSchema>;
 
 /** Review statuses reuse the product_content_status enum (migration 0015). */
 export type DescContentStatus = "none" | "generated" | "in_review" | "approved";

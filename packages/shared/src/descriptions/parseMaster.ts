@@ -640,12 +640,26 @@ function assignContentKeys(
 // Entry point
 // ---------------------------------------------------------------------------
 
+/**
+ * The sheet-row extent of one PPID group (0-based, inclusive). Drawing
+ * anchors map onto groups through these spans (Stage 2 image import) — the
+ * spans stay client-side and are never part of the ImportPayload.
+ */
+export interface GroupRowSpan {
+  content_key: string;
+  sheet: string;
+  startRow: number;
+  endRow: number;
+}
+
 export type ParseMasterResult =
   | {
       ok: true;
       products: ParsedProduct[];
       warnings: string[];
       sheets: SheetReport[];
+      /** One span per product, same order as `products`. */
+      spans: GroupRowSpan[];
     }
   | {
       ok: false;
@@ -667,6 +681,7 @@ export function parseMasterWorkbook(
   const products: ParsedProduct[] = [];
   const warnings: string[] = [];
   const sheets: SheetReport[] = [];
+  const spans: GroupRowSpan[] = [];
 
   for (const desc of descriptors) {
     const cells = sheetCells[desc.sheetName];
@@ -713,11 +728,19 @@ export function parseMasterWorkbook(
     );
     assignContentKeys(desc.sheetKey, groups, sheetProducts, warnings, desc.sheetName);
     products.push(...sheetProducts);
+    groups.forEach((g, i) => {
+      spans.push({
+        content_key: sheetProducts[i]!.content_key,
+        sheet: desc.sheetName,
+        startRow: g.rows[0]!.rowIndex,
+        endRow: g.rows[g.rows.length - 1]!.rowIndex,
+      });
+    });
     sheets.push({ sheet: desc.sheetName, rows, groups: groups.length });
   }
 
   if (products.length === 0) {
     return { ok: false, error: "no product rows found below the header row" };
   }
-  return { ok: true, products, warnings, sheets };
+  return { ok: true, products, warnings, sheets, spans };
 }
