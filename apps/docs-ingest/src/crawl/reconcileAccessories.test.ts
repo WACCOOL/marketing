@@ -9,6 +9,9 @@ import {
   ACCESSORY_SITES,
   buildPdpAccessoryRows,
   invertPdpUrls,
+  MAX_OWNERS_PER_SLUG,
+  normalizeSlug,
+  pdpSlugFromUrl,
   type FrontierAccessoryPdp,
 } from "./reconcileAccessories.js";
 
@@ -21,37 +24,68 @@ const PDP_URLS = [
   { sku: "2003", brand: "WAC", slug: "trim-r2asat", url: null },
   { sku: "8817", brand: "MOF", slug: "wynd-xl", url: "https://modernforms.com/product/wynd-xl/" },
   { sku: "8901", brand: "MOF", slug: "xl-downrod-dr72", url: "https://modernforms.com/product/xl-downrod-dr72/" },
-  // Same slug on TWO different skus -> ambiguous, never resolved.
+  // Same slug on TWO different skus (fan sizes share a PDP) -> both kept.
   { sku: "9001", brand: "MOF", slug: "shared-slug", url: "https://modernforms.com/product/shared-slug/" },
   { sku: "9002", brand: "MOF", slug: "shared-slug", url: "https://modernforms.com/product/shared-slug/" },
   // Legacy '?s=' search fallback url — no /product/ path; slug column still resolves.
   { sku: "2004", brand: "WAC", slug: "sole-r1", url: "https://waclighting.com/?s=SOLE-R1" },
 ];
 
+describe("normalizeSlug / pdpSlugFromUrl (URL normalization — the prod owner-resolution bug)", () => {
+  it("normalizeSlug: trims slashes, lowercases, strips query/hash", () => {
+    expect(normalizeSlug("Wynd-XL")).toBe("wynd-xl");
+    expect(normalizeSlug("/wynd-xl/")).toBe("wynd-xl");
+    expect(normalizeSlug("wynd-xl?ref=nav")).toBe("wynd-xl");
+    expect(normalizeSlug("  wynd-xl#specs ")).toBe("wynd-xl");
+    expect(normalizeSlug("")).toBeNull();
+    expect(normalizeSlug(null)).toBeNull();
+  });
+
+  it("pdpSlugFromUrl: trailing slash BOTH ways, case, www, query, repeated slashes", () => {
+    expect(pdpSlugFromUrl("https://modernforms.com/product/wynd-xl")).toBe("wynd-xl");
+    expect(pdpSlugFromUrl("https://modernforms.com/product/wynd-xl/")).toBe("wynd-xl");
+    expect(pdpSlugFromUrl("https://www.modernforms.com/product/Wynd-XL/")).toBe("wynd-xl");
+    expect(pdpSlugFromUrl("https://modernforms.com/product//wynd-xl//")).toBe("wynd-xl");
+    expect(pdpSlugFromUrl("https://modernforms.com/product/wynd-xl/?utm_source=x#specs")).toBe("wynd-xl");
+    expect(pdpSlugFromUrl("https://waclighting.com/?s=SOLE-R1")).toBeNull();
+    expect(pdpSlugFromUrl(null)).toBeNull();
+    expect(pdpSlugFromUrl("not a url")).toBeNull();
+  });
+});
+
 describe("invertPdpUrls", () => {
-  const { bySlug, collisions } = invertPdpUrls(PDP_URLS);
+  const { bySlug, sharedSlugs } = invertPdpUrls(PDP_URLS);
 
   it("keys (site, slug) from the row url's host and path", () => {
-    expect(bySlug.get("waclighting housing-r2asd")).toBe("2001");
-    expect(bySlug.get("modernforms wynd-xl")).toBe("8817");
+    expect(bySlug.get("waclighting housing-r2asd")).toEqual(["2001"]);
+    expect(bySlug.get("modernforms wynd-xl")).toEqual(["8817"]);
   });
 
-  it("falls back to brand domain + slug column when url is null or slug-less", () => {
-    expect(bySlug.get("waclighting trim-r2asat")).toBe("2003");
-    expect(bySlug.get("waclighting sole-r1")).toBe("2004");
+  it("joins across mismatched trailing slashes, case, and www on the pdp_urls side", () => {
+    const { bySlug: b } = invertPdpUrls([
+      { sku: "1884", brand: "MOF", slug: null, url: "https://www.modernforms.com/product/Wynd-XL" },
+    ]);
+    expect(b.get("modernforms wynd-xl")).toEqual(["1884"]);
   });
 
-  it("drops ambiguous slugs (two skus, one slug) and counts them", () => {
-    expect(bySlug.has("modernforms shared-slug")).toBe(false);
-    expect(collisions).toBe(1);
+  it("falls back to brand domain + slug column when url is null or slug-less (slug column normalized too)", () => {
+    expect(bySlug.get("waclighting trim-r2asat")).toEqual(["2003"]);
+    expect(bySlug.get("waclighting sole-r1")).toEqual(["2004"]);
+    const { bySlug: b } = invertPdpUrls([{ sku: "Y", brand: "WAC", slug: "Trim-X/", url: null }]);
+    expect(b.get("waclighting trim-x")).toEqual(["Y"]);
   });
 
-  it("the same sku appearing twice with the same slug is NOT a collision", () => {
-    const { bySlug: b, collisions: c } = invertPdpUrls([
+  it("KEEPS slugs shared by two skus (fan sizes share one PDP) and counts them", () => {
+    expect(bySlug.get("modernforms shared-slug")).toEqual(["9001", "9002"]);
+    expect(sharedSlugs).toBe(1);
+  });
+
+  it("the same sku appearing twice with the same slug stays a single entry", () => {
+    const { bySlug: b, sharedSlugs: c } = invertPdpUrls([
       { sku: "X", brand: "WAC", slug: "dup", url: "https://waclighting.com/product/dup/" },
       { sku: "X", brand: "WAC", slug: "dup", url: null },
     ]);
-    expect(b.get("waclighting dup")).toBe("X");
+    expect(b.get("waclighting dup")).toEqual(["X"]);
     expect(c).toBe(0);
   });
 });
@@ -149,6 +183,61 @@ describe("buildPdpAccessoryRows", () => {
     expect(built.rows).toHaveLength(0);
     expect(built.withSlugs).toBe(0);
     expect(Object.keys(ACCESSORY_SITES)).toEqual(["waclighting", "modernforms"]);
+  });
+
+  it("WYND XL prod shape: frontier url WITHOUT trailing slash resolves against a pdp_urls url WITH one", () => {
+    const { bySlug: inv } = invertPdpUrls([
+      { sku: "1884", brand: "MOF", slug: "wynd-xl", url: "https://modernforms.com/product/wynd-xl/" },
+      { sku: "8901", brand: "MOF", slug: "xl-downrod-dr72", url: "https://modernforms.com/product/xl-downrod-dr72/" },
+    ]);
+    const built = buildPdpAccessoryRows(
+      [pdp({
+        url: "https://modernforms.com/product/wynd-xl", // no trailing slash (prod evidence)
+        host: "modernforms.com",
+        site: "modernforms",
+        discovered_slug: null, // force the url fallback path
+        accessory_slugs: ["xl-downrod-dr72", "Sloped-Ceiling-Kit/"],
+      })],
+      inv,
+      STAMP,
+    );
+    expect(built.ownersUnresolved).toBe(0);
+    expect(built.rows.map((r) => [r.product_sku, r.related_sku, r.related_product_sku])).toEqual([
+      ["1884", "xl-downrod-dr72", "8901"],
+      ["1884", "sloped-ceiling-kit", null], // harvested slug normalized too
+    ]);
+  });
+
+  it("a PDP shared by several skus writes the section for EVERY owner (fan sizes), capped", () => {
+    const { bySlug: inv } = invertPdpUrls([
+      { sku: "1884", brand: "MOF", slug: "wynd-xl", url: "https://modernforms.com/product/wynd-xl/" },
+      { sku: "1885", brand: "MOF", slug: "wynd-xl", url: "https://modernforms.com/product/wynd-xl/" },
+      { sku: "8901", brand: "MOF", slug: "xl-downrod-dr72", url: "https://modernforms.com/product/xl-downrod-dr72/" },
+    ]);
+    const built = buildPdpAccessoryRows(
+      [pdp({
+        url: "https://modernforms.com/product/wynd-xl",
+        host: "modernforms.com",
+        site: "modernforms",
+        discovered_slug: "wynd-xl",
+        accessory_slugs: ["xl-downrod-dr72"],
+      })],
+      inv,
+      STAMP,
+    );
+    expect(built.rows.map((r) => r.product_sku).sort()).toEqual(["1884", "1885"]);
+    expect(built.ownerSkusSeen).toEqual(new Set(["1884", "1885"]));
+    // Beyond the cap the mapping smells like a family/landing page: skipped.
+    const crowd = new Map([
+      ["modernforms wynd-xl", Array.from({ length: MAX_OWNERS_PER_SLUG + 1 }, (_, i) => `S${i}`)],
+    ]);
+    const capped = buildPdpAccessoryRows(
+      [pdp({ url: "https://modernforms.com/product/wynd-xl", host: "modernforms.com", site: "modernforms", discovered_slug: "wynd-xl", accessory_slugs: ["xl-downrod-dr72"] })],
+      crowd,
+      STAMP,
+    );
+    expect(capped.rows).toHaveLength(0);
+    expect(capped.ownersUnresolved).toBe(1);
   });
 
   it("counts every RESOLVABLE scanned PDP into ownerSkusSeen (the prune guard's feed signal), slugs or not", () => {
