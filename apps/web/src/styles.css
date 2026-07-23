@@ -2169,3 +2169,140 @@ a.thom-family-member:hover {
   width: 100%;
   height: 120px;
 }
+
+/* Title length badge: green inside the 50-60 SEO range, amber outside. */
+.desc-len-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--warn);
+}
+.desc-len-dot.ok {
+  background: var(--good);
+}
+
+/* Voice modal: brand+collection tab row with an accent underline. */
+.desc-voice-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.desc-voice-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 8px 10px;
+  margin-bottom: -1px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.desc-voice-tab:hover {
+  color: var(--text);
+}
+.desc-voice-tab[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.desc-dirty-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--warn);
+}
+
+/* Reference-product chips (thumb + name + remove). */
+.desc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  padding: 2px 6px 2px 2px;
+  font-size: 12px;
+}
+.desc-chip-thumb {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  object-fit: cover;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.desc-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desc-chip-x {
+  flex: none;
+  background: none;
+  border: none;
+  padding: 0 4px;
+  font: inherit;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--radius-pill);
+}
+.desc-chip-x:hover {
+  color: var(--danger);
+}
+
+/* PIM reference search dropdown. */
+.desc-picker {
+  position: relative;
+}
+.desc-picker-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-raised);
+}
+.desc-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.desc-picker-item:hover {
+  background: var(--accent-soft);
+}
+.desc-picker-thumb {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}

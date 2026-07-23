@@ -11,6 +11,9 @@ import {
   DESC_SLOT_LABELS,
   DESC_STATUS_LABELS,
   DESC_SUPPLEMENT_SLOTS,
+  DESC_TITLE_RANGE,
+  titleFor,
+  titleLengthOk,
   type DescContentStatus,
   type DescMasterSlot,
   type DescSupplementSlot,
@@ -18,6 +21,7 @@ import {
 } from "@wac/shared";
 import { api, apiBlob, errorMessage } from "../lib/api.js";
 import { useAuth } from "../lib/auth.js";
+import { DescVoiceModal } from "../components/DescVoiceModal.js";
 import {
   commitImport,
   parseMasterFile,
@@ -172,6 +176,32 @@ function sizeRange(sizes: SizeTuple[]): string {
   const h = axis((s) => s.height);
   if (l === "—" && w === "—" && h === "—") return "—";
   return `${l} × ${w} × ${h} in`;
+}
+
+/** The deterministic per-brand formula title for a row (plan decision 6). */
+function formulaTitleFor(row: DescRow): string {
+  return titleFor({
+    brand: row.brand,
+    collection: row.collection,
+    name: row.name,
+    productType: row.product_type,
+    modelBases: row.model_bases,
+  });
+}
+
+/** Effective title: a saved override wins over the formula. */
+function effectiveTitle(row: DescRow): string {
+  return row.content?.title_override ?? formulaTitleFor(row);
+}
+
+/** Green-in-range / amber-out-of-range length dot with the count on hover. */
+function TitleLenDot({ title }: { title: string }) {
+  return (
+    <span
+      className={`desc-len-dot${titleLengthOk(title) ? " ok" : ""}`}
+      title={`${title.length} characters (target ${DESC_TITLE_RANGE.min}-${DESC_TITLE_RANGE.max})`}
+    />
+  );
 }
 
 /** `first +n` truncation with the full list in a tooltip. */
@@ -363,7 +393,9 @@ export function Descriptions() {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<LightboxState | null>(null);
+  const [voiceOpen, setVoiceOpen] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
+  const voiceBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const t = setTimeout(() => setQd(q.trim().toLowerCase()), 150);
@@ -472,6 +504,13 @@ export function Descriptions() {
     });
   }
 
+  /** Merge a saved desc_content row back into its product without reloading. */
+  function updateContent(rowId: string, content: ContentRow) {
+    setRows((prev) =>
+      prev.map((r) => (r.id === rowId ? { ...r, content } : r)),
+    );
+  }
+
   async function assignTrayImage(imageId: string, productId: string | null) {
     setErr(null);
     try {
@@ -576,6 +615,14 @@ export function Descriptions() {
           onChange={(e) => setQ(e.target.value)}
           style={{ flex: 1, minWidth: 180 }}
         />
+        <button
+          ref={voiceBtnRef}
+          className="secondary"
+          style={{ whiteSpace: "nowrap" }}
+          onClick={() => setVoiceOpen(true)}
+        >
+          Edit brand voice &amp; prompt
+        </button>
         {checked.size > 0 && (
           <span className="tag" style={{ margin: 0 }}>
             {checked.size} selected ·{" "}
@@ -631,7 +678,7 @@ export function Descriptions() {
                 const description =
                   r.content?.description_final ?? r.content?.description_ai ?? null;
                 const meta = r.content?.meta_final ?? r.content?.meta_ai ?? null;
-                const title = r.content?.title_override ?? null;
+                const title = effectiveTitle(r);
                 const isOpen = expanded === r.id;
                 return (
                   <Fragment key={r.id}>
@@ -728,8 +775,23 @@ export function Descriptions() {
                           <span className="muted">not written</span>
                         )}
                       </td>
-                      <td className="muted" title="Formula titles arrive in a later stage">
-                        {title ?? "—"}
+                      <td style={{ maxWidth: 220 }}>
+                        <span
+                          className="row"
+                          style={{ gap: 6, alignItems: "center", flexWrap: "nowrap" }}
+                        >
+                          <TitleLenDot title={title} />
+                          <span
+                            title={`${title}${r.content?.title_override ? " (manual override)" : " (formula)"}`}
+                            style={{
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {title}
+                          </span>
+                        </span>
                       </td>
                       <td className="muted" title="Meta descriptions arrive in a later stage">
                         {meta ?? "—"}
@@ -751,6 +813,7 @@ export function Descriptions() {
                               })
                             }
                             onUnassign={(imageId) => void assignTrayImage(imageId, null)}
+                            onContent={(content) => updateContent(r.id, content)}
                           />
                         </td>
                       </tr>
@@ -800,6 +863,16 @@ export function Descriptions() {
           onIndex={(index) => setLightbox((s) => (s ? { ...s, index } : s))}
         />
       )}
+
+      {voiceOpen && (
+        <DescVoiceModal
+          onClose={() => {
+            setVoiceOpen(false);
+            // Return focus to the trigger button (keyboard flow).
+            voiceBtnRef.current?.focus();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -812,10 +885,12 @@ function ExpandedRow({
   row,
   onLightbox,
   onUnassign,
+  onContent,
 }: {
   row: DescRow;
   onLightbox: (index: number) => void;
   onUnassign: (imageId: string) => void;
+  onContent: (content: ContentRow) => void;
 }) {
   const enriched = Array.isArray(row.attributes?.sheetFeatures);
   const marker = row.slot === "dweled_master" ? "(deck)" : "(pdf)";
@@ -899,9 +974,104 @@ function ExpandedRow({
           )}
         </div>
       </div>
-      <div className="desc-expand-right muted">
-        Description, title and meta editors arrive in a later stage.
+      <div className="desc-expand-right col" style={{ gap: 16 }}>
+        <TitleEditor row={row} onSaved={onContent} />
+        <div className="muted" style={{ fontSize: 12 }}>
+          Description and meta editors arrive with the generation stage.
+        </div>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Title editor — formula with manual override + "Reset to formula"
+// ---------------------------------------------------------------------------
+
+function TitleEditor({
+  row,
+  onSaved,
+}: {
+  row: DescRow;
+  onSaved: (content: ContentRow) => void;
+}) {
+  const formula = formulaTitleFor(row);
+  const [value, setValue] = useState(row.content?.title_override ?? formula);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const saved = row.content?.title_override ?? formula;
+  const dirty = value.trim() !== saved;
+  const hasOverride = !!row.content?.title_override;
+
+  async function persist(override: string | null) {
+    setBusy(true);
+    setErr(null);
+    try {
+      // Content rows are created lazily — the PATCH upserts by product id.
+      const { content } = await api<{ content: ContentRow }>(
+        `/api/descriptions/content/${row.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ action: "save", title_override: override }),
+        },
+      );
+      onSaved(content);
+      setValue(content.title_override ?? formula);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function save() {
+    const trimmed = value.trim();
+    // Saving text identical to the formula stores no override at all.
+    void persist(!trimmed || trimmed === formula ? null : trimmed);
+  }
+
+  return (
+    <div className="col" style={{ gap: 6 }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <strong style={{ fontSize: 13 }}>HTML title</strong>
+        <span className="row" style={{ gap: 6, alignItems: "center" }}>
+          <TitleLenDot title={value.trim() || formula} />
+          <span className="muted" style={{ fontSize: 11 }}>
+            {(value.trim() || formula).length} / {DESC_TITLE_RANGE.min}–
+            {DESC_TITLE_RANGE.max}
+          </span>
+        </span>
+      </div>
+      <input
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        aria-label={`HTML title for ${row.name ?? row.content_key}`}
+      />
+      <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button disabled={busy || !dirty} onClick={save}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+        <button
+          className="secondary"
+          disabled={busy || (!hasOverride && value.trim() === formula)}
+          title={formula}
+          onClick={() => {
+            setValue(formula);
+            if (hasOverride) void persist(null);
+          }}
+        >
+          Reset to formula
+        </button>
+        <span className="muted" style={{ fontSize: 11 }}>
+          {hasOverride ? "Manual override" : "Formula title"}
+          {dirty ? " · unsaved" : ""}
+        </span>
+      </div>
+      {err && (
+        <div className="alert error" style={{ margin: 0 }}>
+          {err}
+        </div>
+      )}
     </div>
   );
 }
