@@ -74,6 +74,33 @@ export const MASTER_SLOT_SHEETS: Record<DescMasterSlot, SheetDescriptor[]> = {
       ],
     },
   ],
+  // WAC Lighting (Limited) and WAC Architectural: no real files exist yet, so
+  // these assume the standard master-sheet template family (row-4 headers,
+  // alpha nameMode, "Master Sheet" tab) that DWELED uses. Deliberately NO
+  // distinctive-column guard: DWELED's discriminators (Tooling Note / sample
+  // qty columns) may legitimately appear in these future files too, so
+  // headers alone cannot tell the WAC Lighting master from DWELED's — the
+  // slot cards say so instead of pretending to detect it.
+  wac_master: [
+    {
+      sheetName: "Master Sheet",
+      sheetKey: "wac",
+      brand: "WAC Lighting",
+      collection: "Limited",
+      year: 2027,
+      nameMode: "alpha",
+    },
+  ],
+  wacarch_master: [
+    {
+      sheetName: "Master Sheet",
+      sheetKey: "wacarch",
+      brand: "WAC Architectural",
+      collection: "Core",
+      year: 2027,
+      nameMode: "alpha",
+    },
+  ],
   mf_master: [
     {
       sheetName: "Master Sheet",
@@ -117,9 +144,13 @@ export const MASTER_SLOT_SHEETS: Record<DescMasterSlot, SheetDescriptor[]> = {
 /** Human labels for the slot cards. */
 export const DESC_SLOT_LABELS: Record<string, string> = {
   dweled_master: "DWELED master list (.xlsx)",
+  wac_master: "WAC Lighting master list (.xlsx)",
+  wacarch_master: "WAC Architectural master list (.xlsx)",
   mf_master: "Modern Forms master list (.xlsx)",
   schonbek_master: "Schonbek master list (.xlsx)",
   dweled_pptx: "DWELED introductions deck (.pptx)",
+  wac_pptx: "WAC Lighting introductions deck (.pptx)",
+  wacarch_pptx: "WAC Architectural introductions deck (.pptx)",
   mf_pdf: "Modern Forms naming PDF",
   schonbek_pdf: "Schonbek Beyond names PDF",
 };
@@ -411,6 +442,23 @@ function scanGroups(
   }
   push();
   return { groups, rows: dataRows };
+}
+
+/**
+ * Pre-formatted EMPTY template blocks (observed in the real Schonbek Sigfor
+ * and 2028 sheets: sixteen No-groups with only a Product Type and a repeated
+ * finish cell, awaiting future products). A group is scaffold ONLY when ALL
+ * identity/data signals are absent: no alpha name, no model numbers, no
+ * Temporary-No. base, and no size dimensions. Any single signal keeps the
+ * group — a tempBase+dims group without a name is a real product awaiting
+ * naming (name corrections are the editor's name_override), not scaffold.
+ */
+function isScaffoldGroup(g: Group): boolean {
+  if (g.alphaName) return false;
+  if (g.tempBase) return false;
+  if (g.rows.some((r) => r.models.length > 0 || r.tempBase)) return false;
+  if (g.rows.some((r) => r.length || r.width || r.height)) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -716,13 +764,24 @@ export function parseMasterWorkbook(
         missing: expected,
       };
     }
-    const { groups, rows } = scanGroups(
+    const { groups: scanned, rows } = scanGroups(
       cells,
       resolved.cols,
       desc.nameMode,
       desc.sheetName,
       warnings,
     );
+    // Drop pre-formatted empty template blocks (no name, no models, no
+    // tempBase, no dimensions) — the Sigfor/2028 sheets carry sixteen each.
+    const groups = scanned.filter((g) => !isScaffoldGroup(g));
+    const scaffolds = scanned.length - groups.length;
+    if (scaffolds > 0) {
+      warnings.push(
+        `${desc.sheetName}: ${scaffolds} empty template block${
+          scaffolds === 1 ? "" : "s"
+        } skipped (no name, models or dimensions)`,
+      );
+    }
     const sheetProducts = groups.map((g, i) =>
       aggregateGroup(g, desc, resolved.cols, headerRow, products.length + i),
     );

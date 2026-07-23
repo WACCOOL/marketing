@@ -34,7 +34,12 @@ import {
   type DescSupplementSlot,
   type ParsedProduct,
 } from "@wac/shared";
-import { anthropicConfigured, claudeMessages, claudeModel } from "../anthropic.js";
+import {
+  anthropicConfigured,
+  claudeMessages,
+  claudeModel,
+  claudeRouterModel,
+} from "../anthropic.js";
 import type { AppBindings } from "../auth.js";
 import { requireAuth, requireFeature } from "../auth.js";
 import { emailsForUserIds, serviceSupabase, userSupabase } from "../supabase.js";
@@ -78,6 +83,18 @@ const SLOT_FILES: Record<DescSlot, { ext: string; contentType: string; magic: "z
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     magic: "zip",
   },
+  wac_master: {
+    ext: "xlsx",
+    contentType:
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    magic: "zip",
+  },
+  wacarch_master: {
+    ext: "xlsx",
+    contentType:
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    magic: "zip",
+  },
   mf_master: {
     ext: "xlsx",
     contentType:
@@ -91,6 +108,18 @@ const SLOT_FILES: Record<DescSlot, { ext: string; contentType: string; magic: "z
     magic: "zip",
   },
   dweled_pptx: {
+    ext: "pptx",
+    contentType:
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    magic: "zip",
+  },
+  wac_pptx: {
+    ext: "pptx",
+    contentType:
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    magic: "zip",
+  },
+  wacarch_pptx: {
     ext: "pptx",
     contentType:
       "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -190,6 +219,8 @@ interface ContentRow {
   meta_ai: string | null;
   meta_final: string | null;
   title_override: string | null;
+  /** Editor's corrected product name (0073) — display/title/prompt input. */
+  name_override: string | null;
   status: "none" | "generated" | "in_review" | "approved";
   note: string | null;
   reviewed_by: string | null;
@@ -200,7 +231,7 @@ interface ContentRow {
 }
 
 const CONTENT_COLS =
-  "id, slot, content_key, description_ai, description_final, meta_ai, meta_final, title_override, status, note, reviewed_by, model, prompt_hash, generated_at, updated_at";
+  "id, slot, content_key, description_ai, description_final, meta_ai, meta_final, title_override, name_override, status, note, reviewed_by, model, prompt_hash, generated_at, updated_at";
 
 interface ImageRow {
   id: string;
@@ -535,6 +566,182 @@ descriptionsRoutes.patch("/images/:id", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /tray/match — read the product name off each unassigned Schonbek tray
+// page with Claude vision and auto-assign unambiguous matches. The pages are
+// rasterized (pdf.js finds zero text items), so the name in large letters
+// top-left is only readable from the rendered JPEG.
+// ---------------------------------------------------------------------------
+
+/** Vision-call cap per request; the client re-runs for a bigger tray. */
+const TRAY_MATCH_LIMIT = 40;
+
+export const TRAY_VISION_SYSTEM =
+  "You read product names off rendered catalog slides for WAC Group. Respond with the name only.";
+export const TRAY_VISION_USER =
+  "Read the product name printed in large letters near the top-left of this slide. Return ONLY the name, or NONE if there is no name.";
+
+/**
+ * Pure response parser (unit-tested): trims wrapping quotes/punctuation,
+ * folds NONE/empty to null, and rejects chatty answers that cannot be a
+ * product name (too long / too many words).
+ */
+export function parseTrayVisionName(raw: string): string | null {
+  const cleaned = raw
+    .trim()
+    .replace(/^["'`]+/, "")
+    .replace(/["'`.]+$/, "")
+    .trim();
+  if (!cleaned) return null;
+  if (/^none$/i.test(cleaned)) return null;
+  if (cleaned.length > 60 || cleaned.split(/\s+/).length > 5) return null;
+  return cleaned;
+}
+
+/**
+ * Pure match resolution (unit-tested): the read name against the Schonbek
+ * master products via the shared matcher (case-fold exact, then Levenshtein
+ * ≤2 / prefix ≥5; every ambiguity stays unmatched — never guess).
+ */
+export function resolveTrayMatch(
+  nameRead: string,
+  products: readonly { id: string; content_key: string; name: string | null }[],
+): { id: string; content_key: string; name: string | null } | null {
+  const [match] = matchSupplementUnits(
+    [{ name: nameRead, modelBases: [] as string[] }],
+    products.map((p) => ({
+      content_key: p.content_key,
+      name: p.name,
+      model_bases: [],
+    })),
+  );
+  const key =
+    match && match.content_keys.length === 1 ? match.content_keys[0]! : null;
+  if (!key) return null;
+  return products.find((p) => p.content_key === key) ?? null;
+}
+
+/** Workers-safe base64 (chunked so large JPEGs don't blow the arg limit). */
+function base64FromBytes(bytes: ArrayBuffer): string {
+  const arr = new Uint8Array(bytes);
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < arr.length; i += CHUNK) {
+    binary += String.fromCharCode(...arr.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+descriptionsRoutes.post("/tray/match", async (c) => {
+  if (!anthropicConfigured(c.env)) {
+    return c.json(
+      { error: "Claude is not configured (set the ANTHROPIC_API_KEY secret)" },
+      503,
+    );
+  }
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const [imgRes, prodRes] = await Promise.all([
+    sb
+      .from("desc_product_images")
+      .select("id, r2_key")
+      .eq("slot", "schonbek_pdf")
+      .is("product_id", null) // existing assignments are never touched
+      .order("sort_order", { ascending: true })
+      .limit(1000),
+    sb
+      .from("desc_products")
+      .select("id, content_key, name")
+      .eq("slot", "schonbek_master")
+      .limit(2000),
+  ]);
+  if (imgRes.error) return c.json({ error: imgRes.error.message }, 500);
+  if (prodRes.error) return c.json({ error: prodRes.error.message }, 500);
+  const allImages = (imgRes.data ?? []) as { id: string; r2_key: string }[];
+  const products = (prodRes.data ?? []) as {
+    id: string;
+    content_key: string;
+    name: string | null;
+  }[];
+  const images = allImages.slice(0, TRAY_MATCH_LIMIT);
+  if (images.length === 0) {
+    return c.json({ assigned: [], unreadable: 0, unmatched: [], errors: [], remaining: 0 });
+  }
+  if (products.length === 0) {
+    return c.json({ error: "no Schonbek master products to match against" }, 400);
+  }
+
+  const model = claudeRouterModel(c.env);
+  const assigned: {
+    image: string;
+    name: string;
+    product: { id: string; content_key: string; name: string | null };
+  }[] = [];
+  const unmatched: { image: string; name_read: string }[] = [];
+  const errors: { image: string; error: string }[] = [];
+  let unreadable = 0;
+
+  for (const img of images) {
+    // Per-image isolation: one bad page (missing object, model hiccup) never
+    // sinks the rest of the run.
+    try {
+      const obj = await c.env.ASSETS_BUCKET.get(img.r2_key);
+      if (!obj) {
+        unreadable++;
+        continue;
+      }
+      const data = base64FromBytes(await obj.arrayBuffer());
+      const mediaType = imageContentType(img.r2_key) as
+        | "image/jpeg"
+        | "image/png"
+        | "image/webp";
+      const res = await claudeMessages(c.env, {
+        system: [{ type: "text", text: TRAY_VISION_SYSTEM }],
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: mediaType, data } },
+              { type: "text", text: TRAY_VISION_USER },
+            ],
+          },
+        ],
+        model,
+        maxTokens: 30,
+      });
+      const nameRead = parseTrayVisionName(claudeText(res));
+      if (!nameRead) {
+        unreadable++;
+        continue;
+      }
+      const product = resolveTrayMatch(nameRead, products);
+      if (!product) {
+        unmatched.push({ image: img.r2_key, name_read: nameRead });
+        continue;
+      }
+      const upd = await sb
+        .from("desc_product_images")
+        .update({ product_id: product.id })
+        .eq("id", img.id)
+        .is("product_id", null); // a concurrent manual assign wins
+      if (upd.error) throw new Error(upd.error.message);
+      assigned.push({ image: img.r2_key, name: nameRead, product });
+    } catch (e) {
+      errors.push({
+        image: img.r2_key,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
+  return c.json({
+    assigned,
+    unreadable,
+    unmatched,
+    errors,
+    remaining: allImages.length - images.length,
+  });
+});
+
+// ---------------------------------------------------------------------------
 // PATCH /content/:target — save copy fields (Stage 3: title override; the
 // route already accepts description/meta so the Stage 4 editors reuse it).
 // desc_content rows are created lazily: a product may have no content row
@@ -544,6 +751,7 @@ descriptionsRoutes.patch("/images/:id", async (c) => {
 const ContentPatchSchema = z.object({
   action: z.enum(["save", "approve", "reopen"]),
   title_override: z.string().max(300).nullable().optional(),
+  name_override: z.string().max(120).nullable().optional(),
   description: z.string().max(6000).nullable().optional(),
   meta: z.string().max(600).nullable().optional(),
 });
@@ -568,11 +776,15 @@ const norm = (v: string | null | undefined): string | null => {
  */
 export function applyContentSave(
   current: { status: DescContentStatus } | null,
-  patch: Pick<ContentPatch, "title_override" | "description" | "meta">,
+  patch: Pick<ContentPatch, "title_override" | "name_override" | "description" | "meta">,
 ): { fields: Record<string, string | null>; error?: string } {
   const fields: Record<string, string | null> = {};
   if (patch.title_override !== undefined) {
     fields.title_override = norm(patch.title_override);
+  }
+  if (patch.name_override !== undefined) {
+    // Like the title: a name correction never moves the review status.
+    fields.name_override = norm(patch.name_override);
   }
   if (patch.description !== undefined) {
     fields.description_final = norm(patch.description);
@@ -607,10 +819,11 @@ export function applyContentApprove(
     description_ai: string | null;
     description_final: string | null;
   } | null,
-  patch: Pick<ContentPatch, "title_override" | "description" | "meta">,
+  patch: Pick<ContentPatch, "title_override" | "name_override" | "description" | "meta">,
 ): { fields: Record<string, string | null>; error?: string } {
   const hasEdits =
     patch.title_override !== undefined ||
+    patch.name_override !== undefined ||
     patch.description !== undefined ||
     patch.meta !== undefined;
   if (current?.status === "approved" && hasEdits) {
@@ -625,6 +838,9 @@ export function applyContentApprove(
   const fields: Record<string, string | null> = {};
   if (patch.title_override !== undefined) {
     fields.title_override = norm(patch.title_override);
+  }
+  if (patch.name_override !== undefined) {
+    fields.name_override = norm(patch.name_override);
   }
   if (patch.description !== undefined) {
     fields.description_final = norm(patch.description);
@@ -796,6 +1012,7 @@ function contentRowEmpty(row: {
   meta_ai: string | null;
   meta_final: string | null;
   title_override: string | null;
+  name_override?: string | null;
 }): boolean {
   return (
     row.status === "none" &&
@@ -803,7 +1020,8 @@ function contentRowEmpty(row: {
     !row.description_final &&
     !row.meta_ai &&
     !row.meta_final &&
-    !row.title_override
+    !row.title_override &&
+    !row.name_override
   );
 }
 
@@ -957,6 +1175,99 @@ descriptionsRoutes.delete("/content/:id", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /products/delete — remove products (and their images + copy) outright.
+// Explicit user deletion, confirmed client-side: unlike a re-import, this
+// deletes desc_content rows of ANY status. A master re-import recreates the
+// products wholesale, so nothing here is unrecoverable beyond the copy.
+// ---------------------------------------------------------------------------
+
+const DeleteProductsSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(400),
+});
+
+/**
+ * Pure planner for POST /products/delete (unit-tested): requires at least one
+ * requested product to exist, reports how many ids were unknown (stale client
+ * state after a re-import), and groups the doomed (slot, content_key) pairs
+ * per slot so the copy delete runs as one IN-list per slot.
+ */
+export function deleteProductsPlan(
+  requested: string[],
+  found: { id: string; slot: string; content_key: string }[],
+):
+  | { error: string; status: 404 }
+  | { keysBySlot: Map<string, string[]>; missing: number } {
+  if (found.length === 0) {
+    return { error: "no matching products found", status: 404 };
+  }
+  const keysBySlot = new Map<string, string[]>();
+  for (const p of found) {
+    const list = keysBySlot.get(p.slot) ?? [];
+    list.push(p.content_key);
+    keysBySlot.set(p.slot, list);
+  }
+  return { keysBySlot, missing: requested.length - found.length };
+}
+
+descriptionsRoutes.post("/products/delete", async (c) => {
+  const parsed = DeleteProductsSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  const ids = [...new Set(parsed.data.ids)];
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { data, error } = await sb
+    .from("desc_products")
+    .select("id, slot, content_key")
+    .in("id", ids);
+  if (error) return c.json({ error: error.message }, 500);
+  const found = (data ?? []) as { id: string; slot: string; content_key: string }[];
+  const plan = deleteProductsPlan(ids, found);
+  if ("error" in plan) return c.json({ error: plan.error }, plan.status);
+
+  // RLS restricts DELETE to admins; the deletes run on the service role after
+  // the user-client read above proved visibility. Image rows are deleted
+  // EXPLICITLY — the ON DELETE SET NULL FK would otherwise drop the deleted
+  // products' renders into the unassigned tray as ghosts. R2 objects stay
+  // (content-hash keys are shared/deduped across imports).
+  const admin = serviceSupabase(c.env);
+  const foundIds = found.map((p) => p.id);
+  const delImgs = await admin
+    .from("desc_product_images")
+    .delete()
+    .in("product_id", foundIds)
+    .select("id");
+  if (delImgs.error) return c.json({ error: delImgs.error.message }, 500);
+
+  let contentDeleted = 0;
+  for (const [slot, keys] of plan.keysBySlot) {
+    const delContent = await admin
+      .from("desc_content")
+      .delete()
+      .eq("slot", slot)
+      .in("content_key", keys)
+      .select("id");
+    if (delContent.error) return c.json({ error: delContent.error.message }, 500);
+    contentDeleted += (delContent.data ?? []).length;
+  }
+
+  const delProducts = await admin
+    .from("desc_products")
+    .delete()
+    .in("id", foundIds)
+    .select("id");
+  if (delProducts.error) return c.json({ error: delProducts.error.message }, 500);
+
+  return c.json({
+    deleted: (delProducts.data ?? []).length,
+    images: (delImgs.data ?? []).length,
+    content: contentDeleted,
+    missing: plan.missing,
+    ids: foundIds,
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Generation — POST /generate, POST /regenerate-meta, POST /bulk-approve
 // (plan decisions 7/8/11)
 // ---------------------------------------------------------------------------
@@ -1040,15 +1351,28 @@ function claudeText(res: { content: { type: string }[] }): string {
 }
 
 /** The effective HTML title (override ?? formula) used for meta keywording. */
+/** Product with the editor's corrected name (0073) folded in — feeds the
+ * title formula and the generation fact sheet so the corrected name is what
+ * the copy talks about. */
+function withNameOverride(
+  product: ProductRow,
+  content: ContentRow | null,
+): ProductRow {
+  return content?.name_override
+    ? { ...product, name: content.name_override }
+    : product;
+}
+
 function effectiveTitle(product: ProductRow, content: ContentRow | null): string {
+  const p = withNameOverride(product, content);
   return (
     content?.title_override ??
     titleFor({
-      brand: product.brand,
-      collection: product.collection,
-      name: product.name,
-      productType: product.product_type,
-      modelBases: product.model_bases,
+      brand: p.brand,
+      collection: p.collection,
+      name: p.name,
+      productType: p.product_type,
+      modelBases: p.model_bases,
     })
   );
 }
@@ -1317,7 +1641,7 @@ descriptionsRoutes.post("/generate", async (c) => {
 
       const prompt = buildDescriptionPrompt({
         profile,
-        product,
+        product: withNameOverride(product, current),
         referenceCopy,
         avoidOpenings,
         // Rotation keyed to run position so chunked client batches keep
@@ -1338,7 +1662,7 @@ descriptionsRoutes.post("/generate", async (c) => {
       const title = effectiveTitle(product, current);
       const { meta, prompt: metaPrompt } = await generateMetaText(
         c.env,
-        product,
+        withNameOverride(product, current),
         title,
         description,
         avoidMetas,
@@ -1449,7 +1773,7 @@ descriptionsRoutes.post("/regenerate-meta", async (c) => {
     const siblings = await recentSiblingOpenings(sb, product);
     const { meta, prompt: metaPrompt } = await generateMetaText(
       c.env,
-      product,
+      withNameOverride(product, current),
       effectiveTitle(product, current),
       description,
       siblings.metaOpenings,
@@ -1935,7 +2259,7 @@ async function commitMaster(c: Ctx, slot: DescMasterSlot): Promise<Response> {
     sb
       .from("desc_content")
       .select(
-        "content_key, status, description_ai, description_final, meta_final, title_override",
+        "content_key, status, description_ai, description_final, meta_final, title_override, name_override",
       )
       .eq("slot", slot)
       .limit(4000),
@@ -1956,6 +2280,7 @@ async function commitMaster(c: Ctx, slot: DescMasterSlot): Promise<Response> {
     description_final: string | null;
     meta_final: string | null;
     title_override: string | null;
+    name_override: string | null;
   }[];
 
   // Model-base relink runs FIRST; removed is computed after (decision 4).
@@ -2151,7 +2476,7 @@ async function commitMaster(c: Ctx, slot: DescMasterSlot): Promise<Response> {
             import_id: supImportId,
             slot: supSlot,
             r2_key: r2Key,
-            source: supSlot === "dweled_pptx" ? "pptx" : "pdf",
+            source: supSlot.endsWith("_pptx") ? "pptx" : "pdf",
             sort_order: SUPPLEMENT_SORT_BASE + i,
           });
         });
@@ -2239,7 +2564,7 @@ async function commitMaster(c: Ctx, slot: DescMasterSlot): Promise<Response> {
 }
 
 // ---------------------------------------------------------------------------
-// Supplemental commit (dweled_pptx / mf_pdf / schonbek_pdf)
+// Supplemental commit (pptx decks / mf_pdf / schonbek_pdf)
 // ---------------------------------------------------------------------------
 
 async function commitSupplement(c: Ctx, slot: DescSupplementSlot): Promise<Response> {
@@ -2413,7 +2738,7 @@ async function commitSupplement(c: Ctx, slot: DescSupplementSlot): Promise<Respo
             import_id,
             slot,
             r2_key: r2Key,
-            source: slot === "dweled_pptx" ? "pptx" : "pdf",
+            source: slot.endsWith("_pptx") ? "pptx" : "pdf",
             sort_order: SUPPLEMENT_SORT_BASE + i,
           });
         });

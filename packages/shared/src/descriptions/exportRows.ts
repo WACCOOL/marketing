@@ -28,6 +28,8 @@ export interface ExportContent {
   meta_ai: string | null;
   meta_final: string | null;
   title_override: string | null;
+  /** Editor's corrected product name (optional pre-0073). */
+  name_override?: string | null;
   status: keyof typeof DESC_STATUS_LABELS;
 }
 
@@ -90,12 +92,15 @@ export function exportRow(p: ExportProduct): string[] {
   const c = p.content;
   const description = c?.description_final ?? c?.description_ai ?? "";
   const meta = c?.meta_final ?? c?.meta_ai ?? "";
+  // The editor's corrected name wins everywhere: the Name column AND the
+  // title formula input (so the Schonbek pattern picks up the fixed name).
+  const name = c?.name_override ?? p.name;
   const title =
     c?.title_override ??
     titleFor({
       brand: p.brand,
       collection: p.collection,
-      name: p.name,
+      name,
       productType: p.product_type,
       modelBases: p.model_bases,
     });
@@ -103,7 +108,7 @@ export function exportRow(p: ExportProduct): string[] {
     p.brand,
     p.collection,
     String(p.year),
-    p.name ?? "",
+    name ?? "",
     p.family ?? "",
     p.product_type ?? "",
     p.diffuser_type ?? "",

@@ -142,13 +142,28 @@ export interface ClaudeWebSearchToolResultBlock {
     | { type: "web_search_tool_result_error"; error_code: string };
 }
 
+/**
+ * A base64 image content block (vision input — e.g. the Descriptions tray
+ * page-name reader). Request-side only: the model never emits image blocks,
+ * so response handling is unaffected.
+ */
+export interface ClaudeImageBlock {
+  type: "image";
+  source: {
+    type: "base64";
+    media_type: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
+    data: string;
+  };
+}
+
 export type ClaudeContentBlock =
   | ClaudeTextBlock
   | ClaudeThinkingBlock
   | ClaudeToolUseBlock
   | ClaudeToolResultBlock
   | ClaudeServerToolUseBlock
-  | ClaudeWebSearchToolResultBlock;
+  | ClaudeWebSearchToolResultBlock
+  | ClaudeImageBlock;
 
 export interface ClaudeMessage {
   role: "user" | "assistant";

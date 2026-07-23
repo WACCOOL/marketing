@@ -450,6 +450,70 @@ describe("Schonbek workbook (alpha forward-fill + numeric modes)", () => {
   });
 });
 
+describe("empty template blocks (scaffold groups)", () => {
+  // Real Schonbek shape: pre-formatted No-groups awaiting future products —
+  // only a Product Type and a repeated finish cell, nothing else.
+  const scaffoldRows: Cell[][] = [
+    // Real product: tempBase + dims, no name (kept — name_override territory).
+    [1, "Flush Mount", "AB", "12", "12", "4", "3000K", null, "41QF0303-1", null],
+    // Scaffold: No=8..10, Product Type + finish only. Distinct No per group.
+    [8, "Outdoor Sconce", "AB", null, null, null, null, null, null, null],
+    [9, "Outdoor Sconce", "AB", null, null, null, null, null, null, null],
+    [10, "Outdoor Sconce", "AB", null, null, null, null, null, null, null],
+    // Kept: only dims (a 2028-style group with sizes but no ids yet).
+    [11, "Pendant", "AB", "10", "10", "20", null, null, null, null],
+    // Kept: only a model number.
+    [12, "Sconce", "AB", null, null, null, null, "BWS55501-AB", null, null],
+    // Kept: only a tempBase.
+    [13, "Chandelier", "AB", null, null, null, null, null, "41ZZ0101-1", null],
+  ];
+
+  const res = parseMasterWorkbook("schonbek_master", {
+    "2027 Beyond (Core)": sheet(ALPHA_HEADERS, beyond2027Rows),
+    "2027 Sigfor (Core)": sheet(NUMERIC_HEADERS, scaffoldRows),
+    "2028 Beyond": sheet(NUMERIC_HEADERS, beyond2028Rows),
+  });
+
+  it("drops groups with no name, no models, no tempBase and no dimensions", () => {
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const sigfor = res.products.filter((p) => p.collection === "Signature");
+    expect(sigfor.map((p) => p.name)).toEqual([
+      "41QF0303",
+      "Item 11",
+      "Item 12",
+      "41ZZ0101",
+    ]);
+    // No "Item 8/9/10" scaffold rows survive.
+    expect(sigfor.some((p) => /Item (8|9|10)$/.test(p.name ?? ""))).toBe(false);
+  });
+
+  it("counts the dropped scaffolds in the sheet report and warnings", () => {
+    if (!res.ok) return;
+    const sigforReport = res.sheets.find((s) => s.sheet === "2027 Sigfor (Core)");
+    expect(sigforReport?.groups).toBe(4);
+    expect(
+      res.warnings.some((w) =>
+        w.includes("3 empty template blocks skipped"),
+      ),
+    ).toBe(true);
+  });
+
+  it("an alpha-named group with nothing else is kept", () => {
+    const alpha = parseMasterWorkbook("dweled_master", {
+      "Master Sheet": sheet(DWELED_HEADERS, [
+        ["ZALTA", null, "Outdoor Sconce", null, "BK", "26", "5", "7", "3000K", "ZZ990726-BK", null, null, null, null, null],
+        // Name only — a placeholder row with a real name stays.
+        ["VELMIO", null, null, null, null, null, null, null, null, null, null, null, null, null, null],
+      ]),
+    });
+    expect(alpha.ok).toBe(true);
+    if (!alpha.ok) return;
+    expect(alpha.products.map((p) => p.name)).toEqual(["ZALTA", "VELMIO"]);
+    expect(alpha.warnings.some((w) => w.includes("template block"))).toBe(false);
+  });
+});
+
 describe("content_key stability", () => {
   it("keys are content-derived: blank-row insertions and appended groups do not shift them", () => {
     const base = parseMasterWorkbook("dweled_master", {

@@ -12,8 +12,9 @@ import { downscaleToJpeg, mimeForMediaPath, uploadDescImages } from "./imageUplo
 import { uploadRawFile } from "./importMaster.js";
 
 /**
- * Client orchestration for the three supplemental slots (plan Stage 2):
- *   dweled_pptx  — slide text + hero images → units with bullets + images
+ * Client orchestration for the supplemental slots (plan Stage 2):
+ *   *_pptx decks (DWELED / WAC Lighting / WAC Architectural) — slide text +
+ *                  hero images → units with bullets + images
  *   mf_pdf       — page text → units with bullets (no images)
  *   schonbek_pdf — image-only pages rendered to JPEG → unassigned tray
  * Flow order per plan: extract → upload images (4-way) → upload raw →
@@ -46,12 +47,11 @@ export async function importSupplementFile(
 ): Promise<SupplementOutcome> {
   try {
     onPhase?.({ kind: "reading" });
-    const payload =
-      slot === "dweled_pptx"
-        ? await preparePptx(slot, file, onPhase)
-        : slot === "mf_pdf"
-          ? await prepareMfPdf(slot, file)
-          : await prepareSchonbekPdf(slot, file, onPhase);
+    const payload = slot.endsWith("_pptx")
+      ? await preparePptx(slot, file, onPhase)
+      : slot === "mf_pdf"
+        ? await prepareMfPdf(slot, file)
+        : await prepareSchonbekPdf(slot, file, onPhase);
     if (payload.units.length === 0) {
       return { ok: false, error: "no usable product slides/pages were found in this file" };
     }

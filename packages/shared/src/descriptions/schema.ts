@@ -7,21 +7,28 @@ import { z } from "zod";
  * the client blob is never trusted (plan §2).
  */
 
-/** The three master-list slots (xlsx). Supplemental slots land in Stage 2. */
+/** The master-list slots (xlsx), ordered brand-coherently for the UI strip:
+ * the WAC Lighting family first (Dweled, Limited, Architectural), then
+ * Modern Forms and Schonbek. Slot lists must stay in sync with the DB CHECK
+ * constraints (migrations 0072 + 0073). */
 export const DESC_MASTER_SLOTS = [
   "dweled_master",
+  "wac_master",
+  "wacarch_master",
   "mf_master",
   "schonbek_master",
 ] as const;
 
-/** The three supplemental enrichment slots (pptx/pdf). */
+/** The supplemental enrichment slots (pptx/pdf), same brand order. */
 export const DESC_SUPPLEMENT_SLOTS = [
   "dweled_pptx",
+  "wac_pptx",
+  "wacarch_pptx",
   "mf_pdf",
   "schonbek_pdf",
 ] as const;
 
-/** All six file slots (masters + supplemental pptx/pdf enrichment). */
+/** All ten file slots (masters + supplemental pptx/pdf enrichment). */
 export const DESC_SLOTS = [
   ...DESC_MASTER_SLOTS,
   ...DESC_SUPPLEMENT_SLOTS,
@@ -52,6 +59,8 @@ export function isDescSupplementSlot(v: string): v is DescSupplementSlot {
  */
 export const SUPPLEMENT_MASTER: Record<DescSupplementSlot, DescMasterSlot | null> = {
   dweled_pptx: "dweled_master",
+  wac_pptx: "wac_master",
+  wacarch_pptx: "wacarch_master",
   mf_pdf: "mf_master",
   schonbek_pdf: null,
 };
@@ -59,6 +68,8 @@ export const SUPPLEMENT_MASTER: Record<DescSupplementSlot, DescMasterSlot | null
 /** Reverse map: the supplemental slot re-applied after a master re-import. */
 export const MASTER_SUPPLEMENT: Record<DescMasterSlot, DescSupplementSlot> = {
   dweled_master: "dweled_pptx",
+  wac_master: "wac_pptx",
+  wacarch_master: "wacarch_pptx",
   mf_master: "mf_pdf",
   schonbek_master: "schonbek_pdf",
 };
@@ -140,7 +151,10 @@ export type SheetReport = z.infer<typeof SheetReportSchema>;
 export const DescImageKeySchema = z
   .string()
   .regex(
-    /^descriptions\/img\/(?:dweled_master|mf_master|schonbek_master|dweled_pptx|mf_pdf|schonbek_pdf)\/[a-f0-9]{16,64}\.(?:jpg|png|webp)$/,
+    // Built from DESC_SLOTS so a new slot can never drift out of this guard.
+    new RegExp(
+      `^descriptions\\/img\\/(?:${DESC_SLOTS.join("|")})\\/[a-f0-9]{16,64}\\.(?:jpg|png|webp)$`,
+    ),
     "not a descriptions image key",
   );
 

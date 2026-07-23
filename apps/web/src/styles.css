@@ -2099,20 +2099,36 @@ a.thom-family-member:hover {
   flex-wrap: wrap;
 }
 
-/* Expanded row: left product panel now, editors join in a later stage. */
+/* Expanded row: left product panel + copy editors. The td spans the whole
+   (wide, sideways-scrolling) table; the sticky wrapper pins the content to
+   the scrollport's left edge and is sized to the container's clientWidth
+   from a ResizeObserver, so the editors are always fully visible without
+   horizontal scrolling. */
 .desc-expand-row > td {
   background: var(--bg);
+  padding: 0;
+}
+.desc-expand-sticky {
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
+  max-width: 100%;
 }
 .desc-expand {
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
   gap: 16px;
-  padding: 12px 4px;
+  padding: 14px 16px;
   white-space: normal;
+}
+/* Narrow CONTAINER (not viewport — the sidebar eats width): stack the
+   product panel above the editors. Class set from the measured width. */
+.desc-expand-narrow .desc-expand {
+  grid-template-columns: minmax(0, 1fr);
 }
 @media (max-width: 900px) {
   .desc-expand {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 .desc-expand-left {
@@ -2262,12 +2278,22 @@ a.thom-family-member:hover {
   color: var(--danger);
 }
 
-/* Source-file slot strips: 3-up when there is room, wrapping down to one
-   column in a narrow window so the page never scrolls horizontally. */
+/* Source-file slot strips: two labeled sections (masters / enrichment), each
+   an auto-fill grid that wraps 5-up → 1-up so ten cards reflow gracefully and
+   the page never scrolls horizontally. auto-fill (not auto-fit) keeps card
+   widths consistent between the two rows. */
 .desc-slots {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 12px;
+}
+.desc-slots-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.desc-slots + .desc-slots-label {
+  margin-top: 6px;
 }
 
 /* Export dropdown (batch card): backdrop catches the outside click. */

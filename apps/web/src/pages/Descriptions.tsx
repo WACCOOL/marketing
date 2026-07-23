@@ -50,9 +50,12 @@ import {
 
 const XLSX_ACCEPT =
   ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const PPTX_ACCEPT =
+  ".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation";
 const SLOT_ACCEPT: Record<DescSupplementSlot, string> = {
-  dweled_pptx:
-    ".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  dweled_pptx: PPTX_ACCEPT,
+  wac_pptx: PPTX_ACCEPT,
+  wacarch_pptx: PPTX_ACCEPT,
   mf_pdf: ".pdf,application/pdf",
   schonbek_pdf: ".pdf,application/pdf",
 };
@@ -66,6 +69,8 @@ interface ContentRow {
   meta_ai: string | null;
   meta_final: string | null;
   title_override: string | null;
+  /** Editor's corrected product name; display name = override ?? imported. */
+  name_override: string | null;
   status: DescContentStatus;
   note: string | null;
   updated_at: string;
@@ -195,12 +200,19 @@ function sizeRange(sizes: SizeTuple[]): string {
   return `${l} × ${w} × ${h} in`;
 }
 
-/** The deterministic per-brand formula title for a row (plan decision 6). */
+/** Display name everywhere: the editor's correction wins over the imported
+ * (possibly placeholder, e.g. "41QF0303") name. */
+function displayNameOf(row: DescRow): string | null {
+  return row.content?.name_override ?? row.name;
+}
+
+/** The deterministic per-brand formula title for a row (plan decision 6).
+ * Uses the display name so a corrected name flows into the title formula. */
 function formulaTitleFor(row: DescRow): string {
   return titleFor({
     brand: row.brand,
     collection: row.collection,
-    name: row.name,
+    name: displayNameOf(row),
     productType: row.product_type,
     modelBases: row.model_bases,
   });
@@ -441,6 +453,26 @@ export function Descriptions() {
   const selectAllRef = useRef<HTMLInputElement>(null);
   const voiceBtnRef = useRef<HTMLButtonElement>(null);
 
+  // The expanded editor row pins itself to the visible width of the
+  // horizontally-scrolling table container (sticky left:0 + measured width),
+  // so the editors never require sideways scrolling. Measured (not derived
+  // from 100vw) because the collapsible sidebar changes the available width.
+  const tableWrapRef = useRef<HTMLDivElement>(null);
+  const [wrapWidth, setWrapWidth] = useState<number | null>(null);
+  useEffect(() => {
+    const el = tableWrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const update = () => setWrapWidth(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Tray vision-match state (Schonbek pages → Claude name reads).
+  const [trayBusy, setTrayBusy] = useState(false);
+  const [trayNotice, setTrayNotice] = useState<string | null>(null);
+
   // Batch generation state (ProductInfo runGenerateBatch pattern).
   const [genBusy, setGenBusy] = useState(false);
   const [genNotice, setGenNotice] = useState<string | null>(null);
@@ -518,7 +550,12 @@ export function Descriptions() {
       if (ptype && r.product_type !== ptype) return false;
       if (status && statusOf(r) !== status) return false;
       if (qd) {
-        const hay = [r.name ?? "", r.family ?? "", ...r.model_numbers]
+        const hay = [
+          r.name ?? "",
+          r.content?.name_override ?? "",
+          r.family ?? "",
+          ...r.model_numbers,
+        ]
           .join(" ")
           .toLowerCase();
         if (!hay.includes(qd)) return false;
@@ -707,6 +744,59 @@ export function Descriptions() {
     }
   }
 
+  /**
+   * Delete products outright (batch button or the per-row Delete in the
+   * expanded panel). Explicitly destructive: drafts AND approved copy go with
+   * the products (the confirm covers it); a master re-import recreates the
+   * slot wholesale, so deletion is never beyond repair.
+   */
+  async function deleteProducts(ids: string[]) {
+    const targets = rows.filter((r) => ids.includes(r.id));
+    if (targets.length === 0) return;
+    const n = targets.length;
+    if (
+      !confirm(
+        `Delete ${n} product${n === 1 ? "" : "s"} from this table? Any drafts or approved copy for ${
+          n === 1 ? "it" : "them"
+        } will be deleted too. Re-importing the master file will bring the product${
+          n === 1 ? "" : "s"
+        } back.`,
+      )
+    ) {
+      return;
+    }
+    setGenBusy(true);
+    setErr(null);
+    try {
+      const res = await api<{ deleted: number; content: number; missing: number }>(
+        "/api/descriptions/products/delete",
+        {
+          method: "POST",
+          body: JSON.stringify({ ids: targets.map((r) => r.id) }),
+        },
+      );
+      const gone = new Set(targets.map((r) => r.id));
+      setRows((prev) => prev.filter((r) => !gone.has(r.id)));
+      setChecked((prev) => {
+        const next = new Set(prev);
+        for (const id of gone) next.delete(id);
+        return next;
+      });
+      setExpanded((cur) => (cur && gone.has(cur) ? null : cur));
+      setGenNotice(
+        `Deleted ${res.deleted} product${res.deleted === 1 ? "" : "s"}${
+          res.content > 0
+            ? ` and ${res.content} saved cop${res.content === 1 ? "y" : "ies"}`
+            : ""
+        }. Re-importing the master file brings them back.`,
+      );
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setGenBusy(false);
+    }
+  }
+
   async function assignTrayImage(imageId: string, productId: string | null) {
     setErr(null);
     try {
@@ -717,6 +807,45 @@ export function Descriptions() {
       await load();
     } catch (e) {
       setErr(errorMessage(e));
+    }
+  }
+
+  /** Claude-vision pass over the unassigned Schonbek tray: read the name off
+   * each rendered page and auto-assign unambiguous matches. */
+  async function matchTray() {
+    setTrayBusy(true);
+    setErr(null);
+    setTrayNotice(null);
+    try {
+      const res = await api<{
+        assigned: unknown[];
+        unreadable: number;
+        unmatched: { image: string; name_read: string }[];
+        errors: { image: string; error: string }[];
+        remaining: number;
+      }>("/api/descriptions/tray/match", { method: "POST", body: "{}" });
+      const bits = [
+        `${res.assigned.length} page${res.assigned.length === 1 ? "" : "s"} matched`,
+        `${res.unreadable} unreadable`,
+        `${res.unmatched.length} unmatched${
+          res.unmatched.length > 0
+            ? ` (read: ${res.unmatched
+                .slice(0, 6)
+                .map((u) => u.name_read)
+                .join(", ")}${res.unmatched.length > 6 ? "…" : ""})`
+            : ""
+        }`,
+      ];
+      if (res.errors.length > 0) bits.push(`${res.errors.length} failed`);
+      if (res.remaining > 0) {
+        bits.push(`${res.remaining} more pages left; run it again`);
+      }
+      setTrayNotice(bits.join(", ") + ".");
+      await load();
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setTrayBusy(false);
     }
   }
 
@@ -756,6 +885,7 @@ export function Descriptions() {
         </div>
         {filesOpen && (
           <>
+            <div className="muted desc-slots-label">Master lists</div>
             <div className="desc-slots">
               {DESC_MASTER_SLOTS.map((slot) => (
                 <MasterSlotCard
@@ -765,6 +895,9 @@ export function Descriptions() {
                   onImported={load}
                 />
               ))}
+            </div>
+            <div className="muted desc-slots-label">
+              Enrichment decks &amp; PDFs
             </div>
             <div className="desc-slots">
               {DESC_SUPPLEMENT_SLOTS.map((slot) => (
@@ -848,12 +981,13 @@ export function Descriptions() {
           cancelRef.current = true;
         }}
         onApprove={() => void bulkApprove()}
+        onDelete={() => void deleteProducts([...checked])}
       />
 
       {err && <div className="alert error">{err}</div>}
 
       <div className="card">
-        <div className="desc-table-wrap">
+        <div className="desc-table-wrap" ref={tableWrapRef}>
           <table>
             <thead>
               <tr>
@@ -890,6 +1024,7 @@ export function Descriptions() {
                   r.content?.description_final ?? r.content?.description_ai ?? null;
                 const meta = r.content?.meta_final ?? r.content?.meta_ai ?? null;
                 const title = effectiveTitle(r);
+                const dispName = displayNameOf(r);
                 const isOpen = expanded === r.id;
                 return (
                   <Fragment key={r.id}>
@@ -903,7 +1038,7 @@ export function Descriptions() {
                           checked={checked.has(r.id)}
                           onChange={() => toggleChecked(r.id)}
                           style={{ width: "auto" }}
-                          aria-label={`Select ${r.name ?? r.content_key}`}
+                          aria-label={`Select ${dispName ?? r.content_key}`}
                         />
                       </td>
                       <td onClick={(e) => e.stopPropagation()}>
@@ -914,14 +1049,14 @@ export function Descriptions() {
                               setLightbox({
                                 images: r.images,
                                 index: 0,
-                                title: r.name ?? r.content_key,
+                                title: dispName ?? r.content_key,
                               })
                             }
-                            aria-label={`View ${r.images.length} images of ${r.name ?? r.content_key}`}
+                            aria-label={`View ${r.images.length} images of ${dispName ?? r.content_key}`}
                           >
                             <DescImg
                               r2Key={r.images[0]!.r2_key}
-                              alt={r.name ?? r.content_key}
+                              alt={dispName ?? r.content_key}
                               className="desc-thumb"
                             />
                             {r.images.length > 1 && (
@@ -935,7 +1070,18 @@ export function Descriptions() {
                         )}
                       </td>
                       <td>
-                        <div style={{ fontWeight: 600 }}>{r.name ?? "—"}</div>
+                        <div style={{ fontWeight: 600 }}>
+                          {dispName ?? "—"}
+                          {r.content?.name_override && (
+                            <span
+                              className="muted"
+                              style={{ fontWeight: 400, fontSize: 11, marginLeft: 6 }}
+                              title={`Imported as "${r.name ?? "—"}"`}
+                            >
+                              (renamed)
+                            </span>
+                          )}
+                        </div>
                         {r.family && (
                           <div className="muted" style={{ fontSize: 11 }}>
                             {r.family}
@@ -1032,13 +1178,27 @@ export function Descriptions() {
                     {isOpen && (
                       <tr className="desc-expand-row">
                         <td colSpan={15}>
+                          {/* Sticky wrapper pinned to the scrollport's left
+                              edge, sized to its visible width — the editors
+                              always fit on screen even though the table
+                              behind scrolls sideways. */}
+                          <div
+                            className={`desc-expand-sticky${
+                              wrapWidth !== null && wrapWidth < 720
+                                ? " desc-expand-narrow"
+                                : ""
+                            }`}
+                            style={
+                              wrapWidth !== null ? { width: wrapWidth } : undefined
+                            }
+                          >
                           <ExpandedRow
                             row={r}
                             onLightbox={(index) =>
                               setLightbox({
                                 images: r.images,
                                 index,
-                                title: r.name ?? r.content_key,
+                                title: dispName ?? r.content_key,
                               })
                             }
                             onUnassign={(imageId) => void assignTrayImage(imageId, null)}
@@ -1061,8 +1221,10 @@ export function Descriptions() {
                               }
                               void runGenerate([r.id], { overwriteEdits: true });
                             }}
+                            onDelete={() => void deleteProducts([r.id])}
                             generating={genBusy || inflight.has(r.id)}
                           />
+                          </div>
                         </td>
                       </tr>
                     )}
@@ -1117,10 +1279,13 @@ export function Descriptions() {
         />
       )}
 
-      {tray.length > 0 && (
+      {(tray.length > 0 || trayNotice) && (
         <TrayCard
           tray={tray}
           rows={rows}
+          matching={trayBusy}
+          notice={trayNotice}
+          onMatch={() => void matchTray()}
           onAssign={(imageId, productId) => void assignTrayImage(imageId, productId)}
           onView={(index) =>
             setLightbox({ images: tray, index, title: "Unassigned Schonbek pages" })
@@ -1164,6 +1329,7 @@ function BatchCard({
   onGenerate,
   onStop,
   onApprove,
+  onDelete,
 }: {
   checkedRows: DescRow[];
   filteredRows: DescRow[];
@@ -1175,6 +1341,7 @@ function BatchCard({
   onGenerate: () => void;
   onStop: () => void;
   onApprove: () => void;
+  onDelete: () => void;
 }) {
   const eligible = checkedRows.filter((r) => statusOf(r) !== "approved").length;
   const excluded = checkedRows.length - eligible;
@@ -1208,6 +1375,19 @@ function BatchCard({
           checkedRows={checkedRows}
           allRows={allRows}
         />
+        <button
+          className="secondary"
+          style={{ color: "var(--danger)" }}
+          onClick={onDelete}
+          disabled={busy || checkedRows.length === 0}
+          title={
+            checkedRows.length === 0
+              ? "Select rows with the checkboxes first"
+              : "Deletes the selected products and their copy; re-importing the master file brings them back"
+          }
+        >
+          Delete selected ({checkedRows.length})
+        </button>
         {excluded > 0 && (
           <span className="muted" style={{ fontSize: 12 }}>
             {excluded} approved row{excluded === 1 ? "" : "s"} excluded from
@@ -1390,6 +1570,7 @@ function ExpandedRow({
   onUnassign,
   onContent,
   onGenerate,
+  onDelete,
   generating,
 }: {
   row: DescRow;
@@ -1397,10 +1578,12 @@ function ExpandedRow({
   onUnassign: (imageId: string) => void;
   onContent: (content: ContentRow) => void;
   onGenerate: () => void;
+  onDelete: () => void;
   generating: boolean;
 }) {
   const enriched = Array.isArray(row.attributes?.sheetFeatures);
-  const marker = row.slot === "dweled_master" ? "(deck)" : "(pdf)";
+  // Deck-enriched brands (DWELED/WAC pptx pairs) vs the MF naming PDF.
+  const marker = row.slot === "mf_master" ? "(pdf)" : "(deck)";
   return (
     <div className="desc-expand">
       <div className="desc-expand-left">
@@ -1480,8 +1663,20 @@ function ExpandedRow({
             <span className="muted">No features yet. Import the deck or naming PDF to fill these in.</span>
           )}
         </div>
+        <div>
+          <button
+            className="secondary"
+            style={{ fontSize: 12, color: "var(--danger)" }}
+            disabled={generating}
+            onClick={onDelete}
+            title="Deletes this product and its copy; re-importing the master file brings it back"
+          >
+            Delete product
+          </button>
+        </div>
       </div>
       <div className="desc-expand-right col" style={{ gap: 16 }}>
+        <NameEditor row={row} onSaved={onContent} />
         <DescriptionEditor
           row={row}
           onSaved={onContent}
@@ -1491,6 +1686,94 @@ function ExpandedRow({
         <MetaEditor row={row} onSaved={onContent} />
         <TitleEditor row={row} onSaved={onContent} />
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Name editor — correct placeholder names (Sigfor "41QF0303" temp bases and
+// the like). Stored as desc_content.name_override so the correction survives
+// re-imports; the display name, title formula, export and generation fact
+// sheet all use override ?? imported name.
+// ---------------------------------------------------------------------------
+
+function NameEditor({
+  row,
+  onSaved,
+}: {
+  row: DescRow;
+  onSaved: (content: ContentRow) => void;
+}) {
+  const imported = row.name ?? "";
+  const saved = row.content?.name_override ?? imported;
+  const [value, setValue] = useState(saved);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const dirty = value.trim() !== saved;
+  const hasOverride = !!row.content?.name_override;
+
+  async function persist(override: string | null) {
+    setBusy(true);
+    setErr(null);
+    try {
+      const { content } = await api<{ content: ContentRow }>(
+        `/api/descriptions/content/${row.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ action: "save", name_override: override }),
+        },
+      );
+      onSaved(content);
+      setValue(content.name_override ?? imported);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function save() {
+    const trimmed = value.trim();
+    // Saving the imported name (or a blank) clears the override.
+    void persist(!trimmed || trimmed === imported ? null : trimmed);
+  }
+
+  return (
+    <div className="col" style={{ gap: 6 }}>
+      <strong style={{ fontSize: 13 }}>Product name</strong>
+      <input
+        value={value}
+        maxLength={120}
+        onChange={(e) => setValue(e.target.value)}
+        aria-label={`Product name for ${row.content_key}`}
+      />
+      <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button disabled={busy || !dirty} onClick={save}>
+          {busy ? "Saving…" : "Save"}
+        </button>
+        {hasOverride && (
+          <button
+            className="secondary"
+            disabled={busy}
+            title={`Imported as "${imported || "—"}"`}
+            onClick={() => {
+              setValue(imported);
+              void persist(null);
+            }}
+          >
+            Reset to imported
+          </button>
+        )}
+        <span className="muted" style={{ fontSize: 11 }}>
+          {hasOverride ? `Renamed (imported as "${imported || "—"}")` : "Imported name"}
+          {dirty ? " · unsaved" : ""}
+        </span>
+      </div>
+      {err && (
+        <div className="alert error" style={{ margin: 0 }}>
+          {err}
+        </div>
+      )}
     </div>
   );
 }
@@ -1822,23 +2105,48 @@ function TitleEditor({
 function TrayCard({
   tray,
   rows,
+  matching,
+  notice,
+  onMatch,
   onAssign,
   onView,
 }: {
   tray: ImageRow[];
   rows: DescRow[];
+  matching: boolean;
+  notice: string | null;
+  onMatch: () => void;
   onAssign: (imageId: string, productId: string) => void;
   onView: (index: number) => void;
 }) {
   return (
     <div className="card col" style={{ gap: 10 }}>
-      <div>
-        <strong>Unassigned Schonbek pages</strong>
-        <div className="muted" style={{ fontSize: 12 }}>
-          The Schonbek names PDF has no readable text, so its pages need a
-          manual match. Assign each page to a product, or leave it here.
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <strong>Unassigned Schonbek pages</strong>
+          <div className="muted" style={{ fontSize: 12 }}>
+            The Schonbek names PDF has no readable text; the names are baked
+            into the page images. Let Claude read them, or assign each page by
+            hand.
+          </div>
         </div>
+        {tray.length > 0 && (
+          <button
+            className="secondary"
+            disabled={matching}
+            onClick={onMatch}
+            title="Reads the product name off each page image with Claude and assigns unambiguous matches"
+          >
+            {matching ? <span className="spinner" /> : null}
+            {matching ? "Reading pages…" : "Match pages by name"}
+          </button>
+        )}
       </div>
+      {notice && (
+        <div className="alert" style={{ margin: 0 }}>
+          {notice}
+        </div>
+      )}
       <div className="desc-tray">
         {tray.map((img, i) => (
           <TrayItem
@@ -2420,6 +2728,13 @@ function MasterSlotCard({
       <div className="muted" style={{ fontSize: 11 }}>
         {lastLine}
       </div>
+      {(slot === "wac_master" || slot === "wacarch_master") && (
+        <div className="muted" style={{ fontSize: 11 }}>
+          Uses the standard master-sheet layout (row-4 headers, "Master Sheet"
+          tab). Headers alone can't tell this brand's file apart, so make sure
+          the right workbook goes in this slot.
+        </div>
+      )}
       <div className="muted" style={{ fontSize: 11 }}>
         Re-uploading replaces this file's products. Approved and edited copy is
         kept for products that still match.
@@ -2451,7 +2766,7 @@ function SupplementSlotCard({
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const busy = phase.kind === "working";
-  const wantExt = slot === "dweled_pptx" ? ".pptx" : ".pdf";
+  const wantExt = slot.endsWith("_pptx") ? ".pptx" : ".pdf";
 
   async function handleFile(file: File) {
     if (!file.name.toLowerCase().endsWith(wantExt)) {
@@ -2598,7 +2913,7 @@ function SupplementSlotCard({
       <div className="muted" style={{ fontSize: 11 }}>
         {slot === "schonbek_pdf"
           ? "Pages land in the unassigned tray below the table for manual matching."
-          : slot === "dweled_pptx"
+          : slot.endsWith("_pptx")
             ? "Matched slides replace a product's features and add hero images."
             : "Matched pages replace a product's features."}
       </div>

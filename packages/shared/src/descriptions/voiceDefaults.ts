@@ -1,11 +1,12 @@
 /**
- * Descriptions — default voice profiles (seeded by migration 0072).
+ * Descriptions — default voice profiles (seeded by migrations 0072 + 0073;
+ * 0073 adds WAC Architectural · Core alongside the new WAC slots).
  *
  * One tab per brand+collection. The `prompt` default follows the Catalog Copy
  * Prompts docx (75-word catalog copy structure) with the anti-formulaic
  * clause as a HARD RULE; `voice_guidance` is a short per-brand paragraph
  * clearly marked as a seeded default. These constants back the "Reset to
- * default" action, and migration 0072 seeds the SAME text — keep the SQL seed
+ * default" action, and the migrations seed the SAME text — keep the SQL seeds
  * in sync with this file (voiceDefaults.test.ts enforces it).
  *
  * Copy style: no em dashes; the company is always "WAC Group", never "WAC".
@@ -46,6 +47,14 @@ export const DESC_VOICE_DEFAULTS: DescVoiceDefault[] = [
     prompt: BASE_PROMPT,
     voice_guidance: seeded(
       "WAC Lighting Limited is elevated, limited-run decorative lighting. Precise and quietly premium: emphasize craftsmanship, materials, and the character of the light. Concrete specifics over adjectives.",
+    ),
+  },
+  {
+    brand: "WAC Architectural",
+    collection: "Core",
+    prompt: BASE_PROMPT,
+    voice_guidance: seeded(
+      "WAC Architectural is precision architectural lighting for designed spaces. Performance-minded and understated: speak to optics, light quality, and how the fixture integrates with the architecture. Clean, specification-aware sentences that still convey design intent.",
     ),
   },
   {

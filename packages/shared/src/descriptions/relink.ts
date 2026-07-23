@@ -139,12 +139,15 @@ export function contentRowEdited(row: {
   description_final: string | null;
   meta_final: string | null;
   title_override: string | null;
+  /** Optional for callers predating migration 0073. */
+  name_override?: string | null;
 }): boolean {
   return (
     row.status === "in_review" ||
     row.status === "approved" ||
     !!row.description_final ||
     !!row.meta_final ||
-    !!row.title_override
+    !!row.title_override ||
+    !!row.name_override
   );
 }

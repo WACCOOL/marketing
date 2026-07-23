@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
+  TRAY_VISION_SYSTEM,
+  TRAY_VISION_USER,
   applyContentApprove,
   applyContentSave,
   attachContentError,
   brandLikePattern,
   buildVoiceDeriveMessages,
   dedupSkus,
+  deleteProductsPlan,
+  parseTrayVisionName,
   pickVoiceProfile,
+  resolveTrayMatch,
   trayAssignError,
 } from "./descriptions.js";
 
@@ -150,6 +155,23 @@ describe("applyContentSave (content PATCH field mapper)", () => {
     }
   });
 
+  it("trims a name override, folds blanks to null, never moves the status", () => {
+    expect(applyContentSave(null, { name_override: "  Velmora  " }).fields)
+      .toEqual({ name_override: "Velmora" });
+    expect(applyContentSave(null, { name_override: "   " }).fields)
+      .toEqual({ name_override: null });
+    for (const status of ["none", "generated", "in_review"] as const) {
+      const { fields } = applyContentSave({ status }, { name_override: "N" });
+      expect(fields.status).toBeUndefined();
+    }
+  });
+
+  it("rejects a name override on an approved row (reopen first)", () => {
+    const res = applyContentSave({ status: "approved" }, { name_override: "N" });
+    expect(res.error).toContain("reopen");
+    expect(res.fields).toEqual({});
+  });
+
   it("an edited description bumps none/generated to in_review", () => {
     expect(
       applyContentSave({ status: "none" }, { description: "Hand-written." }).fields,
@@ -251,6 +273,94 @@ describe("applyContentApprove (row-level approval)", () => {
     const { fields, error } = applyContentApprove(row({ status: "approved" }), {});
     expect(error).toBeUndefined();
     expect(fields).toEqual({ status: "approved" });
+  });
+});
+
+describe("tray vision match (POST /tray/match pure parts)", () => {
+  it("the prompt demands the name only, with a NONE escape hatch", () => {
+    expect(TRAY_VISION_USER).toContain("ONLY the name");
+    expect(TRAY_VISION_USER).toContain("NONE");
+    expect(TRAY_VISION_USER).toContain("top-left");
+    expect(TRAY_VISION_SYSTEM).toContain("WAC Group");
+  });
+
+  describe("parseTrayVisionName", () => {
+    it("trims wrapping quotes and trailing punctuation", () => {
+      expect(parseTrayVisionName('  "VELMORA"  ')).toBe("VELMORA");
+      expect(parseTrayVisionName("Velmora.")).toBe("Velmora");
+    });
+    it("folds NONE and empty to null", () => {
+      expect(parseTrayVisionName("NONE")).toBeNull();
+      expect(parseTrayVisionName("none")).toBeNull();
+      expect(parseTrayVisionName("   ")).toBeNull();
+    });
+    it("rejects chatty answers that cannot be a product name", () => {
+      expect(
+        parseTrayVisionName(
+          "The product name printed near the top-left of this slide is VELMORA",
+        ),
+      ).toBeNull();
+    });
+  });
+
+  describe("resolveTrayMatch", () => {
+    const products = [
+      { id: "p1", content_key: "beyond-2027:velmora", name: "VELMORA" },
+      { id: "p2", content_key: "beyond-2027:briga", name: "BRIGA" },
+      { id: "p3", content_key: "beyond-2027:brigg", name: "BRIGG" },
+      { id: "p4", content_key: "sigfor-2027:41qf0303", name: "41QF0303" },
+    ];
+
+    it("case-fold exact match wins", () => {
+      expect(resolveTrayMatch("Velmora", products)?.id).toBe("p1");
+    });
+    it("fuzzy (Levenshtein ≤2) matches spelling drift", () => {
+      expect(resolveTrayMatch("VELMORE", products)?.id).toBe("p1");
+    });
+    it("ambiguous fuzzy hits stay unmatched (never guess)", () => {
+      // BRIGA vs BRIGG are both ≤2 away from BRIGAA.
+      expect(resolveTrayMatch("BRIGAA", products)).toBeNull();
+    });
+    it("no match returns null", () => {
+      expect(resolveTrayMatch("ZORVIT", products)).toBeNull();
+    });
+  });
+});
+
+describe("deleteProductsPlan (POST /products/delete planner)", () => {
+  const found = [
+    { id: "a", slot: "dweled_master", content_key: "dweled:fictona" },
+    { id: "b", slot: "dweled_master", content_key: "dweled:beamlet" },
+    { id: "c", slot: "mf_master", content_key: "mf:glowlet" },
+  ];
+
+  it("404s when none of the requested ids exist (stale client state)", () => {
+    expect(deleteProductsPlan(["x", "y"], [])).toEqual({
+      error: "no matching products found",
+      status: 404,
+    });
+  });
+
+  it("groups doomed content keys per slot for the copy delete", () => {
+    const plan = deleteProductsPlan(["a", "b", "c"], found);
+    if ("error" in plan) throw new Error("expected a plan");
+    expect(plan.missing).toBe(0);
+    expect([...plan.keysBySlot.keys()].sort()).toEqual([
+      "dweled_master",
+      "mf_master",
+    ]);
+    expect(plan.keysBySlot.get("dweled_master")).toEqual([
+      "dweled:fictona",
+      "dweled:beamlet",
+    ]);
+    expect(plan.keysBySlot.get("mf_master")).toEqual(["mf:glowlet"]);
+  });
+
+  it("counts unknown ids as missing instead of failing the whole delete", () => {
+    const plan = deleteProductsPlan(["a", "gone-1", "gone-2"], [found[0]!]);
+    if ("error" in plan) throw new Error("expected a plan");
+    expect(plan.missing).toBe(2);
+    expect(plan.keysBySlot.get("dweled_master")).toEqual(["dweled:fictona"]);
   });
 });
 

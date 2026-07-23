@@ -12,6 +12,7 @@ export {
 export type {
   ClaudeCacheControl,
   ClaudeContentBlock,
+  ClaudeImageBlock,
   ClaudeMessage,
   ClaudeRequestOpts,
   ClaudeResponse,

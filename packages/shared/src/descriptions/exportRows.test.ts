@@ -131,6 +131,24 @@ describe("exportRow", () => {
     });
     expect(row[15]).toBe("Aster Pendant, Hand Tuned | WAC LIGHTING");
   });
+
+  it("a name override drives the Name column AND the title formula", () => {
+    const row = exportRow({
+      ...base,
+      name: "41QF0303", // placeholder tempBase name awaiting correction
+      content: {
+        description_ai: null,
+        description_final: null,
+        meta_ai: null,
+        meta_final: null,
+        title_override: null,
+        name_override: "Velmora",
+        status: "none",
+      },
+    });
+    expect(row[3]).toBe("Velmora");
+    expect(row[15]).toBe("VELMORA PENDANT | WAC LIGHTING");
+  });
 });
 
 describe("buildExportRows", () => {
