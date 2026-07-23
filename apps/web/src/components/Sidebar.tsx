@@ -19,6 +19,7 @@ import {
   ListChecks,
   Minus,
   Moon,
+  NotebookPen,
   Package,
   PanelLeft,
   PenLine,
@@ -105,6 +106,7 @@ const NAV: NavEntry[] = [
     icon: FileText,
     children: [
       { to: "/products", label: "Products", icon: Package, feature: "product" },
+      { to: "/descriptions", label: "Descriptions", icon: NotebookPen, feature: "product" },
       { to: "/product-info/romance", label: "Romance Copy", icon: PenLine, feature: "product" },
       { to: "/product-info/seo", label: "SEO", icon: Search, feature: "product" },
       { to: "/product-info/normalization", label: "Data Normalization", icon: Ruler, feature: "product" },

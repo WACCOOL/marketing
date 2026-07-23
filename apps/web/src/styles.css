@@ -1022,7 +1022,7 @@ button.slim {
   aspect-ratio: 16 / 9;
   background: #ffffff;
   border: 1px solid var(--border);
-  border-radius: calc(var(--radius) / 2);
+  border-radius: var(--radius-sm);
   overflow: hidden;
   flex-shrink: 0;
 }
@@ -1389,7 +1389,7 @@ button.slim {
   padding: 4px;
   background: #fff;
   border: 1px solid var(--border);
-  border-radius: calc(var(--radius) / 2);
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .ppt-image-option:hover {
@@ -1415,7 +1415,7 @@ button.slim {
   height: 64px;
   object-fit: contain;
   background: #fff;
-  border-radius: calc(var(--radius) / 2);
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
 
@@ -1988,4 +1988,430 @@ a.thom-family-member:hover {
   padding: 0 16px;
   display: inline-flex;
   align-items: center;
+}
+
+/* ---- Descriptions (master-list import + copy review) ---- */
+/* Wide table scrolls inside its card; the page never scrolls horizontally.
+   First 3 columns (checkbox, images, name) stay sticky. Tokens only. */
+.desc-table-wrap {
+  overflow-x: auto;
+}
+.desc-table-wrap table {
+  min-width: 1280px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.desc-table-wrap th:nth-child(1),
+.desc-table-wrap tr:not(.desc-expand-row) > td:nth-child(1) {
+  position: sticky;
+  left: 0;
+  width: 36px;
+  min-width: 36px;
+  background: var(--panel);
+  z-index: 2;
+}
+.desc-table-wrap th:nth-child(2),
+.desc-table-wrap tr:not(.desc-expand-row) > td:nth-child(2) {
+  position: sticky;
+  left: 36px;
+  width: 64px;
+  min-width: 64px;
+  background: var(--panel);
+  z-index: 2;
+}
+.desc-table-wrap th:nth-child(3),
+.desc-table-wrap tr:not(.desc-expand-row) > td:nth-child(3) {
+  position: sticky;
+  left: 100px;
+  min-width: 150px;
+  background: var(--panel);
+  z-index: 2;
+  border-right: 1px solid var(--border);
+}
+
+/* Thumbnails: 48px stacked thumb + "+n" badge in the sticky Images column;
+   larger variants in the expanded panel, lightbox strip and tray. */
+.desc-thumb-btn {
+  position: relative;
+  display: inline-flex;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  box-shadow: none;
+}
+.desc-thumb {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  display: inline-block;
+  cursor: pointer;
+}
+.desc-thumb-empty {
+  opacity: 0.4;
+}
+.desc-thumb-lg {
+  width: 72px;
+  height: 72px;
+}
+.desc-thumb-active {
+  border-color: var(--accent);
+}
+.desc-thumb-badge {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: white; /* matches the button convention on --accent */
+}
+
+/* Lightbox (inside the shared .modal-overlay/.modal) */
+.desc-lightbox {
+  width: min(760px, 100%);
+}
+.desc-lightbox-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: center;
+}
+.desc-lightbox-img {
+  max-width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+.desc-lightbox-nav {
+  flex: none;
+}
+.desc-lightbox-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Expanded row: left product panel + copy editors. The td spans the whole
+   (wide, sideways-scrolling) table; the sticky wrapper pins the content to
+   the scrollport's left edge and is sized to the container's clientWidth
+   from a ResizeObserver, so the editors are always fully visible without
+   horizontal scrolling. */
+.desc-expand-row > td {
+  background: var(--bg);
+  padding: 0;
+}
+.desc-expand-sticky {
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
+  max-width: 100%;
+}
+.desc-expand {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 16px;
+  padding: 14px 16px;
+  white-space: normal;
+}
+/* Narrow CONTAINER (not viewport — the sidebar eats width): stack the
+   product panel above the editors. Class set from the measured width. */
+.desc-expand-narrow .desc-expand {
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (max-width: 900px) {
+  .desc-expand {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.desc-expand-left {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.desc-expand-right {
+  min-width: 0;
+}
+.desc-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.desc-strip-item {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.desc-attrs {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  font-size: 13px;
+}
+.desc-features {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+.desc-features li {
+  margin-bottom: 2px;
+}
+
+/* Schonbek unassigned tray */
+.desc-tray {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+.desc-tray-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  background: var(--panel);
+}
+.desc-tray-item .desc-thumb-lg {
+  width: 100%;
+  height: 120px;
+}
+
+/* Title length badge: green inside the 50-60 SEO range, amber outside. */
+.desc-len-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--warn);
+}
+.desc-len-dot.ok {
+  background: var(--good);
+}
+
+/* Voice modal: brand+collection tab row with an accent underline. */
+.desc-voice-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+}
+.desc-voice-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 8px 10px;
+  margin-bottom: -1px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.desc-voice-tab:hover {
+  color: var(--text);
+}
+.desc-voice-tab[aria-selected="true"] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.desc-dirty-dot {
+  display: inline-block;
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--warn);
+}
+
+/* Reference-product chips (thumb + name + remove). */
+.desc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 240px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  padding: 2px 6px 2px 2px;
+  font-size: 12px;
+}
+.desc-chip-thumb {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  object-fit: cover;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.desc-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desc-chip-x {
+  flex: none;
+  background: none;
+  border: none;
+  padding: 0 4px;
+  font: inherit;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: var(--radius-pill);
+}
+.desc-chip-x:hover {
+  color: var(--danger);
+}
+
+/* Source-file slot strips: two labeled sections (masters / enrichment), each
+   an auto-fill grid that wraps 5-up → 1-up so ten cards reflow gracefully and
+   the page never scrolls horizontally. auto-fill (not auto-fit) keeps card
+   widths consistent between the two rows. */
+.desc-slots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 12px;
+}
+.desc-slots-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.desc-slots + .desc-slots-label {
+  margin-top: 6px;
+}
+
+/* Export dropdown (batch card): backdrop catches the outside click. */
+.desc-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.desc-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+}
+.desc-menu-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-raised);
+}
+.desc-menu-group {
+  display: flex;
+  flex-direction: column;
+}
+.desc-menu-group + .desc-menu-group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+.desc-menu-title {
+  padding: 2px 8px 4px;
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.desc-menu-item {
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.desc-menu-item:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.desc-menu-item:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* Orphaned-copy card items */
+.desc-orphan {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  padding: 10px 12px;
+}
+
+/* PIM reference search dropdown. */
+.desc-picker {
+  position: relative;
+}
+.desc-picker-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-raised);
+}
+.desc-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.desc-picker-item:hover {
+  background: var(--accent-soft);
+}
+.desc-picker-thumb {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--bg);
+  border: 1px solid var(--border);
 }

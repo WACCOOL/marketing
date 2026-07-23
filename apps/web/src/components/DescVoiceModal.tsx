@@ -1,0 +1,539 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api, errorMessage } from "../lib/api.js";
+
+/**
+ * Descriptions — "Edit brand voice & prompt" modal (plan Stage 3, plan-B §7).
+ *
+ * One tab per seeded desc_voice_profiles row (7 brand+collection tabs). Each
+ * tab edits three things: the AI description prompt, the voice-guidance
+ * paragraph, and up to 5 reference products picked from the live PIM search.
+ * Saves are explicit and per-tab; "Derive voice from references" only fills
+ * the guidance textarea with a draft, never saves. Dirty tabs warn on tab
+ * switch and on close; drafts are kept in memory until the modal closes.
+ */
+
+export interface VoiceProfile {
+  id: string;
+  brand: string;
+  collection: string;
+  prompt: string;
+  voice_guidance: string;
+  reference_skus: string[];
+  updated_at: string;
+  updated_by_email: string | null;
+}
+
+interface RefProduct {
+  sku: string;
+  name: string;
+  image: string | null;
+}
+
+interface PimProduct {
+  sku: string;
+  name: string;
+  brand: string | null;
+  primary_image_url: string | null;
+}
+
+interface Draft {
+  prompt: string;
+  voice_guidance: string;
+  refs: RefProduct[];
+  /** Guidance came from "Derive" and has not been saved yet. */
+  derived: boolean;
+}
+
+const MAX_REFS = 5;
+
+function draftFrom(profile: VoiceProfile, refInfo: Map<string, RefProduct>): Draft {
+  return {
+    prompt: profile.prompt,
+    voice_guidance: profile.voice_guidance,
+    refs: profile.reference_skus.map(
+      (sku) => refInfo.get(sku) ?? { sku, name: sku, image: null },
+    ),
+    derived: false,
+  };
+}
+
+function isDirty(profile: VoiceProfile, draft: Draft): boolean {
+  return (
+    draft.prompt !== profile.prompt ||
+    draft.voice_guidance !== profile.voice_guidance ||
+    draft.refs.map((r) => r.sku).join("\u0000") !==
+      profile.reference_skus.join("\u0000")
+  );
+}
+
+export function DescVoiceModal({ onClose }: { onClose: () => void }) {
+  const [profiles, setProfiles] = useState<VoiceProfile[] | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [deriving, setDeriving] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await api<{ profiles: VoiceProfile[] }>(
+          "/api/descriptions/voice",
+        );
+        // Hydrate reference chips (name + thumb) from the PIM; a SKU that no
+        // longer resolves still renders as a bare-SKU chip.
+        const skus = [...new Set(res.profiles.flatMap((p) => p.reference_skus))];
+        const refInfo = new Map<string, RefProduct>();
+        await Promise.all(
+          skus.map(async (sku) => {
+            try {
+              const { product } = await api<{ product: PimProduct }>(
+                `/api/products/${encodeURIComponent(sku)}`,
+              );
+              refInfo.set(sku, {
+                sku,
+                name: product.name,
+                image: product.primary_image_url,
+              });
+            } catch {
+              // keep the bare-SKU fallback chip
+            }
+          }),
+        );
+        if (!alive) return;
+        setProfiles(res.profiles);
+        setDrafts(
+          Object.fromEntries(
+            res.profiles.map((p) => [p.id, draftFrom(p, refInfo)]),
+          ),
+        );
+        setActiveId(res.profiles[0]?.id ?? null);
+      } catch (e) {
+        if (alive) setErr(errorMessage(e));
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const active = profiles?.find((p) => p.id === activeId) ?? null;
+  const draft = activeId ? drafts[activeId] : undefined;
+  const dirtyIds = useMemo(() => {
+    if (!profiles) return new Set<string>();
+    return new Set(
+      profiles
+        .filter((p) => drafts[p.id] && isDirty(p, drafts[p.id]!))
+        .map((p) => p.id),
+    );
+  }, [profiles, drafts]);
+  const activeDirty = !!activeId && dirtyIds.has(activeId);
+
+  function attemptClose() {
+    if (dirtyIds.size > 0) {
+      const ok = window.confirm(
+        "Discard unsaved voice changes? Tabs with unsaved edits will lose them.",
+      );
+      if (!ok) return;
+    }
+    onClose();
+  }
+
+  // Esc closes (through the same dirty guard).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") attemptClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirtyIds.size]);
+
+  function switchTab(id: string) {
+    if (id === activeId) return;
+    if (activeDirty) {
+      const ok = window.confirm(
+        "This tab has unsaved changes. They are kept until you close the modal, but remember to save. Switch tabs?",
+      );
+      if (!ok) return;
+    }
+    setErr(null);
+    setActiveId(id);
+  }
+
+  function patchDraft(patch: Partial<Draft>) {
+    if (!activeId) return;
+    setDrafts((prev) => ({
+      ...prev,
+      [activeId]: { ...prev[activeId]!, ...patch },
+    }));
+  }
+
+  function applySaved(profile: VoiceProfile) {
+    setProfiles((prev) =>
+      prev ? prev.map((p) => (p.id === profile.id ? profile : p)) : prev,
+    );
+    setDrafts((prev) => {
+      const old = prev[profile.id];
+      return {
+        ...prev,
+        [profile.id]: {
+          prompt: profile.prompt,
+          voice_guidance: profile.voice_guidance,
+          // Keep the hydrated chips we already have for unchanged SKUs.
+          refs: profile.reference_skus.map(
+            (sku) =>
+              old?.refs.find((r) => r.sku === sku) ?? {
+                sku,
+                name: sku,
+                image: null,
+              },
+          ),
+          derived: false,
+        },
+      };
+    });
+  }
+
+  async function save() {
+    if (!active || !draft) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const { profile } = await api<{ profile: VoiceProfile }>(
+        `/api/descriptions/voice/${active.id}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            prompt: draft.prompt,
+            voice_guidance: draft.voice_guidance,
+            reference_skus: draft.refs.map((r) => r.sku),
+          }),
+        },
+      );
+      applySaved(profile);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function resetToDefault() {
+    if (!active) return;
+    const ok = window.confirm(
+      `Reset the ${active.brand} ${active.collection} prompt and voice guidance to the seeded default? Reference products are kept.`,
+    );
+    if (!ok) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const { profile } = await api<{ profile: VoiceProfile }>(
+        `/api/descriptions/voice/${active.id}/reset`,
+        { method: "POST" },
+      );
+      applySaved(profile);
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function derive() {
+    if (!active) return;
+    setDeriving(true);
+    setErr(null);
+    try {
+      const res = await api<{ draft: string }>(
+        "/api/descriptions/voice/derive",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            brand: active.brand,
+            collection: active.collection,
+          }),
+        },
+      );
+      patchDraft({ voice_guidance: res.draft, derived: true });
+    } catch (e) {
+      setErr(errorMessage(e));
+    } finally {
+      setDeriving(false);
+    }
+  }
+
+  const savedLine = active
+    ? `Saved ${new Date(active.updated_at).toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+      })}${active.updated_by_email ? ` by ${active.updated_by_email.split("@")[0]}` : ""}`
+    : "";
+
+  return (
+    <div className="modal-overlay" onClick={attemptClose}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-label="Brand voice and prompts"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <strong>Brand voice &amp; prompts</strong>
+          <button className="secondary" onClick={attemptClose}>
+            Close
+          </button>
+        </div>
+
+        {err && <div className="alert error" style={{ margin: 0 }}>{err}</div>}
+
+        {!profiles && !err && (
+          <div className="muted">
+            <span className="spinner" /> Loading voice profiles…
+          </div>
+        )}
+
+        {profiles && profiles.length === 0 && (
+          <div className="muted">
+            No voice profiles found. Apply migration 0072 to seed the 7
+            brand profiles.
+          </div>
+        )}
+
+        {profiles && profiles.length > 0 && (
+          <>
+            <div className="desc-voice-tabs" role="tablist">
+              {profiles.map((p) => (
+                <button
+                  key={p.id}
+                  role="tab"
+                  aria-selected={p.id === activeId}
+                  className="desc-voice-tab"
+                  onClick={() => switchTab(p.id)}
+                >
+                  {p.brand} · {p.collection}
+                  {dirtyIds.has(p.id) && (
+                    <span className="desc-dirty-dot" title="Unsaved changes" />
+                  )}
+                </button>
+              ))}
+            </div>
+
+            {active && draft && (
+              <div className="col" style={{ gap: 12 }}>
+                <label className="col" style={{ gap: 4 }}>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    Prompt (the task instruction sent to Claude)
+                  </span>
+                  <textarea
+                    rows={8}
+                    value={draft.prompt}
+                    onChange={(e) => patchDraft({ prompt: e.target.value })}
+                  />
+                </label>
+
+                <label className="col" style={{ gap: 4 }}>
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    Voice guidance (tone and vocabulary, added as context)
+                    {draft.derived && (
+                      <span style={{ color: "var(--warn)", marginLeft: 8 }}>
+                        Draft from references. Not saved until you press Save.
+                      </span>
+                    )}
+                  </span>
+                  <textarea
+                    rows={6}
+                    value={draft.voice_guidance}
+                    onChange={(e) =>
+                      patchDraft({ voice_guidance: e.target.value, derived: false })
+                    }
+                  />
+                </label>
+
+                <RefPicker
+                  refs={draft.refs}
+                  onChange={(refs) => patchDraft({ refs })}
+                />
+
+                <div
+                  className="row"
+                  style={{ justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}
+                >
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    {activeDirty ? (
+                      <>
+                        <span className="desc-dirty-dot" /> Unsaved changes
+                      </>
+                    ) : (
+                      savedLine
+                    )}
+                  </span>
+                  <span className="row" style={{ gap: 8 }}>
+                    <button
+                      className="secondary"
+                      disabled={saving || deriving}
+                      onClick={() => void resetToDefault()}
+                    >
+                      Reset to default
+                    </button>
+                    <button
+                      className="secondary"
+                      disabled={saving || deriving}
+                      title="Reads the saved reference products' existing copy and drafts a voice description. Fills the guidance box only; nothing is saved."
+                      onClick={() => void derive()}
+                    >
+                      {deriving ? "Deriving…" : "Derive voice from references"}
+                    </button>
+                    <button
+                      disabled={saving || deriving || !activeDirty}
+                      onClick={() => void save()}
+                    >
+                      {saving ? "Saving…" : "Save"}
+                    </button>
+                  </span>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reference product picker: debounced PIM search, chips, cap 5
+// ---------------------------------------------------------------------------
+
+function RefPicker({
+  refs,
+  onChange,
+}: {
+  refs: RefProduct[];
+  onChange: (refs: RefProduct[]) => void;
+}) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<PimProduct[]>([]);
+  const [open, setOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seq = useRef(0);
+  const full = refs.length >= MAX_REFS;
+
+  useEffect(() => {
+    if (debounce.current) clearTimeout(debounce.current);
+    const needle = q.trim();
+    if (!needle) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    debounce.current = setTimeout(async () => {
+      const mySeq = ++seq.current;
+      try {
+        const res = await api<{ products: PimProduct[] }>(
+          `/api/products?q=${encodeURIComponent(needle)}&limit=8`,
+        );
+        if (mySeq === seq.current) {
+          setResults(res.products);
+          setOpen(true);
+        }
+      } catch {
+        if (mySeq === seq.current) setResults([]);
+      } finally {
+        if (mySeq === seq.current) setSearching(false);
+      }
+    }, 300);
+    return () => {
+      if (debounce.current) clearTimeout(debounce.current);
+    };
+  }, [q]);
+
+  function add(p: PimProduct) {
+    if (full || refs.some((r) => r.sku === p.sku)) return;
+    onChange([...refs, { sku: p.sku, name: p.name, image: p.primary_image_url }]);
+    setQ("");
+    setResults([]);
+    setOpen(false);
+  }
+
+  return (
+    <div className="col" style={{ gap: 6 }}>
+      <span className="muted" style={{ fontSize: 12 }}>
+        Reference products (their existing copy teaches Claude this voice) ·{" "}
+        {refs.length}/{MAX_REFS}
+        {full && <span style={{ color: "var(--warn)" }}> · 5 max</span>}
+      </span>
+      {refs.length > 0 && (
+        <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+          {refs.map((r) => (
+            <span key={r.sku} className="desc-chip" title={r.sku}>
+              {r.image ? (
+                <img className="desc-chip-thumb" src={r.image} alt={r.name} />
+              ) : (
+                <span className="desc-chip-thumb" />
+              )}
+              <span className="desc-chip-name">{r.name}</span>
+              <button
+                className="desc-chip-x"
+                aria-label={`Remove ${r.name}`}
+                onClick={() => onChange(refs.filter((x) => x.sku !== r.sku))}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="desc-picker">
+        <input
+          placeholder={
+            full
+              ? "Remove a reference to add another (5 max)"
+              : "Search the PIM by name, SKU, or brand…"
+          }
+          disabled={full}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onFocus={() => results.length > 0 && setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+        />
+        {searching && (
+          <span className="spinner" style={{ position: "absolute", right: 10, top: 10 }} />
+        )}
+        {open && results.length > 0 && (
+          <div className="desc-picker-menu">
+            {results.map((p) => (
+              <button
+                key={p.sku}
+                className="desc-picker-item"
+                // onMouseDown so the click beats the input's onBlur close.
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  add(p);
+                }}
+              >
+                {p.primary_image_url ? (
+                  <img className="desc-picker-thumb" src={p.primary_image_url} alt="" />
+                ) : (
+                  <span className="desc-picker-thumb" />
+                )}
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {p.name}
+                  </span>
+                  <span className="muted" style={{ fontSize: 11 }}>
+                    {p.sku}
+                    {p.brand ? ` · ${p.brand}` : ""}
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

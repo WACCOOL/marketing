@@ -17,6 +17,7 @@ import {
   buildProductPageJsonLd,
   canonicalUrlFor,
   classifyCctType,
+  extractExistingCopy,
   isCctNoValue,
   slugifyName,
   toCsv,
@@ -280,35 +281,8 @@ interface ProductRow {
 const PRODUCT_DETAIL_COLS =
   "sku, name, brand, category, dimensions_mm, primary_image_url, image_urls, variants, raw_json";
 
-/** WAC's connector stores romance copy in `zromnce` (confirmed against the
- * live schema); the regex is a fallback for renamed/added fields. An env
- * override (SALES_LAYER_ROMANCE_FIELD) pins it explicitly. */
-const ROMANCE_FIELD_CANDIDATES = ["zromnce", "romance_copy", "romance"];
-const ROMANCE_KEY_RE =
-  /romance|long[ _-]?desc|marketing[ _-]?desc|web[ _-]?desc/i;
-
-function extractExistingCopy(
-  raw: Record<string, unknown>,
-  preferredKey?: string,
-): string | null {
-  const get = (key: string): string | null => {
-    const v = raw[key];
-    return typeof v === "string" && v.trim() ? v.trim() : null;
-  };
-  if (preferredKey) return get(preferredKey);
-  for (const key of ROMANCE_FIELD_CANDIDATES) {
-    const hit = get(key);
-    if (hit) return hit;
-  }
-  let best: string | null = null;
-  for (const key of Object.keys(raw)) {
-    if (!ROMANCE_KEY_RE.test(key)) continue;
-    const value = get(key);
-    // Prefer the longest match — long descriptions beat one-line blurbs.
-    if (value && (!best || value.length > best.length)) best = value;
-  }
-  return best;
-}
+// Romance copy extraction now lives in @wac/shared (`extractExistingCopy`) so
+// the Descriptions voice derivation reuses the exact same lookup.
 
 function productDetails(p: ProductRow, env: Env) {
   const raw = p.raw_json ?? {};

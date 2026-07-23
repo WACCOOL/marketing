@@ -115,6 +115,7 @@ export const ROUTE_FEATURE: Record<string, FeatureKey> = {
   "/ppt/images": "ppt",
   "/ppt/templates": "ppt-templates",
   "/products": "product",
+  "/descriptions": "product",
   "/thom": "thom",
   "/thom-content": "thom-content",
   "/thom-dictionary": "thom-content",

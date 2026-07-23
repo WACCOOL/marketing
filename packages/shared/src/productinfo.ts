@@ -249,6 +249,45 @@ export function defaultOgImage(imageUrls: readonly string[]): string | null {
   return hero ?? imageUrls[0] ?? null;
 }
 
+// ---------------------------------------------------------------------------
+// Existing romance copy lookup (PIM raw_json)
+// ---------------------------------------------------------------------------
+
+/** WAC's connector stores romance copy in `zromnce` (confirmed against the
+ * live schema); the regex is a fallback for renamed/added fields. An env
+ * override (SALES_LAYER_ROMANCE_FIELD) pins it explicitly. */
+const ROMANCE_FIELD_CANDIDATES = ["zromnce", "romance_copy", "romance"];
+const ROMANCE_KEY_RE =
+  /romance|long[ _-]?desc|marketing[ _-]?desc|web[ _-]?desc/i;
+
+/**
+ * Pull a product's existing marketing ("romance") copy out of its raw PIM
+ * JSON. Shared by the Product Info SEO flow and the Descriptions voice
+ * derivation (both need the same brand-voice reference text).
+ */
+export function extractExistingCopy(
+  raw: Record<string, unknown>,
+  preferredKey?: string,
+): string | null {
+  const get = (key: string): string | null => {
+    const v = raw[key];
+    return typeof v === "string" && v.trim() ? v.trim() : null;
+  };
+  if (preferredKey) return get(preferredKey);
+  for (const key of ROMANCE_FIELD_CANDIDATES) {
+    const hit = get(key);
+    if (hit) return hit;
+  }
+  let best: string | null = null;
+  for (const key of Object.keys(raw)) {
+    if (!ROMANCE_KEY_RE.test(key)) continue;
+    const value = get(key);
+    // Prefer the longest match — long descriptions beat one-line blurbs.
+    if (value && (!best || value.length > best.length)) best = value;
+  }
+  return best;
+}
+
 /** Truncate to `max` chars without cutting a word in half (best effort: falls
  * back to a hard cut when the first word is already longer than max). */
 export function truncateAtWord(value: string, max: number): string {
