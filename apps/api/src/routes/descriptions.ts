@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { z } from "zod";
 import {
+  DESC_META_RANGE,
   DESC_SLOTS,
   DESC_VOICE_DEFAULTS,
   DescImageKeySchema,
@@ -9,17 +10,23 @@ import {
   MASTER_SUPPLEMENT,
   SUPPLEMENT_MASTER,
   SupplementPayloadSchema,
+  buildDescriptionPrompt,
+  buildMetaPrompt,
   buildSupplementOverlay,
   clearFeatureOverlay,
   computeCommitDiff,
   contentRowEdited,
   extractExistingCopy,
+  firstSentence,
   isDescMasterSlot,
   isDescSlot,
   isDescSupplementSlot,
   matchSupplementUnits,
   overlayFeatures,
   slugKey,
+  structureSeed,
+  titleFor,
+  truncateAtWord,
   type DescContentStatus,
   type DescMasterSlot,
   type DescSlot,
@@ -186,12 +193,13 @@ interface ContentRow {
   note: string | null;
   reviewed_by: string | null;
   model: string | null;
+  prompt_hash: string | null;
   generated_at: string | null;
   updated_at: string;
 }
 
 const CONTENT_COLS =
-  "id, slot, content_key, description_ai, description_final, meta_ai, meta_final, title_override, status, note, reviewed_by, model, generated_at, updated_at";
+  "id, slot, content_key, description_ai, description_final, meta_ai, meta_final, title_override, status, note, reviewed_by, model, prompt_hash, generated_at, updated_at";
 
 interface ImageRow {
   id: string;
@@ -543,21 +551,24 @@ type ContentPatch = z.infer<typeof ContentPatchSchema>;
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+const norm = (v: string | null | undefined): string | null => {
+  const t = v?.trim();
+  return t ? t : null;
+};
+
 /**
  * Pure field mapper for `action: "save"` (unit-tested): trims values, folds
  * empty strings to null, and bumps an untouched/generated row to `in_review`
  * only when the description or meta actually changed by hand. A title
  * override on its own never moves the status — status tracks the description
- * lifecycle (plan decision 11).
+ * lifecycle (plan decision 11). Approved rows are LOCKED: every save
+ * (including title overrides) is rejected until the row is reopened, so an
+ * approval means exactly what was on screen when it was granted.
  */
 export function applyContentSave(
   current: { status: DescContentStatus } | null,
   patch: Pick<ContentPatch, "title_override" | "description" | "meta">,
 ): { fields: Record<string, string | null>; error?: string } {
-  const norm = (v: string | null | undefined): string | null => {
-    const t = v?.trim();
-    return t ? t : null;
-  };
   const fields: Record<string, string | null> = {};
   if (patch.title_override !== undefined) {
     fields.title_override = norm(patch.title_override);
@@ -571,6 +582,9 @@ export function applyContentSave(
   if (Object.keys(fields).length === 0) {
     return { fields, error: "nothing to save" };
   }
+  if (current?.status === "approved") {
+    return { fields: {}, error: "this row is approved; reopen it before editing" };
+  }
   const status = current?.status ?? "none";
   const editedCopy = !!(fields.description_final || fields.meta_final);
   if (editedCopy && (status === "none" || status === "generated")) {
@@ -579,67 +593,117 @@ export function applyContentSave(
   return { fields };
 }
 
-descriptionsRoutes.patch("/content/:target", async (c) => {
-  const parsed = ContentPatchSchema.safeParse(await c.req.json().catch(() => null));
-  if (!parsed.success) {
-    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+/**
+ * Pure field mapper for `action: "approve"` (unit-tested). Approval covers
+ * the WHOLE row (description + meta + title — one status per row, plan
+ * decision 11) and requires a non-empty effective description
+ * (final ?? ai, after folding in any edits sent along with the approval —
+ * the RomanceEditor "approve with edits" pattern).
+ */
+export function applyContentApprove(
+  current: {
+    status: DescContentStatus;
+    description_ai: string | null;
+    description_final: string | null;
+  } | null,
+  patch: Pick<ContentPatch, "title_override" | "description" | "meta">,
+): { fields: Record<string, string | null>; error?: string } {
+  const fields: Record<string, string | null> = {};
+  if (patch.title_override !== undefined) {
+    fields.title_override = norm(patch.title_override);
   }
-  if (parsed.data.action !== "save") {
-    // Approve/reopen belong to the generation stage's review workflow.
-    return c.json({ error: "approve and reopen arrive with the generation stage" }, 400);
+  if (patch.description !== undefined) {
+    fields.description_final = norm(patch.description);
   }
+  if (patch.meta !== undefined) {
+    fields.meta_final = norm(patch.meta);
+  }
+  const description =
+    patch.description !== undefined
+      ? fields.description_final
+      : (current?.description_final ?? current?.description_ai ?? null);
+  if (!description) {
+    return {
+      fields: {},
+      error: "nothing to approve; write or generate a description first",
+    };
+  }
+  fields.status = "approved";
+  return { fields };
+}
 
-  const target = c.req.param("target");
-  const sb = userSupabase(c.env, c.get("jwt"));
-
-  // Resolve the target to (slot, content_key): a desc_content id, a
-  // desc_products id, or a bare content_key (must be unambiguous across
-  // slots — keys are content-derived, so cross-slot collisions are possible
-  // in principle).
-  let slot: string | null = null;
-  let contentKey: string | null = null;
+/**
+ * Resolve a PATCH/POST target to (slot, content_key): a desc_content id, a
+ * desc_products id, or a bare content_key (must be unambiguous across
+ * slots — keys are content-derived, so cross-slot collisions are possible
+ * in principle).
+ */
+async function resolveContentTarget(
+  sb: ReturnType<typeof userSupabase>,
+  target: string,
+): Promise<
+  | { ok: true; slot: string; contentKey: string }
+  | { ok: false; error: string; status: 400 | 404 | 500 }
+> {
   if (UUID_RE.test(target)) {
     const { data: byContent, error: cErr } = await sb
       .from("desc_content")
       .select("slot, content_key")
       .eq("id", target)
       .maybeSingle();
-    if (cErr) return c.json({ error: cErr.message }, 500);
+    if (cErr) return { ok: false, error: cErr.message, status: 500 };
     if (byContent) {
-      slot = (byContent as { slot: string }).slot;
-      contentKey = (byContent as { content_key: string }).content_key;
-    } else {
-      const { data: byProduct, error: pErr } = await sb
-        .from("desc_products")
-        .select("slot, content_key")
-        .eq("id", target)
-        .maybeSingle();
-      if (pErr) return c.json({ error: pErr.message }, 500);
-      if (byProduct) {
-        slot = (byProduct as { slot: string }).slot;
-        contentKey = (byProduct as { content_key: string }).content_key;
-      }
+      return {
+        ok: true,
+        slot: (byContent as { slot: string }).slot,
+        contentKey: (byContent as { content_key: string }).content_key,
+      };
     }
-  } else {
-    const { data: byKey, error: kErr } = await sb
+    const { data: byProduct, error: pErr } = await sb
       .from("desc_products")
       .select("slot, content_key")
-      .eq("content_key", target)
-      .limit(2);
-    if (kErr) return c.json({ error: kErr.message }, 500);
-    const hits = (byKey ?? []) as { slot: string; content_key: string }[];
-    if (hits.length > 1) {
-      return c.json(
-        { error: "content key exists in more than one slot; use the product id" },
-        400,
-      );
+      .eq("id", target)
+      .maybeSingle();
+    if (pErr) return { ok: false, error: pErr.message, status: 500 };
+    if (byProduct) {
+      return {
+        ok: true,
+        slot: (byProduct as { slot: string }).slot,
+        contentKey: (byProduct as { content_key: string }).content_key,
+      };
     }
-    if (hits.length === 1) {
-      slot = hits[0]!.slot;
-      contentKey = hits[0]!.content_key;
-    }
+    return { ok: false, error: "product not found", status: 404 };
   }
-  if (!slot || !contentKey) return c.json({ error: "product not found" }, 404);
+  const { data: byKey, error: kErr } = await sb
+    .from("desc_products")
+    .select("slot, content_key")
+    .eq("content_key", target)
+    .limit(2);
+  if (kErr) return { ok: false, error: kErr.message, status: 500 };
+  const hits = (byKey ?? []) as { slot: string; content_key: string }[];
+  if (hits.length > 1) {
+    return {
+      ok: false,
+      error: "content key exists in more than one slot; use the product id",
+      status: 400,
+    };
+  }
+  if (hits.length === 1) {
+    return { ok: true, slot: hits[0]!.slot, contentKey: hits[0]!.content_key };
+  }
+  return { ok: false, error: "product not found", status: 404 };
+}
+
+descriptionsRoutes.patch("/content/:target", async (c) => {
+  const parsed = ContentPatchSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const resolved = await resolveContentTarget(sb, c.req.param("target"));
+  if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+  const { slot, contentKey } = resolved;
 
   const { data: existing, error: exErr } = await sb
     .from("desc_content")
@@ -650,8 +714,21 @@ descriptionsRoutes.patch("/content/:target", async (c) => {
   if (exErr) return c.json({ error: exErr.message }, 500);
   const current = existing as ContentRow | null;
 
-  const { fields, error: saveErr } = applyContentSave(current, parsed.data);
-  if (saveErr) return c.json({ error: saveErr }, 400);
+  let fields: Record<string, string | null>;
+  if (parsed.data.action === "approve") {
+    const res = applyContentApprove(current, parsed.data);
+    if (res.error) return c.json({ error: res.error }, 400);
+    fields = { ...res.fields, reviewed_by: c.get("user").id };
+  } else if (parsed.data.action === "reopen") {
+    if (current?.status !== "approved") {
+      return c.json({ error: "only approved rows can be reopened" }, 400);
+    }
+    fields = { status: "in_review", reviewed_by: c.get("user").id };
+  } else {
+    const res = applyContentSave(current, parsed.data);
+    if (res.error) return c.json({ error: res.error }, 400);
+    fields = res.fields;
+  }
 
   if (current) {
     const { data: updated, error: uErr } = await sb
@@ -686,6 +763,494 @@ descriptionsRoutes.patch("/content/:target", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Generation — POST /generate, POST /regenerate-meta, POST /bulk-approve
+// (plan decisions 7/8/11)
+// ---------------------------------------------------------------------------
+
+const GenerateSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(6),
+  /** Openings produced by earlier chunks of the same client run, threaded
+   * through so a 40-product batch stays self-diversifying across requests. */
+  priorOpenings: z.array(z.string().max(200)).max(24).default([]),
+});
+
+const RegenerateMetaSchema = z.object({ id: z.string().uuid() });
+
+const BulkApproveSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(400),
+});
+
+interface GenerateResult {
+  id: string;
+  ok: boolean;
+  skipped?: boolean;
+  error?: string;
+  description?: string;
+  meta?: string;
+  /** firstSentence of the generated description — the client threads these
+   * into the next chunk's priorOpenings. */
+  opening?: string;
+  content?: ContentRow;
+}
+
+/**
+ * Pure profile picker (unit-tested): exact brand+collection match first, then
+ * any same-brand profile (seed order preferred) as the brand fallback.
+ */
+export function pickVoiceProfile<
+  T extends { brand: string; collection: string },
+>(profiles: readonly T[], brand: string, collection: string): T | null {
+  const b = brand.trim().toLowerCase();
+  const col = collection.trim().toLowerCase();
+  const exact = profiles.find(
+    (p) => p.brand.toLowerCase() === b && p.collection.toLowerCase() === col,
+  );
+  if (exact) return exact;
+  const sameBrand = profiles
+    .filter((p) => p.brand.toLowerCase() === b)
+    .sort(
+      (x, y) =>
+        (VOICE_ORDER.get(`${x.brand}|${x.collection}`) ?? 99) -
+        (VOICE_ORDER.get(`${y.brand}|${y.collection}`) ?? 99),
+    );
+  return sameBrand[0] ?? null;
+}
+
+async function sha256HexText(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  return sha256Hex(bytes.buffer as ArrayBuffer);
+}
+
+/** Concatenated text blocks of a Claude response, trimmed. */
+function claudeText(res: { content: { type: string }[] }): string {
+  return (res.content as ({ type: string } & { text?: string })[])
+    .filter((b) => b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text as string)
+    .join("")
+    .trim();
+}
+
+/** The effective HTML title (override ?? formula) used for meta keywording. */
+function effectiveTitle(product: ProductRow, content: ContentRow | null): string {
+  return (
+    content?.title_override ??
+    titleFor({
+      brand: product.brand,
+      collection: product.collection,
+      name: product.name,
+      productType: product.product_type,
+      modelBases: product.model_bases,
+    })
+  );
+}
+
+/**
+ * One meta call, clamped to the docx range: truncateAtWord at 160, and one
+ * retry with an explicit length complaint when the first attempt lands under
+ * the 50-char floor (the result is persisted either way — the UI counter
+ * flags anything still out of range).
+ */
+async function generateMetaText(
+  env: Ctx["env"],
+  product: ProductRow,
+  title: string,
+  description: string,
+  avoidMetas: readonly string[],
+): Promise<string> {
+  const prompt = buildMetaPrompt({ product, title, description, avoidMetas });
+  const opts = {
+    system: prompt.system,
+    messages: [{ role: "user" as const, content: prompt.user }],
+    model: claudeModel(env),
+    maxTokens: 250,
+  };
+  let meta = truncateAtWord(claudeText(await claudeMessages(env, opts)), DESC_META_RANGE.max);
+  if (meta.length < DESC_META_RANGE.min) {
+    const retry = await claudeMessages(env, {
+      ...opts,
+      messages: [
+        {
+          role: "user" as const,
+          content: `${prompt.user}\n\nYour previous attempt ("${meta}") was under ${DESC_META_RANGE.min} characters. Write a fuller meta description between ${DESC_META_RANGE.min} and ${DESC_META_RANGE.max} characters.`,
+        },
+      ],
+    });
+    const second = truncateAtWord(claudeText(retry), DESC_META_RANGE.max);
+    if (second.length >= meta.length) meta = second;
+  }
+  return meta;
+}
+
+/** Upsert the generated copy by (slot, content_key), racing-insert safe. */
+async function persistGenerated(
+  sb: ReturnType<typeof userSupabase>,
+  product: ProductRow,
+  current: ContentRow | null,
+  fields: Record<string, string | null>,
+): Promise<ContentRow> {
+  if (current) {
+    const { data, error } = await sb
+      .from("desc_content")
+      .update(fields)
+      .eq("id", current.id)
+      .select(CONTENT_COLS)
+      .single();
+    if (error) throw new Error(error.message);
+    return data as ContentRow;
+  }
+  const { data, error } = await sb
+    .from("desc_content")
+    .insert({ slot: product.slot, content_key: product.content_key, ...fields })
+    .select(CONTENT_COLS)
+    .single();
+  if (error && error.code === "23505") {
+    const { data: updated, error: rErr } = await sb
+      .from("desc_content")
+      .update(fields)
+      .eq("slot", product.slot)
+      .eq("content_key", product.content_key)
+      .select(CONTENT_COLS)
+      .single();
+    if (rErr) throw new Error(rErr.message);
+    return updated as ContentRow;
+  }
+  if (error) throw new Error(error.message);
+  return data as ContentRow;
+}
+
+/** The 8 most recent generated openings in the product's brand+collection.
+ * desc_content has no FK to desc_products, so keys resolve through the
+ * sibling products' (slot, content_key) pairs. */
+async function recentSiblingOpenings(
+  sb: ReturnType<typeof userSupabase>,
+  product: ProductRow,
+): Promise<string[]> {
+  const { data: keyRows, error: kErr } = await sb
+    .from("desc_products")
+    .select("content_key")
+    .eq("slot", product.slot)
+    .eq("brand", product.brand)
+    .eq("collection", product.collection)
+    .limit(500);
+  if (kErr) throw new Error(kErr.message);
+  const keys = ((keyRows ?? []) as { content_key: string }[]).map(
+    (r) => r.content_key,
+  );
+  if (keys.length === 0) return [];
+  const { data: recent, error: rErr } = await sb
+    .from("desc_content")
+    .select("description_ai, generated_at")
+    .eq("slot", product.slot)
+    .in("content_key", keys)
+    .not("description_ai", "is", null)
+    .not("generated_at", "is", null)
+    .order("generated_at", { ascending: false })
+    .limit(8);
+  if (rErr) throw new Error(rErr.message);
+  return ((recent ?? []) as { description_ai: string | null }[])
+    .map((r) => firstSentence(r.description_ai ?? ""))
+    .filter(Boolean);
+}
+
+descriptionsRoutes.post("/generate", async (c) => {
+  const parsed = GenerateSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  if (!anthropicConfigured(c.env)) {
+    return c.json(
+      { error: "Claude is not configured (set the ANTHROPIC_API_KEY secret)" },
+      503,
+    );
+  }
+  const sb = userSupabase(c.env, c.get("jwt"));
+
+  const [prodRes, profRes] = await Promise.all([
+    sb.from("desc_products").select(PRODUCT_COLS).in("id", parsed.data.ids),
+    sb.from("desc_voice_profiles").select(VOICE_COLS).limit(50),
+  ]);
+  if (prodRes.error) return c.json({ error: prodRes.error.message }, 500);
+  if (profRes.error) return c.json({ error: profRes.error.message }, 500);
+  const byId = new Map(
+    ((prodRes.data ?? []) as unknown as ProductRow[]).map((p) => [p.id, p]),
+  );
+  const profiles = (profRes.data ?? []) as VoiceRow[];
+  const model = claudeModel(c.env);
+
+  const results: GenerateResult[] = [];
+  // Openings/metas produced in THIS request — product N avoids its N-1
+  // siblings' openings even before anything is persisted.
+  const runOpenings: string[] = [];
+  const runMetas: string[] = [];
+
+  for (const id of parsed.data.ids) {
+    const product = byId.get(id);
+    if (!product) {
+      results.push({ id, ok: false, error: "product not found" });
+      continue;
+    }
+    try {
+      const { data: contentRow, error: cErr } = await sb
+        .from("desc_content")
+        .select(CONTENT_COLS)
+        .eq("slot", product.slot)
+        .eq("content_key", product.content_key)
+        .maybeSingle();
+      if (cErr) throw new Error(cErr.message);
+      const current = contentRow as ContentRow | null;
+      if (current?.status === "approved") {
+        results.push({
+          id,
+          ok: false,
+          skipped: true,
+          error: "approved; reopen the row to regenerate",
+        });
+        continue;
+      }
+
+      const profile = pickVoiceProfile(
+        profiles,
+        product.brand,
+        product.collection,
+      );
+      if (!profile) {
+        results.push({
+          id,
+          ok: false,
+          error: `no voice profile for brand "${product.brand}"`,
+        });
+        continue;
+      }
+
+      // Reference romance copy for the profile's picked products (missing
+      // SKUs are silently skipped — the PIM sync may lag the picker).
+      let referenceCopy: { name: string; copy: string }[] = [];
+      if (profile.reference_skus.length > 0) {
+        const { data: refRows, error: refErr } = await sb
+          .from("products")
+          .select("sku, name, raw_json")
+          .in("sku", profile.reference_skus.slice(0, 5));
+        if (refErr) throw new Error(refErr.message);
+        referenceCopy = (
+          (refRows ?? []) as {
+            sku: string;
+            name: string;
+            raw_json: Record<string, unknown> | null;
+          }[]
+        )
+          .map((p) => ({
+            name: p.name,
+            copy:
+              extractExistingCopy(
+                p.raw_json ?? {},
+                c.env.SALES_LAYER_ROMANCE_FIELD,
+              ) ?? "",
+          }))
+          .filter((r) => !!r.copy);
+      }
+
+      const dbOpenings = await recentSiblingOpenings(sb, product);
+      const avoidOpenings = [
+        ...new Set([
+          ...dbOpenings,
+          ...parsed.data.priorOpenings,
+          ...runOpenings,
+        ]),
+      ].slice(-32);
+
+      const prompt = buildDescriptionPrompt({
+        profile,
+        product,
+        referenceCopy,
+        avoidOpenings,
+        // Rotation keyed to run position so chunked client batches keep
+        // advancing instead of restarting at seed 0 every request.
+        structureSeed: structureSeed(
+          parsed.data.priorOpenings.length + runOpenings.length,
+        ),
+      });
+      const res = await claudeMessages(c.env, {
+        system: prompt.system,
+        messages: [{ role: "user", content: prompt.user }],
+        model,
+        maxTokens: 700,
+      });
+      const description = claudeText(res);
+      if (!description) throw new Error("Claude returned an empty description");
+
+      const title = effectiveTitle(product, current);
+      const meta = await generateMetaText(
+        c.env,
+        product,
+        title,
+        description,
+        runMetas,
+      );
+
+      const promptHash = await sha256HexText(
+        JSON.stringify({ system: prompt.system, user: prompt.user }),
+      );
+      const saved = await persistGenerated(sb, product, current, {
+        description_ai: description,
+        meta_ai: meta,
+        status: "generated",
+        model,
+        prompt_hash: promptHash,
+        generated_at: new Date().toISOString(),
+      });
+
+      const opening = firstSentence(description);
+      runOpenings.push(opening);
+      runMetas.push(meta);
+      results.push({ id, ok: true, description, meta, opening, content: saved });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      results.push({ id, ok: false, error: msg });
+    }
+  }
+
+  return c.json({ results });
+});
+
+descriptionsRoutes.post("/regenerate-meta", async (c) => {
+  const parsed = RegenerateMetaSchema.safeParse(
+    await c.req.json().catch(() => null),
+  );
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  if (!anthropicConfigured(c.env)) {
+    return c.json(
+      { error: "Claude is not configured (set the ANTHROPIC_API_KEY secret)" },
+      503,
+    );
+  }
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const resolved = await resolveContentTarget(sb, parsed.data.id);
+  if (!resolved.ok) return c.json({ error: resolved.error }, resolved.status);
+
+  const { data: prodRow, error: pErr } = await sb
+    .from("desc_products")
+    .select(PRODUCT_COLS)
+    .eq("slot", resolved.slot)
+    .eq("content_key", resolved.contentKey)
+    .maybeSingle();
+  if (pErr) return c.json({ error: pErr.message }, 500);
+  const product = prodRow as unknown as ProductRow | null;
+  if (!product) return c.json({ error: "product not found" }, 404);
+
+  const { data: contentRow, error: cErr } = await sb
+    .from("desc_content")
+    .select(CONTENT_COLS)
+    .eq("slot", resolved.slot)
+    .eq("content_key", resolved.contentKey)
+    .maybeSingle();
+  if (cErr) return c.json({ error: cErr.message }, 500);
+  const current = contentRow as ContentRow | null;
+  if (current?.status === "approved") {
+    return c.json({ error: "this row is approved; reopen it first" }, 400);
+  }
+  // The CURRENT description feeds the meta — a human edit (description_final)
+  // wins over the AI draft, so regenerate-meta after editing "just works".
+  const description = current?.description_final ?? current?.description_ai;
+  if (!description) {
+    return c.json(
+      { error: "no description yet; generate or write one first" },
+      400,
+    );
+  }
+
+  try {
+    const meta = await generateMetaText(
+      c.env,
+      product,
+      effectiveTitle(product, current),
+      description,
+      [],
+    );
+    const fields: Record<string, string | null> = {
+      meta_ai: meta,
+      model: claudeModel(c.env),
+      generated_at: new Date().toISOString(),
+    };
+    // A none-status row becomes generated; edited/generated statuses stay.
+    if (!current || current.status === "none") fields.status = "generated";
+    const saved = await persistGenerated(sb, product, current, fields);
+    return c.json({ content: saved, meta });
+  } catch (e) {
+    return c.json(
+      { error: e instanceof Error ? e.message : String(e) },
+      502,
+    );
+  }
+});
+
+descriptionsRoutes.post("/bulk-approve", async (c) => {
+  const parsed = BulkApproveSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
+    return c.json({ error: "invalid input", issues: parsed.error.issues }, 400);
+  }
+  const sb = userSupabase(c.env, c.get("jwt"));
+  const { data: prodData, error: pErr } = await sb
+    .from("desc_products")
+    .select("id, slot, content_key")
+    .in("id", parsed.data.ids);
+  if (pErr) return c.json({ error: pErr.message }, 500);
+  const products = (prodData ?? []) as {
+    id: string;
+    slot: string;
+    content_key: string;
+  }[];
+
+  // Content rows resolve per slot (no FK — mirror the GET / join).
+  const bySlot = new Map<string, string[]>();
+  for (const p of products) {
+    const list = bySlot.get(p.slot) ?? [];
+    list.push(p.content_key);
+    bySlot.set(p.slot, list);
+  }
+  const contentByKey = new Map<string, ContentRow>();
+  for (const [slot, keys] of bySlot) {
+    const { data, error } = await sb
+      .from("desc_content")
+      .select(CONTENT_COLS)
+      .eq("slot", slot)
+      .in("content_key", keys);
+    if (error) return c.json({ error: error.message }, 500);
+    for (const row of (data ?? []) as ContentRow[]) {
+      contentByKey.set(`${row.slot} ${row.content_key}`, row);
+    }
+  }
+
+  // Mirror productinfo bulk semantics: approve generated/in_review rows that
+  // actually hold a description; everything else (none, approved, empty) is
+  // skipped, never errored.
+  let approved = 0;
+  let skipped = 0;
+  for (const p of products) {
+    const row = contentByKey.get(`${p.slot} ${p.content_key}`) ?? null;
+    const description = row?.description_final ?? row?.description_ai ?? null;
+    const eligible =
+      row &&
+      (row.status === "generated" || row.status === "in_review") &&
+      !!description;
+    if (!row || !eligible) {
+      skipped++;
+      continue;
+    }
+    const { error } = await sb
+      .from("desc_content")
+      .update({ status: "approved", reviewed_by: c.get("user").id })
+      .eq("id", row.id);
+    if (error) skipped++;
+    else approved++;
+  }
+  // Unknown ids (stale selection after a re-import) count as skipped too.
+  skipped += parsed.data.ids.length - products.length;
+  return c.json({ approved, skipped });
+});
+
+// ---------------------------------------------------------------------------
 // Voice profiles — GET /voice, PUT /voice/:id, POST /voice/:id/reset,
 // POST /voice/derive (draft only; NEVER auto-saves)
 // ---------------------------------------------------------------------------
@@ -716,6 +1281,21 @@ const VoicePutSchema = z.object({
     .array(z.string().trim().min(1, "reference SKUs must not be empty").max(60))
     .max(5, "at most 5 reference products"),
 });
+
+/** Case-insensitive de-dup of reference SKUs, first occurrence wins
+ * (unit-tested) — the UI caps at 5, but a pasted duplicate must not burn a
+ * reference slot server-side. */
+export function dedupSkus(skus: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const sku of skus) {
+    const key = sku.toUpperCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(sku);
+  }
+  return out;
+}
 
 function voiceJson(row: VoiceRow, email: string | null) {
   return {
@@ -764,7 +1344,7 @@ descriptionsRoutes.put("/voice/:id", async (c) => {
     .update({
       prompt: parsed.data.prompt,
       voice_guidance: parsed.data.voice_guidance,
-      reference_skus: parsed.data.reference_skus,
+      reference_skus: dedupSkus(parsed.data.reference_skus),
       updated_by: c.get("user").id,
     })
     .eq("id", c.req.param("id"))
