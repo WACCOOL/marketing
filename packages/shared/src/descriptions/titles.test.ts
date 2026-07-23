@@ -185,6 +185,26 @@ describe("titleCaseName", () => {
     expect(titleCaseName("SEMI-FLUSH mount")).toBe("Semi-Flush Mount");
     expect(titleCaseName("wall/ceiling SCONCE")).toBe("Wall/Ceiling Sconce");
   });
+
+  it("passes digit-containing tokens through verbatim (temp-base names)", () => {
+    expect(titleCaseName("41KJ0808")).toBe("41KJ0808");
+    expect(titleCaseName("PENDANT 41KJ0808")).toBe("Pendant 41KJ0808");
+    expect(titleCaseName("Item 7B")).toBe("Item 7B");
+  });
+});
+
+describe("titleFor — digit tokens survive the Schonbek name path", () => {
+  it("a temp-base fallback name is not lowercased", () => {
+    expect(
+      titleFor({
+        brand: "Schonbek",
+        collection: "Beyond",
+        name: "41KJ0808",
+        productType: "Chandelier",
+        modelBases: ["41KJ0808"],
+      }),
+    ).toBe("41KJ0808 | 410808 | Luxury Crystal Chandelier | Schonbek");
+  });
 });
 
 describe("DESC_TITLE_RANGE", () => {

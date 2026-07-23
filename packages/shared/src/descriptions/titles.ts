@@ -33,11 +33,16 @@ export function titleLengthOk(title: string): boolean {
 
 /** Title Case: capitalize after start, whitespace, hyphen and slash;
  * everything else lowercased ("BORDEAUX" → "Bordeaux", "SEMI-FLUSH" →
- * "Semi-Flush"). */
+ * "Semi-Flush"). Tokens containing a digit pass through VERBATIM so
+ * temp-base names ("41KJ0808") and codes never get case-mangled. */
 export function titleCaseName(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/(^|[\s\-\/(])([a-z])/g, (_, sep: string, ch: string) => sep + ch.toUpperCase());
+  return value.replace(/[^\s\-\/(]+/g, (token) =>
+    /\d/.test(token)
+      ? token
+      : token
+          .toLowerCase()
+          .replace(/^[a-z]/, (ch) => ch.toUpperCase()),
+  );
 }
 
 /**
