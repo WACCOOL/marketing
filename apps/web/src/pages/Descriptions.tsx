@@ -966,6 +966,9 @@ function TrayItem({
     const needle = q.trim().toLowerCase();
     return rows
       .filter((r) => {
+        // Tray pages are Schonbek pdf renders — they only ever belong on
+        // Schonbek master products (the API enforces the same rule).
+        if (r.slot !== "schonbek_master") return false;
         const hay = [r.name ?? "", r.family ?? "", ...r.model_numbers]
           .join(" ")
           .toLowerCase();

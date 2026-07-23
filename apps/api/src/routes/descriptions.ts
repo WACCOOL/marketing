@@ -430,7 +430,12 @@ descriptionsRoutes.post("/files/:slot/images", async (c) => {
 
 descriptionsRoutes.get("/images/*", async (c) => {
   const marker = "/images/";
-  const path = decodeURIComponent(new URL(c.req.url).pathname);
+  let path: string;
+  try {
+    path = decodeURIComponent(new URL(c.req.url).pathname);
+  } catch {
+    return c.json({ error: "not found" }, 404); // malformed % sequence
+  }
   const key = path.slice(path.indexOf(marker) + marker.length);
   if (!DescImageKeySchema.safeParse(key).success) {
     return c.json({ error: "not found" }, 404);
@@ -452,6 +457,31 @@ descriptionsRoutes.get("/images/*", async (c) => {
 
 const AssignImageSchema = z.object({ product_id: z.string().uuid().nullable() });
 
+/**
+ * Pure guard for tray reassignment (unit-tested): only Schonbek tray images
+ * move, and only onto Schonbek master products — a tray page assigned onto a
+ * Dweled/MF row would silently cross brands.
+ */
+export function trayAssignError(
+  image: { slot: string } | null,
+  target: { found: boolean; slot?: string } | null,
+): { error: string; status: 400 | 404 } | null {
+  if (!image) return { error: "image not found", status: 404 };
+  if (image.slot !== "schonbek_pdf") {
+    return { error: "only Schonbek tray images can be reassigned", status: 400 };
+  }
+  if (target) {
+    if (!target.found) return { error: "product not found", status: 404 };
+    if (target.slot !== "schonbek_master") {
+      return {
+        error: "tray pages can only be assigned to Schonbek master products",
+        status: 400,
+      };
+    }
+  }
+  return null;
+}
+
 descriptionsRoutes.patch("/images/:id", async (c) => {
   const id = c.req.param("id");
   const parsed = AssignImageSchema.safeParse(await c.req.json().catch(() => null));
@@ -465,19 +495,22 @@ descriptionsRoutes.patch("/images/:id", async (c) => {
     .eq("id", id)
     .maybeSingle();
   if (error) return c.json({ error: error.message }, 500);
-  if (!img) return c.json({ error: "image not found" }, 404);
-  if ((img as ImageRow).slot !== "schonbek_pdf") {
-    return c.json({ error: "only Schonbek tray images can be reassigned" }, 400);
-  }
+
+  let target: { found: boolean; slot?: string } | null = null;
   if (parsed.data.product_id) {
     const { data: prod, error: perr } = await sb
       .from("desc_products")
-      .select("id")
+      .select("id, slot")
       .eq("id", parsed.data.product_id)
       .maybeSingle();
     if (perr) return c.json({ error: perr.message }, 500);
-    if (!prod) return c.json({ error: "product not found" }, 404);
+    target = prod
+      ? { found: true, slot: (prod as { slot: string }).slot }
+      : { found: false };
   }
+
+  const guard = trayAssignError(img as ImageRow | null, target);
+  if (guard) return c.json({ error: guard.error }, guard.status);
   const { data: updated, error: uerr } = await sb
     .from("desc_product_images")
     .update({ product_id: parsed.data.product_id })
@@ -738,7 +771,9 @@ async function commitMaster(c: Ctx, slot: DescMasterSlot): Promise<Response> {
     for (let i = 0; i < payload.products.length; i += CHUNK) {
       const rows = payload.products.slice(i, i + CHUNK).map((raw) => {
         const ov = overlay.get(raw.content_key);
-        const p = ov ? overlayFeatures(raw, ov.bullets) : raw;
+        // A matched unit with no bullets must not wipe the sheet features —
+        // its images still attach below.
+        const p = ov && ov.bullets.length > 0 ? overlayFeatures(raw, ov.bullets) : raw;
         return {
           import_id,
           slot,
@@ -1088,7 +1123,12 @@ async function commitSupplement(c: Ctx, slot: DescSupplementSlot): Promise<Respo
       // match get their sheet features back.
       for (const p of masterProducts) {
         const ov = overlay.get(p.content_key);
-        const next = ov ? overlayFeatures(p, ov.bullets) : clearFeatureOverlay(p);
+        // Bullet-less matches keep (or restore) the sheet features; their
+        // images still attached above.
+        const next =
+          ov && ov.bullets.length > 0
+            ? overlayFeatures(p, ov.bullets)
+            : clearFeatureOverlay(p);
         if (
           next.features === p.features &&
           next.attributes === p.attributes

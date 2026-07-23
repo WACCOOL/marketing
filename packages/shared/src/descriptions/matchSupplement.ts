@@ -117,6 +117,40 @@ function isSizeSegment(s: string): boolean {
   return residual !== s && /^[\d\s/.,&"–-]*$/.test(residual);
 }
 
+/** Joiner words the sources wrap around finish/size codes. */
+const CRUMB_STOPWORDS = new Set([
+  "finish",
+  "finishes",
+  "size",
+  "sizes",
+  "indoor",
+  "outdoor",
+  "indoors",
+  "outdoors",
+]);
+
+/**
+ * Compound spec-crumb fragments ("AB & BN Finish", "3000K – BK", "18” Size",
+ * "BK Indoor/Outdoor") — every token is a finish code, CCT value, size
+ * number or a joiner stopword. Structured data the master already carries;
+ * genuinely descriptive bullets always contain at least one other word
+ * ("Glossy Opal Glass", "Rotatable 350 degrees" survive via "Glossy"/
+ * "Rotatable"/"degrees"). Single tokens are handled by the dedicated
+ * finish/size checks so a lone "4CCT" or "3000K" stays informative.
+ */
+function isSpecCrumbSegment(s: string): boolean {
+  const tokens = s.split(/[\s/&,()?+–—-]+/).filter(Boolean);
+  if (tokens.length < 2) return false;
+  return tokens.every((t) => {
+    if (CRUMB_STOPWORDS.has(t.toLowerCase())) return true;
+    if (/^[A-Z]{2,4}$/.test(t)) return true; // finish code (BK, AB, BKAM…)
+    if (/^\d{3,4}K$/i.test(t)) return true; // CCT value (3000K)
+    if (/^\d+CCT$/i.test(t)) return true; // 4CCT
+    if (/^\d+(\.\d+)?(?:”|"|in|inch|inches)?$/i.test(t)) return true; // size
+    return false;
+  });
+}
+
 /**
  * A deck product name, primary shape: 1–3 ALL-CAPS words (finish codes are
  * shorter; feature bullets are mixed-case). XML paragraph order is not the
@@ -203,6 +237,7 @@ export function parsePptxSlides(slides: readonly PptxSlideInput[]): ParseSupplem
       if (NAME_NOISE.has(text.toLowerCase())) continue;
       if (FINISH_SEG_RE.test(text)) continue;
       if (isSizeSegment(text)) continue;
+      if (isSpecCrumbSegment(text)) continue;
       if (text.length < 2) continue;
       dedupePush(bullets, text.slice(0, 500));
     }
@@ -275,7 +310,13 @@ export function parseMfPdfPages(pages: readonly PdfPageInput[]): ParseSupplement
     const bullets: string[] = [];
     let current: string | null = null;
     const push = () => {
-      if (current && bullets.length < MAX_BULLETS) dedupePush(bullets, current.slice(0, 500));
+      if (
+        current &&
+        bullets.length < MAX_BULLETS &&
+        !isSpecCrumbSegment(current)
+      ) {
+        dedupePush(bullets, current.slice(0, 500));
+      }
       current = null;
     };
     for (const line of lines) {

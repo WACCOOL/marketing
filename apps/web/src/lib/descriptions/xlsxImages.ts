@@ -76,7 +76,14 @@ export async function extractXlsxImages(file: File): Promise<XlsxImageExtract> {
 
   for (const sheet of sheets) {
     const sheetName = sheet.getAttribute("name");
-    const rid = sheet.getAttribute("r:id") ?? sheet.getAttributeNS("*", "id");
+    // Qualified-name lookup first; namespace-aware fallback in case a writer
+    // used a different prefix for the relationships namespace.
+    const rid =
+      sheet.getAttribute("r:id") ??
+      sheet.getAttributeNS(
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+        "id",
+      );
     if (!sheetName || !rid) continue;
     const wsTarget = wbRels.get(rid);
     if (!wsTarget) continue;

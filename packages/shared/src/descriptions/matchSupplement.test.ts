@@ -164,6 +164,33 @@ describe("parsePptxSlides", () => {
     expect(units[0]!.bullets).toEqual(["Task Light", "Rotatable", "Touch Button"]);
   });
 
+  it("drops compound finish/CCT/size crumb segments from slide bullets", () => {
+    const { units } = parsePptxSlides([
+      {
+        index: 10,
+        paragraphs: [
+          "Outdoor Sconce",
+          "3000K – BK",
+          "AB Indoor",
+          "BK Indoor/Outdoor",
+          "AB & BN Finish",
+          "4CCT",
+          "Dark Sky",
+          "BK with AB ribbed collar",
+          "WSW885705-BK",
+          "VOLTZ",
+        ],
+        imageIds: [],
+      },
+    ]);
+    expect(units[0]!.bullets).toEqual([
+      "Outdoor Sconce",
+      "4CCT", // single token stays
+      "Dark Sky",
+      "BK with AB ribbed collar", // descriptive despite the codes
+    ]);
+  });
+
   it("accepts mixed-case and multi-word names", () => {
     const { units } = parsePptxSlides([
       {
@@ -214,11 +241,36 @@ describe("parseMfPdfPages", () => {
       "WSW870518",
       "WSW870524",
     ]);
+    // "BK Finish" is a spec crumb (structured data) and is dropped.
     expect(u.bullets).toEqual([
       "Outdoor Pendant, Post Mount & Sconce",
       "Wet Rated",
       "Glossy Opal Glass with a very long wrapped continuation line",
-      "BK Finish",
+    ]);
+  });
+
+  it("drops compound spec-crumb bullets, keeps descriptive ones", () => {
+    const { units } = parseMfPdfPages([
+      {
+        index: 6,
+        lines: [
+          "WS925717",
+          "Name: VOLTZ",
+          "- Indoor Sconce",
+          "- 18” Size",
+          "- VB & PN Finish",
+          "- 3000K",
+          "- 4CCT (2700K/3000K/3500K/4000K)",
+          "- Rotatable 350 degrees",
+          "- Glossy Opal Glass",
+        ],
+      },
+    ]);
+    expect(units[0]!.bullets).toEqual([
+      "Indoor Sconce",
+      "3000K", // single token stays informative
+      "Rotatable 350 degrees",
+      "Glossy Opal Glass",
     ]);
   });
 
@@ -388,6 +440,22 @@ describe("overlay", () => {
       "descriptions/img/dweled_pptx/bb22.jpg",
     ]);
     expect(o.unitRefs).toEqual(["slide 4", "slide 5"]);
+  });
+
+  it("keeps images for a bullet-less unit without implying a feature wipe", () => {
+    // Consumers must skip the feature overlay when bullets are empty (the
+    // API guards this); the entry still carries the unit's images.
+    const overlay = buildSupplementOverlay([
+      {
+        content_key: "mf:tovler",
+        ref: "slide 9",
+        bullets: [],
+        imageKeys: ["descriptions/img/dweled_pptx/cc33.jpg"],
+      },
+    ]);
+    const o = overlay.get("mf:tovler")!;
+    expect(o.bullets).toEqual([]);
+    expect(o.imageKeys).toEqual(["descriptions/img/dweled_pptx/cc33.jpg"]);
   });
 
   it("replaces features and preserves sheet originals, idempotently", () => {
