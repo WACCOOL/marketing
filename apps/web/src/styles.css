@@ -1022,7 +1022,7 @@ button.slim {
   aspect-ratio: 16 / 9;
   background: #ffffff;
   border: 1px solid var(--border);
-  border-radius: calc(var(--radius) / 2);
+  border-radius: var(--radius-sm);
   overflow: hidden;
   flex-shrink: 0;
 }
@@ -1389,7 +1389,7 @@ button.slim {
   padding: 4px;
   background: #fff;
   border: 1px solid var(--border);
-  border-radius: calc(var(--radius) / 2);
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .ppt-image-option:hover {
@@ -1415,7 +1415,7 @@ button.slim {
   height: 64px;
   object-fit: contain;
   background: #fff;
-  border-radius: calc(var(--radius) / 2);
+  border-radius: var(--radius-sm);
   flex-shrink: 0;
 }
 
@@ -2002,7 +2002,7 @@ a.thom-family-member:hover {
   border-spacing: 0;
 }
 .desc-table-wrap th:nth-child(1),
-.desc-table-wrap td:nth-child(1) {
+.desc-table-wrap tr:not(.desc-expand-row) > td:nth-child(1) {
   position: sticky;
   left: 0;
   width: 36px;
@@ -2011,7 +2011,7 @@ a.thom-family-member:hover {
   z-index: 2;
 }
 .desc-table-wrap th:nth-child(2),
-.desc-table-wrap td:nth-child(2) {
+.desc-table-wrap tr:not(.desc-expand-row) > td:nth-child(2) {
   position: sticky;
   left: 36px;
   width: 64px;
@@ -2020,11 +2020,152 @@ a.thom-family-member:hover {
   z-index: 2;
 }
 .desc-table-wrap th:nth-child(3),
-.desc-table-wrap td:nth-child(3) {
+.desc-table-wrap tr:not(.desc-expand-row) > td:nth-child(3) {
   position: sticky;
   left: 100px;
   min-width: 150px;
   background: var(--panel);
   z-index: 2;
   border-right: 1px solid var(--border);
+}
+
+/* Thumbnails: 48px stacked thumb + "+n" badge in the sticky Images column;
+   larger variants in the expanded panel, lightbox strip and tray. */
+.desc-thumb-btn {
+  position: relative;
+  display: inline-flex;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  box-shadow: none;
+}
+.desc-thumb {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  display: inline-block;
+  cursor: pointer;
+}
+.desc-thumb-empty {
+  opacity: 0.4;
+}
+.desc-thumb-lg {
+  width: 72px;
+  height: 72px;
+}
+.desc-thumb-active {
+  border-color: var(--accent);
+}
+.desc-thumb-badge {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: white; /* matches the button convention on --accent */
+}
+
+/* Lightbox (inside the shared .modal-overlay/.modal) */
+.desc-lightbox {
+  width: min(760px, 100%);
+}
+.desc-lightbox-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: center;
+}
+.desc-lightbox-img {
+  max-width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+.desc-lightbox-nav {
+  flex: none;
+}
+.desc-lightbox-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Expanded row: left product panel now, editors join in a later stage. */
+.desc-expand-row > td {
+  background: var(--bg);
+}
+.desc-expand {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: 16px;
+  padding: 12px 4px;
+  white-space: normal;
+}
+@media (max-width: 900px) {
+  .desc-expand {
+    grid-template-columns: 1fr;
+  }
+}
+.desc-expand-left {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.desc-expand-right {
+  min-width: 0;
+}
+.desc-strip {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.desc-strip-item {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.desc-attrs {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  font-size: 13px;
+}
+.desc-features {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+.desc-features li {
+  margin-bottom: 2px;
+}
+
+/* Schonbek unassigned tray */
+.desc-tray {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+.desc-tray-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  background: var(--panel);
+}
+.desc-tray-item .desc-thumb-lg {
+  width: 100%;
+  height: 120px;
 }
